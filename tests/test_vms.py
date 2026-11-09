@@ -284,6 +284,20 @@ class CreateTest(VmsTest):
                          "agentbox: lab: leftovers of an earlier VM exist (Data disk, Claude token), remove them first\n")
         os.remove(self.path("var/lib/agentbox/vms/lab-data.qcow2"))
         os.remove(self.path("etc/agentbox/secrets/claude-lab"))
+        # each file alone stops it, and is named (a directory ends in /)
+        for what, rel in (("Data disk", "var/lib/agentbox/vms/lab-data.qcow2"),
+                          ("System disk", "var/lib/agentbox/vms/lab-system.qcow2"),
+                          ("Claude token", "etc/agentbox/secrets/claude-lab"),
+                          ("Observer", "var/lib/agentbox/observer-lab/"),
+                          ("units", "etc/systemd/system/agentbox-proxy-lab.socket")):
+            with self.subTest(what=what):
+                if rel.endswith("/"):
+                    os.makedirs(self.path(rel))
+                else:
+                    self.write(rel, "{}")
+                self.assertEqual(self.refused("create", "lab"),
+                                 f"agentbox: lab: leftovers of an earlier VM exist ({what}), remove them first\n")
+                (os.rmdir if rel.endswith("/") else os.remove)(self.path(rel))
         self.scenario(vms={"lab": {"state": "shut off"}},
                       networks={"agentbox-lab": {"active": False, "autostart": False, "xml": "<network/>"}})
         self.assertEqual(self.refused("create", "lab"), "agentbox: lab: leftovers of an earlier VM exist "
