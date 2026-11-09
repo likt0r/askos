@@ -1,5 +1,6 @@
-"""The claims table (docs/claims.md, #10): every promise it quotes still stands, word for word,
-under its heading, and every test it names as defending it still exists.
+"""The claims table (docs/claims.md, #10): the words each row quotes still occur verbatim under
+the heading it links, and every test it names as defending them still exists. Only the quoted
+words are checked: what a row leaves out of its quote may change unnoticed.
 
 check() reads such a table. ClaimsTableTest runs it on docs/claims.md; FixtureTest on small
 tables and documents in a temporary directory, so that a removed sentence, a renamed heading
@@ -84,7 +85,8 @@ def rows(lines):
 
 
 def check_claim(claim, section, base, docs):
-    """What is wrong with a claim and the section it names (docs: the files read so far)."""
+    """What is wrong with a claim and the section it names (docs: the files read so far). The
+    quoted words must occur verbatim under the heading, line wraps and runs of spaces aside."""
     if len(claim) < 3 or not (claim.startswith('"') and claim.endswith('"')):
         return ["the claim is not in double quotes"]
     link = LINK.fullmatch(section)

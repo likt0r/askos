@@ -1,15 +1,17 @@
 # Claims
 
-Each row quotes one promise of [ARCHITECTURE.md](../ARCHITECTURE.md) (or an ADR) word for word
-and names the tests that fail when the promise is broken. `tests/test_claims.py` checks the
-table in every test run: a quoted sentence that is no longer under its heading (removed, changed
-or moved), a heading that was renamed, or a named test that no longer exists fails the run with
-the row's number. So a change that weakens a promise and drops the test that defended it, or a
-doc edit that drops the promise, does not pass unnoticed.
+Each row quotes one promise of [ARCHITECTURE.md](../ARCHITECTURE.md) (or an ADR) and names the
+tests that fail when the promise is broken. `tests/test_claims.py` checks the table in every
+test run and fails it with the row's number when the quoted words no longer occur verbatim under
+the linked heading (removed, reworded or moved), when that heading was renamed, or when a named
+test no longer exists. So a change that weakens a quoted promise and drops the test that
+defended it, or a doc edit that drops the promise, does not pass unnoticed.
 
-- **Claim**: the sentence in double quotes, as it stands in the document, Markdown included;
-  line wraps and runs of spaces do not count. Where the tests defend only part of a sentence,
-  the row quotes that part. A pipe is written `\|`.
+- **Claim**: in double quotes, the words that carry the promise, exactly as they stand in the
+  document, Markdown included; line wraps and runs of spaces do not count. The check sees only
+  the quoted words: whatever a row leaves out of its quote can change without the check
+  noticing. So a row quotes the whole sentence, or, where the tests defend only part of it, the
+  part that carries the promise, never just a lead-in to it. A pipe is written `\|`.
 - **Section**: a link to the heading the sentence sits under (subsections count as under it).
 - **Defended by**: `test_module.TestClass.test_name` in backticks, separated by `<br>`. Each
   test fails when the promise is broken; a test that only touches its area is not enough.
@@ -49,8 +51,9 @@ pull request. A promise without a defending test has no row; those are listed on
 | "Signals that do not depend on the name (port, raw IP, metadata address) still raise Alerts." | [Detection](../ARCHITECTURE.md#detection) | `test_detection.HarmlessTest.test_signals_that_do_not_depend_on_the_name_still_raise_alerts`<br>`test_detection.ReasonTest.test_the_renamed_signals_are_strong_and_do_not_depend_on_the_name`<br>`test_detection.SeenTest.test_alerts_of_harmless_destinations_are_left_out` |
 | "`agentbox setup` runs a self-test of the detection before it changes anything (`agentbox-suspicious --self-test`)" | [Detection](../ARCHITECTURE.md#detection) | `test_setup.HostStepsTest.test_a_broken_list_of_the_host_fails_the_self_test_before_anything_changes`<br>`test_setup.HostStepsTest.test_the_steps_run_in_their_order` |
 | "each VM may only get tokens for the **GitHub owners** in its registry record" | [Credentials](../ARCHITECTURE.md#credentials) | `test_registry.TokenServiceTest.test_refuses_owners_not_in_the_record`<br>`test_registry.TokenServiceTest.test_vm_without_owners_gets_nothing` |
-| "Replacing a credential never breaks a working one:" | [Credentials](../ARCHITECTURE.md#credentials) | `test_credentials.SetClaudeTokenTest.test_a_refused_token_keeps_the_working_one`<br>`test_credentials.SetClaudeTokenTest.test_answers_that_prove_nothing_store_nothing`<br>`test_github_app.SetGitHubAppTest.test_key_github_does_not_know_is_refused_and_the_old_one_stays`<br>`test_github_app.SetGitHubAppTest.test_github_unreachable_or_odd` |
+| "an authentication, permission or billing error refuses the token; an answer, or an error that only comes once the token was accepted (invalid request, not found, rate limit), accepts it; anything else (no answer, overloaded, a page from a proxy) proves nothing and stores nothing." | [Credentials](../ARCHITECTURE.md#credentials) | `test_credentials.SetClaudeTokenTest.test_rejects_authentication_and_permission_errors`<br>`test_credentials.SetClaudeTokenTest.test_a_refused_token_keeps_the_working_one`<br>`test_credentials.SetClaudeTokenTest.test_errors_that_come_after_the_token_was_accepted_mean_valid`<br>`test_credentials.SetClaudeTokenTest.test_answers_that_prove_nothing_store_nothing`<br>`test_credentials.SetClaudeTokenTest.test_failed_request_is_a_rejection` |
 | "`agentbox set-github-app` reads the App's private key from stdin, lets openssl parse it (unencrypted RSA only), signs a JWT with it and asks GitHub `GET /app`, whose answer must name the given App ID." | [Credentials](../ARCHITECTURE.md#credentials) | `test_github_app.SetGitHubAppTest.test_what_is_no_usable_key_never_reaches_github`<br>`test_github_app.SetGitHubAppTest.test_asks_github_for_the_app_with_a_jwt_signed_by_the_new_key`<br>`test_github_app.SetGitHubAppTest.test_wrong_app_id_is_refused`<br>`test_github_app.SetGitHubAppTest.test_github_naming_another_app_is_refused` |
+| "Only then are `app.pem` (owner `agentbox-gh`, mode 0400) and `app.conf` replaced" | [Credentials](../ARCHITECTURE.md#credentials) | `test_github_app.SetGitHubAppTest.test_key_github_does_not_know_is_refused_and_the_old_one_stays`<br>`test_github_app.SetGitHubAppTest.test_wrong_app_id_is_refused`<br>`test_github_app.SetGitHubAppTest.test_github_naming_another_app_is_refused`<br>`test_github_app.SetGitHubAppTest.test_github_unreachable_or_odd`<br>`test_github_app.SetGitHubAppTest.test_rotated_key_replaces_the_old_one` |
 | "JWTs and tokens reach curl on stdin" | [Credentials](../ARCHITECTURE.md#credentials) | `test_credentials.SetClaudeTokenTest.test_token_is_not_on_the_command_line`<br>`test_github_app.SetGitHubAppTest.test_neither_key_nor_jwt_ever_shows` |
 | "Error messages never repeat input, and the Control Room removes whatever it was sent as a secret from anything it answers or logs, should agentbox ever echo it." | [Credentials](../ARCHITECTURE.md#credentials) | `test_credentials.SetClaudeTokenTest.test_rejects_unexpected_characters_without_echoing_them`<br>`test_credentials.SetClaudeTokenTest.test_never_prints_the_token`<br>`test_github_app.SetGitHubAppTest.test_key_passed_as_argument_by_mistake_is_not_echoed`<br>`test_control_room_credentials.ClaudeTokenTest.test_a_token_echoed_by_mistake_is_hidden`<br>`test_control_room_credentials.GitHubAppTest.test_key_echoed_by_mistake_is_hidden` |
 | "`agentbox` fetches nothing and no GitHub token is involved." | [Images and Builds](../ARCHITECTURE.md#images-and-builds) | `test_images.ReleaseSourceTest.test_a_build_takes_the_files_of_the_installed_release_and_asks_github_nothing` |
