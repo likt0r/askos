@@ -41,7 +41,7 @@ The Image every other Image builds on; it carries the agents and all Safeguards,
 _Avoid_: root image, parent
 
 **Safeguard**:
-A protection the Base image sets up inside every VM: package minimum age and no install scripts, Git hooks only from the Image, the proxy settings, the guest-agent wrappers. Every Build is checked for all of them and discarded if one is missing or weakened.
+A protection the Base image sets up inside every VM: package minimum age and no install scripts, Git hooks only from the Image, the proxy settings, the guest-agent wrappers, Claude Code without the owner's claude.ai connectors. Every Build is checked for all of them and discarded if one is missing or weakened.
 _Avoid_: protection, hardening, policy
 
 **Build**:

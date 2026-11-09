@@ -397,7 +397,9 @@ The check verifies, in every Build: npm's global configuration ignores install s
 has `min-release-age` (and npm is at least version 12), uv, pnpm and Bun have the same
 minimum age, Git takes hooks only from the Image and its `pre-push` hook refuses `main` and
 `master`, every service goes through the Host's proxy and there is no DNS, the guest-agent
-wrappers are in place, and no environment variable switches any of this off. A derived Image
+wrappers are in place, Claude Code fetches none of the owner's claude.ai connectors
+(`ENABLE_CLAUDEAI_MCP_SERVERS=false` for every service and shell), and no environment
+variable switches any of this off. A derived Image
 must also be built on the Base Build, leave every Safeguard file, the Git hooks and the
 guest-agent wrappers exactly as the Base has them, and may add files where environment or
 configuration is read only if they do not mention a Safeguard. The check reads the files

@@ -15,6 +15,9 @@ module expects, not the ones the repository happens to contain:
 - Git: hooks only from /usr/lib/agentbox/hooks, whose pre-push hook refuses main and master.
 - Proxy: every service reaches the outside through the Host's proxy; no DNS of its own.
 - Guest agent: the two wrappers the Host runs through it (agentbox-journal, agentbox-devices).
+- Claude Code: fetches none of the owner's claude.ai connectors (#8). ENABLE_CLAUDEAI_MCP_SERVERS
+  is false in the environment of every service, and /etc/profile.d/agentbox.sh exports it
+  for shells. The Claude token cannot fetch connectors; this holds after a /login in the VM.
 - Nothing in that environment switches a safeguard off again (npm_config_ignore_scripts,
   GIT_CONFIG_*, ...).
 
@@ -43,26 +46,29 @@ QGA = "/usr/libexec/qemu-ga/fsfreeze-hook.d"
 JOURNAL_WRAPPER = f"{QGA}/agentbox-journal"
 DEVICES_WRAPPER = f"{QGA}/agentbox-devices"
 NM_CONF = "/etc/NetworkManager/conf.d/agentbox.conf"
+PROFILE = "/etc/profile.d/agentbox.sh"
+CLAUDEAI = "ENABLE_CLAUDEAI_MCP_SERVERS"
 MIN_NPM = 12
 
 # The files that make up the safeguards: a derived Image must leave each as the Base has it.
 FILES = ("/etc/npmrc", NPM_DEFAULT, f"{NPM}/npmrc", "/etc/uv/uv.toml", "/etc/gitconfig", BUNFIG, GUEST_SETUP,
          "/usr/lib/agentbox/package-safeguards", "/usr/lib/systemd/system/agentbox-guest-setup.service",
          "/usr/lib/systemd/system.conf.d/agentbox.conf", "/usr/lib/systemd/system.conf.d/agentbox-packages.conf",
-         NM_CONF)
+         NM_CONF, PROFILE)
 # Directories a derived Image must leave exactly as they are.
 SEALED = (HOOKS, QGA)
 # Where environment and configuration are read: a derived Image may add or change files
 # there, but none that mentions a safeguard (MENTIONS).
 WATCHED_FILES = ("/etc/environment", "/etc/profile", "/etc/bashrc", "/etc/security/pam_env.conf",
                  "/etc/systemd/system.conf", "/usr/lib/systemd/system.conf", "/etc/systemd/user.conf",
-                 "/etc/NetworkManager/NetworkManager.conf", "/etc/xdg/uv/uv.toml", "/etc/gitconfig")
+                 "/etc/NetworkManager/NetworkManager.conf", "/etc/xdg/uv/uv.toml", "/etc/gitconfig",
+                 "/etc/claude-code/managed-settings.json")
 WATCHED_DIRS = ("/etc/profile.d", "/etc/environment.d", "/usr/lib/environment.d",
                 "/etc/systemd/system.conf.d", "/usr/lib/systemd/system.conf.d", "/usr/local/lib/systemd/system.conf.d",
                 "/etc/systemd/user.conf.d", "/usr/lib/systemd/user.conf.d",
-                "/etc/NetworkManager/conf.d", "/usr/lib/NetworkManager/conf.d")
+                "/etc/NetworkManager/conf.d", "/usr/lib/NetworkManager/conf.d", "/etc/claude-code/managed-settings.d")
 MENTIONS = re.compile(r"ignore[-_]?scripts|release[-_]?age|exclude[-_]?newer|hooks[-_]?path|_proxy\b|proxy=|"
-                      r"git_config|uv_no_config|\bdns\s*=", re.IGNORECASE)
+                      r"git_config|uv_no_config|\bdns\s*=|claudeai", re.IGNORECASE)
 # Variables that would switch a safeguard off again for every service of the VM
 OVERRIDES = re.compile(r"(npm_config_(ignore_scripts|min_release_age)|pnpm_config_minimum_release_age_exclude|"
                        r"git_config_(global|system|nosystem|count|parameters)|uv_no_config|uv_config_file)",
@@ -343,6 +349,17 @@ def _network(root, env):
     return problems
 
 
+def _claude(root, env):
+    """Claude Code fetches no claude.ai connectors: the variable is false for every service,
+    and the last line of the shells' profile naming it exports it as false."""
+    problems = _env_value(env, CLAUDEAI, "false", "Claude Code")
+    lines = [line.strip() for line in (text(root, PROFILE) or "").splitlines()]
+    named = [line for line in lines if CLAUDEAI in line and not line.startswith("#")]
+    if not named or named[-1] != f"export {CLAUDEAI}=false":
+        problems.append(f"Claude Code: {PROFILE} does not export {CLAUDEAI}=false for shells")
+    return problems
+
+
 def _overrides(env):
     return [f"Environment: {name} overrides a Safeguard" for name in sorted(env) if OVERRIDES.fullmatch(name)]
 
@@ -399,7 +416,8 @@ def check(root, days, base=None):
     minimum age `days`; `base` is the manifest of the Base Build a derived Image was
     built on (None for the Base image). Returns (problems, manifest, agent versions)."""
     env = systemd_environment(root)
-    problems = _packages(root, env, days) + _git(root) + _network(root, env) + _overrides(env) + _guest_agent(root)
+    problems = (_packages(root, env, days) + _git(root) + _network(root, env) + _claude(root, env) + _overrides(env)
+                + _guest_agent(root))
     if base is not None:
         problems += _compare(root, base)
     return list(dict.fromkeys(problems)), manifest(root), agents(root)

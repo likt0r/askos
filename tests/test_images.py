@@ -264,6 +264,26 @@ class ReleaseSourceTest(ImagesTest):
         self.assertEqual(self.current(), f"base-{OLD}.qcow2")
         self.assertEqual(self.podman("run"), [])          # no disk made
 
+    def test_a_release_letting_claude_code_fetch_claudeai_connectors_is_discarded(self):
+        """#8: a Base image without ENABLE_CLAUDEAI_MCP_SERVERS=false for services and shells."""
+        for rel, line in (("usr/lib/systemd/system.conf.d/agentbox.conf", '  "ENABLE_CLAUDEAI_MCP_SERVERS=false" \\\n'),
+                          ("etc/profile.d/agentbox.sh", "export ENABLE_CLAUDEAI_MCP_SERVERS=false\n")):
+            path = os.path.join(self.source, "vm/files", rel)
+            with open(path) as f:
+                content = f.read()
+            self.assertIn(line, content)
+            with open(path, "w") as f:
+                f.write(content.replace(line, ""))
+        code, out = self.build()
+        self.assertEqual(code, 1, out)
+        new = self.newest()
+        self.assertEqual(new["status"], "rejected")
+        self.assertIn("Claude Code: ENABLE_CLAUDEAI_MCP_SERVERS is not set instead of false", new["problems"])
+        self.assertIn("Claude Code: /etc/profile.d/agentbox.sh does not export ENABLE_CLAUDEAI_MCP_SERVERS=false "
+                      "for shells", new["problems"])
+        self.assertEqual(self.current(), f"base-{OLD}.qcow2")
+        self.assertEqual(self.podman("run"), [])          # no disk made
+
     def test_builds_from_before_name_the_commit_of_main(self):
         """Records written before ADR 0010 hold the repository and the commit, no Release."""
         build = "20261102-030000"
@@ -359,6 +379,42 @@ class SafeguardTest(ImagesTest):
         self.image("weak", DERIVED + "COPY npm.sh /etc/profile.d/npm.sh\n",
                    **{"npm.sh": "export npm_config_ignore_scripts=false\n"})
         self.rejected("weak", "/etc/profile.d/npm.sh is new or changed and concerns a Safeguard")
+
+    def test_the_base_image_keeps_claude_code_from_fetching_claudeai_connectors(self):
+        """#8: every service gets ENABLE_CLAUDEAI_MCP_SERVERS=false from systemd (orca serve, the
+        agents and terminals it starts), shells from the profile, after the token it sources."""
+        self.assertEqual(self.builds()[self.base]["problems"], [])
+        rootfs = self.rootfs("base", self.base)
+        with open(os.path.join(rootfs, "usr/lib/systemd/system.conf.d/agentbox.conf")) as f:
+            self.assertIn('"ENABLE_CLAUDEAI_MCP_SERVERS=false"', f.read())
+        with open(os.path.join(rootfs, "etc/profile.d/agentbox.sh")) as f:
+            lines = f.read().splitlines()
+        self.assertEqual(lines[-1], "export ENABLE_CLAUDEAI_MCP_SERVERS=false")
+        self.assertLess(next(i for i, line in enumerate(lines) if "/run/agentbox/agent-env" in line), len(lines) - 1)
+
+    def test_claude_code_switched_back_to_claudeai_connectors_is_rejected(self):
+        self.image("weak", DERIVED + "COPY zz.conf /etc/systemd/system.conf.d/zz.conf\n",
+                   **{"zz.conf": "[Manager]\nDefaultEnvironment=ENABLE_CLAUDEAI_MCP_SERVERS=true\n"})
+        self.rejected("weak", "Claude Code: ENABLE_CLAUDEAI_MCP_SERVERS is true instead of false",
+                      "/etc/systemd/system.conf.d/zz.conf is new or changed and concerns a Safeguard")
+
+    def test_a_shell_profile_or_claude_code_setting_naming_claudeai_connectors_is_rejected(self):
+        self.image("weak", DERIVED + "COPY claude.sh /etc/profile.d/claude.sh\n"
+                   "COPY managed.json /etc/claude-code/managed-settings.json\n"
+                   "COPY team.json /etc/claude-code/managed-settings.d/10-team.json\n",
+                   **{"claude.sh": "unset ENABLE_CLAUDEAI_MCP_SERVERS\n",
+                      "managed.json": '{"env": {"ENABLE_CLAUDEAI_MCP_SERVERS": "true"}}\n',
+                      "team.json": '{"disableClaudeAiConnectors": false}\n'})
+        self.rejected("weak", "/etc/profile.d/claude.sh is new or changed and concerns a Safeguard",
+                      "/etc/claude-code/managed-settings.json is new or changed and concerns a Safeguard",
+                      "/etc/claude-code/managed-settings.d/10-team.json is new or changed and concerns a Safeguard")
+
+    def test_a_changed_profile_of_the_agent_box_is_rejected(self):
+        with open(os.path.join(REPO, "vm/files/etc/profile.d/agentbox.sh")) as f:
+            changed = f.read() + "unset ENABLE_CLAUDEAI_MCP_SERVERS\n"
+        self.image("weak", DERIVED + "COPY agentbox.sh /etc/profile.d/agentbox.sh\n", **{"agentbox.sh": changed})
+        self.rejected("weak", "Claude Code: /etc/profile.d/agentbox.sh does not export ENABLE_CLAUDEAI_MCP_SERVERS=false",
+                      "/etc/profile.d/agentbox.sh differs from the Base image")
 
     def test_git_hooks_from_repositories_are_rejected(self):
         self.image("weak", DERIVED + "COPY gitconfig /etc/gitconfig\n",
