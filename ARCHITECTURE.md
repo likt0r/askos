@@ -1247,13 +1247,14 @@ attacks on the laptops.
 ### Egress
 
 - **Abuse of an allowed service.** The proxy decides by the server name of the TLS handshake and
-  passes whatever the connection then carries ([Network](#network)). An Allowlist entry covers
-  its domain with every subdomain, and the entries a new Host starts with (`proxy/allowlist`)
-  include GitHub, the AI providers, the package registries and the container registries, all of
-  which take uploads from anyone with an account: a commit, an issue, a package, an image, a
-  file. Token scope limits only the tokens the box issues; a credential an attacker plants in a
-  repository or an issue works from the VM as from anywhere. Mitigation: few Allowlist entries,
-  for one VM where only one needs them, temporary where a task needs them once.
+  passes whatever the connection then carries ([Network](#network)). A domain entry on the
+  Allowlist covers every subdomain, a Regex entry every host its pattern matches, and the
+  entries a new Host starts with (`proxy/allowlist`) include GitHub, the AI providers, the
+  package registries and the container registries, all of which take uploads from anyone with an
+  account: a commit, an issue, a package, an image, a file. Token scope limits only the tokens
+  the box issues; a credential an attacker plants in a repository or an issue works from the VM
+  as from anywhere. Mitigation: few Allowlist entries, for one VM where only one needs them,
+  temporary where a task needs them once.
 - **GitHub with the VM's own tokens.** The token service gives a VM a token for any repository
   of its GitHub owners that one of the Host's GitHub Apps is installed on, as often as it asks;
   each token is valid for that one repository and one hour, with contents, issues and pull
@@ -1263,6 +1264,21 @@ attacks on the laptops.
   `main` and `master` only stops mistakes ([Packages](#packages)). Mitigation: GitHub owners per
   VM; each App installed only on the repositories agents need; branch protection or rulesets on
   GitHub.
+- **A Regex entry can be broader than it looks.** The breadth check refuses a pattern only when
+  it matches one of a fixed sample of unrelated hosts (`BREADTH_SAMPLE`): a broad pattern that
+  misses the sample passes. The preview before `--confirm-pattern` lists only the hosts of the
+  scope's proxy log of the last 7 days, not the ones a VM has not tried yet
+  ([Network](#network), [ADR 0013](docs/adr/0013-regex-entries-in-every-list.md)). Mitigation: a
+  regex Allowlist entry never allows a destination with strong Signals, checked on every
+  connection, and allows nothing while the Watchlist cannot be read; a domain entry where one
+  will do.
+- **A VM can make its own proxy match slowly.** The VM chooses the host names its proxy matches
+  against the patterns of every list that applies to it. The rules for patterns keep a host
+  crafted to make one backtrack to about 60 to 150 ms for a pattern at the limit of the rules
+  (typical patterns take well under a millisecond), and the number of patterns has no cap
+  ([ADR 0013](docs/adr/0013-regex-entries-in-every-list.md)). The proxy matches in its event
+  loop, so this slows only that VM's proxy, but the time is spent on the Host. Mitigation: the
+  rules for patterns; few patterns.
 - **User content below an Allowlist entry.** A domain entry is checked for strong Signals only
   when it is added (see [What detection sees](#what-detection-sees) below), and the Allowlist a
   new Host starts with has `githubusercontent.com` and `claudeusercontent.com` (so claude.ai
@@ -1308,16 +1324,17 @@ attacks on the laptops.
   by default): a destination on no list, registered before the newly-registered window
   (`young_domain_days`, 14 by default), with an inconspicuous name has no Signal at all. The
   `young` Signal, random-looking labels and unusual TLDs are weak: they raise Alerts and block
-  nothing, not even in Open web. Feed hits at or below a Legitimate domain do not count, except
-  on subdomains of the built-in user-content hosts (`github.io`, `githubusercontent.com`,
-  `claudeusercontent.com`). Mitigation: the hand-maintained Watchlist, for what an incident
-  brings to light.
-- **Signals do not stop an Allowlist entry, and Alerts stop nothing.** Strong Signals are
-  checked when an entry is added, extended or made permanent (`--force`); a destination that
+  nothing, not even in Open web. Feed hits at or below a Legitimate domain do not count (for a
+  regex one, only the young Feed's), except on subdomains of the built-in user-content hosts
+  (`github.io`, `githubusercontent.com`, `claudeusercontent.com`). Mitigation: the
+  hand-maintained Watchlist, whose Regex entries can cover a family of names, for what an
+  incident brings to light.
+- **Signals do not stop a domain entry, and Alerts stop nothing.** Strong Signals are checked
+  when a domain entry is added, extended or made permanent (`--force`); a destination that
   turns up on the Watchlist or a Feed after that still passes the proxy through its entry, with
-  an Alert for each connection ([Network](#network)). No Alert pauses, resets or cuts off a VM
-  on its own ([VMs](#vms)); someone has to look. Mitigation: Alerts in the Control Room;
-  `agentbox disallow` closes the entry's tunnels.
+  an Alert for each connection ([Network](#network)). Only a Regex entry is checked on every
+  connection. No Alert pauses, resets or cuts off a VM on its own ([VMs](#vms)); someone has to
+  look. Mitigation: Alerts in the Control Room; `agentbox disallow` closes the entry's tunnels.
 
 ### Credentials in a VM
 
@@ -1326,9 +1343,11 @@ attacks on the laptops.
   ([Credentials](#credentials), [VMs](#vms)). Code in the VM can read it and send it out through
   any allowed service; it then works from anywhere, on the owner's Claude account, until it
   expires or is revoked with Anthropic. `agentbox set-claude-token` stores a new token on the
-  Host and revokes nothing. Nothing in the Image keeps Claude Code from using what the account
-  offers besides the model, such as connectors set up on claude.ai. Mitigation: one token per
-  VM, so a leak is one token to revoke; it never touches the Data disk.
+  Host and revokes nothing. The account's claude.ai connectors stay out of the VM only as long
+  as nobody logs in to claude.ai there: the token cannot fetch them, and
+  `ENABLE_CLAUDEAI_MCP_SERVERS=false`, a Safeguard, is a default that code in the VM can switch
+  back ([Credentials](#credentials)). Mitigation: one token per VM, so a leak is one token to
+  revoke; it never touches the Data disk.
 - **GitHub tokens can be taken out of the VM.** Any process in the VM can ask the token service,
   as Git's credential helper and the `gh` wrapper do; the service knows the VM only by the
   network a request comes from ([Credentials](#credentials)). A token taken out works anywhere
@@ -1349,14 +1368,15 @@ attacks on the laptops.
   container images, for example), have no minimum age.
 - **The Safeguards are configuration inside the VM.** They hold for a package or an agent that
   goes by the defaults, not against code that already runs there: it can loosen them for itself,
-  for example with a repository's own `.npmrc`, `pyproject.toml` or `.git/config`
-  ([Packages](#packages)). So can a VM variable that points a tool at another configuration file
-  (`npm_config_userconfig`, `npm_config_globalconfig`, `XDG_CONFIG_HOME`, which moves where Git
-  and uv look for the user's configuration): those names are not refused ([VMs](#vms)). The
-  check of every Build knows the Safeguards it was written for: a derived Image could undermine
-  one in a way it does not look for (a wrapper earlier on `PATH`, a service that rewrites a file
-  at boot) ([Images and Builds](#images-and-builds)). Mitigation: a Release is reviewed, and the
-  check catches convenient edits.
+  for example with a repository's own `.npmrc`, `pyproject.toml` or `.git/config`, or `env` in
+  Claude Code's settings ([Packages](#packages), [Credentials](#credentials)). So can a VM
+  variable that points a tool at another configuration file (`npm_config_userconfig`,
+  `npm_config_globalconfig`, `XDG_CONFIG_HOME`, which moves where Git and uv look for the user's
+  configuration): those names are not refused ([VMs](#vms)). The check of every Build knows the
+  Safeguards it was written for: a derived Image could undermine one in a way it does not look
+  for (a wrapper earlier on `PATH`, a service that rewrites a file at boot) ([Images and
+  Builds](#images-and-builds)). Mitigation: a Release is reviewed, and the check catches
+  convenient edits.
 - **Repositories in one VM are not isolated from each other.** Every agent in a VM runs as the
   same user on the same Data disk
   ([ADR 0001](docs/adr/0001-vm-is-the-unit-of-separation.md)). Mitigation: sensitive projects in
@@ -1384,10 +1404,10 @@ attacks on the laptops.
   ([Network](#network)). A hole in one of them runs code on the Host: the proxies of all VMs run
   as one user, `agentbox-proxy`, and the token services as `agentbox-gh`, the one user that
   reads the GitHub Apps' keys; code running as it gets tokens for every repository of every
-  installation of every App, not only for one VM's GitHub owners. Mitigation: small services of our own
-  instead of large general ones ([ADR 0004](docs/adr/0004-own-security-services.md)), without
-  privileges, with `NoNewPrivileges` and a read-only system (`ProtectSystem=strict`); the token
-  service starts per request and reads one line.
+  installation of every App, not only for one VM's GitHub owners. Mitigation: small services of
+  our own instead of large general ones ([ADR 0004](docs/adr/0004-own-security-services.md)),
+  without privileges, with `NoNewPrivileges` and a read-only system (`ProtectSystem=strict`);
+  the token service starts per request and reads one line.
 - **Services of the Host on ports 53 and 443.** One that listens on all of the Host's addresses
   keeps the resolver or the proxy from binding the Host's address in a VM network, so Agent Box
   refuses to set up the networks while it runs: `regenerate`, `setup`, `create`, `delete` and a
