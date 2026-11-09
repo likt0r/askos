@@ -140,7 +140,7 @@ They are off, and nothing can turn them on yet. A Release exists only as a file 
 GitHub release: there is no repository for dnf to update
 from, so neither dnf nor `dnf5-automatic` (which applies Fedora's updates on the Host) ever
 updates Agent Box, and every update is the `dnf upgrade` above, run by the owner. Once
-Releases are published through COPR (#101), a Host that enables that repository gets them
+Releases are published through COPR (#5), a Host that enables that repository gets them
 like any other package, and `dnf5-automatic` could install them too. Whether it does stays
 the owner's choice (ADR 0009): the package runs as root on the Host.
 
