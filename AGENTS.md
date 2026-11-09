@@ -20,6 +20,10 @@ on TCP binds port 0 itself and reports the port (`tests/served_port.py`).
 Every PR an agent opens starts as a draft and leaves draft (`gh pr ready`) only after the
 review loop in [docs/agents/review-loop.md](docs/agents/review-loop.md). Agents never merge.
 
+A PR that changes a promise in ARCHITECTURE.md or an ADR, or a test that defends one, updates
+[docs/claims.md](docs/claims.md) in the same PR: the quoted sentence, its heading and the tests
+that defend it. `tests/test_claims.py` checks the table in every test run.
+
 ## Agent skills
 
 ### Issue tracker
