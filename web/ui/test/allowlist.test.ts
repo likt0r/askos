@@ -133,6 +133,45 @@ describe('Allowlist view', () => {
       body: { scope: 'work', regex: pattern, duration: '1h', confirm: true } }])
   })
 
+  it('drops a preview or a refusal that comes back after the pattern changed: no confirmation without its preview', async () => {
+    const pattern = '^mirror[0-9]+\\.vendor\\.example$'
+    const path = (p: string) => `GET /regex/check?list=allowlist&regex=${encodeURIComponent(p)}&scope=work`
+    // the answers come only when the test gives them: requests still on the way
+    const pending: Record<string, (a: { status: number, body?: unknown }) => void> = {}
+    const later = (p: string) => () => new Promise<{ status: number, body?: unknown }>((resolve) => { pending[p] = resolve })
+    await openApp('/allowlist?vm=work', {
+      'GET /allowlist?vm=work': ok([]),
+      [path(pattern)]: later(pattern),
+      [path(`${pattern}x`)]: later(`${pattern}x`),
+    })
+    const submit = () => must('[data-testid="add-submit"]') as HTMLButtonElement
+    await click('[data-testid="allowlist-add-open"]')
+    await click('[data-testid="allowlist-add"] [data-testid="entry-kind"] [data-kind="regex"]')
+    await type('[data-testid="add-regex"]', pattern)
+    await click('[data-testid="allowlist-add"] [data-testid="regex-test"]')
+    expect(Object.keys(pending)).toEqual([pattern])
+
+    // the pattern changes while its preview is on the way; the preview comes back afterwards
+    await type('[data-testid="add-regex"]', `${pattern}x`)
+    pending[pattern]!(ok({ list: 'allowlist', regex: pattern, scope: 'work', matches: {},
+      preview: { hosts: [], more: 0, watchlist_unreadable: null, truncated: false, log_unreadable: null } }))
+    await settle()
+    expect($('[data-testid="regex-result"]')).toBeNull()
+    await click('[data-testid="add-confirm"]')
+    expect(submit().disabled).toBe(true)
+
+    // the same for a refusal, and the new pattern can be checked at once
+    expect((must('[data-testid="allowlist-add"] [data-testid="regex-test"]') as HTMLButtonElement).disabled).toBe(false)
+    await click('[data-testid="allowlist-add"] [data-testid="regex-test"]')
+    await type('[data-testid="add-regex"]', pattern)
+    pending[`${pattern}x`]!(fail(400, 'pattern_too_broad'))
+    await settle()
+    expect($('[data-testid="regex-error"]')).toBeNull()
+    expect($('[data-testid="regex-result"]')).toBeNull()
+    await click('[data-testid="add-confirm"]')
+    expect(submit().disabled).toBe(true)
+  })
+
   it('shows a Regex entry verbatim, marked as one, and changes it by its pattern', async () => {
     const pattern = '^mirror[0-9]+\\.vendor\\.example$'
     const path = `/allowlist/all/regex/note?regex=${encodeURIComponent(pattern)}`

@@ -8,7 +8,7 @@ import { fakeApi, FakeEventSource, SIGNED_IN, vm } from './fakes'
 import type { Call } from './fakes'
 
 type Answer = { status: number, body?: unknown, headers?: Record<string, string> }
-type Routes = Record<string, Answer | ((call: Call) => Answer)>
+type Routes = Record<string, Answer | ((call: Call) => Answer | Promise<Answer>)>
 
 const mounted: { unmount: () => void }[] = []
 

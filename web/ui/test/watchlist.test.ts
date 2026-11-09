@@ -344,7 +344,8 @@ describe('Watchlist view', () => {
     const enc = encodeURIComponent
     const { api } = await openApp('/watchlist', routes({
       'GET /watchlist': ok({ ...WATCHLIST, entries: [...WATCHLIST.entries,
-        { domain: null, regex: drop, category: 'paste', strong: true, source: '', note: '', added: 1793700000, added_by: 'bewr' }] }),
+        { domain: null, regex: drop, category: 'paste', strong: true, source: '', note: '', added: 1793700000, added_by: 'bewr' },
+        { domain: null, regex: '-cdn.example', category: 'c2', strong: true, source: '', note: '', added: 1793700000, added_by: 'bewr' }] }),
       'GET /watchlist/harmless': ok([{ domain: 'githbu.com', regex: null }, { domain: null, regex: ci }]),
       [`GET /regex/check?list=watchlist&regex=${enc(drop)}&host=drop7.xyz`]: ok({ list: 'watchlist', regex: drop, scope: null, matches: { 'drop7.xyz': true }, preview: null }),
       'POST /watchlist/entries': ok({}),
@@ -357,7 +358,13 @@ describe('Watchlist view', () => {
     expect(entry.querySelector('[data-testid="entry-regex"]')!.textContent).toContain('Regex')
     expect(entry.textContent).toContain(drop)
     await click(entry.querySelector('[data-testid="watch-remove-locked"]')!)
-    expect(must('[data-testid="watch-remove-cli"]').textContent).toContain(`sudo agentbox watch-remove --regex '${drop}' --force`)
+    // the pattern in one word with the option, quoted for the shell where needed
+    expect(must('[data-testid="watch-remove-cli"]').textContent).toContain(`sudo agentbox watch-remove --regex='${drop}' --force`)
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await settle()
+    // ... so that a pattern starting with - is never taken for an option
+    await click(withData('[data-testid="watchlist-entry"]', 'regex', '-cdn.example').querySelector('[data-testid="watch-remove-locked"]')!)
+    expect(must('[data-testid="watch-remove-cli"]').textContent).toContain('sudo agentbox watch-remove --regex=-cdn.example --force')
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     await settle()
 

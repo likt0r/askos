@@ -2,7 +2,9 @@
 // Checks a pattern for a Regex entry (ADR 0013) the way adding it would: whether it keeps the
 // rules (else why), whether a host typed in matches it, and for the Allowlist which hosts of
 // the scope's proxy log of the last 7 days it would allow (`GET /regex/check`). The result
-// belongs to the pattern and scope it was made for; it is dropped when either changes.
+// belongs to the pattern, scope and list it was made for; it is dropped when one changes, also
+// when its request is still on the way then (a confirmation must never follow a preview of
+// something else).
 import type { RegexCheck, RegexList } from '~/utils/access'
 
 const props = withDefaults(defineProps<{ list: RegexList, pattern: string, scope?: string }>(), { scope: undefined })
@@ -22,27 +24,36 @@ const canCheck = computed(() => looksLikePattern(props.pattern.trim()) && !hostP
 const match = computed(() => (checked.value && tested.value ? checked.value.matches[tested.value] : undefined))
 const preview = computed(() => checked.value?.preview ?? null)
 
+// which request counts: each change of pattern, scope or list and each new check makes the
+// answers to earlier requests stale, and a stale answer is dropped, result or error alike
+let current = 0
+
 watch(() => [props.pattern, props.scope, props.list], () => {
+  current++
   checked.value = null
   error.value = null
+  busy.value = false
 })
 
 async function check() {
   if (!canCheck.value) return
+  const request = ++current
   busy.value = true
   error.value = null
   const h = host.value.trim() ? normalizedHost.value : ''
   try {
     const result = await api<RegexCheck>(regexCheckPath(props.list, props.pattern.trim(), h, props.list === 'allowlist' ? props.scope : undefined))
+    if (request !== current) return
     tested.value = h
     checked.value = result
   }
   catch (e) {
+    if (request !== current) return
     checked.value = null
     error.value = e
   }
   finally {
-    busy.value = false
+    if (request === current) busy.value = false
   }
 }
 

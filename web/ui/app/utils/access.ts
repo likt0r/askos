@@ -52,9 +52,10 @@ export function shellWord(v: string): string {
   return /^[A-Za-z0-9._:/@%+=,-]+$/.test(v) ? v : `'${v.replace(/'/g, `'\\''`)}'`
 }
 
-/** What a command shown for the Host takes for an entry: the domain, or `--regex '<pattern>'`. */
+/** What a command shown for the Host takes for an entry: the domain, or `--regex='<pattern>'`, in
+ * one word with the option, so that a pattern starting with - is never read as an option. */
 export function cliTarget(e: Partial<Target>): string {
-  return e.regex != null ? `--regex ${shellWord(e.regex)}` : e.domain ?? ''
+  return e.regex != null ? `--regex=${shellWord(e.regex)}` : e.domain ?? ''
 }
 
 /** The lists that take Regex entries, as `GET /regex/check` names them. */
