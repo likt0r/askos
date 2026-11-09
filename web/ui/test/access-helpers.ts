@@ -62,6 +62,14 @@ export function must(selector: string): HTMLElement {
   return el
 }
 
+/** The element of `selector` whose data attribute `key` is `value` (a pattern, which a CSS
+ * attribute selector would read with its backslashes as escapes). */
+export function withData(selector: string, key: string, value: string): HTMLElement {
+  const el = $$(selector).find(e => e.dataset[key] === value)
+  if (!el) throw new Error(`not found: ${selector} with ${key}=${value}`)
+  return el
+}
+
 export async function click(target: string | Element) {
   const el = typeof target === 'string' ? must(target) : target
   ;(el as HTMLElement).click()

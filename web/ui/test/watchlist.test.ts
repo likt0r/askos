@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resetSessionForTests } from '~/composables/useSession'
 import { resetLiveForTests } from '~/composables/useLive'
 import { FakeEventSource } from './fakes'
-import { $, $$, changes, click, fail, must, ok, openApp, settle, type, unmountAll, waitFor } from './access-helpers'
+import { $, $$, changes, click, fail, must, ok, openApp, settle, type, unmountAll, waitFor, withData } from './access-helpers'
 
 const now = () => Math.floor(Date.now() / 1000)
 
@@ -353,7 +353,7 @@ describe('Watchlist view', () => {
       'POST /watchlist/legitimate': ok({ domain: null, regex: mirrors, builtin: false }),
     }))
     // listed verbatim, marked as Regex entries; a strong one only on the Host, with --regex
-    const entry = must(`[data-testid="watchlist-entry"][data-regex="${drop}"]`)
+    const entry = withData('[data-testid="watchlist-entry"]', 'regex', drop)
     expect(entry.querySelector('[data-testid="entry-regex"]')!.textContent).toContain('Regex')
     expect(entry.textContent).toContain(drop)
     await click(entry.querySelector('[data-testid="watch-remove-locked"]')!)
@@ -373,11 +373,11 @@ describe('Watchlist view', () => {
 
     // a Harmless mark
     const harmless = must('[data-testid="harmless"]')
-    expect(must(`[data-testid="harmless-row"][data-regex="${ci}"]`).querySelector('[data-testid="entry-regex"]')).not.toBeNull()
+    expect(withData('[data-testid="harmless-row"]', 'regex', ci).querySelector('[data-testid="entry-regex"]')).not.toBeNull()
     await click(harmless.querySelector('[data-testid="entry-kind"] [data-kind="regex"]')!)
     await type('[data-testid="harmless-regex"]', ci)
     await click('[data-testid="harmless-add"]')
-    await click(`[data-testid="harmless-row"][data-regex="${ci}"] [data-testid="harmless-remove"]`)
+    await click(withData('[data-testid="harmless-row"]', 'regex', ci).querySelector('[data-testid="harmless-remove"]')!)
     await click('[data-testid="confirm-action"]')
 
     // a Legitimate domain: it lifts only weak Signals, and says so

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resetSessionForTests } from '~/composables/useSession'
 import { resetLiveForTests } from '~/composables/useLive'
 import { FakeEventSource } from './fakes'
-import { $, $$, changes, click, fail, must, ok, openApp, settle, type, unmountAll, waitFor } from './access-helpers'
+import { $, $$, changes, click, fail, must, ok, openApp, settle, type, unmountAll, waitFor, withData } from './access-helpers'
 
 const now = () => Math.floor(Date.now() / 1000)
 
@@ -142,14 +142,14 @@ describe('Allowlist view', () => {
       [`PUT ${path}`]: ok({}),
       [`DELETE /allowlist/all/regex?regex=${encodeURIComponent(pattern)}`]: ok({}),
     })
-    const r = must(`[data-testid="allowlist-entry"][data-regex="${pattern}"]`)
+    const r = withData('[data-testid="allowlist-entry"]', 'regex', pattern)
     expect(r.querySelector('[data-testid="entry-regex"]')!.textContent).toContain('Regex')
     expect(r.textContent).toContain(pattern)
     expect(r.querySelector('[data-testid="entry-uses"]')!.textContent).toBe('used 2 times in 24 h')
     await click(r.querySelector('[data-testid="entry-note-edit"]')!)
     await type('[data-testid="note-input"]', 'mirrors')
     await click('[data-testid="note-save"]')
-    await click(must(`[data-testid="allowlist-entry"][data-regex="${pattern}"]`).querySelector('[data-testid="entry-remove"]')!)
+    await click(withData('[data-testid="allowlist-entry"]', 'regex', pattern).querySelector('[data-testid="entry-remove"]')!)
     expect(document.body.textContent).toContain(`Remove ${pattern}?`)
     await click('[data-testid="confirm-action"]')
     expect(changes(api.calls)).toEqual([
