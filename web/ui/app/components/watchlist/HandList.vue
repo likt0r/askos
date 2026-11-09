@@ -179,6 +179,9 @@ function remove() {
           <UTooltip v-if="e.regex != null" :text="t('regex.badgeHint')">
             <UBadge color="warning" variant="outline" size="sm" icon="i-lucide-regex" :label="t('regex.badge')" data-testid="entry-regex" />
           </UTooltip>
+<UTooltip v-if="e.refused" :text="e.refused">
+            <UBadge color="error" variant="subtle" size="sm" icon="i-lucide-ban" :label="t('regex.refused')" data-testid="entry-refused" />
+          </UTooltip>
           <span class="break-all font-mono text-sm text-highlighted">{{ entryValue(e) }}</span>
         </span>
         <span class="flex flex-wrap gap-1 sm:w-48 sm:shrink-0">

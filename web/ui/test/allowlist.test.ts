@@ -100,7 +100,7 @@ describe('Allowlist view', () => {
         preview: { hosts: [
           { host: 'mirror1.vendor.example', allowed: 0, blocked: 3, signals: [], strong: false },
           { host: 'mirror9.vendor.example', allowed: 0, blocked: 1, signals: ['lookalike'], strong: true },
-        ], more: 0, watchlist_unreadable: null, truncated: false, log_unreadable: null },
+        ], more: 0, watchlist_unreadable: null, truncated: true, reaches_back: now() - 3600, log_unreadable: null },
       }),
       'POST /allowlist': { status: 201, body: {} },
     })
@@ -117,6 +117,9 @@ describe('Allowlist view', () => {
     expect($$('[data-testid="regex-preview-host"]').map(h => [h.dataset.host, h.dataset.strong])).toEqual([
       ['mirror1.vendor.example', 'false'], ['mirror9.vendor.example', 'true']])
     expect(must('[data-testid="regex-preview-host"][data-host="mirror9.vendor.example"]').textContent).toContain('stays blocked: strong Signals')
+    // a VM that filled its log pushed older lines out of what was read: said, with how far back it reaches
+    expect(must('[data-testid="regex-preview-truncated"]').textContent)
+      .toContain('The log has more lines than the newest 200,000 read, which reach back only to ')
     expect(submit().disabled).toBe(true)
     await click('[data-testid="add-confirm"]')
     expect(submit().disabled).toBe(false)
@@ -170,6 +173,22 @@ describe('Allowlist view', () => {
     expect($('[data-testid="regex-result"]')).toBeNull()
     await click('[data-testid="add-confirm"]')
     expect(submit().disabled).toBe(true)
+  })
+
+  it('marks a stored pattern the rules refuse, which can still be removed', async () => {
+    const row = { domain: null, regex: '.*', scope: 'all', expires: null, note: '', added_by: 'root', added: now() - 60, expired: false, remaining: null, uses_24h: 0,
+      refused: 'regex entry .* refused: too broad: it matches google.com, one of the unrelated hosts it must not match' }
+    const { api } = await openApp('/allowlist', {
+      'GET /allowlist': ok([row, ...entries()]),
+      'DELETE /allowlist/all/regex?regex=.*': ok({ removed: true }),
+    })
+    const r = withData('[data-testid="allowlist-entry"]', 'regex', '.*')
+    expect(r.querySelector('[data-testid="entry-refused"]')!.textContent).toContain('refused: counts as nothing')
+    expect(row.refused).toContain('too broad')
+    expect(withData('[data-testid="allowlist-entry"]', 'domain', 'crates.io').querySelector('[data-testid="entry-refused"]')).toBeNull()
+    await click(r.querySelector('[data-testid="entry-remove"]')!)
+    await click('[data-testid="confirm-action"]')
+    expect(changes(api.calls)).toEqual([{ method: 'DELETE', path: '/allowlist/all/regex?regex=.*', body: undefined, csrf: '1' }])
   })
 
   it('shows a Regex entry verbatim, marked as one, and changes it by its pattern', async () => {

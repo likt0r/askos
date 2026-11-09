@@ -12,6 +12,7 @@ const props = withDefaults(defineProps<{ list: RegexList, pattern: string, scope
 const checked = defineModel<RegexCheck | null>('checked', { default: null })
 const { t } = useI18n()
 const errorText = useErrorText()
+const when = useWhen()
 
 const host = ref('')
 const busy = ref(false)
@@ -118,9 +119,14 @@ function seen(h: { allowed: number, blocked: number }) {
           <p v-if="preview.more" class="text-xs text-muted">
             {{ t('regex.preview.more', preview.more) }}
           </p>
-          <p v-if="preview.truncated" class="text-xs text-muted">
-            {{ t('regex.preview.truncated') }}
-          </p>
+          <UAlert
+            v-if="preview.truncated"
+            color="warning"
+            variant="subtle"
+            icon="i-lucide-triangle-alert"
+            :title="preview.reaches_back ? t('regex.preview.truncatedSince', { when: when.at(preview.reaches_back) }) : t('regex.preview.truncated')"
+            data-testid="regex-preview-truncated"
+          />
         </template>
         <UAlert v-if="preview.watchlist_unreadable" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="t('regex.preview.watchlistUnreadable')" :description="preview.watchlist_unreadable" data-testid="regex-preview-watchlist" />
       </template>

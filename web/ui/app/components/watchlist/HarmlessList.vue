@@ -115,6 +115,9 @@ async function remove() {
         <UTooltip v-if="m.regex != null" :text="t('regex.badgeHint')">
           <UBadge color="warning" variant="outline" size="sm" icon="i-lucide-regex" :label="t('regex.badge')" data-testid="entry-regex" />
         </UTooltip>
+        <UTooltip v-if="m.refused" :text="m.refused">
+          <UBadge color="error" variant="subtle" size="sm" icon="i-lucide-ban" :label="t('regex.refused')" data-testid="entry-refused" />
+        </UTooltip>
         <span class="min-w-0 flex-1 break-all font-mono text-sm">{{ entryValue(m) }}</span>
         <UButton
           color="error"

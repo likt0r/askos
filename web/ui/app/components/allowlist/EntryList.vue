@@ -115,6 +115,9 @@ const targetValue = computed(() => (target.value ? entryValue(target.value) : ''
           <UTooltip v-if="e.regex != null" :text="t('regex.badgeHint')">
             <UBadge color="warning" variant="outline" size="sm" icon="i-lucide-regex" :label="t('regex.badge')" data-testid="entry-regex" />
           </UTooltip>
+<UTooltip v-if="e.refused" :text="e.refused">
+            <UBadge color="error" variant="subtle" size="sm" icon="i-lucide-ban" :label="t('regex.refused')" data-testid="entry-refused" />
+          </UTooltip>
           <span class="break-all font-mono text-sm font-medium text-highlighted">{{ entryValue(e) }}</span>
           <UBadge v-if="props.showScope" :color="e.scope === 'all' ? 'info' : 'neutral'" variant="subtle" size="sm" :label="scopeLabel(e.scope)" data-testid="entry-scope" />
           <UBadge :color="left(e).color" variant="soft" size="sm" :label="left(e).text" data-testid="entry-left" />

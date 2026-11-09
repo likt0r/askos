@@ -7,6 +7,8 @@ import type { Translator } from './activity'
 export interface Target {
   domain: string | null
   regex: string | null
+  /** why the rules refuse a stored pattern (agentbox's English text): it counts as nothing until removed */
+  refused?: string | null
 }
 
 /** An Allowlist entry as `GET /allowlist` returns it (times in epoch seconds). */
@@ -82,6 +84,8 @@ export interface RegexCheck {
     more: number
     watchlist_unreadable: string | null
     truncated: boolean
+    /** how far back what was read reaches, epoch seconds (the log may have had more lines) */
+    reaches_back?: number
     log_unreadable: string | null
   }
 }
