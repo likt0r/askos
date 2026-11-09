@@ -185,8 +185,11 @@ describe('Activity text (unit)', () => {
   }
 
   it('keeps the stored text without a code, or for an action it does not know', () => {
-    expect(activityText(ENTRIES[11]!, tr)).toBe('Freigabe example.org')
-    expect(activityText(ENTRIES[10]!, tr)).toBe('Frobnicate x')
+    const stored = (description: string) => ENTRIES.find(e => e.description === description)!
+    expect(stored('Freigabe example.org').code).toBeUndefined()
+    expect(activityText(stored('Freigabe example.org'), tr)).toBe('Freigabe example.org')
+    expect(SENTENCES).not.toHaveProperty('frobnicate')
+    expect(activityText(stored('Frobnicate x'), tr)).toBe('Frobnicate x')
     expect(activityText({ ...ENTRIES[0]!, code: undefined }, tr)).toBe(ENTRIES[0]!.description)
   })
 
