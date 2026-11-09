@@ -71,8 +71,9 @@ export interface Call { method: string, path: string, headers: Record<string, st
 
 type Answer = { status: number, body?: unknown, headers?: Record<string, string> }
 
-/** A fake fetch for /api/v1: answers by "METHOD /path" (a function may decide per call). */
-export function fakeApi(routes: Record<string, Answer | ((call: Call) => Answer)>) {
+/** A fake fetch for /api/v1: answers by "METHOD /path" (a function may decide per call, and
+ * answer later with a promise: a request still on the way). */
+export function fakeApi(routes: Record<string, Answer | ((call: Call) => Answer | Promise<Answer>)>) {
   const calls: Call[] = []
   const fetch = vi.fn(async (input: string, init: RequestInit = {}) => {
     const method = (init.method ?? 'GET').toUpperCase()
@@ -81,7 +82,7 @@ export function fakeApi(routes: Record<string, Answer | ((call: Call) => Answer)
     const call = { method, path, headers, body: init.body ? JSON.parse(String(init.body)) : undefined }
     calls.push(call)
     const route = routes[`${method} ${path}`]
-    const answer: Answer = typeof route === 'function' ? route(call) : route
+    const answer: Answer = (typeof route === 'function' ? await route(call) : route)
       ?? { status: 404, body: { error: { code: 'not_found', message: 'Not found' } } }
     return new Response(answer.body === undefined ? null : JSON.stringify(answer.body), {
       status: answer.status,

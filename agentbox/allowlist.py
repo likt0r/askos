@@ -543,7 +543,7 @@ def allow(args):
         if "confirm-pattern" not in opts:
             p = preview(scope, ref[1])
             die(f"{preview_text(scope, ref[1], p)}\nAllowing it only with --confirm-pattern",
-                error="confirmation_required", scope=scope, regex=ref[1], hosts=len(p["hosts"]) + p["more"])
+                error="pattern_confirmation_required", scope=scope, regex=ref[1], hosts=len(p["hosts"]) + p["more"])
     else:
         if "confirm-pattern" in opts:
             die("--confirm-pattern only with --regex", error="invalid_argument", option="--confirm-pattern")

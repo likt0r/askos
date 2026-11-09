@@ -2,11 +2,11 @@
 // The Watchlist view: Alerts across VMs (mark as seen), checking a domain, Harmless marks,
 // the hand-maintained Watchlist and the Legitimate domains (both edited here), and the
 // state of the Feeds.
-import type { LegitimateDomain, Watchlist } from '~/utils/access'
+import type { HarmlessMark, LegitimateDomain, Watchlist } from '~/utils/access'
 
 definePageMeta({ titleKey: 'nav.watchlist' })
 
-const harmless = ref<string[]>([])
+const harmless = ref<HarmlessMark[]>([])
 const harmlessLoaded = ref(false)
 const harmlessError = ref<unknown>(null)
 const watchlist = ref<Watchlist | null>(null)
@@ -19,8 +19,8 @@ const alerts = ref<{ load: () => Promise<void> } | null>(null)
 
 async function loadHarmless() {
   try {
-    const list = await api<string[]>('/watchlist/harmless')
-    harmless.value = Array.isArray(list) ? list : []
+    const list = await api<HarmlessMark[]>('/watchlist/harmless')
+    harmless.value = Array.isArray(list) ? list.filter(m => m && typeof m === 'object') : []
     harmlessError.value = null
     harmlessLoaded.value = true
   }

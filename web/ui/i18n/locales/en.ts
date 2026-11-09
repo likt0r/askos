@@ -88,6 +88,7 @@ export default {
     invalid_query: 'The query is not valid.',
     invalid_name: 'VM names have 2 to 16 lowercase letters, digits or hyphens and start with a letter.',
     confirmation_required: 'Please confirm first.',
+    pattern_confirmation_required: 'Look at what the pattern would allow (Show what it allows) and confirm it first.',
     unauthenticated: 'Please sign in.',
     wrong_password: 'Wrong password.',
     csrf_header_missing: 'The request was refused (protection against cross-site requests).',

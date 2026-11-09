@@ -1422,18 +1422,21 @@ def serve_file(handler, rel, full):
 # again.
 
 class ApiError(Exception):
-    """detail: what agentbox said about it (English); field: the request's field that is wrong."""
+    """detail: what agentbox said about it (English); field: the request's field that is wrong;
+    params: the parameters the UI words this refusal with (ERROR_PARAMS)."""
 
-    def __init__(self, status, code, message, detail=None, headers=(), field=None):
+    def __init__(self, status, code, message, detail=None, headers=(), field=None, params=None):
         super().__init__(code)
         self.status, self.code, self.message, self.detail, self.headers = status, code, message, detail, headers
-        self.field = field
+        self.field, self.params = field, params
 
 
-def api_error(code, message, detail=None, field=None):
+def api_error(code, message, detail=None, field=None, params=None):
     error = {"code": code, "message": message}
     if field:
         error["field"] = field
+    if params:
+        error["params"] = params
     if detail:
         error["detail"] = detail
     return {"error": error}
@@ -1456,6 +1459,7 @@ AGENTBOX_ERRORS = {
     "vm_exists": (409, "A VM of this name exists already"),
     "no_free_network": (409, "No free network left"),
     "confirmation_required": (400, "Confirm by typing the VM's name"),
+    "pattern_confirmation_required": (400, "Confirm what the pattern would allow first, after its preview"),
     "vm_not_running": (409, "The VM is not running"),
     "vm_paused": (409, "The VM is paused; start it first, then try again"),
     "invalid_memory": (400, "Memory limit out of range (at least 1024 MiB, at most the Host's memory)"),
@@ -1564,7 +1568,19 @@ def agentbox_failure(exit_code, stderr, stdout="", secrets_in=()):
         error = "sudo_failed" if text.startswith("sudo: ") else AGENTBOX_EXITS.get(exit_code, "action_failed")
     detail = hide(text, secrets_in).strip()[:500] or None
     status, message = AGENTBOX_ERRORS[error]
-    return ApiError(status, error, message, detail, field=error_field(error, params))
+    return ApiError(status, error, message, detail, field=error_field(error, params), params=error_params(error, params))
+
+
+# The parameters of agentbox's refusals that the UI words them with (docs/control-room-api.md),
+# each passed on only in the form agentbox gives it: which rule a Regex entry's pattern breaks,
+# the host of the breadth check's sample it matches
+ERROR_PARAMS = {"invalid_pattern": {"reason": re.compile(r"[a-z][a-z-]{0,39}")},
+                "pattern_too_broad": {"host": re.compile(r"[a-z0-9][a-z0-9.-]{0,252}")}}
+
+
+def error_params(error, params):
+    wanted = ERROR_PARAMS.get(error, {})
+    return {k: v for k, v in params.items() if k in wanted and isinstance(v, str) and wanted[k].fullmatch(v)} or None
 
 
 def error_field(error, params):
@@ -1713,7 +1729,10 @@ def route(method, pattern, secret=(), public=False):
 
 
 VM = r"/vms/(?P<vm>[a-z][a-z0-9-]{1,15})"
-SCOPE = r"/allowlist/(?P<scope>[a-z][a-z0-9-]{1,15})/(?P<domain>[^/]+)"
+# an entry by its domain, or a Regex entry (ADR 0013) under /regex with its pattern in ?regex=
+# (never a domain: that has a dot)
+SCOPE = r"/allowlist/(?P<scope>[a-z][a-z0-9-]{1,15})/(?!regex(?:/|$))(?P<domain>[^/]+)"
+SCOPE_REGEX = r"/allowlist/(?P<scope>[a-z][a-z0-9-]{1,15})/regex"
 IMAGE = r"/images/(?P<image>[a-z0-9][a-z0-9-]{0,31})"
 
 
@@ -1988,11 +2007,52 @@ def scope(v):
     return v
 
 
+# what a pattern may consist of, as agentbox's rules say (printable ASCII without spaces); the
+# rest of the rules agentbox checks
+PATTERN_CHARS = re.compile(r"[\x21-\x7e]+")
+
+
+# what is dropped around a pattern: ASCII spaces, tabs, CR and LF, nothing else (str.strip()
+# would also drop other control and Unicode whitespace, which is refused instead)
+PATTERN_AROUND = " \t\r\n"
+
+
+def pattern_arg(v):
+    """--regex=<pattern> of a Regex entry, taken as given but for leading and trailing spaces,
+    tabs, CR and LF (not lowercased: \\D is not \\d); as the value of the option it is never
+    one itself. Anything else but printable ASCII without spaces (a NUL byte included, which
+    no process argument can carry) is refused here; agentbox checks the rest."""
+    pattern = v.strip(PATTERN_AROUND) if isinstance(v, str) else None
+    if pattern is None or not PATTERN_CHARS.fullmatch(pattern):
+        raise invalid("regex", "regex must be a pattern of printable ASCII characters without spaces")
+    return f"--regex={pattern}"
+
+
+def target_args(body):
+    """The entry a body names: its domain, or --regex=<pattern> for a Regex entry."""
+    if body.get("regex") is not None:
+        if body.get("domain") is not None:
+            raise invalid("regex", "domain or regex, not both")
+        return [pattern_arg(body["regex"])]
+    return [word(body, "domain").lower()]
+
+
+def regex_query(url):
+    """--regex=<pattern> of the Regex entry a path under /regex names in ?regex=."""
+    return pattern_arg(query_value(url, "regex"))
+
+
 @route("POST", "/allowlist")
 def post_allowlist(h, m, url, body):
     s = scope(body.get("scope"))
-    d = word(body, "domain").lower()
-    return 201, run_json("allow", s, d, *duration_args(body), *note_args(body), "--json")
+    target = target_args(body)
+    if target[0].startswith("--regex="):
+        # adding one allows what it matches: only after the preview, confirmed (ADR 0013)
+        if body.get("confirm") is not True:
+            raise ApiError(400, "pattern_confirmation_required", "Confirm what the pattern would allow first, "
+                                                                 "after its preview", field="confirm")
+        target.append("--confirm-pattern")
+    return 201, run_json("allow", s, *target, *duration_args(body), *note_args(body), "--json")
 
 
 @route("DELETE", SCOPE)
@@ -2017,6 +2077,45 @@ def put_note(h, m, url, body):
                          *note_args(body, required=True), "--json")
 
 
+@route("DELETE", SCOPE_REGEX)
+def delete_allowlist_regex(h, m, url, body):
+    return 200, run_json("disallow", scope(m["scope"]), regex_query(url), "--json")
+
+
+@route("POST", SCOPE_REGEX + "/extend")
+def post_extend_regex(h, m, url, body):
+    return 200, run_json("extend", scope(m["scope"]), regex_query(url), *duration_args(body, temporary_only=True),
+                         "--json")
+
+
+@route("POST", SCOPE_REGEX + "/make-permanent")
+def post_make_permanent_regex(h, m, url, body):
+    return 200, run_json("make-permanent", scope(m["scope"]), regex_query(url), "--json")
+
+
+@route("PUT", SCOPE_REGEX + "/note")
+def put_note_regex(h, m, url, body):
+    return 200, run_json("set-note", scope(m["scope"]), regex_query(url), *note_args(body, required=True), "--json")
+
+
+REGEX_LISTS = ("allowlist", "watchlist", "legitimate", "harmless")
+
+
+@route("GET", "/regex/check")
+def get_regex_check(h, m, url, body):
+    """check-regex: whether a pattern can be an entry of a list, whether a host matches it, and
+    for the Allowlist the preview of what it would allow (the add dialogs' test field)."""
+    which = query_value(url, "list")
+    if which not in REGEX_LISTS:
+        raise invalid("list", "list must be " + ", ".join(REGEX_LISTS))
+    host = (query_value(url, "host") or "").strip().lower()
+    if host.startswith("-"):
+        raise invalid("host", "invalid host")
+    where = query_value(url, "scope")
+    return 200, run_json("check-regex", which, regex_query(url), *([host] if host else []),
+                         *([f"--scope={scope(where)}"] if where is not None else []), "--json", timeout=120)
+
+
 # Watchlist
 
 @route("GET", "/watchlist")
@@ -2037,28 +2136,38 @@ def get_harmless(h, m, url, body):
     return 200, run_json("harmless", "--json")
 
 
-@route("PUT", r"/watchlist/harmless/(?P<domain>[^/]+)")
+@route("PUT", r"/watchlist/harmless/(?!regex$)(?P<domain>[^/]+)")
 def put_harmless(h, m, url, body):
     return 200, run_json("mark-harmless", path_word(m["domain"], "domain").lower(), "--json")
 
 
-@route("DELETE", r"/watchlist/harmless/(?P<domain>[^/]+)")
+@route("DELETE", r"/watchlist/harmless/(?!regex$)(?P<domain>[^/]+)")
 def delete_harmless(h, m, url, body):
     return 200, run_json("unmark-harmless", path_word(m["domain"], "domain").lower(), "--json")
 
 
+@route("PUT", "/watchlist/harmless/regex")
+def put_harmless_regex(h, m, url, body):
+    return 200, run_json("mark-harmless", regex_query(url), "--json")
+
+
+@route("DELETE", "/watchlist/harmless/regex")
+def delete_harmless_regex(h, m, url, body):
+    return 200, run_json("unmark-harmless", regex_query(url), "--json")
+
+
 # Verdachtsliste von Hand und legitime Domains: was starke Merkmale aufhoebe, nur mit
 # --force, das der Leitstand nie uebergibt (agentbox antwortet dann force_required)
-WATCH_ENTRY = r"/watchlist/entries/(?P<domain>[^/]+)"
-LEGITIMATE = r"/watchlist/legitimate/(?P<domain>[^/]+)"
+WATCH_ENTRY = r"/watchlist/entries/(?!regex(?:/|$))(?P<domain>[^/]+)"
+LEGITIMATE = r"/watchlist/legitimate/(?!regex(?:/|$))(?P<domain>[^/]+)"
 
 
 @route("POST", "/watchlist/entries")
 def post_watchlist_entry(h, m, url, body):
-    d = word(body, "domain").lower()
+    target = target_args(body)
     category = word(body, "category")
-    return 201, run_json("watch-add", d, f"--category={category}", *text_args(body, "source"), *note_args(body),
-                         "--json")
+    return 201, run_json("watch-add", *target, f"--category={category}", *text_args(body, "source"),
+                         *note_args(body), "--json")
 
 
 @route("DELETE", WATCH_ENTRY)
@@ -2072,6 +2181,16 @@ def put_watchlist_note(h, m, url, body):
                          *note_args(body, required=True), "--json")
 
 
+@route("DELETE", "/watchlist/entries/regex")
+def delete_watchlist_regex(h, m, url, body):
+    return 200, run_json("watch-remove", regex_query(url), "--json")
+
+
+@route("PUT", "/watchlist/entries/regex/note")
+def put_watchlist_regex_note(h, m, url, body):
+    return 200, run_json("watch-set-note", regex_query(url), *note_args(body, required=True), "--json")
+
+
 @route("GET", "/watchlist/legitimate")
 def get_legitimate(h, m, url, body):
     return 200, run_json("legitimate", "--json")
@@ -2079,7 +2198,7 @@ def get_legitimate(h, m, url, body):
 
 @route("POST", "/watchlist/legitimate")
 def post_legitimate(h, m, url, body):
-    return 201, run_json("legitimate-add", word(body, "domain").lower(), *note_args(body), "--json", timeout=60)
+    return 201, run_json("legitimate-add", *target_args(body), *note_args(body), "--json", timeout=60)
 
 
 @route("DELETE", LEGITIMATE)
@@ -2091,6 +2210,16 @@ def delete_legitimate(h, m, url, body):
 def put_legitimate_note(h, m, url, body):
     return 200, run_json("legitimate-set-note", path_word(m["domain"], "domain").lower(),
                          *note_args(body, required=True), "--json")
+
+
+@route("DELETE", "/watchlist/legitimate/regex")
+def delete_legitimate_regex(h, m, url, body):
+    return 200, run_json("legitimate-remove", regex_query(url), "--json")
+
+
+@route("PUT", "/watchlist/legitimate/regex/note")
+def put_legitimate_regex_note(h, m, url, body):
+    return 200, run_json("legitimate-set-note", regex_query(url), *note_args(body, required=True), "--json")
 
 
 # Activity
@@ -2237,7 +2366,7 @@ def v1(handler, method, url):
     except ApiError as e:
         status, code, extra = e.status, e.code, list(e.headers)
         detail = hide(e.detail, [body.get(f) for f in secret]) if e.detail and secret else e.detail
-        result = api_error(e.code, e.message, detail, e.field)
+        result = api_error(e.code, e.message, detail, e.field, e.params)
     except Exception as e:              # ein Fehler hier darf keine Antwort ohne Format geben
         log(f"{handler.ip()}: v1 {method} {name}: internal error {type(e).__name__}")
         status, code, result = 500, "internal_error", api_error("internal_error", "Internal error")

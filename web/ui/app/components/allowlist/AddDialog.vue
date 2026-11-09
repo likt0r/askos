@@ -1,8 +1,10 @@
 <script setup lang="ts">
-// Adds an Allowlist entry: scope (all VMs or one), domain, duration, note. Also used from a
-// VM's blocked list with the domain and scope given. Destinations with strong Signals are
-// refused by the backend (only the CLI can force them): shown with their Signals.
-import type { AllowlistEntry, EntryDuration } from '~/utils/access'
+// Adds an Allowlist entry: scope (all VMs or one), domain or pattern, duration, note. Also used
+// from a VM's blocked list with the domain and scope given. Destinations with strong Signals are
+// refused by the backend (only the CLI can force them): shown with their Signals. A pattern (a
+// Regex entry, ADR 0013) is added only after its preview, the hosts of the proxy log it would
+// allow, and an explicit confirmation; it never allows a destination with strong Signals.
+import type { AllowlistEntry, EntryDuration, RegexCheck } from '~/utils/access'
 
 const props = withDefaults(defineProps<{
   /** a fixed domain (allowing a blocked destination); else typed in */
@@ -19,15 +21,20 @@ const { t } = useI18n()
 const errorText = useErrorText()
 const toast = useToast()
 
+const kind = ref<'domain' | 'regex'>('domain')
 const domain = ref('')
+const pattern = ref('')
 const scope = ref('all')
 const duration = ref<EntryDuration>('1h')
 const note = ref('')
 const busy = ref(false)
 const error = ref<unknown>(null)
 const refused = ref<{ domain: string, scope: string } | null>(null)
+const checked = ref<RegexCheck | null>(null)
+const confirmed = ref(false)
 
 const fixedDomain = computed(() => props.domain !== undefined)
+const isRegex = computed(() => kind.value === 'regex')
 const scopes = computed(() => [
   { value: 'all', label: t('allowlist.scope.all') },
   ...props.vms.map(vm => ({ value: vm, label: t('allowlist.scope.vm', { vm }) })),
@@ -35,33 +42,56 @@ const scopes = computed(() => [
 const durations = computed(() => ENTRY_DURATIONS.map(d => ({ value: d, label: t(`allowlist.durations.${d}`) })))
 const normalized = computed(() => normalizeDomain(domain.value))
 const domainProblem = computed(() => domain.value.trim() && !looksLikeDomain(normalized.value) ? t('allowlist.add.domainInvalid') : null)
-const canSubmit = computed(() => looksLikeDomain(normalized.value) && !busy.value && note.value.length <= 200)
+const patternProblem = computed(() => pattern.value.trim() && !looksLikePattern(pattern.value.trim()) ? t('regex.patternInvalid') : null)
+// the preview shown belongs to the pattern and scope as they are now (the check names what it
+// was made for), whatever happened in between
+const previewed = computed(() => !!checked.value && checked.value.regex === pattern.value.trim()
+  && checked.value.scope === scope.value)
+// a pattern only once its preview was shown and confirmed
+const ready = computed(() => isRegex.value
+  ? looksLikePattern(pattern.value.trim()) && previewed.value && confirmed.value
+  : looksLikeDomain(normalized.value))
+const canSubmit = computed(() => ready.value && !busy.value && note.value.length <= 200)
 
 watch(open, (isOpen) => {
   if (!isOpen) return
+  kind.value = 'domain'
   domain.value = props.domain ?? ''
+  pattern.value = ''
   scope.value = props.scope
   duration.value = '1h'
   note.value = ''
   error.value = null
   refused.value = null
+  checked.value = null
+  confirmed.value = false
 }, { immediate: true })
+// a new pattern or scope needs its own preview and confirmation; so does coming back from Domain
+// (the check is not there to drop its preview while the form shows a domain)
+watch([pattern, scope, kind], () => {
+  checked.value = null
+  confirmed.value = false
+  error.value = null
+})
 
 async function submit() {
   if (!canSubmit.value) return
   busy.value = true
   error.value = null
   refused.value = null
-  const body: Record<string, string> = { scope: scope.value, domain: normalized.value, duration: duration.value }
+  const what = isRegex.value ? pattern.value.trim() : normalized.value
+  const body: Record<string, string | boolean> = isRegex.value
+    ? { scope: scope.value, regex: what, duration: duration.value, confirm: true }
+    : { scope: scope.value, domain: what, duration: duration.value }
   if (note.value.trim()) body.note = note.value.trim()
   try {
     const entry = await api<AllowlistEntry>('/allowlist', { method: 'POST', body })
-    toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t('allowlist.add.done', { domain: body.domain }) })
+    toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t(isRegex.value ? 'allowlist.add.doneRegex' : 'allowlist.add.done', { domain: what }) })
     emit('added', entry)
     open.value = false
   }
   catch (e) {
-    if (e instanceof ApiError && e.code === 'domain_suspicious') refused.value = { domain: body.domain!, scope: body.scope! }
+    if (e instanceof ApiError && e.code === 'domain_suspicious' && !isRegex.value) refused.value = { domain: what, scope: scope.value }
     else error.value = e
   }
   finally {
@@ -71,10 +101,11 @@ async function submit() {
 </script>
 
 <template>
-  <UModal v-model:open="open" :title="t('allowlist.add.title')" :description="t('allowlist.add.description')">
+  <UModal v-model:open="open" :title="t('allowlist.add.title')" :description="isRegex ? t('allowlist.add.descriptionRegex') : t('allowlist.add.description')">
     <template #body>
       <form class="space-y-4" novalidate data-testid="allowlist-add" @submit.prevent="submit">
-        <UFormField :label="t('allowlist.add.domain')" name="domain" :error="domainProblem ?? undefined" :help="fixedDomain ? undefined : t('allowlist.add.domainHelp')">
+        <AccessEntryKind v-if="!fixedDomain" v-model="kind" />
+        <UFormField v-if="!isRegex" :label="t('allowlist.add.domain')" name="domain" :error="domainProblem ?? undefined" :help="fixedDomain ? undefined : t('allowlist.add.domainHelp')">
           <UInput
             v-model="domain"
             :disabled="fixedDomain"
@@ -85,12 +116,32 @@ async function submit() {
             data-testid="add-domain"
           />
         </UFormField>
+        <UFormField v-else :label="t('regex.pattern')" name="regex" :error="patternProblem ?? undefined" :help="t('allowlist.add.regexHelp')">
+          <UInput
+            v-model="pattern"
+            placeholder="^mirror[0-9]+\.vendor\.example$"
+            autocomplete="off"
+            spellcheck="false"
+            class="w-full font-mono"
+            data-testid="add-regex"
+          />
+        </UFormField>
         <UFormField v-if="props.vms.length" :label="t('allowlist.add.scope')" name="scope">
           <USelect v-model="scope" :items="scopes" class="w-full" data-testid="add-scope" />
         </UFormField>
         <p v-else class="text-sm text-muted">
           {{ props.scope === 'all' ? t('allowlist.scope.all') : t('allowlist.scope.vm', { vm: props.scope }) }}
         </p>
+        <template v-if="isRegex">
+          <AccessRegexCheck v-model:checked="checked" list="allowlist" :pattern="pattern" :scope="scope" />
+          <UCheckbox
+            v-model="confirmed"
+            :disabled="!previewed"
+            :label="t('allowlist.add.confirmRegex')"
+            :description="t('allowlist.add.confirmRegexHelp')"
+            data-testid="add-confirm"
+          />
+        </template>
         <UFormField :label="t('allowlist.add.duration')" name="duration">
           <div class="flex flex-wrap gap-2" role="radiogroup" :aria-label="t('allowlist.add.duration')" data-testid="add-duration">
             <UButton

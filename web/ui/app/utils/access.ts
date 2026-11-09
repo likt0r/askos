@@ -2,9 +2,17 @@
 // Allowlist, Watchlist, GitHub App; the VM's blocked list, Alerts and GitHub tokens).
 import type { Translator } from './activity'
 
+/** What an entry of a list stands for: a domain (with its subdomains), or the pattern of a
+ * Regex entry (ADR 0013), matched against the whole host name; the other is null. */
+export interface Target {
+  domain: string | null
+  regex: string | null
+  /** why the rules refuse a stored pattern (agentbox's English text): it counts as nothing until removed */
+  refused?: string | null
+}
+
 /** An Allowlist entry as `GET /allowlist` returns it (times in epoch seconds). */
-export interface AllowlistEntry {
-  domain: string
+export interface AllowlistEntry extends Target {
   /** `all` or a VM's name */
   scope: string
   expires: number | null
@@ -22,9 +30,78 @@ export type EntryDuration = typeof ENTRY_DURATIONS[number]
 /** What a temporary entry can be extended by. */
 export const EXTEND_DURATIONS = ['15min', '1h', '8h', '7d'] as const
 
-/** The API path of an entry (`/allowlist/<scope>/<domain>`). */
-export function allowlistEntryPath(e: { scope: string, domain: string }): string {
-  return `/allowlist/${encodeURIComponent(e.scope)}/${encodeURIComponent(e.domain)}`
+/** The value of an entry, as shown: its domain or its pattern, verbatim. */
+export function entryValue(e: Partial<Target>): string {
+  return e.regex ?? e.domain ?? ''
+}
+
+/** The API path of an entry of a list under `base`, with an action after it: `<base>/<domain>/<action>`,
+ * or for a Regex entry `<base>/regex/<action>?regex=<pattern>` (docs/control-room-api.md). */
+export function entryPath(base: string, e: Partial<Target>, action = ''): string {
+  const tail = action ? `/${action}` : ''
+  return e.regex != null
+    ? `${base}/regex${tail}?regex=${encodeURIComponent(e.regex)}`
+    : `${base}/${encodeURIComponent(e.domain ?? '')}${tail}`
+}
+
+/** The API path of an Allowlist entry (`/allowlist/<scope>/<domain>`, or its pattern under `/regex`). */
+export function allowlistEntryPath(e: Partial<Target> & { scope: string }, action = ''): string {
+  return entryPath(`/allowlist/${encodeURIComponent(e.scope)}`, e, action)
+}
+
+/** A value as one word of a shell command shown for the Host: as it is, or in single quotes. */
+export function shellWord(v: string): string {
+  return /^[A-Za-z0-9._:/@%+=,-]+$/.test(v) ? v : `'${v.replace(/'/g, `'\\''`)}'`
+}
+
+/** What a command shown for the Host takes for an entry: the domain, or `--regex='<pattern>'`, in
+ * one word with the option, so that a pattern starting with - is never read as an option. */
+export function cliTarget(e: Partial<Target>): string {
+  return e.regex != null ? `--regex=${shellWord(e.regex)}` : e.domain ?? ''
+}
+
+/** The lists that take Regex entries, as `GET /regex/check` names them. */
+export type RegexList = 'allowlist' | 'watchlist' | 'legitimate' | 'harmless'
+
+/** A host of the proxy log a regex Allowlist entry would allow (`strong`: it stays blocked). */
+export interface RegexPreviewHost {
+  host: string
+  allowed: number
+  blocked: number
+  signals: string[]
+  strong: boolean
+}
+
+/** `GET /regex/check`: the pattern can be an entry of the list; whether the host matches; for
+ * the Allowlist what it would allow. */
+export interface RegexCheck {
+  list: RegexList
+  regex: string
+  scope: string | null
+  matches: Record<string, boolean>
+  preview: null | {
+    hosts: RegexPreviewHost[]
+    more: number
+    watchlist_unreadable: string | null
+    truncated: boolean
+    /** how far back what was read reaches, epoch seconds (the log may have had more lines) */
+    reaches_back?: number
+    log_unreadable: string | null
+  }
+}
+
+/** The path of `GET /regex/check`, its query in a fixed order. */
+export function regexCheckPath(list: RegexList, pattern: string, host = '', scope?: string): string {
+  let q = `list=${list}&regex=${encodeURIComponent(pattern)}`
+  if (host) q += `&host=${encodeURIComponent(host)}`
+  if (scope) q += `&scope=${encodeURIComponent(scope)}`
+  return `/regex/check?${q}`
+}
+
+/** Rough check of a pattern before asking the backend (which applies the rules): at most 200
+ * printable ASCII characters without spaces. */
+export function looksLikePattern(p: string): boolean {
+  return /^[\x21-\x7e]{1,200}$/.test(p)
 }
 
 /** Seconds an entry still runs at `nowMs`, null when permanent, 0 when expired. */
@@ -33,9 +110,10 @@ export function entrySecondsLeft(e: Pick<AllowlistEntry, 'expires'>, nowMs: numb
   return Math.max(0, Math.floor(e.expires - nowMs / 1000))
 }
 
-/** The domain is covered by an active entry (the entry's domain or a subdomain of it). */
+/** The domain is covered by an active domain entry (the entry's domain or a subdomain of it).
+ * Regex entries are left out: only the proxy matches them, and it also checks the Signals. */
 export function coveredBy(domain: string, entries: AllowlistEntry[], nowMs: number): AllowlistEntry | undefined {
-  return entries.find(e => (domain === e.domain || domain.endsWith('.' + e.domain))
+  return entries.find(e => e.domain != null && (domain === e.domain || domain.endsWith('.' + e.domain))
     && (e.expires == null || e.expires * 1000 > nowMs))
 }
 
@@ -94,16 +172,21 @@ export interface DomainCheck {
   signals: SignalReport[]
   alert: boolean
   strong: boolean
-  /** the harmless mark that covers it, or null */
+  /** the harmless mark that covers it, or null; a pattern when `harmless_regex` */
   harmless: string | null
-  /** the known legitimate domain that covers it, or null */
+  harmless_regex?: boolean
+  /** the known legitimate domain that covers it, or null; a pattern (which lifts only weak
+   * Signals) when `legitimate_regex` */
   legitimate: string | null
+  legitimate_regex?: boolean
   feeds: Record<string, FeedState>
 }
 
+/** A Harmless mark as `GET /watchlist/harmless` lists it: a domain, or a pattern. */
+export type HarmlessMark = Target
+
 /** An entry of the hand-maintained Watchlist (`added` in epoch seconds). */
-export interface WatchlistEntry {
-  domain: string
+export interface WatchlistEntry extends Target {
   category: string
   strong: boolean
   source: string
@@ -116,8 +199,7 @@ export interface WatchlistEntry {
 export const WATCHLIST_CATEGORIES = ['exfil', 'c2', 'tunnel', 'paste', 'phishing', 'blockchain', 'payload'] as const
 
 /** A Legitimate domain as `GET /watchlist/legitimate` returns it; built-in ones have no `added`. */
-export interface LegitimateDomain {
-  domain: string
+export interface LegitimateDomain extends Target {
   note: string
   added: number | null
   added_by: string | null
@@ -174,6 +256,7 @@ export const SIGNAL_REASONS: Record<string, string[]> = {
   'metadata': [],
   'raw-ip': [],
   'watchlist': ['domain'],
+  'watchlist-regex': ['pattern'],
   'threat-feed': ['domain'],
   'young-feed': ['domain'],
   'brand': ['brand', 'domain'],
@@ -195,7 +278,8 @@ export function signalReason(s: SignalReport, tr: Translator): string {
   const p = paramsOf(s.params)
   const needs = s.code ? SIGNAL_REASONS[s.code] : undefined
   if (!needs || !tr.te(`signals.names.${s.signal}`) || !filled(p, needs)) return s.reason
-  const key = s.code === 'watchlist' && filled(p, ['source']) ? 'watchlistSource' : s.code!
+  const key = s.code === 'watchlist' && filled(p, ['source']) ? 'watchlistSource'
+    : s.code === 'watchlist-regex' && filled(p, ['source']) ? 'watchlistRegexSource' : s.code!
   return tr.t(`signals.reasons.${key}`, p)
 }
 

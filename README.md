@@ -262,7 +262,11 @@ scope's proxy log of the last 7 days the pattern would allow and adds it only wi
 `--confirm-pattern`; `agentbox check-regex` tells whether a pattern can be an entry of a list
 and which hosts it matches. A regex Legitimate domain lifts only weak Signals. A stored
 pattern the rules refuse (a hand edit, or stricter rules in a later Release) counts as nothing,
-on the Watchlist keeps Open web closed, and is listed with the reason until you remove it.
+on the Watchlist keeps Open web closed, and is listed with the reason until you remove it. In the Control
+Room, the add form of each list switches between *Domain* and *Regex*; a test field checks a
+pattern as adding it would and says whether a host matches it. For the Allowlist the same check
+shows the preview, and the entry is added only after the confirmation, which a changed pattern
+or scope takes back. Regex entries are marked as such and show their pattern verbatim.
 When a temporary entry expires, new connections are refused but tunnels already open keep
 running; a timer removes expired entries every minute and records each in Activity
 (`agentbox-allowlist-expire.timer`). Removing an entry, or the end of Open web, closes the

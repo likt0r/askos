@@ -8,7 +8,7 @@ import { fakeApi, FakeEventSource, SIGNED_IN, vm } from './fakes'
 import type { Call } from './fakes'
 
 type Answer = { status: number, body?: unknown, headers?: Record<string, string> }
-type Routes = Record<string, Answer | ((call: Call) => Answer)>
+type Routes = Record<string, Answer | ((call: Call) => Answer | Promise<Answer>)>
 
 const mounted: { unmount: () => void }[] = []
 
@@ -59,6 +59,14 @@ export function $$(selector: string): HTMLElement[] {
 export function must(selector: string): HTMLElement {
   const el = $(selector)
   if (!el) throw new Error(`not found: ${selector}`)
+  return el
+}
+
+/** The element of `selector` whose data attribute `key` is `value` (a pattern, which a CSS
+ * attribute selector would read with its backslashes as escapes). */
+export function withData(selector: string, key: string, value: string): HTMLElement {
+  const el = $$(selector).find(e => e.dataset[key] === value)
+  if (!el) throw new Error(`not found: ${selector} with ${key}=${value}`)
   return el
 }
 

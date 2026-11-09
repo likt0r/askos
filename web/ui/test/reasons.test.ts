@@ -65,8 +65,9 @@ describe('why a destination was blocked', () => {
   it('is worded from its code, the Signals by their names', () => {
     expect(blockedReason(blocked({ code: 'not-allowed', params: {} }), DE)).toBe('nicht auf der Allowlist')
     expect(blockedReason(blocked({ code: 'suspicious', params: { signals: 'exfil, raw-ip, roh-ip' } }), EN))
-      .toBe('strong Signals in Open web: Exfiltration, Raw IP address, roh-ip')
-    expect(blockedReason(blocked({ code: 'watchlist-unreadable', params: {} }), EN)).toBe('Open web closed: the Watchlist cannot be read')
+      .toBe('strong Signals: Exfiltration, Raw IP address, roh-ip')
+    // also a regex Allowlist entry that matched but does not allow it (ADR 0013)
+    expect(blockedReason(blocked({ code: 'watchlist-unreadable', params: {} }), EN)).toBe('the Watchlist cannot be read (Open web and Regex entries closed)')
   })
 
   it('keeps the proxy\'s text without a code, for one it does not know, or without the Signals', () => {

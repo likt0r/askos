@@ -348,11 +348,11 @@ class AllowlistCliTest(allowlist_tests.CliTest):
         # for all VMs: every VM's log
         self.assertIn("  mirror3.vendor.example (allowed 0x, blocked 1x)", self.refused("allow", "all", "--regex", PATTERN))
         self.assertEqual(self.failure("allow", "work", "--regex", PATTERN)[:2],
-                         ("confirmation_required", {"scope": "work", "regex": PATTERN, "hosts": 4}))
+                         ("pattern_confirmation_required", {"scope": "work", "regex": PATTERN, "hosts": 4}))
         self.assertFalse(os.path.exists(os.path.join(self.conf, "allowlist.json")))
         [e, *_] = [e for e in self.journald.entries() if e["AGENTBOX_ACTION"] == "allow"]
         self.assertEqual((e["AGENTBOX_OUTCOME"], e["AGENTBOX_ERROR"], e["AGENTBOX_PARAM_REGEX"]),
-                         ("failed", "confirmation_required", PATTERN))
+                         ("failed", "pattern_confirmation_required", PATTERN))
         self.assertTrue(e["AGENTBOX_DESCRIPTION"].startswith(f"Allow pattern {PATTERN}: pattern {PATTERN} for work "
                                                              "matches 4 hosts"), e["AGENTBOX_DESCRIPTION"])
 
