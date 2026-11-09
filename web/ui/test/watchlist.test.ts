@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resetSessionForTests } from '~/composables/useSession'
 import { resetLiveForTests } from '~/composables/useLive'
 import { FakeEventSource } from './fakes'
-import { $, $$, changes, click, fail, must, ok, openApp, settle, type, unmountAll, waitFor } from './access-helpers'
+import { $, $$, changes, click, fail, must, ok, openApp, settle, type, unmountAll, waitFor, withData } from './access-helpers'
 
 const now = () => Math.floor(Date.now() / 1000)
 
@@ -48,7 +48,7 @@ function routes(extra: Record<string, unknown> = {}) {
     'GET /vms/priv/alerts': ok([
       { domain: '169.254.169.254', tags: ['metadata'], count: 4, first: now() - 7200, last: now() - 3600, seen: false },
     ]),
-    'GET /watchlist/harmless': ok(['githbu.com']),
+    'GET /watchlist/harmless': ok([{ domain: 'githbu.com', regex: null }]),
     'GET /watchlist': ok(WATCHLIST),
     'GET /watchlist/legitimate': ok(LEGITIMATE),
     ...extra,
@@ -152,13 +152,13 @@ describe('Watchlist view', () => {
   })
 
   it('checks a domain: Signals and why, what it means, and marks it harmless', async () => {
-    let harmless = ['githbu.com']
+    let harmless = [{ domain: 'githbu.com', regex: null as string | null }]
     const { api } = await openApp('/watchlist', routes({
-      'GET /watchlist/check?domain=npm-cache.example': () => ok(harmless.includes('npm-cache.example')
+      'GET /watchlist/check?domain=npm-cache.example': () => ok(harmless.some(m => m.domain === 'npm-cache.example')
         ? { ...CHECK, harmless: 'npm-cache.example', alert: false, signals: CHECK.signals.map(s => ({ ...s, suppressed: true })) }
         : CHECK),
       'GET /watchlist/harmless': () => ok(harmless),
-      'PUT /watchlist/harmless/npm-cache.example': () => { harmless = [...harmless, 'npm-cache.example']; return ok({}) },
+      'PUT /watchlist/harmless/npm-cache.example': () => { harmless = [...harmless, { domain: 'npm-cache.example', regex: null }]; return ok({}) },
     }))
     await type('[data-testid="check-input"]', ' HTTPS://npm-cache.example/x ')
     await click('[data-testid="check-submit"]')
@@ -335,6 +335,105 @@ describe('Watchlist view', () => {
     await click('[data-testid="legitimate-add-submit"]')
     const refusal = must('[data-testid="legitimate-add-error"]')
     expect(refusal.textContent).toContain('sudo agentbox legitimate-add npm-mirror.example --force')
+  })
+
+  it('adds a Regex entry to each list, tested first, and marks it as one', async () => {
+    const drop = '^drop[0-9]+\\.(xyz|top)$'
+    const mirrors = '^mirror[0-9]+\\.vendor\\.example$'
+    const ci = '^ci[0-9]+\\.builds\\.example$'
+    const enc = encodeURIComponent
+    const { api } = await openApp('/watchlist', routes({
+      'GET /watchlist': ok({ ...WATCHLIST, entries: [...WATCHLIST.entries,
+        { domain: null, regex: drop, category: 'paste', strong: true, source: '', note: '', added: 1793700000, added_by: 'bewr' },
+        { domain: null, regex: '-cdn.example', category: 'c2', strong: true, source: '', note: '', added: 1793700000, added_by: 'bewr' }] }),
+      'GET /watchlist/harmless': ok([{ domain: 'githbu.com', regex: null }, { domain: null, regex: ci }]),
+      [`GET /regex/check?list=watchlist&regex=${enc(drop)}&host=drop7.xyz`]: ok({ list: 'watchlist', regex: drop, scope: null, matches: { 'drop7.xyz': true }, preview: null }),
+      'POST /watchlist/entries': ok({}),
+      [`PUT /watchlist/harmless/regex?regex=${enc(ci)}`]: ok({}),
+      [`DELETE /watchlist/harmless/regex?regex=${enc(ci)}`]: ok({}),
+      'POST /watchlist/legitimate': ok({ domain: null, regex: mirrors, builtin: false }),
+    }))
+    // listed verbatim, marked as Regex entries; a strong one only on the Host, with --regex
+    const entry = withData('[data-testid="watchlist-entry"]', 'regex', drop)
+    expect(entry.querySelector('[data-testid="entry-regex"]')!.textContent).toContain('Regex')
+    expect(entry.textContent).toContain(drop)
+    await click(entry.querySelector('[data-testid="watch-remove-locked"]')!)
+    // the pattern in one word with the option, quoted for the shell where needed
+    expect(must('[data-testid="watch-remove-cli"]').textContent).toContain(`sudo agentbox watch-remove --regex='${drop}' --force`)
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await settle()
+    // ... so that a pattern starting with - is never taken for an option
+    await click(withData('[data-testid="watchlist-entry"]', 'regex', '-cdn.example').querySelector('[data-testid="watch-remove-locked"]')!)
+    expect(must('[data-testid="watch-remove-cli"]').textContent).toContain('sudo agentbox watch-remove --regex=-cdn.example --force')
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await settle()
+
+    // the Watchlist: tested against a host, then added
+    const form = must('[data-testid="watch-add"]')
+    await click(form.querySelector('[data-testid="entry-kind"] [data-kind="regex"]')!)
+    await type('[data-testid="watch-add-regex"]', ` ${drop} `)
+    await type('[data-testid="watch-add"] [data-testid="regex-host"]', 'Drop7.xyz')
+    await click(form.querySelector('[data-testid="regex-test"]')!)
+    const match = must('[data-testid="watch-add"] [data-testid="regex-match"]')
+    expect([match.dataset.match, match.textContent!.trim()]).toEqual(['true', 'It matches drop7.xyz.'])
+    await click('[data-testid="watch-add-submit"]')
+
+    // a Harmless mark
+    const harmless = must('[data-testid="harmless"]')
+    expect(withData('[data-testid="harmless-row"]', 'regex', ci).querySelector('[data-testid="entry-regex"]')).not.toBeNull()
+    await click(harmless.querySelector('[data-testid="entry-kind"] [data-kind="regex"]')!)
+    await type('[data-testid="harmless-regex"]', ci)
+    await click('[data-testid="harmless-add"]')
+    await click(withData('[data-testid="harmless-row"]', 'regex', ci).querySelector('[data-testid="harmless-remove"]')!)
+    await click('[data-testid="confirm-action"]')
+
+    // a Legitimate domain: it lifts only weak Signals, and says so
+    const legitimate = must('[data-testid="legitimate-add"]')
+    await click(legitimate.querySelector('[data-testid="entry-kind"] [data-kind="regex"]')!)
+    expect(legitimate.textContent).toContain('A Regex entry lifts only weak Signals')
+    await type('[data-testid="legitimate-add-regex"]', mirrors)
+    await click('[data-testid="legitimate-add-submit"]')
+
+    expect(changes(api.calls)).toEqual([
+      { method: 'POST', path: '/watchlist/entries', body: { regex: drop, category: 'exfil' }, csrf: '1' },
+      { method: 'PUT', path: `/watchlist/harmless/regex?regex=${enc(ci)}`, body: undefined, csrf: '1' },
+      { method: 'DELETE', path: `/watchlist/harmless/regex?regex=${enc(ci)}`, body: undefined, csrf: '1' },
+      { method: 'POST', path: '/watchlist/legitimate', body: { regex: mirrors }, csrf: '1' },
+    ])
+  })
+
+  it('says why a pattern cannot be an entry, in the UI language', async () => {
+    await useNuxtApp().$i18n.setLocale('de')
+    await openApp('/watchlist', routes({
+      'GET /regex/check?list=harmless&regex=(a%2B)%2B': { status: 400, body: { error: { code: 'invalid_pattern', message: 'This pattern cannot be a Regex entry', params: { reason: 'nested-quantifier' } } } },
+      'PUT /watchlist/harmless/regex?regex=.*': { status: 400, body: { error: { code: 'pattern_too_broad', message: 'This pattern is too broad', params: { host: 'google.com' } } } },
+    }))
+    const harmless = must('[data-testid="harmless"]')
+    await click(harmless.querySelector('[data-testid="entry-kind"] [data-kind="regex"]')!)
+    await type('[data-testid="harmless-regex"]', '(a+)+')
+    await click(harmless.querySelector('[data-testid="regex-test"]')!)
+    expect(must('[data-testid="harmless"] [data-testid="regex-error"]').textContent)
+      .toContain('Dieser Ausdruck kann kein Eintrag sein: ein Quantor oder eine Alternative in einer wiederholten Gruppe')
+    await type('[data-testid="harmless-regex"]', '.*')
+    expect($('[data-testid="harmless"] [data-testid="regex-error"]')).toBeNull()
+    await click('[data-testid="harmless-add"]')
+    expect(must('[data-testid="harmless-error"]').textContent).toContain('Dieser Ausdruck ist zu breit: er passt auf google.com')
+  })
+
+  it('names a Regex entry in the check of a domain', async () => {
+    await openApp('/watchlist', routes({
+      'GET /watchlist/check?domain=drop7.xyz': ok({
+        ...CHECK, domain: 'drop7.xyz', harmless: '^drop[0-9]+\\.xyz$', harmless_regex: true, alert: false,
+        signals: [{ signal: 'paste', strong: true, suppressed: true, reason: 'Watchlist: pattern ^drop[0-9]+\\.xyz$ (Vorfall)', code: 'watchlist-regex', params: { pattern: '^drop[0-9]+\\.xyz$', source: 'Vorfall' } }],
+      }),
+    }))
+    await type('[data-testid="check-input"]', 'drop7.xyz')
+    await click('[data-testid="check-submit"]')
+    const result = must('[data-testid="check-result"]')
+    expect(result.textContent).toContain('drop7.xyz: marked harmless (Regex entry ^drop[0-9]+\\.xyz$)')
+    expect($$('[data-testid="signal-reason"]').map(r => r.textContent!.trim())).toEqual(['Watchlist, Regex entry: ^drop[0-9]+\\.xyz$ (Vorfall)'])
+    // a pattern is no mark of the domain itself: removed in the list of marks
+    expect($('[data-testid="check-unmark-harmless"]')).toBeNull()
   })
 
   it('opens the check for an Alert\'s destination', async () => {

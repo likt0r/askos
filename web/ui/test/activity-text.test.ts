@@ -201,6 +201,16 @@ describe('Activity text (unit)', () => {
     expect(activityText({ ...ENTRIES[0]!, code: undefined }, tr)).toBe(ENTRIES[0]!.description)
   })
 
+  it('names a Regex entry by its pattern (ADR 0013)', () => {
+    const pattern = (p: string) => `activity.parts.pattern ${JSON.stringify({ pattern: p })}`
+    expect(activityText(coded(0, 'watch-add', { regex: '^drop$', category: 'paste' }, 'stored'), tr))
+      .toBe(`activity.actions.watchAddCategory ${JSON.stringify({ domain: pattern('^drop$'), category: 'paste' })}`)
+    expect(activityText(coded(0, 'disallow', { regex: '^m$', scope: 'work' }, 'stored'), tr))
+      .toBe(`activity.actions.disallow ${JSON.stringify({ entry: pattern('^m$') })}`)
+    expect(activityText(coded(0, 'mark-harmless', { regex: '^m$' }, 'stored'), tr))
+      .toBe(`activity.actions.markHarmless ${JSON.stringify({ domain: pattern('^m$') })}`)
+  })
+
   it('keeps it when a parameter the sentence needs is missing or not text', () => {
     expect(activityText(coded(0, 'open-web', {}, 'Open web for x minutes'), tr)).toBe('Open web for x minutes')
     expect(activityText(coded(0, 'migrate-lists', { list: 'nope', legacy: 'f' }, 'stored'), tr)).toBe('stored')

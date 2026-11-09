@@ -2,9 +2,9 @@
 // Checks a domain against the Watchlist, the Feeds and the patterns: its Signals and why,
 // what that means (Alert, blocked in Open web, only the CLI can allow it), and a Harmless
 // mark for a false positive.
-import type { DomainCheck } from '~/utils/access'
+import type { DomainCheck, HarmlessMark } from '~/utils/access'
 
-const props = defineProps<{ harmless: string[] }>()
+const props = defineProps<{ harmless: HarmlessMark[] }>()
 const emit = defineEmits<{ 'harmless-changed': [] }>()
 const { t } = useI18n()
 const errorText = useErrorText()
@@ -19,16 +19,16 @@ const confirmUnmark = ref(false)
 
 const domain = computed(() => normalizeDomain(input.value))
 const valid = computed(() => looksLikeDomain(domain.value))
-/** the domain itself carries a mark (a parent's mark is removed on the parent) */
-const ownMark = computed(() => !!result.value && props.harmless.includes(result.value.domain))
+/** the domain itself carries a mark (a parent's mark is removed on the parent, a pattern in the list) */
+const ownMark = computed(() => !!result.value && props.harmless.some(m => m.domain === result.value!.domain))
 
 const verdict = computed(() => {
   const r = result.value
   if (!r) return null
-  if (r.harmless) return { color: 'info' as const, icon: 'i-lucide-shield-check', title: t('watchlist.check.verdict.harmless', { mark: r.harmless }) }
+  if (r.harmless) return { color: 'info' as const, icon: 'i-lucide-shield-check', title: t(r.harmless_regex ? 'watchlist.check.verdict.harmlessRegex' : 'watchlist.check.verdict.harmless', { mark: r.harmless }) }
   if (r.strong) return { color: 'error' as const, icon: 'i-lucide-shield-alert', title: t('watchlist.check.verdict.strong') }
   if (r.alert) return { color: 'warning' as const, icon: 'i-lucide-triangle-alert', title: t('watchlist.check.verdict.alert') }
-  if (r.legitimate) return { color: 'success' as const, icon: 'i-lucide-shield-check', title: t('watchlist.check.verdict.legitimate', { domain: r.legitimate }) }
+  if (r.legitimate) return { color: 'success' as const, icon: 'i-lucide-shield-check', title: t(r.legitimate_regex ? 'watchlist.check.verdict.legitimateRegex' : 'watchlist.check.verdict.legitimate', { domain: r.legitimate }) }
   return { color: 'success' as const, icon: 'i-lucide-shield-check', title: t('watchlist.check.verdict.clean') }
 })
 const consequences = computed(() => {

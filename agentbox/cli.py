@@ -52,6 +52,14 @@ Controls the agent VMs on this Host.
   agentbox allow <vm|all> <domain> [--for 15min|1h|8h|7d | --temporary] [--note TEXT] [--force] [--json]
                 Allowlist entry for one VM or all, permanent or temporary (suspicious ones only
                 with --force)
+  agentbox allow <vm|all> --regex PATTERN [--confirm-pattern] [--for ...|--temporary] [--note TEXT] [--json]
+                Regex entry: never allows strong Signals; without --confirm-pattern it only shows
+                which hosts of the proxy log of the last 7 days it would allow
+  agentbox check-regex <allowlist|watchlist|legitimate|harmless> --regex PATTERN [<host>...]
+                [--scope vm|all] [--json]            whether the pattern can be an entry of that list,
+                                                     which hosts it matches, for the Allowlist the preview
+                Every command of the four lists takes --regex PATTERN in place of <domain>: a Regex
+                entry, matched with re.fullmatch against the whole host name (ADR 0013)
   agentbox disallow <vm|all> <domain> [--json]       remove an Allowlist entry, close open tunnels to it
   agentbox extend <vm|all> <domain> --for 15min|1h|8h|7d [--force] [--json]   extend a temporary one
   agentbox make-permanent <vm|all> <domain> [--force] [--json]

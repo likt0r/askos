@@ -1,6 +1,7 @@
 <script setup lang="ts">
-// Allowlist entries, one row each: domain, scope, remaining time, uses in 24 h, note, who
-// added it. Actions: extend, make permanent, change the note, remove (asks first).
+// Allowlist entries, one row each: domain or pattern (a Regex entry, marked as such and shown
+// verbatim), scope, remaining time, uses in 24 h, note, who added it. Actions: extend, make
+// permanent, change the note, remove (asks first).
 import type { AllowlistEntry } from '~/utils/access'
 
 const props = withDefaults(defineProps<{ entries: AllowlistEntry[], showScope?: boolean }>(), { showScope: true })
@@ -30,7 +31,7 @@ const removeOpen = dialogOpen('remove')
 const permanentOpen = dialogOpen('permanent')
 
 function key(e: AllowlistEntry) {
-  return `${e.scope}/${e.domain}`
+  return `${e.scope}/${e.regex != null ? `regex:${e.regex}` : e.domain}`
 }
 
 function left(e: AllowlistEntry): { text: string, color: 'neutral' | 'warning' | 'error' | 'success' } {
@@ -74,27 +75,28 @@ async function run(what: 'extend' | 'make-permanent' | 'note' | 'remove', reques
 
 function extend(duration: string) {
   const e = target.value!
-  void run('extend', () => api(`${allowlistEntryPath(e)}/extend`, { method: 'POST', body: { duration } }),
-    t('allowlist.entry.extended', { domain: e.domain, duration: t(`allowlist.durations.${duration}`) }))
+  void run('extend', () => api(allowlistEntryPath(e, 'extend'), { method: 'POST', body: { duration } }),
+    t('allowlist.entry.extended', { domain: entryValue(e), duration: t(`allowlist.durations.${duration}`) }))
 }
 function makePermanent() {
   const e = target.value!
-  void run('make-permanent', () => api(`${allowlistEntryPath(e)}/make-permanent`, { method: 'POST' }),
-    t('allowlist.entry.madePermanent', { domain: e.domain }))
+  void run('make-permanent', () => api(allowlistEntryPath(e, 'make-permanent'), { method: 'POST' }),
+    t('allowlist.entry.madePermanent', { domain: entryValue(e) }))
 }
 function saveNote() {
   const e = target.value!
-  void run('note', () => api(`${allowlistEntryPath(e)}/note`, { method: 'PUT', body: { note: noteText.value.trim() } }),
-    t('allowlist.entry.noteSaved', { domain: e.domain }))
+  void run('note', () => api(allowlistEntryPath(e, 'note'), { method: 'PUT', body: { note: noteText.value.trim() } }),
+    t('allowlist.entry.noteSaved', { domain: entryValue(e) }))
 }
 function remove() {
   const e = target.value!
-  void run('remove', () => api(allowlistEntryPath(e), { method: 'DELETE' }), t('allowlist.entry.removed', { domain: e.domain }))
+  void run('remove', () => api(allowlistEntryPath(e), { method: 'DELETE' }), t('allowlist.entry.removed', { domain: entryValue(e) }))
 }
 
 const extendDurations = EXTEND_DURATIONS
 const scopeLabel = (s: string) => s === 'all' ? t('allowlist.scope.all') : t('allowlist.scope.vm', { vm: s })
 const targetScope = computed(() => target.value ? scopeLabel(target.value.scope) : '')
+const targetValue = computed(() => (target.value ? entryValue(target.value) : ''))
 </script>
 
 <template>
@@ -104,12 +106,19 @@ const targetScope = computed(() => target.value ? scopeLabel(target.value.scope)
       :key="key(e)"
       class="flex flex-col gap-1.5 px-4 py-3 sm:flex-row sm:items-start sm:gap-4"
       data-testid="allowlist-entry"
-      :data-domain="e.domain"
+      :data-domain="e.domain ?? undefined"
+      :data-regex="e.regex ?? undefined"
       :data-scope="e.scope"
     >
       <div class="min-w-0 flex-1 space-y-1">
         <div class="flex flex-wrap items-center gap-2">
-          <span class="break-all font-mono text-sm font-medium text-highlighted">{{ e.domain }}</span>
+          <UTooltip v-if="e.regex != null" :text="t('regex.badgeHint')">
+            <UBadge color="warning" variant="outline" size="sm" icon="i-lucide-regex" :label="t('regex.badge')" data-testid="entry-regex" />
+          </UTooltip>
+          <UTooltip v-if="e.refused" :text="e.refused">
+            <UBadge color="error" variant="subtle" size="sm" icon="i-lucide-ban" :label="t('regex.refused')" data-testid="entry-refused" />
+          </UTooltip>
+          <span class="break-all font-mono text-sm font-medium text-highlighted">{{ entryValue(e) }}</span>
           <UBadge v-if="props.showScope" :color="e.scope === 'all' ? 'info' : 'neutral'" variant="subtle" size="sm" :label="scopeLabel(e.scope)" data-testid="entry-scope" />
           <UBadge :color="left(e).color" variant="soft" size="sm" :label="left(e).text" data-testid="entry-left" />
         </div>
@@ -145,7 +154,7 @@ const targetScope = computed(() => target.value ? scopeLabel(target.value.scope)
     </li>
   </ul>
 
-  <UModal v-model:open="extendOpen" :title="t('allowlist.entry.extendTitle', { domain: target?.domain })" :description="targetScope">
+  <UModal v-model:open="extendOpen" :title="t('allowlist.entry.extendTitle', { domain: targetValue })" :description="targetScope">
     <template #body>
       <div class="space-y-3">
         <p class="text-sm text-muted">
@@ -163,7 +172,7 @@ const targetScope = computed(() => target.value ? scopeLabel(target.value.scope)
             @click="extend(d)"
           />
         </div>
-        <AllowlistRefusal v-if="refused && target" :domain="target.domain" :scope="target.scope" command="extend" />
+        <AllowlistRefusal v-if="refused && target?.domain" :domain="target.domain" :scope="target.scope" command="extend" />
         <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(error)" role="alert" />
       </div>
     </template>
@@ -171,7 +180,7 @@ const targetScope = computed(() => target.value ? scopeLabel(target.value.scope)
 
   <AccessConfirmDialog
     v-model:open="permanentOpen"
-    :title="t('allowlist.entry.permanentTitle', { domain: target?.domain })"
+    :title="t('allowlist.entry.permanentTitle', { domain: targetValue })"
     :description="t('allowlist.entry.permanentText', { scope: targetScope })"
     :confirm-label="t('allowlist.entry.makePermanent')"
     color="primary"
@@ -179,10 +188,10 @@ const targetScope = computed(() => target.value ? scopeLabel(target.value.scope)
     :error="error ? errorText(error) : null"
     @confirm="makePermanent"
   >
-    <AllowlistRefusal v-if="refused && target" :domain="target.domain" :scope="target.scope" command="make-permanent" />
+    <AllowlistRefusal v-if="refused && target?.domain" :domain="target.domain" :scope="target.scope" command="make-permanent" />
   </AccessConfirmDialog>
 
-  <UModal v-model:open="noteOpen" :title="t('allowlist.entry.noteTitle', { domain: target?.domain })" :description="targetScope">
+  <UModal v-model:open="noteOpen" :title="t('allowlist.entry.noteTitle', { domain: targetValue })" :description="targetScope">
     <template #body>
       <form class="space-y-3" @submit.prevent="saveNote">
         <UInput v-model="noteText" :placeholder="t('allowlist.add.notePlaceholder')" class="w-full" autofocus data-testid="note-input" />
@@ -202,7 +211,7 @@ const targetScope = computed(() => target.value ? scopeLabel(target.value.scope)
 
   <AccessConfirmDialog
     v-model:open="removeOpen"
-    :title="t('allowlist.entry.removeTitle', { domain: target?.domain })"
+    :title="t('allowlist.entry.removeTitle', { domain: targetValue })"
     :description="t('allowlist.entry.removeText', { scope: targetScope })"
     :confirm-label="t('allowlist.entry.remove')"
     :busy="busy"

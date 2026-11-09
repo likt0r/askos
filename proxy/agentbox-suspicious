@@ -15,8 +15,19 @@ Wird vom Proxy als Modul geladen und von agentbox als Befehl genutzt:
                                              starke Merkmale (ohne das Blockchain-Muster,
                                              das bleibt) und Eintraege der Threat-
                                              Intelligence-Liste darunter, als JSON
+  agentbox-suspicious --signals <host>...    the Signals of each host and whether one is strong,
+                                             and why the Watchlist cannot be read, as JSON (the
+                                             preview of a regex Allowlist entry)
   agentbox-suspicious --self-test            Selbsttest der Erkennung (agentbox setup): startet den
                                              Proxy neben dieser Datei mit Testlisten
+
+Regex entries (ADR 0013): every list can hold a regular expression instead of a domain,
+matched with re.fullmatch against the lowercased host without its trailing dot, and
+compiled once whenever its file is read again. The rules a pattern has to follow are
+here (pattern_problem), and agentbox loads this file to judge patterns the same way
+(agentbox/patterns.py). A regex Legitimate domain lifts only weak Signals: which strong
+ones it would lift cannot be checked for a pattern (ADR 0009, ADR 0013). In the proxy a regex
+Allowlist entry never allows a destination with strong Signals, checked per connection.
 
 Grundlage: Auswertung von Supply-Chain-Vorfaellen 2024-2026 (Shai-Hulud,
 s1ngularity, chalk/debug, axios, TanStack, keyv, GlassWorm). Feste Domains
@@ -41,7 +52,8 @@ das offene Web):
                                      legitimate-domains (eine Domain pro Zeile).
   /etc/agentbox/harmless             als harmlos markiert (agentbox mark-harmless): loest
                                      keine Alerts mehr aus, bleibt aber sonst, wie es ist
-                                     (im offenen Web gesperrt, Freigabe nur mit --force)
+                                     (im offenen Web gesperrt, Freigabe nur mit --force);
+                                     a line "regex <pattern>" is a Regex entry
   /var/lib/agentbox/feeds/           HaGeZi-Listen von agentbox-feeds (Timer):
                                      threat-intelligence (Merkmal threat) und
                                      newly-registered (Merkmal young)
@@ -61,6 +73,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import warnings
 
 CONF_DIR = os.environ.get("AGENTBOX_CONF_DIR", "/etc/agentbox")
 # Datensaetze des Hosts (schreibt nur agentbox) und die Textdateien davor
@@ -80,10 +93,10 @@ STRONG = {"exfil", "c2", "tunnel", "paste", "phishing", "blockchain", "lookalike
 # Kategorien der Verdachtsliste von Hand (zugleich das Merkmal eines Treffers); payload ist schwach
 CATEGORIES = ("exfil", "c2", "tunnel", "paste", "phishing", "blockchain", "payload")
 # was agentbox (lists.py, network.py) in watchlist.json und legitimate.json zulaesst; ein
-# Eintrag, der davon abweicht, macht die Datei kaputt, fuer den Proxy wie fuer agentbox
-WATCH_FIELDS = (("domain", str), ("category", str), ("source", str), ("note", str), ("added", int),
-                ("added_by", str))
-LEGITIMATE_FIELDS = (("domain", str), ("note", str), ("added", int), ("added_by", str))
+# Eintrag, der davon abweicht, macht die Datei kaputt, fuer den Proxy wie fuer agentbox. Each
+# entry also has its domain, or as a Regex entry its pattern (regex) instead (_problem).
+WATCH_FIELDS = (("category", str), ("source", str), ("note", str), ("added", int), ("added_by", str))
+LEGITIMATE_FIELDS = (("note", str), ("added", int), ("added_by", str))
 MAX_TEXT = 200          # note und source
 DOMAIN = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+")
 # so viele Eintraege der Threat-Intelligence-Liste nennt --lifts hoechstens
@@ -115,7 +128,280 @@ METADATA = {"169.254.169.254", "metadata.google.internal", "fd00:ec2::254", "100
 FEED_ENTRY = re.compile(rb"(?=.{4,253}\Z)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+([a-z]{2,63}|xn--[a-z0-9-]{1,59})")
 
 USAGE = ("agentbox-suspicious <host> [port] | --json <host> [port] | --watchlist | --constants | "
-         "--lifts <domain> | --self-test")
+         "--lifts <domain> | --signals <host>... | --self-test")
+
+
+# --- Regex entries ---------------------------------------------------------------
+
+# the parser of the re module, for the rules below (re._parser since Python 3.11)
+try:
+    from re import _constants as _sre, _parser as _sre_parse
+except ImportError:                                     # pragma: no cover
+    import sre_constants as _sre
+    import sre_parse as _sre_parse
+
+MAX_PATTERN = 200
+# what a pattern may consist of: printable ASCII without spaces (host names have neither more
+# nor spaces, and the proxy log names a pattern as one word)
+PATTERN_TEXT = re.compile(r"[!-~]{1,%d}" % MAX_PATTERN)
+# the hosts a pattern is tried on: the same characters, at most as long as a host name can be;
+# this bounds what any pattern can cost per connection
+PATTERN_HOST = re.compile(r"[!-~]{1,253}")
+MAX_HOST = 253
+# at most this many ways for a pattern to match one host (_ways): two quantifiers in a row
+# that can take the same characters, such as .*foo.*, and no more
+MAX_WAYS = (MAX_HOST + 1) ** 2
+# The breadth check: a Regex entry (except on the Watchlist, where a broad pattern only raises
+# false Alerts) must match none of these unrelated hosts, common public domains and names
+# made up at random. A fixed list, so that a pattern is judged the same on every Host.
+BREADTH_SAMPLE = (
+    "google.com", "www.google.com", "mail.google.com", "youtube.com", "facebook.com", "instagram.com",
+    "wikipedia.org", "en.wikipedia.org", "amazon.com", "amazon.de", "apple.com", "microsoft.com",
+    "bing.com", "yahoo.com", "x.com", "twitter.com", "linkedin.com", "reddit.com", "netflix.com",
+    "cloudflare.com", "akamai.net", "fastly.net", "bbc.co.uk", "www.bbc.co.uk", "gov.uk", "nasa.gov",
+    "mit.edu", "archive.org", "mozilla.org", "debian.org", "ubuntu.com", "wordpress.com",
+    "medium.com", "stackoverflow.com", "gitlab.com", "bitbucket.org", "dropbox.com", "zoom.us",
+    "paypal.com", "ebay.com", "booking.com", "nytimes.com", "spiegel.de", "heise.de", "lemonde.fr",
+    "baidu.com", "qq.com", "yandex.ru", "vk.com", "naver.com", "rakuten.co.jp", "example.com",
+    "example.net", "example.org", "k3j9x2.net", "zq-ab.io", "a.co", "b.ai", "x1.y2.z3.de",
+    "7h4t.dev", "qwpzlm.app", "mxv-9kq.xyz", "lmn0p.top", "123.net", "a-b-c.info", "r4nd0m.site",
+    "pqz.online", "vxw.sh", "tt.me", "foo-bar-baz.cloud", "z.tech", "h7.cn", "n0de.ru", "o9.fr",
+    "qqq.jp", "aaa.biz", "bbb.us", "ccc.ca", "ddd.eu", "eee.nl", "fff.it", "ggg.es", "hhh.pl",
+    "iii.ch", "jjj.se", "kkk.no", "nnn.at", "ppp.br", "rrr.in", "sss.com.au", "ttt.tv", "uuu.cc",
+    "vvv.io", "www.qx7-vendor.com", "ab.cd.ef.gh.ij.example.org", "xn--80ak6aa92e.com",
+    "s0me-very-long-label-made-up-for-the-breadth-check-of-patterns.net", "192.0.2.1", "1.1.1.1",
+    # long and many-label names, as data sent out in DNS-shaped hosts looks: a pattern that
+    # only asks for length or for many labels (^[a-z0-9.-]{80,}$) is no narrow one
+    "q" * 63 + ".net", ("7f3a9c0e1b5d4f2a8c6e0b9d7f1a3c5e" * 2)[:63] + ".io",
+    ".".join(["a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b"] * 3 + ["x9-y8-z7"]) + ".com",
+    ".".join(["b" * 63] * 3 + ["c" * 57]) + ".net", ".".join(["mx"] * 83) + ".com",
+    "a.b.c.d.e.f.g.h.i.j.k.l.example.net", "1.2.3.4.5.6.7.8.org",
+    "data-0.data-1.data-2.data-3.data-4.data-5.data-6.cdn.example.com",
+)
+# characters a host can have when a pattern is tried on it (PATTERN_HOST, lowercased)
+_HOST_CHARS = frozenset(chr(c) for c in range(0x21, 0x7f)) - frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+_DIGITS = frozenset("0123456789")
+_WORD = _DIGITS | frozenset("abcdefghijklmnopqrstuvwxyz_")
+_CATEGORIES = {_sre.CATEGORY_DIGIT: _DIGITS, _sre.CATEGORY_NOT_DIGIT: _HOST_CHARS - _DIGITS,
+               _sre.CATEGORY_SPACE: frozenset(), _sre.CATEGORY_NOT_SPACE: _HOST_CHARS,
+               _sre.CATEGORY_WORD: _WORD, _sre.CATEGORY_NOT_WORD: _HOST_CHARS - _WORD,
+               _sre.CATEGORY_LINEBREAK: frozenset(), _sre.CATEGORY_NOT_LINEBREAK: _HOST_CHARS}
+_REPEATS = {_sre.MAX_REPEAT, _sre.MIN_REPEAT, getattr(_sre, "POSSESSIVE_REPEAT", _sre.MAX_REPEAT)}
+_END = "<end>"          # in a FIRST set: the end of the host may come next
+# why a pattern is refused: the stable reason (agentbox's invalid_pattern names it) and English
+PATTERN_REASONS = {
+    "too-long": f"longer than {MAX_PATTERN} characters",
+    "characters": "only printable ASCII characters without spaces are allowed",
+    "syntax": "not a regular expression",
+    "uppercase": "an uppercase letter, but host names are compared in lowercase",
+    "backreference": r"a backreference (\1, (?P=name), (?(1)...)), which may backtrack for very long",
+    "lookaround": "a lookahead or lookbehind ((?=...), (?!...), (?<=...), (?<!...))",
+    # refused also where a delimiter would keep it fast (^(?:[a-z]+\.){1,5}example\.org$): the
+    # rule stays simple; a domain entry or a pattern without the repeated group does it instead
+    "nested-quantifier": "a quantifier or an alternative inside a repeated group, such as (a+)+ or (a|ab)+, "
+                         "which may backtrack for very long (a domain entry covers subdomains, or write it "
+                         "without the repeated group, such as ^[a-z0-9.-]+\\.example\\.org$)",
+    "too-complex": "more than two quantifiers or alternatives in a row that can take the same characters, "
+                   "such as .*a.*b.*c: matching would take too long",
+}
+
+
+def pattern_problem(pattern, broad=True):
+    """Why pattern cannot be a Regex entry, as (reason, English text, the sample host it
+    matches or None), else None. broad: also the breadth check (BREADTH_SAMPLE), which the
+    Watchlist does without. The rules: at most MAX_PATTERN printable ASCII characters
+    without spaces; a regular expression of the re module without uppercase letters (it is
+    matched against lowercased host names), backreferences or lookarounds; no quantifier or
+    alternative inside a repeated group; at most MAX_WAYS ways to match a host, so that no
+    host makes it backtrack for long."""
+    if not isinstance(pattern, str) or not pattern:
+        return "characters", PATTERN_REASONS["characters"], None
+    if len(pattern) > MAX_PATTERN:
+        return "too-long", PATTERN_REASONS["too-long"], None
+    if not PATTERN_TEXT.fullmatch(pattern):
+        return "characters", PATTERN_REASONS["characters"], None
+    try:
+        # a warning (such as a possible nested set, [[) refuses it too, and never reaches a log
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            tree = _sre_parse.parse(pattern)
+            compiled = re.compile(pattern)
+    except (re.error, OverflowError, RecursionError, ValueError, Warning) as e:
+        why = getattr(e, "msg", None) or str(e) or type(e).__name__
+        return "syntax", f"{PATTERN_REASONS['syntax']} ({why[:100]})", None
+    reason = _rule(list(tree), False, tree.state.flags)
+    if reason is None and _ways(list(tree), {_END}) > MAX_WAYS:
+        reason = "too-complex"
+    if reason:
+        return reason, PATTERN_REASONS[reason], None
+    if broad:
+        host = next((h for h in BREADTH_SAMPLE if compiled.fullmatch(h)), None)
+        if host:
+            return "too-broad", f"too broad: it matches {host}, one of the unrelated hosts it must not match", host
+    return None
+
+
+def compile_pattern(pattern, broad=True):
+    """The compiled pattern of a Regex entry, or None when it breaks a rule (pattern_problem)."""
+    if pattern_problem(pattern, broad):
+        return None
+    return re.compile(pattern)
+
+
+def pattern_matches(compiled, host):
+    """Whether a Regex entry's compiled pattern matches host (already lowercased, without its
+    trailing dot); hosts longer than a host name or with other characters never match."""
+    return bool(PATTERN_HOST.fullmatch(host) and compiled.fullmatch(host))
+
+
+def _rule(items, repeated, flags):
+    """The first rule the parsed items break, as a reason of PATTERN_REASONS, else None.
+    repeated: inside a group that repeats (a quantifier with a maximum above 1)."""
+    for op, av in items:
+        if op in (_sre.GROUPREF, _sre.GROUPREF_EXISTS):
+            return "backreference"
+        if op in (_sre.ASSERT, _sre.ASSERT_NOT):
+            return "lookaround"
+        if not flags & _sre.SRE_FLAG_IGNORECASE and _uppercase(op, av):
+            return "uppercase"
+        if op is _sre.SUBPATTERN:
+            _, add, remove, body = av
+            reason = _rule(list(body), repeated, (flags | add) & ~remove)
+        elif op is _sre.ATOMIC_GROUP:
+            reason = _rule(list(av), repeated, flags)
+        elif op is _sre.BRANCH:
+            reason = "nested-quantifier" if repeated else next(
+                (r for r in (_rule(list(alt), repeated, flags) for alt in av[1]) if r), None)
+        elif op in _REPEATS:
+            low, high, body = av
+            reason = "nested-quantifier" if repeated and low != high else _rule(list(body), repeated or high > 1, flags)
+        else:
+            reason = None
+        if reason:
+            return reason
+    return None
+
+
+def _uppercase(op, av):
+    if op is _sre.LITERAL:
+        return 0x41 <= av <= 0x5a
+    if op is _sre.IN:
+        return any(o is _sre.LITERAL and 0x41 <= a <= 0x5a or o is _sre.RANGE and 0x41 <= a[0] <= a[1] <= 0x5a
+                   for o, a in av)
+    return False
+
+
+def _chars(op, av):
+    """The host characters a one-character item can match (rather more than fewer), or None
+    when it is no such item."""
+    if op is _sre.LITERAL:
+        return frozenset({chr(av).lower()}) & _HOST_CHARS
+    if op is _sre.NOT_LITERAL:
+        return _HOST_CHARS - {chr(av)}
+    if op is _sre.ANY:
+        return _HOST_CHARS
+    if op is not _sre.IN:
+        return None
+    out, negate = set(), False
+    for o, a in av:
+        if o is _sre.NEGATE:
+            negate = True
+        elif o is _sre.LITERAL:
+            out.add(chr(a))
+        elif o is _sre.RANGE:
+            out |= {chr(c) for c in range(a[0], min(a[1], 0x7e) + 1)}
+        elif o is _sre.CATEGORY:
+            out |= _CATEGORIES.get(a, _HOST_CHARS)
+        else:
+            out |= _HOST_CHARS
+    # negated: exactly what is left out; else with the lowercase letters, as ignorecase may match them
+    return _HOST_CHARS - out if negate else frozenset({c.lower() for c in out}) & _HOST_CHARS
+
+
+def _taken(items):
+    """Every host character the items can consume."""
+    out = set()
+    for op, av in items:
+        chars = _chars(op, av)
+        if chars is not None:
+            out |= chars
+        elif op is _sre.SUBPATTERN:
+            out |= _taken(av[3])
+        elif op is _sre.ATOMIC_GROUP:
+            out |= _taken(av)
+        elif op is _sre.BRANCH:
+            for alt in av[1]:
+                out |= _taken(alt)
+        elif op in _REPEATS:
+            out |= _taken(av[2])
+        elif op is not _sre.AT:
+            out |= _HOST_CHARS
+    return out
+
+
+def _first(items, follow):
+    """What the first character of the items, followed by follow, can be (with _END: the end
+    of the host): their FIRST set."""
+    for op, av in reversed(list(items)):
+        follow = _first_item(op, av, follow)
+    return follow
+
+
+def _first_item(op, av, follow):
+    chars = _chars(op, av)
+    if chars is not None:
+        return set(chars)
+    if op is _sre.AT:
+        return {_END} if av in (_sre.AT_END, _sre.AT_END_STRING) else follow
+    if op is _sre.SUBPATTERN:
+        return _first(av[3], follow)
+    if op is _sre.ATOMIC_GROUP:
+        return _first(av, follow)
+    if op is _sre.BRANCH:
+        return set().union(*(_first(alt, follow) for alt in av[1]))
+    if op in _REPEATS:
+        low, high, body = av
+        if high == 0:
+            return follow
+        first = _first(body, follow)
+        return first | follow if low == 0 else first
+    return set(_HOST_CHARS) | {_END}
+
+
+def _ways(items, follow):
+    """At most how many ways the items, followed by follow (a FIRST set), can match one
+    stretch of a host: what a backtracking matcher may have to try. A quantifier counts
+    with the number of lengths it can take, unless what follows it cannot start with a
+    character it takes (then only one length can go on); an alternative counts with the
+    sum of its branches unless they start differently. Capped above MAX_WAYS."""
+    total = 1
+    for op, av in reversed(list(items)):
+        total = min(total * _ways_item(op, av, follow), MAX_WAYS + 1)
+        follow = _first_item(op, av, follow)
+    return total
+
+
+def _ways_item(op, av, follow):
+    if op is _sre.SUBPATTERN:
+        return _ways(av[3], follow)
+    if op is _sre.ATOMIC_GROUP:
+        return _ways(av, follow)
+    if op is _sre.BRANCH:
+        alts = av[1]
+        firsts = [_first(alt, follow) for alt in alts]
+        ways = [_ways(alt, follow) for alt in alts]
+        apart = all(a.isdisjoint(b) for i, a in enumerate(firsts) for b in firsts[i + 1:])
+        return max(ways) if apart else sum(ways)
+    if op in _REPEATS:
+        low, high, body = av
+        inner = _ways(body, follow)
+        if high <= 1:
+            return inner + 1 if low == 0 else inner
+        lengths = min(high, MAX_HOST) - min(low, MAX_HOST) + 1
+        if lengths <= 1 or _taken(body).isdisjoint(follow):
+            return inner
+        return lengths * inner
+    return 1
 
 
 # --- Listen -------------------------------------------------------------------
@@ -126,10 +412,20 @@ USAGE = ("agentbox-suspicious <host> [port] | --json <host> [port] | --watchlist
 _cache = {}
 
 
+class Refused(ValueError):
+    """A record that reads, but holds a Regex entry the rules refuse: value is what it gives
+    without such entries, the message why it counts as unreadable all the same."""
+
+    def __init__(self, why, value):
+        super().__init__(why)
+        self.value = value
+
+
 def _read(path, parse, empty):
     """(Inhalt, None) einer Liste, neu gelesen, wenn sich die Datei geaendert hat; (None,
     None), wenn es sie nicht gibt. Ist sie nicht lesbar oder kaputt (parse wirft
-    ValueError): (der letzte gute Stand, ohne einen empty, warum)."""
+    ValueError): (der letzte gute Stand, ohne einen empty, warum); parse raising Refused:
+    (what it read without the refused entries, why)."""
     hit = _cache.get(path)
     last = hit[1] if hit else empty
     try:
@@ -146,6 +442,8 @@ def _read(path, parse, empty):
             value, why = parse(f.read()), None
     except OSError as e:
         return last, e.strerror or type(e).__name__
+    except Refused as e:
+        value, why = e.value, str(e)
     except ValueError as e:
         value, why = last, str(e) or type(e).__name__
     _cache[path] = (key, value, why)
@@ -170,13 +468,18 @@ def _printable(text, limit):
 
 def _problem(e, fields):
     """What is wrong with an entry of a record, else None; the same checks and texts as
-    in agentbox (lists.py), byte for byte."""
+    in agentbox (lists.py), byte for byte. An entry names a domain, or as a Regex entry a
+    pattern (regex); whether the rules take that pattern is refused_entry's question."""
     if not isinstance(e, dict):
         return "not a JSON object"
-    for key, typ in fields:
+    name = "regex" if "regex" in e else "domain"
+    for key, typ in ((name, str), *fields):
         if key not in e or isinstance(e[key], bool) or not isinstance(e[key], typ):
             return f"field {key} missing or of the wrong type"
-    if not DOMAIN.fullmatch(e["domain"]):
+    if name == "regex":
+        if "domain" in e:
+            return "both domain and regex"
+    elif not DOMAIN.fullmatch(e["domain"]):
         return f"invalid domain {_printable(e['domain'], 60)}"
     if fields is WATCH_FIELDS and e["category"] not in CATEGORIES:
         return f"unknown category {_printable(e['category'], 20)}"
@@ -185,36 +488,88 @@ def _problem(e, fields):
     return None
 
 
+def refused_entry(e, broad=True):
+    """Why the rules refuse a stored Regex entry's pattern (a hand edit, or a later Release
+    with stricter rules or a larger BREADTH_SAMPLE), as English text, else None. Such an
+    entry counts as nothing, in the proxy as in agentbox (patterns.py), which lists it with
+    this text and removes it by its pattern: on the Allowlist it allows nothing, as a
+    Harmless mark it silences nothing, as a Legitimate domain it lifts nothing, and on the
+    Watchlist, where it would raise a Signal, Open web stays closed until it is gone."""
+    if not isinstance(e, dict) or not isinstance(e.get("regex"), str):
+        return None
+    why = pattern_problem(e["regex"], broad)
+    return f"regex entry {_printable(e['regex'], 60)} refused: {why[1]}" if why else None
+
+
 def _checked(text, fields):
     """Die Eintraege eines Datensatzes; ein kaputter oder doppelter macht die ganze Datei
-    kaputt (ValueError), wie fuer agentbox."""
+    kaputt (ValueError), wie fuer agentbox. A domain and a Regex entry of the same text are
+    two entries."""
     entries, seen = [], set()
     for e in _entries(text):
         why = _problem(e, fields)
         if why:
             raise ValueError(f"broken entry ({why})")
-        if e["domain"] in seen:
-            raise ValueError(f"{e['domain']} listed twice")
-        seen.add(e["domain"])
+        key = ("regex", e["regex"]) if "regex" in e else ("domain", e["domain"])
+        if key in seen:
+            raise ValueError(f"{key[1]} listed twice")
+        seen.add(key)
         entries.append(e)
     return entries
 
 
+class Listed:
+    """The entries of a list: domains ({domain: value}, each with its subdomains) and Regex
+    entries ([(pattern, compiled, value)]), compiled once when the file is read."""
+
+    def __init__(self, domains=None, patterns=()):
+        self.domains = domains if domains is not None else {}
+        self.patterns = list(patterns)
+
+    def hits(self, host):
+        """(entry, value, whether it is a Regex entry) of every entry that covers host: the
+        domains that are host or above it, from host up, then the patterns that match it."""
+        out = [(d, self.domains[d], False) for d in _within(host, self.domains)]
+        if self.patterns and PATTERN_HOST.fullmatch(host):
+            out += [(p, value, True) for p, compiled, value in self.patterns if compiled.fullmatch(host)]
+        return out
+
+
+EMPTY = Listed()
+
+
+def _listed(entries, value, broad=True):
+    """(Listed of a record's checked entries without the Regex entries the rules refuse,
+    why the first of these is refused or None); value(entry) is what an entry stands for."""
+    refused = [why for why in (refused_entry(e, broad) for e in entries) if why]
+    kept = [e for e in entries if not refused_entry(e, broad)]
+    return (Listed({e["domain"]: value(e) for e in kept if "domain" in e},
+                   [(e["regex"], re.compile(e["regex"]), value(e)) for e in kept if "regex" in e]),
+            refused[0] if refused else None)
+
+
 def _watchlist_record(text):
-    """watchlist.json  ->  {domain: (kategorie, quelle)}; ein Tippfehler in der Kategorie
-    machte einen starken Eintrag sonst schwach."""
-    return {e["domain"]: (e["category"], e["source"]) for e in _checked(text, WATCH_FIELDS)}
+    """watchlist.json  ->  Listed of (kategorie, quelle); ein Tippfehler in der Kategorie
+    machte einen starken Eintrag sonst schwach. Its patterns need no breadth check: a
+    broad one only raises false Alerts. A pattern the rules refuse raises no Signal, so what
+    Open web would have to keep blocked is unknown: the record reads without it, but counts
+    as unreadable (Refused) until it is removed."""
+    listed, refused = _listed(_checked(text, WATCH_FIELDS), lambda e: (e["category"], e["source"]), broad=False)
+    if refused:
+        raise Refused(f"{refused}; Open web stays closed until it is removed (agentbox watch-remove --regex)",
+                      listed)
+    return listed
 
 
 def _watchlist_text(text):
-    """<domain> <kategorie> # Quelle  ->  {domain: (kategorie, quelle)}"""
+    """<domain> <kategorie> # Quelle  ->  Listed of (kategorie, quelle)"""
     entries = {}
     for line in text.splitlines():
         body, _, source = line.partition("#")
         parts = body.split()
         if len(parts) >= 2:
             entries[parts[0].lower().rstrip(".")] = (parts[1], source.strip())
-    return entries
+    return Listed(entries)
 
 
 def _domains(text):
@@ -227,28 +582,51 @@ def _domains(text):
     return frozenset(out)
 
 
+def _legitimate_text(text):
+    return Listed(dict.fromkeys(_domains(text)))
+
+
+def _marks(text):
+    """The Harmless marks: one domain per line (the first word, comments with #), or
+    "regex <pattern>" for a Regex entry. A pattern that breaks a rule counts as nothing,
+    which only means more Alerts."""
+    domains, patterns = {}, []
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == "regex":
+            compiled = compile_pattern(parts[1])
+            if compiled:
+                patterns.append((parts[1], compiled, None))
+            continue
+        parts = line.split("#", 1)[0].split()
+        if parts:
+            domains[parts[0].lower().rstrip(".")] = None
+    return Listed(domains, patterns)
+
+
 def _legitimate_record(text):
-    """legitimate.json  ->  ihre Domains; kaputt zaehlen nur die eingebauten (oder im Proxy
-    der letzte gute Stand), das fuegt nur Merkmale hinzu."""
-    return frozenset(e["domain"] for e in _checked(text, LEGITIMATE_FIELDS))
+    """legitimate.json  ->  Listed; kaputt zaehlen nur die eingebauten (oder im Proxy
+    der letzte gute Stand), das fuegt nur Merkmale hinzu. A pattern the rules refuse lifts
+    nothing, which only adds Signals; the other entries count."""
+    return _listed(_checked(text, LEGITIMATE_FIELDS), lambda e: None)[0]
 
 
 def _hand_watchlist():
     """(Verdachtsliste von Hand, warum sie gerade nicht lesbar ist oder None). Fehlt
     watchlist.json und die Textdatei davor auch, bleibt ihr letzter guter Stand, wie fuer
     eine kaputte."""
-    found, why = _read(WATCHLIST, _watchlist_record, {})
+    found, why = _read(WATCHLIST, _watchlist_record, EMPTY)
     if found is not None:
         return found, why and f"{WATCHLIST}: {why}"
-    found, why = _read(LEGACY_WATCHLIST, _watchlist_text, {})
+    found, why = _read(LEGACY_WATCHLIST, _watchlist_text, EMPTY)
     if found is None:
         hit = _cache.get(WATCHLIST)
-        return (hit[1] if hit else {}), f"{WATCHLIST} missing"
+        return (hit[1] if hit else EMPTY), f"{WATCHLIST} missing"
     return found, why and f"{LEGACY_WATCHLIST}: {why}"
 
 
 def hand_watchlist():
-    """Die Verdachtsliste von Hand, {domain: (kategorie, quelle)}: watchlist.json, bis
+    """Die Verdachtsliste von Hand, Listed of (kategorie, quelle): watchlist.json, bis
     es sie gibt die Textdatei davor; ist sie kaputt, ihr letzter guter Stand."""
     return _hand_watchlist()[0]
 
@@ -267,22 +645,27 @@ def _within(host, domains):
     return [d for d in (".".join(labels[i:]) for i in range(len(labels))) if d in domains]
 
 
-# (die legitimen Domains des Hosts, mit den eingebauten vereinigt): neu gebildet nur, wenn
-# sich die des Hosts aendern, nicht fuer jedes Ziel, das der Proxy einstuft
-_legitimate = (None, GENUINE)
+# (die legitimen Domains des Hosts, mit den eingebauten vereinigt, and the Host's patterns):
+# neu gebildet nur, wenn sich die des Hosts aendern, nicht fuer jedes Ziel, das der Proxy einstuft
+_legitimate = (None, GENUINE, ())
+
+
+def _legitimate_lists():
+    """(the Legitimate domains with the built-in ones, the Host's Regex entries)"""
+    global _legitimate
+    found = _read(LEGITIMATE, _legitimate_record, EMPTY)[0]
+    if found is None:
+        found = _read(LEGACY_LEGITIMATE, _legitimate_text, EMPTY)[0] or EMPTY
+    if _legitimate[0] is not found:
+        _legitimate = (found, frozenset(found.domains) | GENUINE, tuple(found.patterns))
+    return _legitimate[1:]
 
 
 def legitimate_domains():
     """Bekannte legitime Domains: die eingebauten und die des Hosts (legitimate.json, bis
     es sie gibt die Textdatei davor). Treffer der HaGeZi-Listen fuer sie und ihre
     Subdomains zaehlen nicht (explain); die Listen liegen ungefiltert."""
-    global _legitimate
-    found = _read(LEGITIMATE, _legitimate_record, frozenset())[0]
-    if found is None:
-        found = _read(LEGACY_LEGITIMATE, _domains, frozenset())[0] or frozenset()
-    if _legitimate[0] is not found:
-        _legitimate = (found, found | GENUINE)
-    return _legitimate[1]
+    return _legitimate_lists()[0]
 
 
 def legitimate(host):
@@ -291,10 +674,29 @@ def legitimate(host):
     return hits[-1] if hits else None
 
 
+def legitimate_pattern(host):
+    """The first Regex entry of the Legitimate domains that matches host, else None. It lifts
+    only weak Signals (explain): which strong ones a pattern would lift cannot be checked when
+    it is added, as it is for a domain (ADR 0009, ADR 0013)."""
+    if not PATTERN_HOST.fullmatch(host):
+        return None
+    return next((p for p, compiled, _ in _legitimate_lists()[1] if compiled.fullmatch(host)), None)
+
+
+def harmless_hit(host):
+    """(the Harmless mark that covers host, whether it is a Regex entry), else None; a domain
+    before a pattern."""
+    hits = (_read(HARMLESS, _marks, EMPTY)[0] or EMPTY).hits(host)
+    domains = [h for h in hits if not h[2]]
+    if domains:
+        return domains[-1][0], False
+    return (hits[0][0], True) if hits else None
+
+
 def harmless(host):
-    """Der Eintrag der Harmlos-Liste, unter den host faellt, sonst None."""
-    hits = _within(host, _read(HARMLESS, _domains, frozenset())[0] or frozenset())
-    return hits[-1] if hits else None
+    """Der Eintrag der Harmlos-Liste, unter den host faellt (a domain or a pattern), sonst None."""
+    hit = harmless_hit(host)
+    return hit[0] if hit else None
 
 
 class SortedList:
@@ -463,14 +865,22 @@ def explain(host, port=443):
     except ValueError:
         pass
 
-    watchlist = hand_watchlist()
-    for domain in _within(host, watchlist):
-        category, source = watchlist[domain]
-        found.append(_reason(category, "watchlist", f"Watchlist: {domain}" + (f" ({source})" if source else ""),
-                             domain=domain, **({"source": source} if source else {})))
+    for entry, (category, source), regex in hand_watchlist().hits(host):
+        more = {"source": source} if source else {}
+        if regex:
+            found.append(_reason(category, "watchlist-regex", f"Watchlist: pattern {entry}"
+                                 + (f" ({source})" if source else ""), pattern=entry, **more))
+        else:
+            found.append(_reason(category, "watchlist", f"Watchlist: {entry}" + (f" ({source})" if source else ""),
+                                 domain=entry, **more))
     # Bekannt legitim: keine Muster, Treffer der HaGeZi-Listen zaehlen nicht (fuer die Domain
-    # und darunter; ein Eintrag ueber ihr zaehlt weiter fuer ihre Nachbarn)
-    if not legitimate(host):
+    # und darunter; ein Eintrag ueber ihr zaehlt weiter fuer ihre Nachbarn). A regex
+    # Legitimate domain lifts only the weak ones.
+    if legitimate(host):
+        pass
+    elif legitimate_pattern(host):
+        found += [r for r in _name_signals(host) if r["signal"] in STRONG]
+    else:
         found += _name_signals(host)
     # ausser dem Blockchain-Muster: das hebt keine legitime Domain auf (nur agentbox allow --force)
     if BLOCKCHAIN.search(host):
@@ -539,14 +949,18 @@ def report(host, port=443):
     """For agentbox check-domain: every Signal with why it applies (its English text, and
     the code and parameters the Control Room words it from)."""
     host = normalise(host)
-    quiet = harmless(host)
+    quiet = harmless_hit(host)
     signals = [{"signal": r["signal"], "strong": r["signal"] in STRONG, "reason": r["reason"], "code": r["code"],
                 "params": r["params"], "suppressed": bool(quiet) and r["signal"] not in STRUCTURAL}
                for r in explain(host, port)]
+    legit = legitimate(host)
+    legit_pattern = None if legit else legitimate_pattern(host)
+    # harmless and legitimate: the entry that covers it, a domain or (*_regex) a pattern
     return {"domain": host, "port": port, "signals": signals,
             "alert": any(not s["suppressed"] for s in signals),
             "strong": is_strong(s["signal"] for s in signals),
-            "harmless": quiet, "legitimate": legitimate(host), "feeds": feed_status()}
+            "harmless": quiet[0] if quiet else None, "harmless_regex": bool(quiet and quiet[1]),
+            "legitimate": legit or legit_pattern, "legitimate_regex": bool(legit_pattern), "feeds": feed_status()}
 
 
 def lifts(domain):
@@ -577,9 +991,22 @@ def watchlist():
     """Fuer agentbox watchlist: die Verdachtsliste von Hand (jeder Eintrag mit Kategorie,
     ob sie stark ist, und Quelle) und der Stand der HaGeZi-Listen."""
     entries = hand_watchlist()
-    return {"entries": [{"domain": d, "category": c, "strong": c in STRONG, "source": src}
-                        for d, (c, src) in sorted(entries.items())],
+    return {"entries": [{"domain": d, "regex": None, "category": c, "strong": c in STRONG, "source": src}
+                        for d, (c, src) in sorted(entries.domains.items())]
+                       + [{"domain": None, "regex": p, "category": c, "strong": c in STRONG, "source": src}
+                          for p, _, (c, src) in sorted(entries.patterns, key=lambda x: x[0])],
             "feeds": feed_status()}
+
+
+def signals(hosts):
+    """For agentbox (the preview of a regex Allowlist entry): each host's Signals and whether
+    one is strong, and why the Watchlist cannot be read (then nothing a pattern matches gets
+    through)."""
+    out = {}
+    for host in hosts:
+        tags = classify(host)
+        out[normalise(host)] = {"signals": tags, "strong": is_strong(tags)}
+    return {"hosts": out, "watchlist_unreadable": watchlist_unreadable()}
 
 
 # --- Selbsttest ------------------------------------------------------------------
@@ -591,8 +1018,8 @@ SELFTEST_WATCHLIST = ("exfil-selftest.example", "exfil", "self-test")
 SELFTEST_LEGITIMATE = ("legit-selftest.example", "cdn.vendor-selftest.example")
 SELFTEST_FEEDS = {
     "threat-intelligence": ["evil-selftest.example", "github.com", "objects.githubusercontent.com",
-                            "cdn.legit-selftest.example", "vendor-selftest.example"],
-    "newly-registered": ["npmjs.com", "young-selftest.example"],
+                            "cdn.legit-selftest.example", "vendor-selftest.example", "mirror2-selftest.example"],
+    "newly-registered": ["npmjs.com", "young-selftest.example", "mirror1-selftest.example"],
 }
 SELFTEST_HARMLESS = ["npm-selftest.example"]
 # (host, erwartete Merkmale, genau) - ohne offenes Web, nichts davon wird aufgeloest. Echte
@@ -620,9 +1047,26 @@ SELFTEST_CASES = [
 # Aufloesung. Nur Namen unter .example: auch wenn die Erkennung kaputt ist, erreicht der
 # Selbsttest so nie ein echtes Ziel.
 SELFTEST_OPEN = [("x.exfil-selftest.example", "exfil"), ("api.evil-selftest.example", "threat"),
-                 ("www.npm-selftest.example", "lookalike")]
+                 ("www.npm-selftest.example", "lookalike"), ("c2-8-selftest.example", "c2"),
+                 ("pypi-2-selftest.example", "lookalike")]
 # danach, mit kaputter Verdachtsliste: das offene Web laesst auch Unauffaelliges nicht durch
 SELFTEST_UNREADABLE = ("free-selftest.example", "Watchlist unreadable")
+# One Regex entry per list (ADR 0013), in lists of only the test entries, which replace the
+# Host's for the cases after the first ones (the text files from before have no patterns)
+SELFTEST_REGEX = {"watchlist": r"^c2-[0-9]+-selftest\.example$", "legitimate": r"^mirror[0-9]+-selftest\.example$",
+                  "harmless": r"^pypi-[0-9]+-selftest\.example$",
+                  "allowlist": (r"^[a-z]+\.exfil-selftest\.example$", r"^free[0-9]+-selftest\.example$")}
+SELFTEST_REGEX_CASES = [
+    ("c2-7-selftest.example", {"c2"}, True),             # Watchlist pattern
+    ("mirror1-selftest.example", set(), True),           # newly registered, but a Legitimate pattern
+    ("mirror2-selftest.example", {"threat"}, True),      # ... which lifts no strong Signal
+    ("pypi-1-selftest.example", set(), True),            # brand name, but a Harmless pattern: no Alert
+    ("y.exfil-selftest.example", {"exfil"}, True),       # an Allowlist pattern ...
+]
+# ... that never allows strong Signals, checked on every connection; and nothing while the
+# Watchlist cannot be read (checked last, with Open web closed)
+SELFTEST_REGEX_BLOCKED = [("y.exfil-selftest.example", "suspicious: exfil")]
+SELFTEST_REGEX_UNREADABLE = ("free1-selftest.example", "Watchlist unreadable, regex entries closed")
 # Zeilen des Proxy-Logs; aeltere deutsche Schluesselwoerter zaehlen nicht
 LOG_ALERT = re.compile(r"\] ALERT (\S+) \[(.*)\]$")
 LOG_BLOCKED = re.compile(r"\] BLOCKED (\S+) \((.*)\)$")
@@ -663,6 +1107,29 @@ def _selftest_list(conf, record, legacy, add, parse):
     raise OSError(f"{os.path.basename(record)} and {os.path.basename(legacy)} missing in {CONF_DIR}")
 
 
+def _put(path, text):
+    """A file of the self-test replaced whole, so the proxy reads it again."""
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(path + ".tmp", path)
+
+
+def _selftest_regex_lists(conf):
+    """The lists for the Regex entries' cases: only test entries, one pattern per list
+    (SELFTEST_REGEX) besides the test domains the cases in Open web need."""
+    added = {"note": "", "added": 0, "added_by": "selftest"}
+    domain, category, source = SELFTEST_WATCHLIST
+    _put(os.path.join(conf, "watchlist.json"), json.dumps({"entries": [
+        {"domain": domain, "category": category, "source": source, **added},
+        {"regex": SELFTEST_REGEX["watchlist"], "category": "c2", "source": source, **added}]}))
+    _put(os.path.join(conf, "legitimate.json"), json.dumps({"entries": [
+        {"regex": SELFTEST_REGEX["legitimate"], **added}]}))
+    _put(os.path.join(conf, "harmless"), "".join(d + "\n" for d in SELFTEST_HARMLESS)
+         + f"regex {SELFTEST_REGEX['harmless']}\n")
+    _put(os.path.join(conf, "allowlist.json"), json.dumps({"entries": [
+        {"regex": p, "scope": "all", "expires": None, **added} for p in SELFTEST_REGEX["allowlist"]]}))
+
+
 def self_test():
     """Startet den Proxy neben dieser Datei mit der Verdachtsliste und den legitimen
     Domains des Hosts (aus CONF_DIR) plus Testeintraegen und Testlisten, schickt
@@ -687,14 +1154,14 @@ def self_test():
         except (OSError, ValueError) as e:
             print(f"FAILED  lists of the Host: {getattr(e, 'strerror', None) or e}")
             return 1
-        # was die Verdachtsliste des Hosts dazu sagt, und ein echter Eintrag von ihr: seine Liste
-        # ist mit allen Eintraegen geladen
+        # was die Verdachtsliste des Hosts dazu sagt (its patterns too), und ein echter Eintrag
+        # von ihr: seine Liste ist mit allen Eintraegen geladen
         listed = hand_watchlist()
-        cases = [(host, want | {listed[d][0] for d in _within(host, listed)}, exact)
+        cases = [(host, want | {value[0] for _, value, _ in listed.hits(host)}, exact)
                  for host, want, exact in SELFTEST_CASES]
-        own = sorted(d for d in listed if d != domain)
+        own = sorted(d for d in listed.domains if d != domain)
         if own:
-            cases.insert(1, (f"selftest.{own[0]}", {listed[own[0]][0]}, False))
+            cases.insert(1, (f"selftest.{own[0]}", {listed.domains[own[0]][0]}, False))
         # nichts freigegeben, also wird nichts aufgeloest
         with open(os.path.join(conf, "allowlist.json"), "w") as f:
             f.write('{"entries": []}\n')
@@ -724,6 +1191,10 @@ def self_test():
                 time.sleep(0.05)
         for host, _, _ in cases[1:]:
             answers[host] = _connect(sock, host)
+        _selftest_regex_lists(conf)
+        cases += SELFTEST_REGEX_CASES
+        for host, _, _ in SELFTEST_REGEX_CASES:
+            answers[host] = _connect(sock, host)
         with open(os.path.join(conf, "open-selftest"), "w") as f:
             f.write(f"{int(time.time()) + 600}\n")
         for host, _ in SELFTEST_OPEN:
@@ -731,6 +1202,8 @@ def self_test():
         with open(os.path.join(conf, "watchlist.json"), "w") as f:
             f.write("{broken")
         answers[SELFTEST_UNREADABLE[0]] = _connect(sock, SELFTEST_UNREADABLE[0])
+        os.remove(os.path.join(conf, "open-selftest"))
+        answers[SELFTEST_REGEX_UNREADABLE[0]] = _connect(sock, SELFTEST_REGEX_UNREADABLE[0])
         server.terminate()
         server.wait(10)
         alerts, blocks = {}, {}
@@ -751,6 +1224,11 @@ def self_test():
             why = blocks.get(host, "")
             ok = signal in why and answers[host].split()[1:2] == ["403"]
             results.append((ok, host, f"Open web: expected blocked for {signal}, got "
+                                      f"{why or '-'} ({answers[host]})"))
+        for host, reason in SELFTEST_REGEX_BLOCKED + [SELFTEST_REGEX_UNREADABLE]:
+            why = blocks.get(host, "")
+            ok = why == reason and answers[host].split()[1:2] == ["403"]
+            results.append((ok, host, f"Allowlist pattern: expected blocked ({reason}), got "
                                       f"{why or '-'} ({answers[host]})"))
     except (OSError, subprocess.SubprocessError, IndexError) as e:
         print(f"FAILED  self-test aborted: {e}")
@@ -781,6 +1259,9 @@ def main(args):
         return 0
     if len(args) == 2 and args[0] == "--lifts":
         print(json.dumps(lifts(args[1])))
+        return 0
+    if args[:1] == ["--signals"]:
+        print(json.dumps(signals(args[1:])))
         return 0
     as_json = args[:1] == ["--json"]
     args = args[1:] if as_json else args

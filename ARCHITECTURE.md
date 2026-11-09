@@ -218,8 +218,9 @@ flowchart LR
   addresses.
 - The Allowlist is one root-owned file, `/etc/agentbox/allowlist.json`, that the proxy reads
   directly and re-reads when it changes. Each **Allowlist entry** has a domain (covering its
-  subdomains), a scope (`all` or one VM), an optional expiry (15 minutes, 1 hour, 8 hours or
-  7 days; a **Temporary allowlist entry**), a note, and who added it when. Only the
+  subdomains) or a pattern (a **Regex entry**, below), a scope (`all` or one VM), an optional
+  expiry (15 minutes, 1 hour, 8 hours or 7 days; a **Temporary allowlist entry**), a note, and
+  who added it when. Only the
   `agentbox` CLI writes it (`allow`, `disallow`, `extend`, `make-permanent`, `set-note`);
   a broken file leaves the proxy with the entries it read before. `agentbox
   migrate-allowlist` (run by `agentbox setup`) took over the earlier files
@@ -229,6 +230,33 @@ flowchart LR
   `--force` on the CLI; the Control Room never passes it and refuses them with the reason.
   While the hand-maintained Watchlist cannot be read, every destination needs `--force`:
   which Signals are strong is unknown then, and Allowlist entries pass the proxy.
+- **Regex entries** ([ADR 0013](docs/adr/0013-regex-entries-in-every-list.md)): every list
+  (the Allowlist, the Watchlist, the Legitimate domains, the Harmless marks) can hold a
+  regular expression in place of a domain (`regex` instead of `domain` in a record, the line
+  `regex <pattern>` among the Harmless marks, `--regex PATTERN` on the CLI). It matches with
+  `re.fullmatch` against the lowercased host name without its trailing dot, only hosts of at
+  most 253 printable ASCII characters, and covers no subdomains of its own accord. The rules
+  live in the classifier (`pattern_problem`), which the proxy loads and agentbox loads the
+  same way, so both judge a pattern alike when it is added and whenever a list is read: at
+  most 200 printable ASCII characters without spaces, it compiles, no uppercase letters,
+  backreferences or lookarounds, no quantifier or alternative inside a repeated group, at
+  most two quantifiers in a row that can take the same characters (the host comes from the
+  VM, so no host may make a pattern backtrack for long), and, except on the Watchlist, it
+  matches none of a fixed sample of unrelated hosts (`BREADTH_SAMPLE`: `.*\.com` is refused).
+  Patterns are compiled whenever a list is read again, not per connection. A regex Allowlist
+  entry never allows a destination with strong Signals, checked on every connection the way
+  Open web does it (`--force` does not apply to it), and allows nothing while the Watchlist
+  cannot be read; domain entries are checked only when they are added. `allow --regex` first
+  shows which hosts of the scope's proxy log of the last 7 days (`ALLOWED` and `BLOCKED`
+  lines) the pattern would allow, each with whether strong Signals keep it blocked, and adds
+  it only with `--confirm-pattern`; `agentbox check-regex` answers the same for a pattern
+  without adding it, and whether given hosts match. Scope, expiry, notes, uses and closing
+  tunnels work as for a domain entry. The preview reads at most the newest 200,000 log lines
+  and says first, with how far back it reaches, when a VM filled its log beyond them. A stored
+  pattern the rules refuse (a hand edit, or a later Release with stricter rules or a larger
+  sample) counts as nothing while the other entries keep working: it allows, silences or lifts
+  nothing; on the Watchlist it keeps Open web and regex Allowlist entries closed until it is
+  removed. The CLI lists it with the reason (`refused`) and removes it by its pattern.
 - **Open web** lets a VM reach any public domain for a limited time. Destinations with strong
   **Signals** stay blocked, which includes **Watchlist** entries of a strong category and
   those of the threat-intelligence list; a `payload` entry only raises an Alert. While the
@@ -242,7 +270,10 @@ flowchart LR
   running, also after `agentbox expire-allowlist` (a timer, every minute) removes it and
   records the expiry in Activity.
 - Every connection is logged per VM, into the journald namespace of Activity:
-  `ALLOWED <host> (allowlist <domain> <scope>)` or `(open web)`, `BLOCKED <host> (<reason>)`,
+  `ALLOWED <host> (allowlist <domain> <scope>)`, `(allowlist regex <pattern> <scope>)` or
+  `(open web)` (of several entries the most specific domain, else a pattern),
+  `BLOCKED <host> (<reason>)` (for a destination only Open web or a regex entry would let
+  through, `suspicious: <signals>` or `Watchlist unreadable, ... closed`),
   `ALERT <host> [<signals>]`, and `CLOSED <host> (<reason>)` for a tunnel the proxy closed.
   `agentbox allowlist` counts each entry's uses of the last 24 hours from the `ALLOWED`
   lines. Lines with the earlier German keywords are ignored entirely.
@@ -251,8 +282,8 @@ flowchart LR
 `proxy/agentbox-suspicious` classifies each destination by:
 - the Watchlist, matched by host suffix: entries kept by hand on the Host
   (`/etc/agentbox/watchlist.json`, each with a category that becomes its Signal and its
-  source incident) and the HaGeZi threat-intelligence list (Signal `threat`: malware,
-  phishing, command-and-control),
+  source incident; a Regex entry matches by pattern) and the HaGeZi threat-intelligence list
+  (Signal `threat`: malware, phishing, command-and-control),
 - the HaGeZi list of newly registered domains (Signal `young`: registered in the last
   14 days, a weak Signal because many new domains are harmless),
 - lookalikes of registry and vendor names (`npm-cache.com`, `pypi-get.com`, `npmjs.help`)
@@ -271,7 +302,10 @@ Legitimate domain counts again at once, and a Feed entry above one (`vendor.exam
 `cdn.vendor.example`) still counts for its other subdomains. Watchlist
 entries kept by hand apply to Legitimate domains as well. Some Legitimate domains are built
 into the classifier (`GENUINE`), the rest are kept on the Host
-(`/etc/agentbox/legitimate.json`).
+(`/etc/agentbox/legitimate.json`). A Legitimate domain that is a Regex entry lifts only weak
+Signals (the young Feed, unusual TLDs, random-looking labels, many labels): which strong ones
+a pattern would lift cannot be checked when it is added, so it needs no `--force` and never
+makes a destination with strong Signals reachable in Open web.
 
 Both hand-kept lists are records on the Host, like the Allowlist
 ([ADR 0009](docs/adr/0009-watchlist-and-legitimate-domains-live-on-the-host.md)):
@@ -327,11 +361,13 @@ needs about 0.1 ms per destination.
 Hits raise an **Alert**, shown in the Control Room; Alerts can be marked as seen
 (`agentbox mark-seen`) so that only new ones stand out. `agentbox check-domain` shows a
 domain's Signals and the reason for each: an English text, and for the Control Room a stable
-code with its parameters (the Watchlist entry and its source, the Feed entry, the imitated
-brand or name, the port, ...), which it words in its language (`docs/control-room-api.md`).
+code with its parameters (the Watchlist entry or pattern and its source, the Feed entry, the
+imitated brand or name, the port, ...), which it words in its language
+(`docs/control-room-api.md`), and the Harmless mark and Legitimate domain that cover it,
+domain or pattern.
 A **Harmless mark** (`agentbox mark-harmless`,
-root-owned `/etc/agentbox/harmless`) stops Alerts for a false positive and its subdomains,
-but nothing else: a destination with strong Signals stays blocked in Open web and can only
+root-owned `/etc/agentbox/harmless`, a domain per line or `regex <pattern>`) stops Alerts for
+a false positive and its subdomains (or the hosts its pattern matches), but nothing else: a destination with strong Signals stays blocked in Open web and can only
 be allowed with `--force`, so marking a domain harmless never opens a way out. Signals
 that do not depend on the name (port, raw IP, metadata address) still raise Alerts.
 
@@ -342,7 +378,12 @@ before the migration its text file, on a fresh Host the Release's), sends `CONNE
 resolving any name. Besides its own test entries it checks one real Watchlist entry of the
 Host, so a list that does not load is noticed, and that a broken Watchlist closes Open web.
 Its cases use names under `.example` besides the built-in Legitimate domains, and a Host
-entry covering one of them is expected as well, so ordinary entries cannot fail it. A
+entry covering one of them is expected as well, so ordinary entries cannot fail it. It covers
+one Regex entry per list, in lists of only its own test entries (the text files from before
+the records have no patterns): a Watchlist pattern raises its Signal, a Legitimate pattern
+lifts a weak Signal but not a strong one, a Harmless pattern stops an Alert, and an Allowlist
+pattern lets through neither a destination with strong Signals nor anything while the
+Watchlist cannot be read. A
 failure stops setup and the installation.
 
 The approach sees host names only: abuse of allowed services such as GitHub is not

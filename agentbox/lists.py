@@ -19,7 +19,13 @@ Control Room cannot):
 An entry covers its domain and every subdomain; there is at most one per domain.
 category is one of the classifier's CATEGORIES and becomes the Signal of a hit;
 source names the incident or report behind an entry. Only agentbox writes these
-files. The repository's proxy/suspicious-domains and proxy/legitimate-domains only
+files.
+
+A Regex entry (ADR 0013, patterns.py) has a pattern, "regex", in place of the domain,
+given with --regex PATTERN; a domain and a pattern of the same text are two entries.
+Watchlist patterns skip the breadth check (a broad one only raises false Alerts). A
+regex Legitimate domain lifts only weak Signals: which strong ones a pattern would
+lift cannot be checked, so it needs no --force and takes none. The repository's proxy/suspicious-domains and proxy/legitimate-domains only
 fill a new Host; later changes to them do not reach it.
 
 Built in. The classifier's GENUINE domains (registries and vendors) are
@@ -53,7 +59,7 @@ import json
 import os
 import time
 
-from . import activity, paths, settings, state_files
+from . import activity, paths, patterns, settings, state_files
 from .allowlist import MAX_NOTE, _parse
 from .detection import _classifier, domain_arg, feed_line
 from .errors import Fail, die
@@ -61,10 +67,11 @@ from .network import DOMAIN, done
 from .sanitize import clean
 
 MAX_SOURCE = 200
+# the fields of an entry besides domain or regex (patterns.py)
 WATCHLIST = {"title": "Watchlist", "file": "watchlist.json", "legacy": "suspicious-domains",
-             "fields": {"domain": str, "category": str, "source": str, "note": str, "added": int, "added_by": str}}
+             "fields": {"category": str, "source": str, "note": str, "added": int, "added_by": str}}
 LEGITIMATE = {"title": "Legitimate domains", "file": "legitimate.json", "legacy": "legitimate-domains",
-              "fields": {"domain": str, "note": str, "added": int, "added_by": str}}
+              "fields": {"note": str, "added": int, "added_by": str}}
 # what migrate-lists says when there is nothing to take over
 NOTHING_TO_MIGRATE = "Watchlist and Legitimate domains: nothing to take over"
 # what an unreadable Watchlist means (the Control Room answers watchlist_unreadable)
@@ -129,11 +136,33 @@ def _text(value, name, limit):
     return text
 
 
-def _domain(positional):
+def _target(positional, opts):
+    """The entry asked for: ("domain", domain) from the positional argument, or ("regex",
+    pattern) from --regex in its place, taken as given (a new one is checked by the caller)."""
+    if "regex" in opts:
+        if positional:
+            die("--regex takes the place of the domain; too many arguments: " + clean(positional[0], False)[:60],
+                error="invalid_argument")
+        return "regex", opts["regex"]
     domain = domain_arg(positional[0] if positional else "")
     if len(positional) > 1:
         die("too many arguments: " + clean(positional[1], False)[:60], error="invalid_argument")
-    return domain
+    return "domain", domain
+
+
+def label(ref):
+    """An entry for people: the domain, or "pattern <regex>"."""
+    return f"pattern {ref[1]}" if ref[0] == "regex" else ref[1]
+
+
+def _given(ref):
+    """The entry asked for as a result's fields: domain and regex, the other null."""
+    return patterns.both({ref[0]: ref[1]})
+
+
+def _param(ref):
+    """The entry asked for as a failure's parameter: domain or regex."""
+    return {ref[0]: ref[1]}
 
 
 def _category(value):
@@ -150,10 +179,15 @@ def _problem(kind, e):
     records the same way, with the same texts byte for byte (agentbox-suspicious, _problem)."""
     if not isinstance(e, dict):
         return "not a JSON object"
-    for key, typ in kind["fields"].items():
+    name = "regex" if "regex" in e else "domain"
+    for key, typ in ((name, str), *kind["fields"].items()):
         if key not in e or isinstance(e[key], bool) or not isinstance(e[key], typ):
             return f"field {key} missing or of the wrong type"
-    if not DOMAIN.fullmatch(e["domain"]):
+    if name == "regex":
+        # a pattern the rules refuse is no broken entry: it counts as nothing (_refused)
+        if "domain" in e:
+            return "both domain and regex"
+    elif not DOMAIN.fullmatch(e["domain"]):
         return f"invalid domain {clean(e['domain'], False)[:60]}"
     if "category" in kind["fields"] and e["category"] not in categories():
         return f"unknown category {clean(e['category'], False)[:20]}"
@@ -170,19 +204,26 @@ def _valid(kind, entries, path):
     for e in entries:
         why = _problem(kind, e)
         # the classifier's reasons, byte for byte (see _problem)
-        why = f"broken entry ({why})" if why else f"{e['domain']} listed twice" if e["domain"] in seen else None
+        why = f"broken entry ({why})" if why else f"{patterns.value(e)} listed twice" \
+            if patterns.key(e) in seen else None
         if why and kind is WATCHLIST:
             raise Unreadable(f"{path}: {why}")
         if why:
             die(f"{LEGITIMATE_UNREADABLE}: {path}: {why}", error="legitimate_unreadable")
-        seen.add(e["domain"])
+        seen.add(patterns.key(e))
     return entries
 
 
-def _entry(kind, domain, now, added_by, category="", source="", note=""):
-    e = {"domain": domain, "category": category, "source": source, "note": note, "added": now,
-         "added_by": added_by}
-    return {k: e[k] for k in kind["fields"]}
+def _entry(kind, domain, now, added_by, category="", source="", note="", ref=None):
+    """A new entry of the domain, or of ref, ("domain", domain) or ("regex", pattern)."""
+    ref = ref or ("domain", domain)
+    e = {"category": category, "source": source, "note": note, "added": now, "added_by": added_by}
+    return {ref[0]: ref[1], **{k: e[k] for k in kind["fields"]}}
+
+
+def _sorted(entries):
+    """Domains first, then Regex entries, each by their value."""
+    return sorted(entries, key=patterns.key)
 
 
 def _lines(n):
@@ -285,15 +326,32 @@ def read(kind, create=False):
     return (_from_legacy(kind, legacy, int(time.time()))[0] if legacy else []), legacy
 
 
+def _refused(kind, e):
+    """Why the rules refuse a stored Regex entry, else None (patterns.refused; the Watchlist
+    does without the breadth check)."""
+    return patterns.refused(e, broad=kind is not WATCHLIST)
+
+
+def refused_watchlist(entries):
+    """Why the Watchlist counts as unreadable for a Regex entry the rules refuse, as the
+    classifier says it (its _watchlist_record), else None: it raises no Signal, so the proxy
+    keeps Open web closed until it is removed."""
+    why = next((w for w in (_refused(WATCHLIST, e) for e in entries) if w), None)
+    return why and f"{record_file(WATCHLIST)}: {why}; Open web stays closed until it is removed " \
+                   f"(agentbox watch-remove --regex)"
+
+
 def readable_watchlist():
     """Ends the command while the proxy keeps Open web closed for an unreadable Watchlist
-    (agentbox open-web), also for a broken entry."""
-    read(WATCHLIST)
+    (agentbox open-web), also for a broken entry or a Regex entry the rules refuse."""
+    why = refused_watchlist(read(WATCHLIST)[0])
+    if why:
+        raise Unreadable(why)
 
 
 def _write(kind, entries, legacy=None):
     """The record (readable by the proxy's and the Feeds' users), then the legacy file moved aside."""
-    data = json.dumps({"entries": sorted(entries, key=lambda e: e["domain"])}, indent=2, ensure_ascii=False) + "\n"
+    data = json.dumps({"entries": _sorted(entries)}, indent=2, ensure_ascii=False) + "\n"
     state_files.write_atomic(record_file(kind), data.encode(), 0o644)
     if legacy:
         try:
@@ -320,34 +378,39 @@ def changing(kind, create=False):
                 die(f"{legacy}: {_lines(len(skipped))} cannot be taken over ({', '.join(skipped)}); "
                     f"run agentbox migrate-lists on the Host first", error="migration_required")
         migrated = len(entries)
-        before = json.dumps(sorted(entries, key=lambda e: e["domain"]), sort_keys=True)
+        before = json.dumps(_sorted(entries), sort_keys=True)
         yield entries
-        if legacy or json.dumps(sorted(entries, key=lambda e: e["domain"]), sort_keys=True) != before:
+        if legacy or json.dumps(_sorted(entries), sort_keys=True) != before:
             _write(kind, entries, legacy)
         if legacy:
             activity.record("action", "migrate-lists", **_migrated(kind, migrated, []))
 
 
-def find(entries, domain):
-    return next((e for e in entries if e["domain"] == domain), None)
+def find(entries, ref):
+    """The entry of ref, ("domain", domain) or ("regex", pattern), else None."""
+    return next((e for e in entries if patterns.key(e) == tuple(ref)), None)
 
 
 # --- the Watchlist ------------------------------------------------------------------
 
 def _shown(e):
-    """A Watchlist entry as the commands show it."""
-    return {**e, "strong": categories()[e["category"]]}
+    """A Watchlist entry as the commands show it: domain and regex (one of them null), strong,
+    and refused (why the rules refuse a stored pattern, else null)."""
+    return {**patterns.both(e), "strong": categories()[e["category"]], "refused": _refused(WATCHLIST, e)}
 
 
 def watchlist(args):
     """agentbox watchlist [--json]: the hand-maintained Watchlist and the state of the
     Feeds (when each was last fetched, entries, the last error). While the Watchlist
-    cannot be read, why (unreadable) in place of its entries; the Feeds still show."""
+    cannot be read, why (unreadable) in place of its entries; the Feeds still show. A Regex
+    entry the rules refuse is listed (refused) and makes it unreadable for Open web, as for
+    the proxy, until it is removed."""
     positional, opts = _parse(args, {"json": False})
     if positional:
         die("too many arguments: " + clean(positional[0], False)[:60], error="invalid_argument")
     try:
-        entries, unreadable = [_shown(e) for e in sorted(read(WATCHLIST)[0], key=lambda e: e["domain"])], None
+        stored = read(WATCHLIST)[0]
+        entries, unreadable = [_shown(e) for e in _sorted(stored)], refused_watchlist(stored)
     except Unreadable as e:
         entries, unreadable = [], e.why
     rep = _classifier("--watchlist")
@@ -362,19 +425,23 @@ def watchlist(args):
     if unreadable:
         print(f"{UNREADABLE}: {unreadable}")
     for e in entries:
-        print(f"{e['domain']:<32} {e['category']:<11} {e['source']}".rstrip())
+        what = e["domain"] or "regex " + clean(e["regex"], False)
+        print(f"{what:<32} {e['category']:<11} {'[refused] ' if e['refused'] else ''}{e['source']}".rstrip())
     print(feed_line(result["feeds"]))
 
 
 def watch_add(args):
-    """agentbox watch-add <domain> --category C [--source S] [--note N] [--force] [--json]:
-    a new Watchlist entry, or an existing one changed (lowering a strong category to a
+    """agentbox watch-add <domain>|--regex PATTERN --category C [--source S] [--note N] [--force]
+    [--json]: a new Watchlist entry, or an existing one changed (lowering a strong category to a
     weak one only with --force). On a Host without any Watchlist (no record, no text
     file from before) it creates the record, which opens Open web again: only with
-    --force, so the Control Room can never recreate a deleted Watchlist."""
+    --force, so the Control Room can never recreate a deleted Watchlist. A pattern needs
+    no breadth check here."""
     positional, opts = _parse(args, {"category": True, "source": True, "note": True, "force": False,
-                                     "json": False})
-    domain = _domain(positional)
+                                     "regex": True, "json": False})
+    ref = _target(positional, opts)
+    if ref[0] == "regex":
+        patterns.checked(ref[1], broad=False)
     if "category" not in opts:
         die("watch-add needs --category", error="invalid_argument", option="--category")
     category = _category(opts["category"])
@@ -387,16 +454,16 @@ def watch_add(args):
             raise Unreadable(f"{path} is missing; agentbox watch-add with --force on the Host creates it again "
                              f"and so opens Open web again. Creating it again only with --force",
                              error="watchlist_recreate_force_required")
-        e = find(entries, domain)
+        e = find(entries, ref)
         if e is None:
-            e = _entry(WATCHLIST, domain, int(time.time()), activity.actor(), category=category,
-                       source=source or "", note=note or "")
+            e = _entry(WATCHLIST, None, int(time.time()), activity.actor(), category=category,
+                       source=source or "", note=note or "", ref=ref)
             entries.append(e)
-            message = f"{domain} on the Watchlist ({category})"
+            message = f"{label(ref)} on the Watchlist ({category})"
         else:
             if strong[e["category"]] and not strong[category] and "force" not in opts:
-                die(f"{domain} is on the Watchlist as {e['category']}, a strong Signal. "
-                    f"Downgrading to {category} only with --force", error="force_required", domain=domain,
+                die(f"{label(ref)} is on the Watchlist as {e['category']}, a strong Signal. "
+                    f"Downgrading to {category} only with --force", error="force_required", **_param(ref),
                     category=e["category"])
             before = dict(e)
             e["category"] = category
@@ -406,45 +473,46 @@ def watch_add(args):
                 e["note"] = note
             if e == before:
                 activity.unchanged()
-                message = f"{domain} is on the Watchlist like this already ({category})"
+                message = f"{label(ref)} is on the Watchlist like this already ({category})"
             else:
-                message = f"{domain} changed on the Watchlist ({category})"
+                message = f"{label(ref)} changed on the Watchlist ({category})"
     done("json" in opts, message, **_shown(e))
 
 
 def watch_remove(args):
-    """agentbox watch-remove <domain> [--force] [--json]: the Watchlist entry goes;
-    one of a strong category only with --force"""
-    positional, opts = _parse(args, {"force": False, "json": False})
-    domain = _domain(positional)
+    """agentbox watch-remove <domain>|--regex PATTERN [--force] [--json]: the Watchlist entry
+    goes; one of a strong category only with --force"""
+    positional, opts = _parse(args, {"force": False, "regex": True, "json": False})
+    ref = _target(positional, opts)
     with changing(WATCHLIST) as entries:
-        e = find(entries, domain)
+        e = find(entries, ref)
         if e is not None:
             if categories()[e["category"]] and "force" not in opts:
-                die(f"{domain} is on the Watchlist as {e['category']}, a strong Signal. "
-                    f"Removing it only with --force", error="force_required", domain=domain,
+                die(f"{label(ref)} is on the Watchlist as {e['category']}, a strong Signal. "
+                    f"Removing it only with --force", error="force_required", **_param(ref),
                     category=e["category"])
             entries.remove(e)
     if e is None:
         activity.unchanged()
-        done("json" in opts, f"{domain} is not on the Watchlist", domain=domain, removed=False)
+        done("json" in opts, f"{label(ref)} is not on the Watchlist", **_given(ref), removed=False)
         return
-    done("json" in opts, f"{domain} removed from the Watchlist", domain=domain, removed=True)
+    done("json" in opts, f"{label(ref)} removed from the Watchlist", **_given(ref), removed=True)
 
 
 def watch_set_note(args):
-    """agentbox watch-set-note <domain> --note TEXT [--json]: the entry's note (empty to clear it)"""
-    positional, opts = _parse(args, {"note": True, "json": False})
-    domain = _domain(positional)
+    """agentbox watch-set-note <domain>|--regex PATTERN --note TEXT [--json]: the entry's note
+    (empty to clear it)"""
+    positional, opts = _parse(args, {"note": True, "regex": True, "json": False})
+    ref = _target(positional, opts)
     if "note" not in opts:
         die("watch-set-note needs --note TEXT", error="invalid_argument", option="--note")
     note = _text(opts["note"], "note", MAX_NOTE)
     with changing(WATCHLIST) as entries:
-        e = find(entries, domain)
+        e = find(entries, ref)
         if e is None:
-            die(f"{domain} is not on the Watchlist", error="watchlist_entry_not_found", domain=domain)
+            die(f"{label(ref)} is not on the Watchlist", error="watchlist_entry_not_found", **_param(ref))
         e["note"] = note
-    done("json" in opts, f"Note on {domain} saved", **_shown(e))
+    done("json" in opts, f"Note on {label(ref)} saved", **_shown(e))
 
 
 # --- the Legitimate domains ---------------------------------------------------------
@@ -456,14 +524,18 @@ def legitimate(args):
         die("too many arguments: " + clean(positional[0], False)[:60], error="invalid_argument")
     own = read(LEGITIMATE)[0]
     builtin = genuine()
-    rows = [{**e, "builtin": False} for e in own if e["domain"] not in builtin]
-    rows += [{"domain": d, "note": "", "added": None, "added_by": None, "builtin": True} for d in builtin]
-    rows.sort(key=lambda e: e["domain"])
+    rows = [{**patterns.both(e), "builtin": False, "refused": _refused(LEGITIMATE, e)} for e in own
+            if e.get("domain") not in builtin]
+    rows += [{"domain": d, "regex": None, "note": "", "added": None, "added_by": None, "builtin": True,
+              "refused": None} for d in builtin]
+    rows.sort(key=lambda e: (e["domain"] is None, e["domain"] or e["regex"]))
     if "json" in opts:
         print(json.dumps(rows, ensure_ascii=False))
         return
     for r in rows:
-        print(f"{r['domain']:<32} {'built-in' if r['builtin'] else r['note']}".rstrip())
+        what = r["domain"] or "regex " + clean(r["regex"], False)
+        said = "built-in" if r["builtin"] else (f"[{r['refused']}; it lifts nothing] " if r["refused"] else "") + r["note"]
+        print(f"{what:<32} {said}".rstrip())
 
 
 def _refuse_lifts(domain):
@@ -488,65 +560,73 @@ def _refuse_lifts(domain):
 
 
 def legitimate_add(args):
-    """agentbox legitimate-add <domain> [--note N] [--force] [--json]: a new Legitimate
-    domain (with its subdomains); one that would lift strong Signals only with --force"""
-    positional, opts = _parse(args, {"note": True, "force": False, "json": False})
-    domain = _domain(positional)
+    """agentbox legitimate-add <domain>|--regex PATTERN [--note N] [--force] [--json]: a new
+    Legitimate domain (with its subdomains); one that would lift strong Signals only with
+    --force. A pattern lifts only weak Signals, so it needs no --force and takes none."""
+    positional, opts = _parse(args, {"note": True, "force": False, "regex": True, "json": False})
+    ref = _target(positional, opts)
     note = _text(opts.get("note"), "note", MAX_NOTE)
-    if domain in genuine():
+    if ref[0] == "regex":
+        if "force" in opts:
+            die("--force does not apply to a regex Legitimate domain: it lifts no strong Signals",
+                error="invalid_argument", option="--force")
+        patterns.checked(ref[1])
+    elif ref[1] in genuine():
         activity.unchanged()
-        done("json" in opts, f"{domain} is built in and legitimate already", domain=domain, builtin=True)
+        done("json" in opts, f"{ref[1]} is built in and legitimate already", **_given(ref), builtin=True)
         return
     with changing(LEGITIMATE) as entries:
-        e = find(entries, domain)
+        e = find(entries, ref)
         if e is None:
             # under the lock: an entry removed in the meantime is checked like a new one
-            if "force" not in opts:
-                _refuse_lifts(domain)
-            e = _entry(LEGITIMATE, domain, int(time.time()), activity.actor(), note=note or "")
+            if "force" not in opts and ref[0] == "domain":
+                _refuse_lifts(ref[1])
+            e = _entry(LEGITIMATE, None, int(time.time()), activity.actor(), note=note or "", ref=ref)
             entries.append(e)
-            message = f"{domain} added as a Legitimate domain"
+            message = f"{label(ref)} added as a Legitimate domain"
         else:
             if note is None or note == e["note"]:
                 activity.unchanged()
             else:
                 e["note"] = note
-            message = f"{domain} is legitimate already"
-    done("json" in opts, message, **e, builtin=False)
+            message = f"{label(ref)} is legitimate already"
+    done("json" in opts, message, **patterns.both(e), builtin=False)
 
 
 def legitimate_remove(args):
-    """agentbox legitimate-remove <domain> [--json]: the Host's entry goes; built-in ones stay"""
-    positional, opts = _parse(args, {"json": False})
-    domain = _domain(positional)
-    if domain in genuine():
-        die(f"{domain} is built in and stays legitimate", error="builtin_entry", domain=domain)
+    """agentbox legitimate-remove <domain>|--regex PATTERN [--json]: the Host's entry goes;
+    built-in ones stay"""
+    positional, opts = _parse(args, {"regex": True, "json": False})
+    ref = _target(positional, opts)
+    if ref[0] == "domain" and ref[1] in genuine():
+        die(f"{ref[1]} is built in and stays legitimate", error="builtin_entry", domain=ref[1])
     with changing(LEGITIMATE) as entries:
-        e = find(entries, domain)
+        e = find(entries, ref)
         if e is not None:
             entries.remove(e)
     if e is None:
         activity.unchanged()
-        done("json" in opts, f"{domain} is not an added Legitimate domain", domain=domain, removed=False)
+        done("json" in opts, f"{label(ref)} is not an added Legitimate domain", **_given(ref), removed=False)
         return
-    done("json" in opts, f"{domain} no longer legitimate", domain=domain, removed=True)
+    done("json" in opts, f"{label(ref)} no longer legitimate", **_given(ref), removed=True)
 
 
 def legitimate_set_note(args):
-    """agentbox legitimate-set-note <domain> --note TEXT [--json]"""
-    positional, opts = _parse(args, {"note": True, "json": False})
-    domain = _domain(positional)
+    """agentbox legitimate-set-note <domain>|--regex PATTERN --note TEXT [--json]"""
+    positional, opts = _parse(args, {"note": True, "regex": True, "json": False})
+    ref = _target(positional, opts)
     if "note" not in opts:
         die("legitimate-set-note needs --note TEXT", error="invalid_argument", option="--note")
     note = _text(opts["note"], "note", MAX_NOTE)
-    if domain in genuine():
-        die(f"{domain} is built in and stays legitimate", error="builtin_entry", domain=domain)
+    if ref[0] == "domain" and ref[1] in genuine():
+        die(f"{ref[1]} is built in and stays legitimate", error="builtin_entry", domain=ref[1])
     with changing(LEGITIMATE) as entries:
-        e = find(entries, domain)
+        e = find(entries, ref)
         if e is None:
-            die(f"{domain} is not an added Legitimate domain", error="legitimate_domain_not_found", domain=domain)
+            die(f"{label(ref)} is not an added Legitimate domain", error="legitimate_domain_not_found",
+                **_param(ref))
         e["note"] = note
-    done("json" in opts, f"Note on {domain} saved", **e, builtin=False)
+    done("json" in opts, f"Note on {label(ref)} saved", **patterns.both(e), builtin=False)
 
 
 # --- migration ------------------------------------------------------------------------
@@ -576,7 +656,7 @@ def migrate(args):
                 continue
             entries = read(kind)[0] if exists else []
             found, skipped = _from_legacy(kind, legacy, int(time.time()))
-            added = [e for e in found if not find(entries, e["domain"])]
+            added = [e for e in found if not find(entries, patterns.key(e))]
             # without a source an empty Watchlist would open Open web with nothing on it:
             # it stays missing, and Open web closed, until watch-add creates it
             if kind is WATCHLIST and not exists and not had_legacy:

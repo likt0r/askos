@@ -108,9 +108,15 @@ const say = (tr: Translator, key: string, values: Record<string, unknown> = {}) 
 const part = (tr: Translator, key: string, values: Record<string, unknown> = {}) => tr.t(`activity.parts.${key}`, values)
 const joined = (...parts: (string | null)[]) => parts.filter(Boolean).join(' ')
 
-/** The domain of an Allowlist entry, with "for all VMs" when that is its scope. */
+/** The entry a list command names: its domain, or the pattern of a Regex entry (`regex`). */
+function target(p: Params, tr: Translator): string {
+  return has(p, 'regex') ? part(tr, 'pattern', { pattern: p.regex }) : p.domain!
+}
+const named = (p: Params) => has(p, 'domain') || has(p, 'regex')
+
+/** The domain or pattern of an Allowlist entry, with "for all VMs" when that is its scope. */
 function entryOf(p: Params, tr: Translator): string {
-  return p.scope === 'all' ? part(tr, 'allVms', { domain: p.domain }) : p.domain!
+  return p.scope === 'all' ? part(tr, 'allVms', { domain: target(p, tr) }) : target(p, tr)
 }
 
 /** The duration of --for after "for" or "by" (Allowlist durations), or "temporarily". */
@@ -132,10 +138,10 @@ function reason(p: Params, tr: Translator): string | null {
 const plain = (key: string): Sentence => (_p, tr) => say(tr, key)
 /** An Allowlist command or event: the entry, then the duration (allow, extend) and --force. */
 const listed = (key: string, word?: 'for' | 'by'): Sentence => (p, tr) =>
-  has(p, 'domain') ? joined(say(tr, key, { entry: entryOf(p, tr) }), word ? duration(p, tr, word) : null, forced(p, tr)) : null
-/** A command on one domain (Watchlist, Legitimate domains, Harmless marks), and --force. */
+  named(p) ? joined(say(tr, key, { entry: entryOf(p, tr) }), word ? duration(p, tr, word) : null, forced(p, tr)) : null
+/** A command on one domain or pattern (Watchlist, Legitimate domains, Harmless marks), and --force. */
 const domain = (key: string): Sentence => (p, tr) =>
-  has(p, 'domain') ? joined(say(tr, key, { domain: p.domain }), forced(p, tr)) : null
+  named(p) ? joined(say(tr, key, { domain: target(p, tr) }), forced(p, tr)) : null
 /** The variant `key` with the parameter `name`, else `other` without it. */
 const either = (name: string, key: string, other: string, value = name): Sentence => (p, tr) =>
   has(p, name) ? say(tr, key, { [value]: p[name] }) : say(tr, other)
@@ -165,8 +171,8 @@ export const SENTENCES: Record<string, Sentence> = {
   'mark-seen': either('domain', 'markSeenDomain', 'markSeen'),
   'mark-harmless': domain('markHarmless'),
   'unmark-harmless': domain('unmarkHarmless'),
-  'watch-add': (p, tr) => (has(p, 'domain')
-    ? joined(has(p, 'category') ? say(tr, 'watchAddCategory', { domain: p.domain, category: p.category }) : say(tr, 'watchAdd', { domain: p.domain }), forced(p, tr))
+  'watch-add': (p, tr) => (named(p)
+    ? joined(has(p, 'category') ? say(tr, 'watchAddCategory', { domain: target(p, tr), category: p.category }) : say(tr, 'watchAdd', { domain: target(p, tr) }), forced(p, tr))
     : null),
   'watch-remove': domain('watchRemove'),
   'watch-set-note': domain('watchSetNote'),

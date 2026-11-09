@@ -41,6 +41,9 @@ Every error has the same shape and an HTTP status that fits:
 - `code`: stable, snake_case; the UI translates it. New codes may be added.
 - `message`: short English text, a fallback when the UI has no translation.
 - `field` (optional): the request field that is wrong.
+- `params` (optional): the parameters the UI words a refusal with, for the codes that have
+  them: `invalid_pattern` (`reason`) and `pattern_too_broad` (`host`), each only in the form
+  agentbox gives it.
 - `detail` (optional): agentbox's own message (English, untranslated, for diagnosis);
   never shown as the main text.
 
@@ -107,6 +110,9 @@ else `500 action_failed`, with the message in `detail`:
 | 409 | `migration_required` | the text files from before hold lines the records cannot take (an unknown category, an invalid name): a change would drop them unseen, so `agentbox migrate-lists` on the Host has to take them over first (it names them) |
 | 409 | `watchlist_unreadable` | the hand-maintained Watchlist cannot be read (`watchlist.json` broken, also in a single entry, or missing without the text file from before): the proxy keeps Open web closed. Watchlist changes, allowing without `--force` and opening the web answer this until it is fixed on the Host; recreating a missing one is `409 watchlist_recreate_force_required`. `GET /watchlist` answers with `unreadable` instead, and the Feeds' state |
 | 400 | `invalid_domain`, `invalid_minutes`, `invalid_note`, `invalid_duration`, `invalid_category`, `invalid_source` | values agentbox refused |
+| 400 | `pattern_confirmation_required` | adding a regex Allowlist entry without confirming what its preview showed: `POST /allowlist` without `confirm: true`, refused by the backend itself with `field`: `confirm`; the same code from agentbox (`allow --regex` without `--confirm-pattern`) comes without a `field` |
+| 400 | `invalid_pattern` | the pattern of a Regex entry breaks a rule ([ADR 0013](adr/0013-regex-entries-in-every-list.md)): too long, not printable ASCII without spaces, no regular expression, an uppercase letter, a backreference, a lookaround, a quantifier or alternative inside a repeated group, or too many quantifiers in a row that can take the same characters (agentbox names which as the parameter `reason`: `too-long`, `characters`, `syntax`, `uppercase`, `backreference`, `lookaround`, `nested-quantifier`, `too-complex`) |
+| 400 | `pattern_too_broad` | the pattern matches a host of the fixed sample of unrelated hosts (agentbox names it as the parameter `host`); every list but the Watchlist |
 | 400 | `unknown_setting`, `invalid_setting` | Settings (`invalid_setting` has `field`: the key whose value is wrong) |
 | 404 | `image_not_found`, `build_not_found` | no such Image or Build |
 | 404 | `containerfile_not_found` | the installed Release has no Containerfile for this Image (it no longer defines it, or its files are not there) |
@@ -273,7 +279,7 @@ Sign-ins, failures, refusals by the brake and sign-outs are Activity entries (co
 | `POST /vms/<vm>/open-web` | `{"minutes": 30}` | `open-web`; while the Watchlist cannot be read: `409 watchlist_unreadable` |
 | `DELETE /vms/<vm>/open-web` | | `close-web` |
 | `GET /vms/<vm>/logs` | `?unit&priority&since&until&boot&grep&lines&after_cursor` | `logs`: `{"vm", "entries": [{"time", "unit", "identifier", "priority", "message", "boot", "cursor"}], "cursor", "truncated"}`; poll with `after_cursor=<cursor>` for new lines |
-| `GET /vms/<vm>/blocked` | | `blocked`: `[{"domain", "count", "first", "last", "reason", "code", "params", "suspicious"}]` (last 24 hours, epoch seconds). `reason`: why the proxy blocked it, English; `code`: the same as a stable code, `null` for a reason agentbox does not know: `not-allowed` (not on the Allowlist), `suspicious` (strong Signals in Open web; `params.signals`, joined with `", "`), `watchlist-unreadable` (Open web closed while the Watchlist cannot be read), `not-public` (no public address); `suspicious`: the Signals of its last Alert |
+| `GET /vms/<vm>/blocked` | | `blocked`: `[{"domain", "count", "first", "last", "reason", "code", "params", "suspicious"}]` (last 24 hours, epoch seconds). `reason`: why the proxy blocked it, English; `code`: the same as a stable code, `null` for a reason agentbox does not know: `not-allowed` (not on the Allowlist), `suspicious` (strong Signals, where only Open web or a regex Allowlist entry would let it through; `params.signals`, joined with `", "`), `watchlist-unreadable` (Open web, or a regex Allowlist entry, closed while the Watchlist cannot be read), `not-public` (no public address); `suspicious`: the Signals of its last Alert |
 | `GET /vms/<vm>/alerts` | | `alerts`: `[{"domain", "tags", "count", "first", "last", "seen", ...}]` |
 | `POST /vms/<vm>/alerts/seen` | `{"domain"?}` | `mark-seen`: all Alerts of the VM, or those of one destination |
 | `GET /vms/<vm>/allowlist` | | `allowlist <vm>`: the entries that apply to the VM (see Allowlist) |
@@ -294,29 +300,46 @@ temporary entries (Settings).
 
 | Method and path | Body / query | agentbox call, response |
 |---|---|---|
-| `GET /allowlist` | `?vm=<vm>\|all` | `allowlist`: `[{"domain", "scope", "expires", "note", "added_by", "added", "expired", "remaining", "uses_24h"}]` (`expires` and `added` epoch seconds, `expires` `null` when permanent, `remaining` seconds, `uses_24h` `null` when unknown) |
-| `POST /allowlist` | `{"scope", "domain", "duration"?, "note"?}` | `allow`: `201`; destinations with strong Signals: `409 domain_suspicious`; any destination while the Watchlist cannot be read: `409 watchlist_unreadable` (also for `extend` and `make-permanent`) |
+| `GET /allowlist` | `?vm=<vm>\|all` | `allowlist`: `[{"domain", "regex", "scope", "expires", "note", "added_by", "added", "expired", "remaining", "uses_24h", "refused"}]` (`domain` or, for a Regex entry, `regex`: the pattern as stored; the other `null`. `refused`: why the rules refuse a stored pattern, which then allows nothing until it is removed, else `null`. `expires` and `added` epoch seconds, `expires` `null` when permanent, `remaining` seconds, `uses_24h` `null` when unknown) |
+| `POST /allowlist` | `{"scope", "domain", "duration"?, "note"?}` or `{"scope", "regex", "confirm": true, "duration"?, "note"?}` | `allow`: `201`; destinations with strong Signals: `409 domain_suspicious`; any destination while the Watchlist cannot be read: `409 watchlist_unreadable` (also for `extend` and `make-permanent`). With `regex` a Regex entry (`allow --regex --confirm-pattern`): only with `confirm: true`, after the preview of `GET /regex/check` (else `400 pattern_confirmation_required`, `field`: `confirm`); a pattern the rules refuse: `400 invalid_pattern` or `400 pattern_too_broad`. It never allows a destination with strong Signals (the proxy checks every connection), so it is never `domain_suspicious` |
 | `DELETE /allowlist/<scope>/<domain>` | | `disallow` (open tunnels to it are closed) |
 | `POST /allowlist/<scope>/<domain>/extend` | `{"duration": "1h"}` | `extend` |
 | `POST /allowlist/<scope>/<domain>/make-permanent` | | `make-permanent` |
 | `PUT /allowlist/<scope>/<domain>/note` | `{"note"}` | `set-note` |
+| `DELETE /allowlist/<scope>/regex?regex=<pattern>` | | `disallow --regex`: the Regex entry with exactly this pattern (open tunnels it allowed are closed) |
+| `POST /allowlist/<scope>/regex/extend?regex=<pattern>` | `{"duration": "1h"}` | `extend --regex` |
+| `POST /allowlist/<scope>/regex/make-permanent?regex=<pattern>` | | `make-permanent --regex` |
+| `PUT /allowlist/<scope>/regex/note?regex=<pattern>` | `{"note"}` | `set-note --regex` |
+| `GET /regex/check?list=<list>&regex=<pattern>&host=<host>&scope=<vm\|all>` | `list`: `allowlist`, `watchlist`, `legitimate` or `harmless`; `host` and `scope` (`allowlist` only, default `all`) optional | `check-regex`: `{"list", "regex", "scope", "matches": {"<host>": bool}, "preview": null \| {"hosts": [{"host", "allowed", "blocked", "signals", "strong"}], "more", "watchlist_unreadable", "truncated", "reaches_back", "log_unreadable"}}`: whether the pattern can be an entry of that list (else `400 invalid_pattern` or `400 pattern_too_broad`, as adding it would answer), whether `host` matches it, and for the Allowlist the preview: the hosts of the scope's proxy log of the last 7 days (`ALLOWED` and `BLOCKED` lines) it matches, how often each was allowed and blocked, its Signals and whether a strong one keeps it blocked; `more`: hosts beyond the 100 shown; `watchlist_unreadable`: why the Watchlist cannot be read (then the pattern allows nothing), else `null`; `truncated`: the log had more than the 200,000 lines read (a VM can fill its log), and `reaches_back` (epoch seconds) how far back these go, else the start of the 7 days; `log_unreadable`: why the proxy log could not be read (`hosts` then empty), else `null`. Changes nothing |
+
+A Regex entry ([ADR 0013](adr/0013-regex-entries-in-every-list.md)) is a pattern in place of the
+domain, in every list: in a body `regex` instead of `domain`, in a path the segment `regex` with
+the pattern as the query parameter `regex` (percent-encoded; a domain is never the bare label
+`regex`). The pattern is taken as given, not lowercased; only leading and trailing spaces, tabs, CR and LF are dropped, and anything but printable ASCII without spaces is `400 invalid_field` (`field`: `regex`). It matches the whole host name, no
+subdomains of its own accord; the rules it has to follow are in the ADR.
 
 ## Watchlist
 
 | Method and path | Body / query | agentbox call, response |
 |---|---|---|
-| `GET /watchlist` | | `watchlist`: `{"entries": [{"domain", "category", "strong", "source", "note", "added", "added_by"}], "unreadable", "feeds": {"threat-intelligence"\|"newly-registered": {"present", "entries", "updated", "attempted", "error", "days"}}, "feed_interval_hours", "young_domain_days"}`: the hand-maintained Watchlist (`source`: the incident or `""`; `strong`: the category keeps it blocked in Open web; `unreadable`: why it cannot be read, `entries` then empty, else `null`) and the Feeds' state (`updated`/`attempted` epoch seconds or `null`, `error` of the last fetch or `null`) |
-| `GET /watchlist/check?domain=<domain>` | | `check-domain`: `{"domain", "port", "signals": [{"signal", "strong", "suppressed", "reason", "code", "params"}], "alert", "strong", "harmless", "legitimate", "feeds"}`: the Signals of a destination, each with why it applies (below) |
-| `GET /watchlist/harmless` | | `harmless`: domains with a Harmless mark |
+| `GET /watchlist` | | `watchlist`: `{"entries": [{"domain", "regex", "category", "strong", "source", "note", "added", "added_by", "refused"}], "unreadable", "feeds": {"threat-intelligence"\|"newly-registered": {"present", "entries", "updated", "attempted", "error", "days"}}, "feed_interval_hours", "young_domain_days"}`: the hand-maintained Watchlist (`domain`, or `regex` for a Regex entry, the other `null`; `refused`: why the rules refuse a stored pattern, else `null`: it raises no Signal, so `unreadable` says why Open web stays closed until it is removed, while the entries still show; `source`: the incident or `""`; `strong`: the category keeps it blocked in Open web; `unreadable`: why it cannot be read, `entries` then empty, else `null`) and the Feeds' state (`updated`/`attempted` epoch seconds or `null`, `error` of the last fetch or `null`) |
+| `GET /watchlist/check?domain=<domain>` | | `check-domain`: `{"domain", "port", "signals": [{"signal", "strong", "suppressed", "reason", "code", "params"}], "alert", "strong", "harmless", "harmless_regex", "legitimate", "legitimate_regex", "feeds"}`: the Signals of a destination, each with why it applies (below); `harmless` and `legitimate`: the Harmless mark and the Legitimate domain that cover it, or `null`, each a domain or, with `*_regex` `true`, the pattern of a Regex entry (a Legitimate pattern lifts only weak Signals) |
+| `GET /watchlist/harmless` | | `harmless`: `[{"domain", "regex", "refused"}]`, the Harmless marks: a domain, or the pattern of a Regex entry (the other `null`); `refused`: why the rules refuse a stored pattern, which then silences nothing until it is removed, else `null` |
 | `PUT /watchlist/harmless/<domain>` | | `mark-harmless` |
 | `DELETE /watchlist/harmless/<domain>` | | `unmark-harmless` |
-| `POST /watchlist/entries` | `{"domain", "category", "source"?, "note"?}` | `watch-add`: `201` with the entry; an existing entry is changed. `category`: `exfil`, `c2`, `tunnel`, `paste`, `phishing`, `blockchain` (strong) or `payload`. Lowering a strong entry to `payload`: `409 force_required`; adding one while `watchlist.json` is missing (it would recreate the Watchlist and open Open web again): `409 watchlist_recreate_force_required` |
-| `DELETE /watchlist/entries/<domain>` | | `watch-remove`: `{"domain", "removed"}`; an entry of a strong category: `409 force_required` |
+| `PUT /watchlist/harmless/regex?regex=<pattern>` | | `mark-harmless --regex`: a pattern the rules refuse is `400 invalid_pattern` or `400 pattern_too_broad` |
+| `DELETE /watchlist/harmless/regex?regex=<pattern>` | | `unmark-harmless --regex` |
+| `POST /watchlist/entries` | `{"domain", "category", "source"?, "note"?}` or, for a Regex entry, `{"regex", "category", "source"?, "note"?}` | `watch-add` (`--regex` for a pattern): `201` with the entry; an existing entry is changed. `category`: `exfil`, `c2`, `tunnel`, `paste`, `phishing`, `blockchain` (strong) or `payload`. Lowering a strong entry to `payload`: `409 force_required`; adding one while `watchlist.json` is missing (it would recreate the Watchlist and open Open web again): `409 watchlist_recreate_force_required`. A pattern gets no breadth check here (a broad one only raises false Alerts); one the other rules refuse is `400 invalid_pattern` |
+| `DELETE /watchlist/entries/<domain>` | | `watch-remove`: `{"domain", "regex", "removed"}`; an entry of a strong category: `409 force_required` |
 | `PUT /watchlist/entries/<domain>/note` | `{"note"}` | `watch-set-note` |
-| `GET /watchlist/legitimate` | | `legitimate`: `[{"domain", "note", "added", "added_by", "builtin"}]`, built-in ones with `added` and `added_by` `null` |
-| `POST /watchlist/legitimate` | `{"domain", "note"?}` | `legitimate-add`: `201`; a domain with strong Signals, or with threat-intelligence entries at or below it (also ones another Legitimate domain lifts now), or any new one while the threat-intelligence list has not been fetched: `409 force_required` |
-| `DELETE /watchlist/legitimate/<domain>` | | `legitimate-remove`: `{"domain", "removed"}`; built-in ones: `409 builtin_entry` |
+| `DELETE /watchlist/entries/regex?regex=<pattern>` | | `watch-remove --regex`: `{"domain", "regex", "removed"}`; one of a strong category: `409 force_required` |
+| `PUT /watchlist/entries/regex/note?regex=<pattern>` | `{"note"}` | `watch-set-note --regex` |
+| `GET /watchlist/legitimate` | | `legitimate`: `[{"domain", "regex", "note", "added", "added_by", "builtin", "refused"}]` (`domain`, or `regex` for a Regex entry, the other `null`; `refused`: why the rules refuse a stored pattern, which then lifts nothing until it is removed, else `null`), built-in ones with `added` and `added_by` `null` |
+| `POST /watchlist/legitimate` | `{"domain", "note"?}` or, for a Regex entry, `{"regex", "note"?}` | `legitimate-add` (`--regex` for a pattern): `201`; a domain with strong Signals, or with threat-intelligence entries at or below it (also ones another Legitimate domain lifts now), or any new one while the threat-intelligence list has not been fetched: `409 force_required`. A pattern lifts only weak Signals, so it is never `force_required`; one the rules refuse is `400 invalid_pattern` or `400 pattern_too_broad` |
+| `DELETE /watchlist/legitimate/<domain>` | | `legitimate-remove`: `{"domain", "regex", "removed"}`; built-in ones: `409 builtin_entry` |
 | `PUT /watchlist/legitimate/<domain>/note` | `{"note"}` | `legitimate-set-note` |
+| `DELETE /watchlist/legitimate/regex?regex=<pattern>` | | `legitimate-remove --regex`: `{"domain", "regex", "removed"}` |
+| `PUT /watchlist/legitimate/regex/note?regex=<pattern>` | `{"note"}` | `legitimate-set-note --regex` |
 
 Changes that would lift strong Signals need `--force`, which only the CLI on the Host passes
 ([ADR 0009](adr/0009-watchlist-and-legitimate-domains-live-on-the-host.md)).
@@ -335,6 +358,7 @@ can come from several kinds of reason (a Watchlist category, the blockchain patt
 | `metadata` | `metadata` | none | `address of a cloud metadata service` |
 | `raw-ip` | `raw-ip` | none | `IP address instead of a domain` |
 | the entry's category (`exfil`, `c2`, `tunnel`, `paste`, `phishing`, `blockchain`, `payload`) | `watchlist` | `domain` (the Watchlist entry), `source` (when it has one) | `Watchlist: webhook.site (Shai-Hulud 1 (09/2025))` |
+| the entry's category | `watchlist-regex` | `pattern` (the Watchlist's Regex entry), `source` (when it has one) | `Watchlist: pattern ^npm-[a-z]+\.(com\|net)$ (lookalikes)` |
 | `threat` | `threat-feed` | `domain` (the Feed's entry) | `HaGeZi Threat Intelligence Feeds: bad.example` |
 | `young` | `young-feed` | `domain` (the Feed's entry) | `newly registered (HaGeZi NRD): fresh.example` |
 | `lookalike` | `brand` | `brand`, `domain` (the registrable domain) | `brand name npm in the foreign domain npm-cache.com` |
@@ -391,7 +415,7 @@ first:
 | `create` | `image` (when given) |
 | `delete` | `delete_data_disk` |
 | `set-memory` | `mib` |
-| `allow` | `domain`, `scope` (a VM or `all`), `duration` (`15min`, `1h`, `8h`, `7d`) or `temporary`, `force` |
+| `allow` | `domain` or, for a Regex entry, `regex` (the pattern; so for every command below that names `domain`), `scope` (a VM or `all`), `duration` (`15min`, `1h`, `8h`, `7d`) or `temporary`, `force` |
 | `extend` | `domain`, `scope`, `duration`, `force` |
 | `make-permanent` | `domain`, `scope`, `force` |
 | `disallow`, `set-note`, `allowlist.expired` | `domain`, `scope` |

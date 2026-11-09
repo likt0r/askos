@@ -27,6 +27,8 @@ LOG_WINDOW = 86400
 # why the proxy blocked a destination (the reasons of its BLOCKED lines, proxy/agentbox-proxy, part
 # of the log format) as a stable code the Control Room words (docs/control-room-api.md)
 BLOCK_REASONS = {"not on the Allowlist": "not-allowed", "Watchlist unreadable, Open web closed": "watchlist-unreadable",
+                 # a Regex entry matched, but allows nothing while the Watchlist cannot be read
+                 "Watchlist unreadable, regex entries closed": "watchlist-unreadable",
                  "does not resolve to a public address": "not-public"}
 BLOCK_SUSPICIOUS = re.compile(r"suspicious: ([a-z0-9-]+(?:,[a-z0-9-]+)*)")
 

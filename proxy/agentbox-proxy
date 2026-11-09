@@ -7,6 +7,7 @@ Ziele im LAN oder auf localhost werden auch dann abgelehnt, wenn eine
 erlaubte Domain dorthin aufloest. Jede Verbindung wird protokolliert (englisch,
 agentbox liest diese Zeilen):
   [<vm>] ALLOWED <host> (allowlist <domain> <scope>)   oder (open web)
+  [<vm>] ALLOWED <host> (allowlist regex <pattern> <scope>)   a Regex entry
   [<vm>] BLOCKED <host> (<grund>)
   [<vm>] ALERT <host> [<merkmal>,...]
   [<vm>] CLOSED <host> (<grund>)        Tunnel vom Proxy geschlossen (ADR 0005)
@@ -19,6 +20,14 @@ Eintraege erlauben keine neuen Verbindungen. Aenderungen greifen ohne Neustart;
 eine kaputte Datei aendert nichts (der letzte gute Stand bleibt). Solange es die
 Datei nicht gibt (vor agentbox migrate-allowlist), gelten die alten Listen
 /etc/agentbox/allowlist und allowlist-<vm>, eine Domain pro Zeile.
+
+A Regex entry (ADR 0013) has a pattern (regex) instead of the domain, compiled once
+whenever the file is read again; one that breaks the rules of agentbox-suspicious is
+left out. It never allows a destination with strong Signals, checked on every connection
+as in Open web ("suspicious: <signals>"), and nothing while the Watchlist cannot be read:
+  [<vm>] BLOCKED <host> (Watchlist unreadable, regex entries closed)
+Without agentbox-suspicious Regex entries allow nothing.
+
 Steht in /etc/agentbox/open-<vm> eine Zeit in der Zukunft, ist jede
 oeffentliche Domain erlaubt (offenes Web auf Zeit), ausser stark verdaechtigen.
 Solange die Verdachtsliste von Hand nicht lesbar ist (watchlist.json kaputt, oder
@@ -31,6 +40,7 @@ Zugang bewusst endet und die nichts anderes mehr erlaubt: ein Eintrag wird
 entfernt, bevor er abgelaufen ist (agentbox disallow), oder das offene Web endet.
 """
 import asyncio
+import collections
 import importlib.machinery
 import importlib.util
 import ipaddress
@@ -89,24 +99,38 @@ def log(ctx, msg):
 
 # --- Allowlist -----------------------------------------------------------------
 
+# An entry as the proxy tells them apart: a domain (regex False) or a Regex entry's pattern
+Key = collections.namedtuple("Key", "value scope regex")
+
+
 def _entries(data, ctx):
-    """{(domain, scope): ablauf oder None} der Eintraege, die fuer ctx gelten;
-    Eintraege mit falschen Typen gelten nicht."""
+    """({Key: ablauf oder None} der Eintraege, die fuer ctx gelten, {pattern: compiled}, the
+    patterns left out with why); Eintraege mit falschen Typen gelten nicht."""
     if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
         raise ValueError("entries missing")
-    out = {}
+    out, compiled, refused = {}, {}, {}
     for e in data["entries"]:
         if not isinstance(e, dict):
             continue
-        domain, scope, expires = e.get("domain"), e.get("scope"), e.get("expires")
-        if not isinstance(domain, str) or scope not in ("all", ctx):
+        domain, pattern, scope, expires = e.get("domain"), e.get("regex"), e.get("scope"), e.get("expires")
+        if scope not in ("all", ctx):
             continue
         if expires is not None and (isinstance(expires, bool) or not isinstance(expires, (int, float))):
             continue
+        if isinstance(pattern, str) and domain is None:
+            why = suspicious.pattern_problem(pattern) if suspicious else ("", "no agentbox-suspicious", None)
+            if why:
+                refused[pattern] = why[1]
+                continue
+            compiled.setdefault(pattern, suspicious.compile_pattern(pattern))
+            out[Key(pattern, scope, True)] = expires
+            continue
+        if not isinstance(domain, str) or pattern is not None:
+            continue
         domain = domain.strip().lower().rstrip(".")
         if domain:
-            out[(domain, scope)] = expires
-    return out
+            out[Key(domain, scope, False)] = expires
+    return out, compiled, refused
 
 
 def _legacy(ctx):
@@ -118,19 +142,21 @@ def _legacy(ctx):
                 for line in f:
                     line = line.split("#", 1)[0].strip().lower().rstrip(".")
                     if line:
-                        out[(line, scope)] = None
+                        out[Key(line, scope, False)] = None
         except OSError:
             pass
     return out
 
 
 class Allowlist:
-    """Die Eintraege fuer eine VM, neu gelesen, wenn sich allowlist.json aendert."""
+    """Die Eintraege fuer eine VM, neu gelesen, wenn sich allowlist.json aendert; the
+    patterns of its Regex entries compiled then, not per connection."""
 
     def __init__(self, ctx):
         self.ctx = ctx
         self.key = None
         self.entries = {}
+        self.compiled = {}
 
     def current(self):
         path = os.path.join(CONF_DIR, ALLOWLIST)
@@ -138,7 +164,7 @@ class Allowlist:
             st = os.stat(path)
         except FileNotFoundError:
             self.key = None
-            self.entries = _legacy(self.ctx)
+            self.entries, self.compiled = _legacy(self.ctx), {}
             return self.entries
         except OSError:
             return self.entries
@@ -147,16 +173,44 @@ class Allowlist:
             self.key = key
             try:
                 with open(path, encoding="utf-8") as f:
-                    self.entries = _entries(json.load(f), self.ctx)
+                    self.entries, self.compiled, refused = _entries(json.load(f), self.ctx)
             except (OSError, ValueError) as e:
                 log(self.ctx, f"ERROR {path} unreadable, the previous entries stay ({type(e).__name__})")
+            else:
+                for pattern, why in sorted(refused.items()):
+                    log(self.ctx, f"ERROR {path}: regex entry {pattern!r} left out ({why})")
         return self.entries
 
+    def matches(self, pattern, host):
+        compiled = self.compiled.get(pattern)
+        return bool(compiled and suspicious.pattern_matches(compiled, host))
 
-def granting(host, entries, now):
-    """Die Eintraege (domain, scope), die host jetzt erlauben."""
-    return [(d, s) for (d, s), expires in entries.items()
-            if (expires is None or expires > now) and (host == d or host.endswith("." + d))]
+
+def regex_refusal(host, tags):
+    """Why Regex entries cannot allow host, as (reason for the log, answer to the VM), else
+    None: it has strong Signals, or the Watchlist cannot be read (which Signals are strong is
+    unknown then), checked on every connection the way Open web does it."""
+    if not suspicious or suspicious.watchlist_unreadable():
+        return "Watchlist unreadable, regex entries closed", "regex entries closed: the Watchlist cannot be read"
+    if strong(tags):
+        return f"suspicious: {','.join(tags)}", f"{host} is suspicious ({','.join(tags)})"
+    return None
+
+
+def granting(host, tags, lists, now):
+    """(die Eintraege, die host jetzt erlauben, why the Regex entries that match it do not, or
+    None)."""
+    keys, patterns = [], []
+    for k, expires in lists.current().items():
+        if expires is not None and expires <= now:
+            continue
+        if not k.regex:
+            if host == k.value or host.endswith("." + k.value):
+                keys.append(k)
+        elif lists.matches(k.value, host):
+            patterns.append(k)
+    refused = regex_refusal(host, tags) if patterns else None
+    return frozenset(keys if refused else keys + patterns), refused
 
 
 def open_until(ctx):
@@ -176,9 +230,9 @@ def strong(tags):
 def decide(ctx, lists, host, tags, now):
     """(Freigabe, Grund fuer das Log, Antwort an die VM). Freigabe: die Eintraege,
     die host erlauben, OPEN (nur das offene Web) oder None (gesperrt)."""
-    keys = granting(host, lists.current(), now)
+    keys, refused = granting(host, tags, lists, now)
     if keys:
-        return frozenset(keys), None, None
+        return keys, None, None
     if open_until(ctx):
         # ohne lesbare Verdachtsliste ist unbekannt, was gesperrt bleiben muesste: nichts
         if suspicious and suspicious.watchlist_unreadable():
@@ -188,7 +242,21 @@ def decide(ctx, lists, host, tags, now):
         if strong(tags):
             return None, f"suspicious: {','.join(tags)}", f"{host} is suspicious ({','.join(tags)})"
         return OPEN, None, None
+    # a Regex entry matches, but does not allow it (strong Signals, or no Watchlist)
+    if refused:
+        return None, *refused
     return None, "not on the Allowlist", f"{host} is not on the Allowlist"
+
+
+def logged(ctx, grant):
+    """The entry the log names for a tunnel the Allowlist allows: the most specific domain
+    (on a tie the VM's own), else a Regex entry (the VM's own first)."""
+    domains = [k for k in grant if not k.regex]
+    if domains:
+        k = max(domains, key=lambda k: (len(k.value), k.scope == ctx))
+        return f"allowlist {k.value} {k.scope}"
+    k = min(grant, key=lambda k: (k.scope != ctx, k.value))
+    return f"allowlist regex {k.value} {k.scope}"
 
 
 # --- Tunnel ----------------------------------------------------------------------
@@ -207,13 +275,13 @@ class Tunnel:
 tunnels = set()
 
 
-def withdraw(ctx, entries, now, revoked, web_ended, is_open):
+def withdraw(ctx, lists, now, revoked, web_ended, is_open):
     """Zugang endet bewusst (Eintraege entfernt oder offenes Web zu): betroffene
     Tunnel bleiben, wenn ihr Ziel jetzt noch erlaubt ist, sonst gehen sie zu."""
     for t in list(tunnels):
         if not (web_ended if t.grant == OPEN else t.grant & revoked):
             continue
-        keys = granting(t.host, entries, now)
+        keys, _ = granting(t.host, t.tags, lists, now)
         if keys:
             t.grant = frozenset(keys)
         elif is_open and not strong(t.tags):
@@ -241,7 +309,7 @@ async def watch(ctx, lists):
             ended = was_open and not is_open
             known, was_open = dict(entries), is_open
             if revoked or ended:
-                withdraw(ctx, entries, now, revoked, ended, is_open)
+                withdraw(ctx, lists, now, revoked, ended, is_open)
         except Exception as e:      # der Waechter darf nie stehen bleiben
             log(ctx, f"ERROR check of open tunnels failed ({type(e).__name__}: {e})")
 
@@ -344,9 +412,7 @@ async def handle(ctx, lists, reader, writer):
     if grant == OPEN:
         log(ctx, f"ALLOWED {host} (open web)")
     else:
-        # der genaueste Eintrag, bei Gleichstand der der VM selbst
-        domain, scope = max(grant, key=lambda k: (len(k[0]), k[1] == ctx))
-        log(ctx, f"ALLOWED {host} (allowlist {domain} {scope})")
+        log(ctx, f"ALLOWED {host} ({logged(ctx, grant)})")
     tunnel = Tunnel(host, tags, grant, (writer, up_writer))
     tunnels.add(tunnel)
     try:

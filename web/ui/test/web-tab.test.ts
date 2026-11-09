@@ -56,7 +56,7 @@ describe('Web tab', () => {
     expect(paste.textContent).toContain('last 2 min ago')
     // why, worded from the reason's code (#69); a reason without one as the proxy said it
     const reason = (domain: string) => blockedRow(domain).querySelector('[data-testid="blocked-reason"]')!
-    expect(reason('paste.example').textContent).toBe('strong Signals in Open web: Paste service, Young domain')
+    expect(reason('paste.example').textContent).toBe('strong Signals: Paste service, Young domain')
     expect(reason('paste.example').getAttribute('title')).toBe('suspicious: paste,young')
     expect(reason('static.docs.rs').textContent).toBe('not on the Allowlist')
     expect(reason('pypi.org').textContent).toBe('something new')
