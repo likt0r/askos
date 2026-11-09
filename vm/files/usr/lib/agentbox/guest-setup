@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# Laeuft bei jedem Start der VM als root, vor orca serve.
+#  - liest den Kontext (work/priv) und den Orca-Port aus fw_cfg (von titan gesetzt)
+#  - traegt titan als host.agentbox ein
+#  - richtet das Home des Agenten frisch ein und bindet nur die dauerhaften
+#    Teile von der Datenplatte ein
+set -euo pipefail
+
+DATA=/var/lib/agentbox-data
+HOME_DIR=/var/home/agent
+AGENT_UID=1000
+
+# titan liest das Journal per Gast-Agent (agentbox logs/pair) ueber
+# /usr/libexec/qemu-ga/fsfreeze-hook.d/agentbox-journal; SELinux erlaubt das
+# nur mit diesem Boolean. Zuerst, damit die Logs auch dann lesbar sind, wenn
+# der Rest hier scheitert. Gilt bis zum naechsten Start.
+setsebool virt_qemu_ga_run_unconfined 1 || true
+
+fwcfg() {
+  local f="/sys/firmware/qemu_fw_cfg/by_name/opt/agentbox/$1/raw"
+  [ -r "$f" ] || { echo "guest-setup: fw_cfg entry $1 is missing" >&2; exit 1; }
+  cat "$f"
+}
+modprobe qemu_fw_cfg
+CONTEXT=$(fwcfg context)
+ORCA_PORT=$(fwcfg orca_port)
+# die Adresse, unter der Geraete den Host erreichen (sie steht im Host setup, nicht im Image)
+PAIRING_ADDRESS=$(fwcfg pairing_address)
+install -d -m 755 /run/agentbox
+install -m 600 /dev/null /run/agentbox/env
+printf 'AGENTBOX_CONTEXT=%s\nORCA_PORT=%s\nPAIRING_ADDRESS=%s\n' "$CONTEXT" "$ORCA_PORT" "$PAIRING_ADDRESS" > /run/agentbox/env
+# Claude-Token von titan (leer, solange keins hinterlegt ist). Orca gibt es
+# an alle Terminals und Agenten weiter.
+token=$(fwcfg claude_token 2>/dev/null | tr -d '[:space:]' || true)
+# Fuer Shells (Orca-Terminals) zusaetzlich als Datei, die nur agent lesen darf
+install -m 640 -g agent /dev/null /run/agentbox/agent-env
+if [[ "$token" == sk-ant-* ]]; then
+  printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$token" >> /run/agentbox/env
+  printf 'export CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$token" > /run/agentbox/agent-env
+fi
+hostnamectl set-hostname "agentbox-$CONTEXT"
+
+# titan ist die .1 im eigenen isolierten Netz (es gibt keine Default-Route)
+for _ in $(seq 30); do
+  ip=$(ip -4 -o addr show scope global | awk '{print $4; exit}' | cut -d/ -f1)
+  [ -n "$ip" ] && break
+  sleep 1
+done
+[ -n "${ip:-}" ] || { echo "guest-setup: no IP address" >&2; exit 1; }
+gw="${ip%.*}.1"
+# Rootless Podman (pasta) braucht eine Default-Route. titan leitet nichts
+# weiter und nimmt nur Proxy und Token-Dienst an, ins Internet fuehrt sie nicht.
+ip route replace default via "$gw"
+sed -i '/ host\.agentbox$/d' /etc/hosts
+echo "$gw host.agentbox" >> /etc/hosts
+
+# Kein DNS nach aussen. Podmans DNS fuer Compose-Dienste (aardvark) braucht
+# trotzdem eine resolv.conf.
+rm -f /etc/resolv.conf
+echo "nameserver 127.0.0.1" > /etc/resolv.conf
+
+# Ohne Datenplatte lieber nicht starten als still auf die Systemplatte schreiben
+mountpoint -q "$DATA" || { echo "guest-setup: the Data disk is not mounted" >&2; exit 1; }
+
+# Home ist fluechtig (Systemplatte); dauerhaft ist nur, was hier steht.
+PERSIST=(code orca .config/orca .claude/projects .codex/sessions .cargo/registry .cargo/git
+         .gradle .android .local/share/android-sdk)
+install -d -o agent -g agent -m 700 "$HOME_DIR"
+for p in "${PERSIST[@]}"; do
+  install -d -o agent -g agent -m 700 "$DATA/home/$p" "$HOME_DIR/$p"
+  mountpoint -q "$HOME_DIR/$p" || mount --bind "$DATA/home/$p" "$HOME_DIR/$p"
+done
+chown agent:agent "$HOME_DIR"/.config "$HOME_DIR"/.claude "$HOME_DIR"/.codex "$HOME_DIR"/.cargo \
+  "$HOME_DIR"/.local "$HOME_DIR"/.local/share
+
+# Der Android-Emulator (SwiftShader) braucht ausfuehrbaren Heap. Die Grenze
+# ist hier die VM, nicht SELinux in ihr; gilt nur bis zum naechsten Start.
+setsebool selinuxuser_execheap 1 || true
+
+# Node-Laufzeit fuer Orcas Server bereitlegen (sonst laedt Orca sie beim Start)
+rt="$HOME_DIR/.config/orca/orcad-artifacts/linux-x64-glibc/runtimes"
+for r in /usr/lib/agentbox/orca-runtimes/node-*; do
+  [ -e "$r" ] || continue
+  [ -e "$rt/$(basename "$r")" ] && continue
+  runuser -u agent -- mkdir -p "$rt"
+  runuser -u agent -- cp -a "$r" "$rt/"
+done
+
+# Claude Code zeigt sonst bei jedem frischen Home den Login-Dialog, obwohl
+# ein Token gesetzt ist
+[ -e "$HOME_DIR/.claude.json" ] || { echo '{"hasCompletedOnboarding": true}' > "$HOME_DIR/.claude.json"; chown agent:agent "$HOME_DIR/.claude.json"; }
+
+# Bun liest seine globale Config nur aus dem Home (Mindestalter von Paketen,
+# geschrieben von package-safeguards beim Bauen des Images)
+install -m 644 -o agent -g agent /usr/lib/agentbox/bunfig.toml "$HOME_DIR/.bunfig.toml"
+
+# Git-Hooks in den Repos zaehlen nicht (core.hooksPath), aber Reste entfernen,
+# damit sie auch bei geaenderter Config nicht greifen.
+find "$DATA/home/code" -path '*/.git/hooks/*' -type f ! -name '*.sample' -delete 2>/dev/null || true
+
+echo "guest-setup: context $CONTEXT, Orca port $ORCA_PORT, the Host at $gw"

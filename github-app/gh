@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# gh-Wrapper: Fuer Agent-User holt er ein kurzlebiges App-Token fuer das Repo,
+# um das es geht (-R/--repo oder origin im aktuellen Verzeichnis).
+# Alle anderen User bekommen das normale gh.
+set -euo pipefail
+
+REAL_GH=/usr/bin/gh
+
+if [[ "$(id -un)" != agent* && -z "${AGENTBOX_CONTEXT:-}${AGENTBOX_GH_ADDR:-}" ]] || [[ -n "${GH_TOKEN:-}" ]]; then
+  exec "$REAL_GH" "$@"
+fi
+
+repo=""
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+  case "${args[i]}" in
+    -R | --repo) repo="${args[i + 1]:-}" ;;
+    --repo=*) repo="${args[i]#--repo=}" ;;
+  esac
+done
+if [[ -z "$repo" ]]; then
+  url=$(git remote get-url origin 2>/dev/null || true)
+  url=${url#https://github.com/}
+  url=${url#git@github.com:}
+  [[ "$url" == */* && "$url" != *://* ]] && repo=${url%.git}
+fi
+
+if [[ -n "$repo" ]]; then
+  GH_TOKEN=$(agentbox-gh-token "$repo")
+  export GH_TOKEN
+fi
+exec "$REAL_GH" "$@"

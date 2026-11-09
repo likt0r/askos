@@ -1,0 +1,17 @@
+[Unit]
+Description=Agent Box: orca serve
+After=agentbox-guest-setup.service user@1000.service
+Requires=agentbox-guest-setup.service
+Wants=user@1000.service
+
+[Service]
+User=agent
+WorkingDirectory=/var/home/agent
+EnvironmentFile=/run/agentbox/env
+Environment=HOME=/var/home/agent XDG_RUNTIME_DIR=/run/user/1000
+ExecStart=/usr/lib/orca/resources/bin/orca-ide serve --port ${ORCA_PORT} --pairing-address ${PAIRING_ADDRESS}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

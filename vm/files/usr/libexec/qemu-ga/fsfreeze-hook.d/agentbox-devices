@@ -1,0 +1,81 @@
+#!/usr/bin/python3
+"""Ruft titan per guest-exec auf (agentbox pairings / revoke-pairings). Feste Befehle,
+keine Shell, Zeitlimit; liegt in diesem Verzeichnis aus demselben Grund wie
+agentbox-journal (SELinux, siehe dort). Kein fsfreeze-Hook: freeze/thaw werden ignoriert.
+
+  list         die Paired devices aus Orcas Geraeteregister als JSON, ohne Tokens
+  revoke-all   Orca anhalten, Geraeteregister und Orca-Schluessel loeschen, Orca starten:
+               Orca hat danach eine neue Identitaet, jedes Geraet muss neu koppeln
+"""
+import json
+import os
+import subprocess
+import sys
+
+DATA = "/var/home/agent/.config/orca"
+REGISTRY = "orca-devices.json"
+KEYPAIR = "orca-e2ee-keypair.json"
+UNIT = "agentbox-orca.service"
+LIMIT = 20
+
+
+def number(v):
+    return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0
+
+
+def listing():
+    try:
+        with open(os.path.join(DATA, REGISTRY)) as f:
+            rows = json.load(f)
+    except FileNotFoundError:
+        rows = []
+    out = []
+    for r in rows if isinstance(rows, list) else []:
+        if not isinstance(r, dict) or not isinstance(r.get("deviceId"), str):
+            continue
+        # ein Kopplungsangebot, mit dem sich noch niemand gekoppelt hat
+        if number(r.get("lastSeenAt")) == 0 and r.get("token") is not None and r.get("credentialKind") is None:
+            continue
+        out.append({"id": r["deviceId"], "name": r["name"] if isinstance(r.get("name"), str) else "",
+                    "scope": "runtime" if r.get("scope") == "runtime" else "mobile",
+                    "paired_ms": number(r.get("pairedAt")), "last_seen_ms": number(r.get("lastSeenAt"))})
+    print(json.dumps({"devices": out}))
+    return 0
+
+
+def systemctl(verb):
+    return subprocess.run(["/usr/bin/systemctl", verb, UNIT], timeout=LIMIT).returncode
+
+
+def revoke_all():
+    if systemctl("stop") != 0:
+        return 1
+    removed = []
+    for name in (REGISTRY, KEYPAIR):
+        try:
+            os.remove(os.path.join(DATA, name))
+            removed.append(name)
+        except FileNotFoundError:
+            pass
+    started = systemctl("start") == 0
+    print(json.dumps({"removed": removed, "started": started}))
+    return 0 if started else 1
+
+
+def main(argv):
+    if argv[:1] in (["freeze"], ["thaw"]):
+        return 0
+    try:
+        if argv == ["list"]:
+            return listing()
+        if argv == ["revoke-all"]:
+            return revoke_all()
+    except (OSError, ValueError, subprocess.TimeoutExpired) as e:
+        print(f"agentbox-devices: {e}", file=sys.stderr)
+        return 1
+    print("agentbox-devices: list | revoke-all", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

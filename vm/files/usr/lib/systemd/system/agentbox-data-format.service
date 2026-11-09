@@ -1,0 +1,12 @@
+[Unit]
+Description=Agent Box: format the Data disk at the first start
+DefaultDependencies=no
+Requires=dev-disk-by\x2did-virtio\x2dagentbox\x2ddata.device
+After=dev-disk-by\x2did-virtio\x2dagentbox\x2ddata.device
+Before=var-lib-agentbox\x2ddata.mount
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Nur eine leere Platte formatieren, nie eine mit Dateisystem
+ExecStart=/bin/sh -c 'blkid /dev/disk/by-id/virtio-agentbox-data || mkfs.xfs /dev/disk/by-id/virtio-agentbox-data'

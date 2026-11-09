@@ -1,0 +1,15 @@
+# Keeps the actions of .github/workflows current. They are pinned to commit hashes with the
+# version as a comment; Dependabot updates both. "ci" makes the pull request title a
+# Conventional Commit ("ci: bump …"), which the title check (pr-title.yml) requires.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    # one pull request a week for all of them; upload- and download-artifact move together
+    groups:
+      actions:
+        patterns: ['*']

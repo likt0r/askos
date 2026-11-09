@@ -1,0 +1,67 @@
+# Verdaechtige Domains (gilt jeweils inkl. Subdomains): <domain> <kategorie> # Quelle
+# Nur die Erstbefuellung eines neuen Hosts: agentbox setup installiert sie, agentbox
+# migrate-lists uebernimmt sie einmalig nach /etc/agentbox/watchlist.json; danach aendert
+# sie nur noch agentbox watch-add/-remove, Aenderungen hier erreichen den Host nicht mehr.
+# Kategorien: exfil, c2, tunnel, paste, phishing, blockchain, payload (nur Warnung)
+# As of 2026-10-29. Entries with an incident as evidence; "(category)": a common service without specific evidence.
+
+# --- belegt in Vorfaellen ---
+webhook.site            exfil      # Shai-Hulud 1 (09/2025), stepsecurity.io, wiz.io
+npm-cache.com           exfil      # keyv/Shai-Hulud (08/2026), CSA AD-2026-009, aikido.dev
+pypi-get.com            phishing   # keyv (08/2026), CSA AD-2026-009
+js-mirror.com           phishing   # keyv (08/2026), CSA AD-2026-009
+git-tanstack.com        exfil      # Sha1-Hulud variant (uncertain, one secondary source)
+getsession.org          exfil      # TanStack (05/2026), tanstack.com Postmortem
+catbox.moe              paste      # TanStack (05/2026), litter.catbox.moe
+sfrclak.com             c2         # axios/plain-crypto-js (03/2026), stepsecurity.io, datadog
+calltan.com             c2         # axios context, huntress.com
+npmjs.help              phishing   # chalk/debug (09/2025), aikido.dev
+npnjs.com               phishing   # eslint-config-prettier (07/2025), socket.dev
+jsonkeeper.com          payload    # Contagious Interview (11/2025), nviso.eu
+npoint.io               payload    # Contagious Interview (11/2025), nviso.eu
+jsonsilo.com            payload    # Contagious Interview (11/2025), nviso.eu
+ngrok.io                tunnel     # twilio-npm, socket.dev
+ngrok-free.app          tunnel     # (category) ngrok
+canarytokens.com        exfil      # callback in install scripts, snyk.io
+nodereal.io             blockchain # keyv (08/2026), CSA AD-2026-009
+getblock.io             blockchain # keyv (08/2026)
+llamarpc.com            blockchain # keyv (08/2026)
+solana.com              blockchain # GlassWorm (since 10/2025), netskope.com, socket.dev
+calendar.app.google     c2         # GlassWorm C2 fallback, truesec.com
+
+# --- uebliche Exfil-/Tunnel-/Paste-Dienste (Kategorie, ohne konkreten Beleg) ---
+pipedream.net           exfil
+requestbin.com          exfil
+requestcatcher.com      exfil
+oastify.com             exfil
+interact.sh             exfil
+oast.fun                exfil
+oast.live               exfil
+oast.pro                exfil
+oast.site               exfil
+oast.me                 exfil
+burpcollaborator.net    exfil
+dnslog.cn               exfil
+api.telegram.org        exfil
+trycloudflare.com       tunnel
+serveo.net              tunnel
+loca.lt                 tunnel
+localtunnel.me          tunnel
+localhost.run           tunnel
+pinggy.io               tunnel
+pastebin.com            paste
+paste.ee                paste
+hastebin.com            paste
+ghostbin.co             paste
+transfer.sh             paste
+file.io                 paste
+0x0.st                  paste
+temp.sh                 paste
+gofile.io               paste
+anonfiles.com           paste
+ipfs.io                 paste
+dweb.link               paste
+infura.io               blockchain
+alchemy.com             blockchain
+quiknode.pro            blockchain
+ankr.com                blockchain

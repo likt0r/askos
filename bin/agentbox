@@ -1,0 +1,17 @@
+#!/usr/bin/python3 -I
+"""Starter for the agentbox CLI.
+
+In a checkout the package sits next to bin/; installed, in lib/agentbox under the
+prefix whose bin/ holds this starter (root-owned; the layout is in agentbox/paths.py).
+-I keeps PYTHONPATH and the current directory out of the import path.
+"""
+import os
+import sys
+
+here = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+lib = here if os.path.isfile(os.path.join(here, "agentbox", "__init__.py")) else os.path.join(here, "lib", "agentbox")
+sys.path.insert(0, lib)
+
+from agentbox.cli import main  # noqa: E402
+
+sys.exit(main())

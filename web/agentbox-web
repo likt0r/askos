@@ -1,0 +1,2273 @@
+#!/usr/bin/python3 -I
+"""Dashboard der Agent-Box: Steuerung der VMs per Browser aus dem Heimnetz.
+
+Laeuft als System-User agentbox-web (nicht root). Jede Aktion ist genau ein
+Aufruf von `sudo -n agentbox ...` mit festen Argumenten;
+agentbox prueft Kontext und Werte selbst. Jeder Aufruf nennt mit --actor das
+Geraet (aus dem User-Agent) und die Adresse des Browsers; agentbox vermerkt
+damit jede Aktion in der Aktivitaet. Anmeldungen vermerkt dieser Dienst selbst
+dort (Journal-Namensraum agentbox, Kennung agentbox-activity), nie mit Passwort.
+
+Die versionierte API /api/v1/... (docs/control-room-api.md) dient der neuen
+Oberflaeche (Nuxt, als statische Dateien unter AGENTBOX_WEB_UI installiert); die
+unversionierten Endpunkte bleiben fuer die bisherige Oberflaeche, bis die neue sie
+ersetzt. Live-Ereignisse (GET /api/events) kommen aus den Messwerten des Hosts und aus
+einem einzigen `sudo -n agentbox watch`, das dieser Dienst startet (und neu startet,
+wenn es endet) und dessen Ereignisse er an alle Verbindungen verteilt.
+
+  agentbox-web                     Server starten (HTTPS)
+  agentbox-web --hash-password     Passwort von stdin lesen, Hash ausgeben
+"""
+import base64
+import collections
+import datetime
+import email.utils
+import hashlib
+import hmac
+import http.server
+import importlib.machinery
+import importlib.util
+import ipaddress
+import json
+import os
+import re
+import secrets
+import socket
+import ssl
+import struct
+import subprocess
+import sys
+import threading
+import time
+from urllib.parse import parse_qs, unquote, urlparse
+
+
+def _package_dir():
+    """Wo das Paket agentbox liegt: im Checkout neben web/, installiert in lib/agentbox unter dem
+    Praefix, in dessen libexec/ dieses Programm liegt. Hier dient nur paths.py, das jede Datei von
+    Agent Box nennt (ARCHITECTURE.md); alles andere macht dieser Dienst ohne das Paket."""
+    here = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+    checkout = os.path.isfile(os.path.join(here, "agentbox", "__init__.py"))
+    return here if checkout else os.path.join(here, "lib", "agentbox")
+
+
+sys.path.insert(0, _package_dir())
+from agentbox import paths  # noqa: E402
+
+CONF = os.environ.get("AGENTBOX_WEB_CONF", "/etc/agentbox/web")
+STATIC = os.environ.get("AGENTBOX_WEB_STATIC", paths.WEB_STATIC)
+# Die neue Oberflaeche (Nuxt, statisch erzeugt): index.html, _nuxt/, Schriften, ...
+# Solange dort keine index.html liegt, gilt die bisherige aus STATIC.
+UI = os.environ.get("AGENTBOX_WEB_UI", paths.WEB_UI)
+# Adresse und Port kommen aus dem Host setup (host.json, nur auf dem Host aenderbar; ADR 0009),
+# ohne die Datei gilt Local-only. Die Umgebung hat Vorrang (Tests, Entwicklung).
+HOST_SETUP = os.environ.get("AGENTBOX_WEB_HOST_SETUP", "/etc/agentbox/host.json")
+
+
+def host_setup():
+    """(bind, port) aus dem Host setup. Dasselbe liest agentbox/hostsetup.py und prueft
+    es vollstaendig (`agentbox regenerate`); dieser Dienst laeuft ohne das Paket und
+    prueft nur, was er braucht. Eine kaputte Datei beendet den Dienst, statt zu raten:
+    eine falsche Adresse koennte mehr freigeben, als der Owner gewaehlt hat."""
+    try:
+        with open(HOST_SETUP) as f:
+            raw = json.load(f)
+    except FileNotFoundError:
+        raw = {}
+    except (OSError, ValueError) as e:
+        sys.exit(f"Host setup {HOST_SETUP} unreadable: {e}")
+    if not isinstance(raw, dict):
+        sys.exit(f"Host setup {HOST_SETUP}: must be a JSON object")
+    mode, bind, port = raw.get("mode", "local"), raw.get("bind", "127.0.0.1"), raw.get("web_port", 8800)
+    try:
+        address = ipaddress.IPv4Address(bind)
+    except ValueError:
+        sys.exit(f"Host setup {HOST_SETUP}: bind is not an IPv4 address: {bind!r}")
+    if mode not in ("local", "network") or isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        sys.exit(f"Host setup {HOST_SETUP}: invalid mode or web_port")
+    if mode == "local" and not address.is_loopback:
+        sys.exit(f"Host setup {HOST_SETUP}: in mode local, bind must be a loopback address")
+    return bind, port
+
+
+def bind_port():
+    if "AGENTBOX_WEB_BIND" in os.environ or "AGENTBOX_WEB_PORT" in os.environ:
+        return os.environ.get("AGENTBOX_WEB_BIND", "127.0.0.1"), int(os.environ.get("AGENTBOX_WEB_PORT", "8800"))
+    return host_setup()
+# der Starter unter dem Pfad, den die sudoers-Regel nennt (paths.CLI)
+AGENTBOX = os.environ.get("AGENTBOX_WEB_COMMAND", f"sudo -n {paths.CLI}").split()
+# Journal-Sockets fuer die Aktivitaet: der Namensraum agentbox, sonst das Vorgabe-Journal
+JOURNAL = os.environ.get("AGENTBOX_WEB_JOURNAL",
+                         "/run/systemd/journal.agentbox/socket:/run/systemd/journal/socket").split(":")
+
+# Welche VMs es gibt, weiss agentbox (Registry); hier nur das Namensmuster
+# (wie agentbox/registry.py)
+VM_NAME = re.compile(r"[a-z][a-z0-9-]{1,15}")
+SETTINGS = os.environ.get("AGENTBOX_WEB_SETTINGS", "/etc/agentbox/settings.json")
+SESSION_HOURS = 12        # Standard von session_hours der Einstellungen
+LANGUAGES = ("browser", "en", "de")     # default_language der Einstellungen, der erste ist der Standard
+MAX_FAILS, LOCK_SECONDS = 5, 15 * 60
+MAX_BODY = 8 * 1024
+DRAIN_BODY = 1024 * 1024    # so viel eines abgelehnten Bodys wird noch abgenommen
+STATIC_FILES = {
+    "/": ("index.html", "text/html; charset=utf-8"),
+    "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+    "/style.css": ("style.css", "text/css; charset=utf-8"),
+}
+
+# Content-Security-Policy der API und der bisherigen Oberflaeche; die neue bekommt
+# zusaetzlich die Hashes der Inline-Skripte ihrer index.html (UiBuild)
+CSP = ("default-src 'self'; style-src 'self'; script-src 'self'; "
+       "img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+
+sessions = {}           # token -> Ablaufzeit
+fails = {}              # ip -> (anzahl, erster Fehlversuch)
+lock = threading.Lock()
+request = threading.local()     # Ausloeser der laufenden Anfrage (request.actor), fuer --actor
+
+
+def log(msg):
+    print(msg, file=sys.stderr, flush=True)
+
+
+# --- Aktivitaet ---------------------------------------------------------------
+
+# Teilstueck im User-Agent -> Name; die erste Fundstelle gilt (Edge nennt auch
+# Chrome und Safari, Android auch Linux)
+BROWSERS = (("Edg/", "Edge"), ("OPR/", "Opera"), ("FxiOS/", "Firefox"), ("Firefox/", "Firefox"),
+            ("CriOS/", "Chrome"), ("Chrome/", "Chrome"), ("Safari/", "Safari"), ("curl/", "curl"))
+SYSTEMS = (("Android", "Android"), ("iPhone", "iPhone"), ("iPad", "iPad"), ("Windows", "Windows"),
+           ("Macintosh", "macOS"), ("CrOS", "ChromeOS"), ("Linux", "Linux"))
+
+
+def device(user_agent):
+    """Kurzbeschreibung des Geraets aus dem User-Agent, z. B. Firefox/Linux. Nur
+    feste Namen, nie Text aus der Anfrage."""
+    browser = next((name for key, name in BROWSERS if key in user_agent), None)
+    system = next((name for key, name in SYSTEMS if key in user_agent), None)
+    return "/".join(n for n in (browser, system) if n) or "unknown device"
+
+
+def journal(fields):
+    """Ein Eintrag im Journal (natives Protokoll, journal-native(7)). Ohne
+    erreichbares Journal nur ein Hinweis im eigenen Log; ebenso, wenn das erste
+    (der Namensraum der Aktivitaet) den Dienst nicht schreiben laesst: dann auch
+    nirgends sonst, die Anmeldung gehoert in die Aktivitaet."""
+    data = b""
+    for key, value in fields.items():
+        v = value.encode("utf-8", "replace")
+        data += key.encode() + (b"\n" + struct.pack("<Q", len(v)) + v if b"\n" in v else b"=" + v) + b"\n"
+    for i, path in enumerate(JOURNAL):
+        if not path or not os.path.exists(path):
+            continue
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
+                s.sendto(data, path)
+            return
+        except PermissionError:
+            if i == 0:
+                log("Activity not recorded in the journal: no permission to write "
+                    "(group agentbox-journal; run agentbox setup again)")
+                return
+        except OSError:
+            continue
+    log("Activity not recorded in the journal")
+
+
+# Sign-ins and sign-outs in Activity, as agentbox records its entries (agentbox/activity.py):
+# the action is the entry's code (AGENTBOX_CODE), from which the UI words it; the English
+# description is the fallback. No parameters: address and device are fields of their own.
+SIGN_INS = {"signin": ("ok", "Signed in"), "signin.failed": ("failed", "Sign-in with a wrong password"),
+            "signin.locked": ("failed", "Sign-in refused: too many failed attempts"),
+            "signout": ("ok", "Signed out")}
+
+
+def signin_activity(handler, action):
+    """A sign-in or sign-out in Activity (SIGN_INS): outcome, address and device, never the
+    password."""
+    outcome, description = SIGN_INS[action]
+    actor, ip = handler.actor(), handler.ip()
+    journal({"MESSAGE": f"- {action} {outcome} ({actor}): {description}",
+             "PRIORITY": "5" if outcome == "ok" else "4", "SYSLOG_IDENTIFIER": "agentbox-activity",
+             "AGENTBOX_KIND": "signin", "AGENTBOX_ACTION": action, "AGENTBOX_CODE": action,
+             "AGENTBOX_OUTCOME": outcome, "AGENTBOX_ACTOR": actor, "AGENTBOX_DESCRIPTION": description,
+             "AGENTBOX_ADDRESS": ip, "AGENTBOX_DEVICE": device(handler.headers.get("User-Agent", ""))})
+
+
+# --- Passwort ---------------------------------------------------------------
+
+def scrypt(password, salt, n=2**15, r=8, p=1):
+    return hashlib.scrypt(password.encode(), salt=salt, n=n, r=r, p=p, maxmem=64 * 1024 * 1024)
+
+
+def make_hash(password):
+    salt = secrets.token_bytes(16)
+    return f"scrypt$32768$8$1${salt.hex()}${scrypt(password, salt).hex()}"
+
+
+def session_seconds():
+    """Laenge einer Sitzung: session_hours der Einstellungen (agentbox schreibt sie, der
+    Leitstand liest die Datei), bei jeder Anmeldung neu; ohne gueltigen Wert der Standard."""
+    try:
+        with open(SETTINGS, encoding="utf-8") as f:
+            hours = json.load(f).get("session_hours", SESSION_HOURS)
+    except (OSError, ValueError, AttributeError):
+        hours = SESSION_HOURS
+    if isinstance(hours, bool) or not isinstance(hours, int) or not 1 <= hours <= 168:
+        hours = SESSION_HOURS
+    return hours * 3600
+
+
+def default_language():
+    """default_language der Einstellungen fuer GET und POST /session: die Oberflaeche braucht
+    ihn nach der Anmeldung, ohne GET /settings (ein Aufruf von agentbox mit sudo); bei jeder
+    Anfrage neu aus der Datei, ohne gueltigen Wert der Standard."""
+    try:
+        with open(SETTINGS, encoding="utf-8") as f:
+            value = json.load(f).get("default_language", LANGUAGES[0])
+    except (OSError, ValueError, AttributeError):
+        value = LANGUAGES[0]
+    return value if isinstance(value, str) and value in LANGUAGES else LANGUAGES[0]
+
+
+def check_password(password):
+    try:
+        with open(f"{CONF}/password") as f:
+            _, n, r, p, salt, digest = f.read().strip().split("$")
+    except (OSError, ValueError):
+        return False
+    got = scrypt(password, bytes.fromhex(salt), int(n), int(r), int(p))
+    return hmac.compare_digest(got.hex(), digest)
+
+
+# --- agentbox ---------------------------------------------------------------
+
+def agentbox(*args, stdin=None, timeout=300):
+    # --actor steht vor dem Befehl (globale Option von agentbox)
+    actor = getattr(request, "actor", None)
+    argv = [*AGENTBOX, *([f"--actor={actor}"] if actor else []), *args]
+    r = subprocess.run(argv, input=stdin, capture_output=True, text=True, timeout=timeout)
+    # a failure with --json is a JSON object on stderr (cli_error); the old UI shows its message
+    said = cli_error(r.stderr) if r.returncode != 0 else None
+    out = (r.stdout.strip() or (said[1] if said else r.stderr.strip())).removeprefix("agentbox: ")
+    return r.returncode == 0, out
+
+
+def agentbox_json(*args):
+    ok, out = agentbox(*args, timeout=60)
+    if not ok:
+        raise RuntimeError(out)
+    return json.loads(out or "null")
+
+
+# Filter fuer das Journal einer VM -> Option von `agentbox logs`. Werte gehen
+# immer als --option=wert hinaus, damit keiner zur eigenen Option wird;
+# agentbox prueft sie.
+LOG_FILTERS = {"unit": "--unit", "priority": "--priority", "since": "--since", "until": "--until",
+               "boot": "--boot", "grep": "--grep", "lines": "--lines", "after_cursor": "--after-cursor"}
+
+
+def logs(ctx, body):
+    args = []
+    for key, opt in LOG_FILTERS.items():
+        v = body.get(key)
+        if v is None:                    # null = kein Filter
+            continue
+        # nur Text und ganze Zahlen; true/false, Listen, Kommazahlen sind Fehler,
+        # nicht etwas, das zu Text umgewandelt wird
+        if isinstance(v, bool) or not isinstance(v, (str, int)):
+            return False, f"invalid value for {key}"
+        v = str(v)
+        if not v.strip():                # leer = kein Filter
+            continue
+        # Suchtext unveraendert (Leerzeichen koennen gemeint sein), sonst getrimmt
+        args.append(f"{opt}={v if key == 'grep' else v.strip()}")
+    return agentbox("logs", ctx, *args, "--json", timeout=60)
+
+
+# Neue VM: Feld -> Option von `agentbox create`. Werte gehen als --option=wert
+# hinaus (wie bei logs); agentbox prueft sie, Netz und Orca-Port vergibt es selbst.
+CREATE_FIELDS = {"image": "--image", "memory_mib": "--memory-mib", "data_disk_gib": "--data-disk-gib",
+                 "copy_allowlist_from": "--copy-allowlist-from"}
+
+
+def create(ctx, body):
+    args = []
+    for key, opt in CREATE_FIELDS.items():
+        v = body.get(key)
+        if v is None or v == "":         # null/leer = Vorgabe
+            continue
+        if isinstance(v, bool) or not isinstance(v, (str, int)):
+            raise ValueError(f"invalid value for {key}")
+        args.append(f"{opt}={str(v).strip()}")
+    owners = body.get("github_owners") or []
+    if not isinstance(owners, list) or not all(isinstance(o, str) for o in owners):
+        raise ValueError("github_owners must be a list of names")
+    args += [f"--owner={o.strip()}" for o in owners if o.strip()]
+    return agentbox("create", ctx, *args, "--json")
+
+
+def delete(ctx, body):
+    # Loeschen nur mit dem getippten Namen; agentbox prueft ihn noch einmal
+    if body.get("confirm") != ctx:
+        raise ValueError(f"type the name {ctx} to delete it")
+    data = body.get("delete_data_disk", False)
+    if not isinstance(data, bool):
+        raise ValueError("delete_data_disk must be true or false")
+    return agentbox("delete", ctx, f"--confirm={ctx}", *(["--delete-data-disk"] if data else []), "--json")
+
+
+def pair(ctx, body):
+    # Der Code gibt vollen Zugriff auf die VM: nur mit ausdruecklicher Bestaetigung
+    if body.get("confirm") is not True:
+        raise ValueError("the Pairing code is shown only with confirm=true")
+    return agentbox("pair", ctx)
+
+
+def revoke_pairings(ctx, body):
+    # wie Loeschen: nur mit dem getippten Namen; agentbox prueft ihn noch einmal
+    if body.get("confirm") != ctx:
+        raise ValueError(f"type the name {ctx} to revoke its pairings")
+    return agentbox("revoke-pairings", ctx, f"--confirm={ctx}", "--json", timeout=240)
+
+
+def unpair(ctx, body):
+    device = body.get("device")
+    if not isinstance(device, str) or not device.strip() or device.strip().startswith("-"):
+        raise ValueError("device is missing or invalid")
+    return agentbox("unpair", ctx, device.strip(), "--json")
+
+
+# Filter der Aktivitaet (Query-Parameter) -> Option von `agentbox activity`;
+# wie bei logs immer als --option=wert, agentbox prueft die Werte
+ACTIVITY_FILTERS = {"kind": "--kind", "vm": "--vm", "since": "--since", "until": "--until",
+                    "search": "--search", "lines": "--lines"}
+
+
+def query_options(query, filters):
+    """Query-Parameter -> Optionen (--option=wert) nach `filters`; andere Parameter
+    zaehlen nicht. ValueError, wenn einer doppelt kommt."""
+    try:
+        params = parse_qs(query, max_num_fields=len(filters) * 2)
+    except ValueError:
+        raise ValueError("too many parameters")
+    args = []
+    for key, opt in filters.items():
+        values = params.get(key, [])
+        if len(values) > 1:
+            raise ValueError(f"give {key} only once")
+        if not values or not values[0].strip():       # leer = kein Filter
+            continue
+        # Suchtext unveraendert (Leerzeichen koennen gemeint sein), sonst getrimmt
+        args.append(f"{opt}={values[0] if key == 'search' else values[0].strip()}")
+    return args
+
+
+def activity(query):
+    """GET /api/activity?kind=..&vm=..&since=..&until=..&search=..&lines=..: Zeitleiste."""
+    try:
+        args = query_options(query, ACTIVITY_FILTERS)
+    except ValueError as e:
+        return False, str(e)
+    return agentbox("activity", *args, "--json", timeout=120)
+
+
+# Einstellungen, die der Leitstand aendern darf (agentbox prueft die Werte; ein Test haelt
+# die Liste mit `agentbox settings` gleich). Passwort, Heimnetz und Ports gehoeren nicht dazu.
+SETTING_KEYS = ("reset_age_days", "reset_time", "rebuild_day", "rebuild_time", "builds_kept",
+                "default_memory_mib", "default_data_disk_gib", "default_image", "open_web_max_minutes",
+                "temporary_entry_default", "young_domain_days", "feed_interval_hours", "package_min_age_days",
+                "auto_update", "orca_version", "activity_retention_days", "session_hours", "default_language")
+
+
+# Einstellungen mit true/false als Wert; JSON true/false wird fuer agentbox zu Text
+BOOL_SETTINGS = ("auto_update",)
+
+
+def setting_text(key, value):
+    """Ein Wert als Text fuer agentbox set-settings: Text oder Zahl, bei BOOL_SETTINGS auch true
+    oder false; None fuer alles andere."""
+    if isinstance(value, bool):
+        return ("true" if value else "false") if key in BOOL_SETTINGS else None
+    return str(value) if isinstance(value, (str, int)) else None
+
+
+def set_settings(body):
+    """POST /api/settings {schluessel: wert, ...}: nur bekannte Schluessel, Werte Text oder Zahl
+    (auto_update auch true/false; "default" fuer den Standard); agentbox prueft sie und speichert
+    alles oder nichts."""
+    if not body:
+        raise ValueError("no setting given")
+    args = []
+    for key, value in body.items():
+        if key not in SETTING_KEYS:
+            raise ValueError(f"unknown setting: {str(key)[:40]}")
+        if setting_text(key, value) is None:
+            raise ValueError(f"{key}: text or a number expected")
+        args.append(f"{key}={setting_text(key, value)}")
+    return agentbox("set-settings", *args, "--json", timeout=120)
+
+
+# --- Images und Builds ----------------------------------------------------------
+# Live-Fortschritt eines Builds: die Oberflaeche fragt GET /api/images/<image>/log mit
+# after_cursor alle paar Sekunden nach neuen Zeilen, solange GET /api/images ihn als
+# laufend zeigt. Ein build-Ereignis im SSE-Strom braeuchte einen Dienst, der als root das
+# Journal verfolgt (agentbox watch, geplant); dieser Dienst darf es nicht lesen.
+
+IMAGE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")          # wie agentbox/settings.py
+BUILD_ID = re.compile(r"[0-9]{8}(-[0-9]{4}([0-9]{2})?)?")    # wie agentbox/images.py
+BUILD_LOG_FILTERS = {"after_cursor": "--after-cursor", "lines": "--lines"}
+
+
+def build_log(image, query):
+    """GET /api/images/<image>/log?build=..&after_cursor=..&lines=..: Protokoll eines Builds
+    (ohne build: der laufende, sonst der neueste); agentbox prueft die Werte."""
+    try:
+        builds = parse_qs(query, max_num_fields=6).get("build", [])
+        args = query_options(query, BUILD_LOG_FILTERS)
+    except ValueError as e:
+        return False, str(e)
+    if len(builds) > 1:
+        return False, "give build only once"
+    build = builds[0].strip() if builds else ""
+    if build and not BUILD_ID.fullmatch(build):
+        return False, f"invalid Build: {build[:40]}"
+    return agentbox("build-log", image, *([build] if build else []), *args, "--json", timeout=60)
+
+
+def start_build(body):
+    """POST /api/build {"image": "<image>"|"all"}: Build aus dem installierten Release starten (Unit)."""
+    image = body.get("image")
+    if image == "all":
+        return agentbox("build", "--all", "--json", timeout=60)
+    if not isinstance(image, str) or not IMAGE_NAME.fullmatch(image):
+        raise ValueError("image must be the name of an Image or all")
+    return agentbox("build", image, "--json", timeout=60)
+
+
+def set_image(ctx, body):
+    """POST /api/<vm>/set-image {"image": .., "build": null|"<build>"}: Image der VM und
+    optional ein frueherer Build; gilt ab dem naechsten Reset."""
+    image, build = body.get("image"), body.get("build")
+    if not isinstance(image, str) or not IMAGE_NAME.fullmatch(image):
+        raise ValueError("image is missing or invalid")
+    if build is not None and (not isinstance(build, str) or not BUILD_ID.fullmatch(build)):
+        raise ValueError("build must be null or a Build")
+    return agentbox("set-image", ctx, image, *([f"--build={build}"] if build else []), "--json")
+
+
+# --- Zugangsdaten ------------------------------------------------------------
+# Token und Schluessel gehen nur ueber stdin an agentbox, nie als Argument, und
+# kommen in keiner Antwort, keinem Log und keiner Fehlermeldung vor.
+
+TOKEN_FILTERS = {"since": "--since", "until": "--until", "lines": "--lines"}
+APP_ID = re.compile(r"[1-9][0-9]{0,11}")
+# Aktion -> Felder des Bodys, die ein Geheimnis tragen
+SECRET_FIELDS = {"claude-token": ("token",), "github-app": ("private_key",)}
+
+
+def scrub(text, action, body):
+    """Text ohne das, was die Aktion als Geheimnis bekam: als Ganzes, ohne
+    Leerraum (so speichert agentbox ein Token) und Zeile fuer Zeile (PEM).
+    agentbox gibt es nie aus; das hier haelt es auch dann aus Antwort und Log."""
+    for name in SECRET_FIELDS.get(action, ()):
+        v = body.get(name)
+        if not isinstance(v, str):
+            continue
+        parts = {v.strip(), "".join(v.split()), *(line.strip() for line in v.splitlines())}
+        for part in sorted((p for p in parts if len(p) >= 16), key=len, reverse=True):
+            text = text.replace(part, "[hidden]")
+    return text
+
+
+def github_tokens(ctx, query):
+    """GET /api/<vm>/github-tokens?since=..&until=..&lines=..: Repos mit Tokens, Ablehnungen."""
+    try:
+        args = query_options(query, TOKEN_FILTERS)
+    except ValueError as e:
+        return False, str(e)
+    return agentbox("github-tokens", ctx, *args, "--json", timeout=120)
+
+
+def claude_token(ctx, body):
+    """Claude-Token setzen; agentbox prueft es bei Anthropic, bevor es das alte ersetzt."""
+    token = body.get("token")
+    if not isinstance(token, str) or not token.strip():
+        raise ValueError("token is missing or not text")
+    return agentbox("set-claude-token", ctx, "--no-prompt", stdin=token, timeout=120)
+
+
+def set_owners(ctx, body):
+    owners = body.get("owners")
+    if not isinstance(owners, list) or not all(isinstance(o, str) for o in owners):
+        raise ValueError("owners must be a list of names")
+    names = [o.strip() for o in owners if o.strip()]
+    # GitHub-Namen beginnen nie mit "-": so wird keiner zur Option
+    if any(n.startswith("-") for n in names):
+        raise ValueError("invalid GitHub name")
+    return agentbox("set-owners", ctx, *names)
+
+
+def set_github_app(body):
+    """POST /api/github-app {"app_id": .., "private_key": ".pem"}: App-ID und Schluessel
+    ersetzen; agentbox prueft beides vorher bei GitHub."""
+    app_id = body.get("app_id")
+    if isinstance(app_id, bool) or not isinstance(app_id, (str, int)) or not APP_ID.fullmatch(str(app_id).strip()):
+        raise ValueError("app_id must be a number")
+    key = body.get("private_key")
+    if not isinstance(key, str) or not key.strip():
+        raise ValueError("private_key is missing or not text")
+    return agentbox("set-github-app", str(app_id).strip(), "--no-prompt", "--json", stdin=key, timeout=120)
+
+
+def domain(body):
+    """Domain aus dem Body; agentbox prueft sie. Nie etwas, das wie eine Option aussieht."""
+    d = body.get("domain")
+    if not isinstance(d, str) or not d.strip() or d.strip().startswith("-"):
+        raise ValueError("domain is missing or invalid")
+    return d.strip().lower()
+
+
+def mark_seen(ctx, body):
+    """Alle Alerts der VM, oder mit domain die zu einem Ziel, als gesehen markieren."""
+    if body.get("domain") in (None, ""):
+        return agentbox("mark-seen", ctx)
+    return agentbox("mark-seen", ctx, domain(body))
+
+
+# Allowlist. ctx ist eine VM oder "all" (alle VMs); agentbox prueft beides.
+# Dauer ("duration") einer Freigabe -> Option von agentbox allow/extend: ohne
+# Dauer (null oder "permanent") dauerhaft, "default" die voreingestellte Dauer
+# voruebergehender Freigaben. --force gibt der Leitstand nie mit: stark
+# verdaechtige Ziele gibt nur die Kommandozeile frei.
+DURATIONS = ("15min", "1h", "8h", "7d")
+
+
+def duration(body, temporary_only=False):
+    d = body.get("duration")
+    if d in DURATIONS:
+        return [f"--for={d}"]
+    if not temporary_only and d in (None, "permanent"):
+        return []
+    if not temporary_only and d == "default":
+        return ["--temporary"]
+    raise ValueError("duration must be " + ("" if temporary_only else "permanent, default, ") + "15min, 1h, 8h or 7d")
+
+
+def note(body, required=False):
+    """Notiz als --note=wert (wird so nie zur eigenen Option); agentbox prueft sie."""
+    n = body.get("note")
+    if n is None and not required:
+        return []
+    if not isinstance(n, str):
+        raise ValueError("note must be text")
+    return [f"--note={n}"]
+
+
+def allow(ctx, body):
+    """Freigabe fuer eine VM oder alle, dauerhaft oder auf Zeit, mit Notiz; auch aus
+    der Liste der blockierten Ziele einer VM."""
+    return agentbox("allow", ctx, domain(body), *duration(body), *note(body))
+
+
+def allowlist_entries(query):
+    """GET /api/allowlist?vm=..: alle Freigaben oder die, die fuer eine VM gelten
+    (vm=all: die fuer alle VMs), mit Restzeit und Nutzung der letzten 24 Stunden."""
+    try:
+        params = parse_qs(query, max_num_fields=2)
+    except ValueError:
+        return False, "too many parameters"
+    values = params.get("vm", [])
+    if len(values) > 1:
+        return False, "give vm only once"
+    vm = values[0].strip() if values else ""
+    if vm and not VM_NAME.fullmatch(vm):
+        return False, f"No such VM: {vm[:40]}"
+    return agentbox("allowlist", *([vm] if vm else []), "--json", timeout=120)
+
+
+# Aktion -> Funktion(ctx, body) -> (ok, text). Nur diese sind erreichbar.
+ACTIONS = {
+    "start": lambda c, b: agentbox("start", c),
+    "pause": lambda c, b: agentbox("pause", c),
+    "restart": lambda c, b: agentbox("restart", c),
+    "reset": lambda c, b: agentbox("reset", c),
+    "focus": lambda c, b: agentbox("focus", c),
+    "allow": allow,
+    "disallow": lambda c, b: agentbox("disallow", c, domain(b)),
+    "extend": lambda c, b: agentbox("extend", c, domain(b), *duration(b, temporary_only=True)),
+    "make-permanent": lambda c, b: agentbox("make-permanent", c, domain(b)),
+    "set-note": lambda c, b: agentbox("set-note", c, domain(b), *note(b, required=True)),
+    "open-web": lambda c, b: agentbox("open-web", c, str(int(b.get("minutes", 30)))),
+    "close-web": lambda c, b: agentbox("close-web", c),
+    "set-owners": set_owners,
+    "claude-token": claude_token,
+    "pair": pair,
+    "pairings": lambda c, b: agentbox("pairings", c, "--json", timeout=60),
+    "unpair": unpair,
+    "revoke-pairings": revoke_pairings,
+    "logs": logs,
+    "create": create,
+    "delete": delete,
+    "mark-seen": mark_seen,
+    "set-image": set_image,
+}
+# Antworten dieser Aktionen nie ins Journal
+SECRET_ACTIONS = {"pair", "claude-token", "logs", "github-app"}
+# Diese antworten bei Erfolg mit dem JSON von agentbox statt mit einer Meldung
+JSON_ACTIONS = {"logs", "create", "delete", "check-domain", "pairings", "revoke-pairings", "settings",
+                "github-app", "build", "set-image"}
+
+# Aktionen ohne VM (Verdachtsliste, GitHub-App): POST /api/<aktion>
+GLOBAL_ACTIONS = {
+    "check-domain": lambda b: agentbox("check-domain", domain(b), "--json", timeout=60),
+    "mark-harmless": lambda b: agentbox("mark-harmless", domain(b)),
+    "unmark-harmless": lambda b: agentbox("unmark-harmless", domain(b)),
+    "settings": set_settings,
+    "github-app": set_github_app,
+    "build": start_build,
+}
+
+
+# --- HTTP -------------------------------------------------------------------
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    server_version = "agentbox-web"
+    sys_version = ""
+    timeout = 30
+
+    def log_message(self, fmt, *args):
+        pass  # eigenes Logging: nur Anmeldungen und Aktionen
+
+    def ip(self):
+        return self.client_address[0]
+
+    def actor(self):
+        """Wer die Anfrage stellt, fuer die Aktivitaet: Geraet (Adresse)."""
+        return f"{device(self.headers.get('User-Agent', ''))} ({self.ip()})"
+
+    def send(self, code, body, ctype="application/json", extra=(), cache="no-store", csp=None):
+        data = body if isinstance(body, bytes) else body.encode()
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", cache)
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Strict-Transport-Security", "max-age=31536000")
+        self.send_header("Content-Security-Policy", csp or CSP)
+        for k, v in extra:
+            self.send_header(k, v)
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(data)
+
+    def send_json(self, code, obj, extra=()):
+        self.send(code, json.dumps(obj), extra=extra)
+
+    def session(self):
+        for part in self.headers.get("Cookie", "").split(";"):
+            name, _, value = part.strip().partition("=")
+            if name == "agentbox":
+                with lock:
+                    exp = sessions.get(value)
+                    if exp and exp > time.time():
+                        return value
+                    sessions.pop(value, None)
+        return None
+
+    def drain(self):
+        """Den Body einer Anfrage ungelesen verwerfen (hoechstens MAX_BODY), sonst die
+        Verbindung danach schliessen."""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = MAX_BODY + 1
+        if 0 < length <= DRAIN_BODY:
+            while length > 0:
+                chunk = self.rfile.read(min(length, 65536))
+                if not chunk:
+                    break
+                length -= len(chunk)
+        elif length:
+            self.close_connection = True
+
+    def body(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > MAX_BODY:
+            raise ValueError("too large")
+        raw = self.rfile.read(length) if length else b"{}"
+        obj = json.loads(raw or b"{}")
+        if not isinstance(obj, dict):
+            raise ValueError("JSON object expected")
+        return obj
+
+    # GET: Seite und Lese-APIs
+    def do_GET(self):
+        request.actor = self.actor()
+        url = urlparse(self.path)
+        path = url.path
+        if path.startswith("/api/v1/") or path == "/api/v1":
+            return v1(self, "GET", url)
+        if not path.startswith("/api/"):
+            return serve_page(self, path)
+        if not self.session():
+            return self.send_json(401, {"error": "not signed in"})
+        parts = path.split("/")[2:]
+        if parts == ["host"]:
+            return serve_host(self)
+        if parts == ["events"]:
+            return serve_events(self)
+        try:
+            if parts == ["status"]:
+                return self.send_json(200, agentbox_json("status", "--json"))
+            if parts == ["activity"]:
+                ok, out = activity(url.query)
+                if not ok:
+                    return self.send_json(400, {"error": out[:300]})
+                return self.send_json(200, json.loads(out))
+            if parts == ["settings"]:
+                return self.send_json(200, agentbox_json("settings", "--json"))
+            if parts == ["harmless"]:
+                return self.send_json(200, agentbox_json("harmless", "--json"))
+            if parts == ["github-app"]:
+                # fragt GitHub: scheitert das, ist es kein Fehler dieses Dienstes
+                ok, out = agentbox("github-app", "--json", timeout=120)
+                if not ok:
+                    return self.send_json(502, {"error": out[:300]})
+                return self.send_json(200, json.loads(out))
+            if parts == ["allowlist"]:
+                ok, out = allowlist_entries(url.query)
+                if not ok:
+                    return self.send_json(400, {"error": out[:300]})
+                return self.send_json(200, json.loads(out))
+            if parts == ["images"]:
+                return self.send_json(200, agentbox_json("images", "--json"))
+            if len(parts) == 3 and parts[0] == "images" and IMAGE_NAME.fullmatch(parts[1]) and parts[2] == "log":
+                ok, out = build_log(parts[1], url.query)
+                if not ok:
+                    return self.send_json(400, {"error": out[:300]})
+                return self.send_json(200, json.loads(out))
+            if len(parts) == 2 and VM_NAME.fullmatch(parts[0]):
+                ctx, what = parts
+                if what == "github-tokens":
+                    ok, out = github_tokens(ctx, url.query)
+                    if not ok:
+                        return self.send_json(400, {"error": out[:300]})
+                    return self.send_json(200, json.loads(out))
+                if what == "blocked":
+                    return self.send_json(200, agentbox_json("blocked", ctx, "--json"))
+                if what == "alerts":
+                    return self.send_json(200, agentbox_json("alerts", ctx, "--json"))
+                if what == "allowlist":
+                    # die eigenen Freigaben der VM als Domains (die bisherige Oberflaeche);
+                    # alles mit Geltungsbereich und Ablauf: GET /api/allowlist?vm=<vm>
+                    entries = agentbox_json("allowlist", ctx, "--json")
+                    return self.send_json(200, [e["domain"] for e in entries if e.get("scope") == ctx])
+                if what == "owners":
+                    ok, out = agentbox("owners", ctx, timeout=30)
+                    return self.send_json(200, [l for l in out.splitlines() if l.strip()] if ok else [])
+        except Exception as e:
+            return self.send_json(500, {"error": str(e)[:300]})
+        return self.send_json(404, {"error": "not found"})
+
+    # POST: Anmeldung und Aktionen
+    def do_HEAD(self):
+        path = urlparse(self.path).path
+        if path.startswith("/api/"):
+            return self.send_error(501)
+        return serve_page(self, path)
+
+    def do_PUT(self):
+        self.other("PUT")
+
+    def do_PATCH(self):
+        self.other("PATCH")
+
+    def do_DELETE(self):
+        self.other("DELETE")
+
+    def other(self, method):
+        """PUT, PATCH, DELETE: nur die API v1 kennt sie."""
+        request.actor = self.actor()
+        url = urlparse(self.path)
+        if url.path.startswith("/api/v1/"):
+            return v1(self, method, url)
+        return self.send_error(501)
+
+    def do_POST(self):
+        request.actor = self.actor()
+        url = urlparse(self.path)
+        path = url.path
+        if path.startswith("/api/v1/"):
+            return v1(self, "POST", url)
+        # Schutz gegen Cross-Site-Requests: nur das eigene JS setzt diesen Header
+        if self.headers.get("X-Agentbox") != "1":
+            return self.send_json(403, {"error": "forbidden"})
+        try:
+            body = self.body()
+        except (ValueError, json.JSONDecodeError) as e:
+            return self.send_json(400, {"error": str(e)})
+
+        if path == "/api/login":
+            return self.login(body)
+        if path == "/api/logout":
+            token = self.session()
+            with lock:
+                sessions.pop(token, None)
+            if token:
+                signin_activity(self, "signout")
+            return self.send_json(200, {"ok": True}, extra=[("Set-Cookie", "agentbox=; Max-Age=0; Path=/; Secure; HttpOnly; SameSite=Strict")])
+
+        if not self.session():
+            return self.send_json(401, {"error": "not signed in"})
+        parts = path.split("/")[2:]
+        if len(parts) == 1 and parts[0] in GLOBAL_ACTIONS:
+            ctx, action = None, parts[0]
+        elif len(parts) != 2 or not VM_NAME.fullmatch(parts[0]) or parts[1] not in ACTIONS:
+            return self.send_json(404, {"error": "unknown action"})
+        else:
+            ctx, action = parts
+        try:
+            ok, out = GLOBAL_ACTIONS[action](body) if ctx is None else ACTIONS[action](ctx, body)
+        except subprocess.TimeoutExpired:
+            ok, out = False, "timed out"
+        except (ValueError, TypeError) as e:
+            ok, out = False, f"invalid input: {e}"
+        # was an Token oder Schluessel kam, geht nie zurueck, auch nicht im Log
+        out = scrub(out, action, body)
+        result = None
+        if ok and action in JSON_ACTIONS:
+            try:
+                result = json.loads(out)
+            except ValueError:
+                ok, out = False, "unreadable answer from agentbox"
+        # Antworten vertraulicher Aktionen nie ins Journal; bei logs auch keine
+        # Fehlertexte (Inhalte aus der VM), bei pair/claude-token schon (Diagnose)
+        shown = "(confidential)" if ok and action in SECRET_ACTIONS or action == "logs" else out[:200]
+        log(f"{self.ip()}: {ctx or '-'} {action} -> {'ok' if ok else 'FAILED'}: {shown}")
+        if result is not None:
+            return self.send_json(200, result)
+        return self.send_json(200 if ok else 400, {"ok": ok, "message": out})
+
+    def login(self, body):
+        result, value = self.attempt_login(body.get("password", ""))
+        if result == "locked":
+            return self.send_json(429, {"error": "too many failed attempts, try again later"})
+        if result == "wrong":
+            return self.send_json(401, {"error": "wrong password"})
+        return self.send_json(200, {"ok": True}, extra=[("Set-Cookie", value)])
+
+    def attempt_login(self, password):
+        """Anmeldung mit Bremse (alte und neue API): ("ok", Cookie), ("locked", Sekunden bis
+        zum naechsten Versuch) oder ("wrong", None)."""
+        ip = self.ip()
+        now = time.time()
+        with lock:
+            count, first = fails.get(ip, (0, now))
+            locked = count >= MAX_FAILS and now - first < LOCK_SECONDS
+        if locked:
+            log(f"{ip}: sign-in locked")
+            signin_activity(self, "signin.locked")
+            return "locked", max(1, int(first + LOCK_SECONDS - now))
+        if not check_password(str(password)):
+            with lock:
+                count, first = fails.get(ip, (0, now))
+                if now - first >= LOCK_SECONDS:
+                    count, first = 0, now
+                fails[ip] = (count + 1, first)
+            log(f"{ip}: sign-in FAILED")
+            signin_activity(self, "signin.failed")
+            time.sleep(1)
+            return "wrong", None
+        token = secrets.token_urlsafe(32)
+        seconds = session_seconds()
+        with lock:
+            fails.pop(ip, None)
+            sessions[token] = now + seconds
+        log(f"{ip}: signed in")
+        signin_activity(self, "signin")
+        return "ok", f"agentbox={token}; Max-Age={seconds}; Path=/; Secure; HttpOnly; SameSite=Strict"
+
+
+class Server(http.server.ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(self, addr, handler, tls):
+        super().__init__(addr, handler)
+        self.tls = tls
+
+    # TLS-Handshake im Thread der Verbindung, nicht beim Annehmen
+    def finish_request(self, request, client_address):
+        request.settimeout(30)
+        try:
+            request = self.tls.wrap_socket(request, server_side=True)
+        except (ssl.SSLError, OSError):
+            return
+        super().finish_request(request, client_address)
+
+
+# --- Messwerte des Hosts und Live-Ereignisse ----------------------------------
+# Die Messwerte (CPU, GPU, Speicher, NVMe, Speicher je VM) liest agentbox-readings
+# ohne Rechte aus /proc, /sys und nvidia-smi; die Wurzeln sind fuer Tests
+# einstellbar, ebenso die Takte.
+PROC = os.environ.get("AGENTBOX_WEB_PROC", "/proc")
+SYS = os.environ.get("AGENTBOX_WEB_SYS", "/sys")
+SAMPLE_SECONDS = max(0.1, float(os.environ.get("AGENTBOX_WEB_SAMPLE_SECONDS", "5")))
+HISTORY_SECONDS = float(os.environ.get("AGENTBOX_WEB_HISTORY_SECONDS", "1800"))
+HEARTBEAT_SECONDS = max(0.1, float(os.environ.get("AGENTBOX_WEB_HEARTBEAT_SECONDS", "15")))
+MAX_STREAMS = 8         # gleichzeitige Live-Verbindungen (je eine bindet einen Thread)
+REPLAY_EVENTS = 256     # so viele Ereignisse werden nach einem Abbruch nachgereicht
+# Reihenfolge der Zustands-Ereignisse fuer eine neue Verbindung (nach hello)
+LATEST_ORDER = ("host", "version", "watch", "state", "host-reboot", "services")
+RETRY_MS = 3000         # Wartezeit des Browsers vor dem Neuverbinden
+STREAM_ID = secrets.token_hex(4)   # neu bei jedem Start: alte Last-Event-IDs gelten nicht
+
+
+def _load_readings():
+    """agentbox-readings, liegt neben agentbox-web (im Checkout und installiert)."""
+    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "agentbox-readings")
+    if not os.path.exists(path):
+        return None
+    loader = importlib.machinery.SourceFileLoader("agentbox_readings", path)
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+readings = _load_readings()
+sampler = None          # startet mit dem Server (main)
+
+
+class Events:
+    """Ein Ereignisstrom fuer alle Live-Verbindungen (GET /api/events).
+
+    Jedes Ereignis bekommt eine fortlaufende ID `<STREAM_ID>-<n>` und wird einmal
+    als SSE-Text gebaut. Die letzten REPLAY_EVENTS liegen in einem Ringpuffer, aus
+    dem jede Verbindung ab ihrer Position liest; wer zu weit zurueckfaellt, wird
+    getrennt und verbindet sich neu. Zustands-Ereignisse (state=True, z.B. host)
+    bekommt eine neue Verbindung sofort mit ihrem letzten Stand.
+    """
+
+    def __init__(self):
+        self.cond = threading.Condition()
+        self.seq = 0
+        self.recent = collections.deque(maxlen=REPLAY_EVENTS)   # (n, Text)
+        self.latest = {}                                        # Name -> Text
+        self.streams = 0
+
+    def publish(self, name, data, state=False, latest=None):
+        """Ein Ereignis an alle. state: neue Verbindungen bekommen es als letzten Stand;
+        latest=(Name, Daten): ein Stand, der mit diesem Ereignis neu gilt, ohne eigenes
+        Ereignis (der VM-Stand `state` mit jedem `vm`-Ereignis)."""
+        with self.cond:
+            self.seq += 1
+            text = self._text(name, data)
+            self.recent.append((self.seq, text))
+            if state:
+                self.latest[name] = text
+            if latest:
+                self.latest[latest[0]] = self._text(*latest)
+            self.cond.notify_all()
+
+    def _text(self, name, data):
+        return f"id: {STREAM_ID}-{self.seq}\nevent: {name}\ndata: {json.dumps(data)}\n\n"
+
+    def resume(self, last_id):
+        """(Position, nachgereicht?, erste Texte) fuer eine neue Verbindung."""
+        stream, _, n = last_id.strip().partition("-")
+        with self.cond:
+            oldest = self.recent[0][0] if self.recent else self.seq + 1
+            if stream == STREAM_ID and n.isdigit() and oldest - 1 <= int(n) <= self.seq:
+                return int(n), True, []
+            order = sorted(self.latest, key=lambda k: (LATEST_ORDER.index(k) if k in LATEST_ORDER else 99, k))
+            return self.seq, False, [self.latest[k] for k in order]
+
+    def wait(self, pos, timeout):
+        """(Texte nach pos, neue Position); Texte None, wenn sie nicht mehr im Puffer sind."""
+        with self.cond:
+            if self.seq == pos:
+                self.cond.wait(timeout)
+            if self.recent and self.recent[0][0] > pos + 1:
+                return None, pos
+            return [t for n, t in self.recent if n > pos], self.seq
+
+
+events = Events()
+
+
+def start_readings():
+    global sampler
+    if readings is None:
+        log("Host readings not available: agentbox-readings is missing")
+        return
+    sampler = readings.Sampler(readings.Collector(PROC, SYS), SAMPLE_SECONDS, HISTORY_SECONDS,
+                               publish=publish_sample, log=log)
+    sampler.start()
+
+
+TEMPERATURES = {"cpu_temp": "CPU", "gpu_temp": "GPU", "nvme_temp": "NVMe"}
+hot = set()             # Temperaturen ueber ihrer Schwelle (id)
+
+
+def publish_sample(sample):
+    """Messwerte an alle; eine Temperatur, die ihre Schwelle erreicht, als Benachrichtigung
+    (einmal, bis sie wieder darunter liegt)."""
+    events.publish("host", sample, state=True)
+    for r in sample.get("readings", []):
+        if r.get("kind") not in TEMPERATURES:
+            continue
+        if not r.get("over"):
+            hot.discard(r["id"])
+        elif r["id"] not in hot:
+            hot.add(r["id"])
+            notify("temperature", "warning", f"{TEMPERATURES[r['kind']]} temperature is {r['value']:g} °C "
+                   f"(threshold {r['threshold']:g} °C)", reading=r["id"], device=r.get("device"),
+                   value=r["value"], threshold=r["threshold"])
+
+
+def serve_host(handler):
+    """GET /api/host: aktuelle Messwerte, Schwellen und Verlauf."""
+    if sampler is None:
+        return handler.send_json(503, {"error": "host readings not available"})
+    return handler.send_json(200, sampler.snapshot())
+
+
+def session_alive(token):
+    with lock:
+        exp = sessions.get(token)
+        return bool(exp and exp > time.time())
+
+
+def serve_events(handler, v1=False):
+    """GET /api/events (und /api/v1/events): Server-Sent Events, bis der Browser geht oder
+    die Sitzung endet."""
+    token = handler.session()
+    with events.cond:
+        full = events.streams >= MAX_STREAMS
+        if not full:
+            events.streams += 1
+    if full:
+        error = api_error("too_many_streams", "Too many live connections, try again later") if v1 else \
+            {"error": "too many live connections"}
+        return handler.send_json(503, error, extra=[("Retry-After", "10")])
+    handler.close_connection = True
+    try:
+        pos, resumed, first = events.resume(handler.headers.get("Last-Event-ID", ""))
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        handler.send_header("Cache-Control", "no-store")
+        handler.send_header("X-Content-Type-Options", "nosniff")
+        handler.end_headers()
+        hello = json.dumps({"stream": STREAM_ID, "resumed": resumed})
+        out = [f"retry: {RETRY_MS}\nevent: hello\ndata: {hello}\n\n", *first]
+        while True:
+            # Nur schreiben, nie lesen: das timeout des Handlers greift dann nur,
+            # wenn ein Browser 30 s lang nichts abnimmt, und trennt ihn.
+            handler.wfile.write("".join(out).encode() if out else b": ping\n\n")
+            out, pos = events.wait(pos, HEARTBEAT_SECONDS)
+            if out is None or not session_alive(token):
+                return
+    except OSError:
+        return          # Browser weg (Reset, TLS-Fehler, Zeitueberschreitung)
+    finally:
+        with events.cond:
+            events.streams -= 1
+
+
+# --- Benachrichtigungen ---------------------------------------------------------
+# Was der Browser als Benachrichtigung zeigen kann (#21): Art, VM, kurzer englischer
+# Text, Schwere. Welche Arten er zeigt, waehlt jeder Browser selbst.
+
+def now_iso():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def notify(kind, severity, text, vm=None, **ref):
+    events.publish("notification", {"time": now_iso(), "kind": kind, "severity": severity, "vm": vm,
+                                    "text": text, **ref})
+
+
+# --- agentbox watch -------------------------------------------------------------
+# Ein einziger root-Helfer fuer alle Verbindungen: `sudo -n agentbox watch` schreibt
+# Ereignisse als JSON-Zeilen; endet er, startet dieser Dienst ihn neu (mit wachsender
+# Pause, 1 s bis 60 s). Seine stdin bleibt offen, solange dieser Dienst laeuft: endet
+# der Dienst, endet auch watch.
+WATCH_RETRY_SECONDS = max(0.05, float(os.environ.get("AGENTBOX_WEB_WATCH_RETRY_SECONDS", "1")))
+WATCH_RETRY_MAX = 60
+WATCH_STABLE = 60       # so lange gelaufen: die Pause beginnt wieder von vorn
+# Ereignisse von watch, die unveraendert weitergehen (als Zustand: neue Verbindungen
+# bekommen den letzten)
+WATCH_FORWARD = {"activity": False, "alert": False, "github-token": False, "build": False, "build-log": False,
+                 "services": True, "host-reboot": True}
+
+
+class Watch:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.vms = {}               # Name -> VM (Reihenfolge der Registry)
+        self.problems = []
+        self.known = False          # ein vms-Ereignis kam schon
+        self.status = {"running": False, "since": None, "restarts": 0, "last_exit": None}
+        self.reboot = None
+        self.services = None
+
+    def start(self):
+        self.set_status(running=False)
+        threading.Thread(target=self.run, name="watch", daemon=True).start()
+
+    def set_status(self, **changes):
+        with self.lock:
+            self.status.update(changes)
+            status = dict(self.status)
+        events.publish("watch", status, state=True)
+
+    def snapshot(self):
+        with self.lock:
+            return {"vms": list(self.vms.values()), "problems": list(self.problems), "known": self.known}
+
+    def run(self):
+        delay = WATCH_RETRY_SECONDS
+        while True:
+            started = time.monotonic()
+            try:
+                p = subprocess.Popen([*AGENTBOX, "watch"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE)
+            except OSError as e:
+                log(f"agentbox watch does not start: {e.strerror or e}")
+                p = None
+            if p:
+                self.set_status(running=True, since=now_iso())
+                threading.Thread(target=self.errors, args=(p.stderr,), name="watch-stderr", daemon=True).start()
+                for line in p.stdout:
+                    try:
+                        self.handle(line)
+                    except Exception as e:      # eine seltsame Zeile beendet nichts
+                        log(f"agentbox watch: line skipped ({type(e).__name__})")
+                code = p.wait()
+                with self.lock:
+                    restarts = self.status["restarts"] + 1
+                self.set_status(running=False, last_exit=code, restarts=restarts)
+                log(f"agentbox watch ended (exit {code})")
+            if time.monotonic() - started > WATCH_STABLE:
+                delay = WATCH_RETRY_SECONDS
+            time.sleep(delay)
+            delay = min(delay * 2, WATCH_RETRY_MAX)
+
+    @staticmethod
+    def errors(stream):
+        # watch schreibt nur eigene Meldungen nach stderr, nie Inhalte aus dem Journal
+        for line in stream:
+            log("agentbox watch: " + line.decode("utf-8", "replace").strip()[:300])
+
+    def handle(self, line):
+        msg = json.loads(line)
+        name, data = msg.get("event"), msg.get("data")
+        if not isinstance(name, str) or not isinstance(data, dict):
+            return
+        if name == "vms":
+            vms = [v for v in data.get("vms") or [] if isinstance(v, dict) and isinstance(v.get("name"), str)]
+            with self.lock:
+                self.vms = {v["name"]: v for v in vms}
+                self.problems = [p for p in data.get("problems") or [] if isinstance(p, dict)]
+                self.known = True
+            events.publish("state", self.public_state(), state=True)
+        elif name == "vm" and isinstance(data.get("name"), str):
+            with self.lock:
+                self.vms[data["name"]] = data
+            events.publish("vm", data, latest=("state", self.public_state()))
+        elif name in WATCH_FORWARD:
+            events.publish(name, data, state=WATCH_FORWARD[name])
+            self.notice(name, data)
+
+    def public_state(self):
+        snap = self.snapshot()
+        return {"vms": snap["vms"], "problems": snap["problems"]}
+
+    def notice(self, name, data):
+        """Zustand fuer GET /api/v1/system merken, Benachrichtigungen ausloesen."""
+        vm = data.get("vm") if isinstance(data.get("vm"), str) else None
+        if name == "host-reboot":
+            with self.lock:
+                before, self.reboot = self.reboot, data
+            if data.get("needed") is True and (before or {}).get("needed") is not True:
+                notify("host-reboot", "warning", "Updates need a Host reboot (the disk passphrase must be "
+                       "entered at boot)", packages=data.get("packages") or [])
+        elif name == "services":
+            with self.lock:
+                self.services = data.get("units")
+        elif name == "alert":
+            signals = ", ".join(str(s) for s in data.get("signals") or [])
+            notify("alert", "critical", f"{vm} tried to reach {data.get('domain')}"
+                   + (f" ({signals})" if signals else ""), vm=vm, domain=data.get("domain"),
+                   signals=data.get("signals") or [])
+        elif name == "github-token" and data.get("action") == "refused":
+            notify("github-refused", "warning", f"{vm}: GitHub token refused for {data.get('request') or '?'}",
+                   vm=vm, request=data.get("request"), detail=data.get("reason"))
+        elif name == "build" and data.get("status") in ("failed", "rejected"):
+            what = f"Build {data.get('image')}-{data.get('build')}"
+            text = f"{what} rejected: a safeguard is missing or weakened" if data["status"] == "rejected" \
+                else f"{what} failed; the previous Build stays in use"
+            notify(f"build-{data['status']}", "critical" if data["status"] == "rejected" else "warning", text,
+                   image=data.get("image"), build=data.get("build"), detail=data.get("error"))
+
+
+watcher = Watch()
+
+
+# --- Oberflaeche ----------------------------------------------------------------
+# Die neue Oberflaeche ist ein statischer Nuxt-Build (ssr: false): index.html, die
+# gehashten Dateien unter /_nuxt/ (und /_fonts/), sonst ein paar feste Dateien. Jeder
+# Pfad, der keine API und keine Datei ist, bekommt index.html (die Oberflaeche waehlt
+# die Seite selbst). Die CSP bleibt bei 'self'; erlaubt sind zusaetzlich genau die
+# Inline-Skripte (und -Styles) dieser index.html, ueber ihre sha256-Hashes, die beim
+# Laden der Datei berechnet werden. Ohne neue Oberflaeche gilt die bisherige.
+
+UI_CHECK_SECONDS = max(0.05, float(os.environ.get("AGENTBOX_WEB_UI_CHECK_SECONDS", "2")))
+IMMUTABLE = ("/_nuxt/", "/_fonts/")     # Dateinamen mit Inhalts-Hash
+TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
+         ".mjs": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
+         ".json": "application/json", ".map": "application/json", ".svg": "image/svg+xml",
+         ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp",
+         ".gif": "image/gif", ".ico": "image/x-icon", ".woff2": "font/woff2", ".woff": "font/woff",
+         ".ttf": "font/ttf", ".otf": "font/otf", ".txt": "text/plain; charset=utf-8",
+         ".webmanifest": "application/manifest+json", ".xml": "application/xml", ".wasm": "application/wasm"}
+INLINE = re.compile(r"<(script|style)\b([^>]*)>(.*?)</\1\s*>", re.S | re.I)
+SRC = re.compile(r"""\ssrc\s*=""", re.I)
+TYPE = re.compile(r"""\stype\s*=\s*["']?([^"'\s>]+)""", re.I)
+# Skript-Typen, die der Browser ausfuehrt (Daten wie application/json nicht)
+SCRIPT_TYPES = {"", "text/javascript", "application/javascript", "module", "importmap"}
+
+
+def inline_hashes(html):
+    """('sha256-...' der Inline-Skripte, ... der Inline-Styles) einer HTML-Seite, ueber
+    genau den Text zwischen den Tags, wie ihn der Browser hasht."""
+    scripts, styles = [], []
+    for tag, attrs, body in INLINE.findall(html):
+        if tag.lower() == "script":
+            if SRC.search(attrs):
+                continue
+            m = TYPE.search(attrs)
+            if (m.group(1).lower() if m else "") not in SCRIPT_TYPES:
+                continue
+        digest = "'sha256-" + base64.b64encode(hashlib.sha256(body.encode()).digest()).decode() + "'"
+        (scripts if tag.lower() == "script" else styles).append(digest)
+    return sorted(set(scripts)), sorted(set(styles))
+
+
+def page_csp(scripts, styles):
+    return ("default-src 'self'; " + " ".join(["style-src 'self'", *styles]) + "; "
+            + " ".join(["script-src 'self'", *scripts]) + "; "
+            "img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
+            "form-action 'none'")
+
+
+class UiBuild:
+    """Die installierte Oberflaeche: welche (neu oder bisherig), ihre Version (Hash der
+    index.html) und die CSP ihrer Seite. Wird alle UI_CHECK_SECONDS neu geprueft; eine neue
+    Version geht als version-Ereignis an alle offenen Seiten."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.key = None
+        self.info = None            # {"kind", "root", "index", "version", "installed", "csp", "etag"}
+
+    def _key(self):
+        files = [os.path.join(UI, "index.html")]
+        try:
+            st = os.stat(files[0])
+            return ("nuxt", os.path.realpath(UI), st.st_mtime_ns, st.st_size, st.st_ino)
+        except OSError:
+            pass
+        out = ["legacy"]
+        for name in ("index.html", "app.js", "style.css"):
+            try:
+                st = os.stat(os.path.join(STATIC, name))
+                out.append((name, st.st_mtime_ns, st.st_size, st.st_ino))
+            except OSError:
+                out.append((name, None))
+        return tuple(out)
+
+    def refresh(self):
+        """True, wenn sich die installierte Oberflaeche geaendert hat."""
+        key = self._key()
+        with self.lock:
+            if key == self.key:
+                return False
+        info = self._load(key)
+        with self.lock:
+            changed = self.info is None or info["version"] != self.info["version"]
+            self.key, self.info = key, info
+        return changed
+
+    @staticmethod
+    def _load(key):
+        if key[0] == "nuxt":
+            root = os.path.realpath(UI)
+            with open(os.path.join(root, "index.html"), "rb") as f:
+                index = f.read()
+            scripts, styles = inline_hashes(index.decode("utf-8", "replace"))
+            digest = hashlib.sha256(index).hexdigest()
+            installed = os.stat(os.path.join(root, "index.html")).st_mtime
+            return {"kind": "nuxt", "root": root, "index": index, "version": digest[:16], "csp": page_csp(scripts, styles),
+                    "etag": f'"{digest[:32]}"', "installed": installed}
+        h = hashlib.sha256()
+        for name in ("index.html", "app.js", "style.css"):
+            try:
+                with open(os.path.join(STATIC, name), "rb") as f:
+                    h.update(f.read())
+            except OSError:
+                pass
+        return {"kind": "legacy", "root": STATIC, "index": None, "version": "legacy-" + h.hexdigest()[:16],
+                "csp": CSP, "etag": None, "installed": None}
+
+    def current(self):
+        with self.lock:
+            info = self.info
+        if info is None:
+            self.refresh()
+            with self.lock:
+                info = self.info
+        return info
+
+    def public(self):
+        info = self.current()
+        installed = info["installed"]
+        return {"version": info["version"], "ui": info["kind"],
+                "installed": datetime.datetime.fromtimestamp(installed, datetime.timezone.utc)
+                .isoformat(timespec="seconds").replace("+00:00", "Z") if installed else None}
+
+    def loop(self):
+        while True:
+            try:
+                if self.refresh():
+                    events.publish("version", self.public(), state=True)
+                    log(f"UI: version {self.public()['version']}")
+            except Exception as e:      # eine halb kopierte Oberflaeche: beim naechsten Mal
+                log(f"UI unreadable: {type(e).__name__}")
+            time.sleep(UI_CHECK_SECONDS)
+
+    def start(self):
+        try:
+            self.refresh()
+        except Exception as e:
+            log(f"UI unreadable: {type(e).__name__}")
+        if self.info:
+            events.publish("version", self.public(), state=True)
+        threading.Thread(target=self.loop, name="ui-version", daemon=True).start()
+
+
+ui = UiBuild()
+
+
+def serve_legacy(handler, path):
+    """Die bisherige Oberflaeche: drei feste Dateien, sonst 404 wie bisher."""
+    name, ctype = STATIC_FILES[path]
+    with open(os.path.join(STATIC, name), "rb") as f:
+        return handler.send(200, f.read(), ctype)
+
+
+def serve_page(handler, path):
+    """GET (und HEAD) ausserhalb von /api/: die Oberflaeche."""
+    info = ui.current()
+    if info["kind"] == "legacy":
+        if path in STATIC_FILES:
+            return serve_legacy(handler, path)
+        return handler.send_json(404, {"error": "not found"})
+    # die bisherige Oberflaeche bleibt unter /legacy/ erreichbar, solange sie installiert ist
+    if path in ("/legacy", "/legacy/"):
+        return serve_legacy(handler, "/")
+    if path in ("/app.js", "/style.css"):
+        return serve_legacy(handler, path)
+    rel = unquote(path)
+    parts = rel.split("/")
+    if "\x00" in rel or "\\" in rel or any(p in (".", "..") for p in parts):
+        return handler.send_json(404, api_error("not_found", "Not found"))
+    if rel not in ("/", "/index.html"):
+        full = os.path.realpath(os.path.join(info["root"], rel.lstrip("/")))
+        if full.startswith(info["root"] + os.sep) and os.path.isfile(full):
+            return serve_file(handler, rel, full)
+        # fehlende Dateien bleiben 404, statt HTML zu bekommen
+        if rel.startswith(IMMUTABLE) or os.path.splitext(parts[-1])[1].lower() in TYPES:
+            return handler.send_json(404, api_error("not_found", "Not found"))
+    if handler.headers.get("If-None-Match") == info["etag"]:
+        return handler.send(304, b"", "text/html; charset=utf-8", cache="no-cache", csp=info["csp"],
+                            extra=[("ETag", info["etag"])])
+    return handler.send(200, info["index"], "text/html; charset=utf-8", cache="no-cache", csp=info["csp"],
+                        extra=[("ETag", info["etag"])])
+
+
+def serve_file(handler, rel, full):
+    ext = os.path.splitext(full)[1].lower()
+    st = os.stat(full)
+    etag = f'"{st.st_mtime_ns:x}-{st.st_size:x}"'
+    cache = "public, max-age=31536000, immutable" if rel.startswith(IMMUTABLE) else "no-cache"
+    csp = ui.current()["csp"]
+    extra = [("ETag", etag), ("Last-Modified", email.utils.formatdate(st.st_mtime, usegmt=True))]
+    ctype = TYPES.get(ext, "application/octet-stream")
+    if handler.headers.get("If-None-Match") == etag:
+        return handler.send(304, b"", ctype, cache=cache, csp=csp, extra=extra)
+    with open(full, "rb") as f:
+        return handler.send(200, f.read(), ctype, cache=cache, csp=csp, extra=extra)
+
+
+# --- API v1 ---------------------------------------------------------------------
+# Versioned, for the new UI (docs/control-room-api.md). Errors are
+# {"error": {"code": <stable>, "message": <English>, "detail": <optional>}}; the UI
+# translates the code. agentbox names the code itself (its --json failure on stderr); its
+# English message goes only into detail. Each call of agentbox is exactly one, as in the
+# old API, with fixed arguments and values as --option=value; agentbox checks everything
+# again.
+
+class ApiError(Exception):
+    """detail: what agentbox said about it (English); field: the request's field that is wrong."""
+
+    def __init__(self, status, code, message, detail=None, headers=(), field=None):
+        super().__init__(code)
+        self.status, self.code, self.message, self.detail, self.headers = status, code, message, detail, headers
+        self.field = field
+
+
+def api_error(code, message, detail=None, field=None):
+    error = {"code": code, "message": message}
+    if field:
+        error["field"] = field
+    if detail:
+        error["detail"] = detail
+    return {"error": error}
+
+
+def invalid(field, message):
+    return ApiError(400, "invalid_field", message[:1].upper() + message[1:], field=field)
+
+
+# Error code of agentbox (agentbox/errors.py, set where the failure arises) -> (HTTP status,
+# English message). Codes are groups and never matched by wording (ADR 0012); the UI
+# translates them (web/ui/i18n/locales, errors.*).
+AGENTBOX_ERRORS = {
+    "sudo_failed": (500, "The Control Room may not run agentbox (sudo)"),
+    "vm_not_found": (404, "No such VM"),
+    "name_reserved": (400, "This name is reserved"),
+    "invalid_name": (400, "Invalid VM name (a-z, 0-9 and -, 2 to 16 characters, starting with a letter)"),
+    "vm_being_deleted": (409, "This VM is being deleted"),
+    "vm_leftovers": (409, "Leftovers of an earlier VM of this name exist"),
+    "vm_exists": (409, "A VM of this name exists already"),
+    "no_free_network": (409, "No free network left"),
+    "confirmation_required": (400, "Confirm by typing the VM's name"),
+    "vm_not_running": (409, "The VM is not running"),
+    "vm_paused": (409, "The VM is paused; start it first, then try again"),
+    "invalid_memory": (400, "Memory limit out of range (at least 1024 MiB, at most the Host's memory)"),
+    "memory_not_applied": (500, "The memory limit is saved, but the VM was not defined again; "
+                                "agentbox regenerate finishes it"),
+    "guest_agent_unavailable": (503, "The VM's guest agent does not answer"),
+    "vm_query_timeout": (504, "The query in the VM took too long"),
+    "vm_journal_failed": (502, "Reading the VM's journal failed"),
+    "pairing_code_unavailable": (503, "No Pairing code found yet (Orca may still be starting)"),
+    "orca_unavailable": (503, "Orca in the VM does not answer"),
+    "vm_not_off": (409, "The VM did not stay off; the System disk is unchanged"),
+    "reset_start_failed": (500, "The System disk is fresh, but the VM did not start"),
+    "build_mismatch": (500, "The VM ran on another Build than its new System disk and was forced off; "
+                            "reset it again"),
+    "unpair_unsupported": (501, "Orca cannot remove a single device; revoke all pairings instead"),
+    "observer_not_removable": (409, "The Observer cannot be removed"),
+    "device_not_found": (404, "No such paired device"),
+    "no_pairings": (409, "Orca has no pairings to revoke"),
+    "domain_suspicious": (409, "This destination has strong Signals; only the CLI can allow it (--force)"),
+    "allowlist_entry_not_found": (404, "No such Allowlist entry"),
+    "allowlist_entry_permanent": (409, "This Allowlist entry is permanent"),
+    "force_required": (409, "This would lift strong Signals; only the CLI on the Host can do it (--force)"),
+    "watchlist_recreate_force_required": (409, "Creating the Watchlist again would reopen Open web; only the CLI "
+                                               "on the Host can do it (--force)"),
+    "builtin_entry": (409, "Built-in Legitimate domains cannot be changed"),
+    "watchlist_entry_not_found": (404, "No such Watchlist entry"),
+    "legitimate_domain_not_found": (404, "No such Legitimate domain"),
+    "invalid_category": (400, "Invalid category"),
+    "invalid_source": (400, "Invalid source (one line of printable characters)"),
+    "legitimate_unreadable": (409, "The record of the Legitimate domains on the Host cannot be read; "
+                                   "fix it there"),
+    "migration_required": (409, "The lists from before cannot be taken over completely; run "
+                                "agentbox migrate-lists on the Host first"),
+    "watchlist_unreadable": (409, "The Watchlist on the Host cannot be read; Open web stays closed until "
+                                  "it is fixed there"),
+    "invalid_domain": (400, "Invalid domain"),
+    "invalid_minutes": (400, "Minutes out of range (Settings: longest Open web)"),
+    "invalid_note": (400, "Invalid note (one line of printable characters)"),
+    "invalid_duration": (400, "Invalid duration"),
+    "unknown_setting": (400, "Unknown setting"),
+    "invalid_setting": (400, "Invalid value for a setting"),
+    "image_not_found": (404, "No such Image"),
+    "invalid_image": (400, "Invalid Image name"),
+    "invalid_build": (400, "Invalid Build"),
+    "build_not_found": (404, "No such Build"),
+    "containerfile_not_found": (404, "The installed Release has no Containerfile for this Image"),
+    "image_has_no_build": (409, "The Image has no Build yet"),
+    "update_running": (409, "An update of the Images runs already"),
+    "build_running": (409, "A Build is running already"),
+    "vm_uses_other_image": (409, "The VM uses another Image"),
+    "vm_pinned": (409, "The VM is pinned to a Build, so a Reset would not bring the new one; unpin it first"),
+    "not_set_up": (409, "Not set up on the Host yet"),
+    "claude_token_rejected": (422, "Anthropic rejected the token; nothing changed"),
+    "anthropic_unavailable": (502, "Anthropic answered unexpectedly; nothing changed, try again later"),
+    "invalid_claude_token": (400, "This is not a token from `claude setup-token`"),
+    "github_app_rejected": (422, "GitHub rejected the App ID or key; nothing changed"),
+    "github_unavailable": (502, "GitHub is not reachable or answered with an error"),
+    "invalid_private_key": (400, "This is not the GitHub App's private key (.pem file)"),
+    "invalid_app_id": (400, "Invalid App ID"),
+    "github_app_missing": (409, "No GitHub App is set up"),
+    "invalid_github_owner": (400, "Invalid GitHub owner name"),
+    "github_owner_required": (400, "At least one GitHub owner is needed"),
+    "journal_failed": (502, "Reading the journal failed"),
+    "invalid_argument": (400, "Invalid value"),
+    "action_failed": (500, "The action failed"),
+}
+# Without a code (a crash, an agentbox from before the codes) the exit code decides:
+# those of `agentbox logs` are 2 option, 3 VM off, 4 guest agent, 5 time limit, 6 journalctl
+# in the VM; anything else is action_failed.
+AGENTBOX_EXITS = {2: "invalid_argument", 3: "vm_not_running", 4: "guest_agent_unavailable",
+                  5: "vm_query_timeout", 6: "vm_journal_failed"}
+
+
+def cli_error(stderr):
+    """The failure agentbox reported with --json, as (code, message, params), else None:
+    the last line of stderr that is such a JSON object. Programs agentbox ran may have
+    written lines before it."""
+    for line in reversed(stderr.splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            said = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(said, dict) and isinstance(said.get("error"), str) and isinstance(said.get("message"), str):
+            params = said.get("params")
+            return said["error"], said["message"], params if isinstance(params, dict) else {}
+    return None
+
+
+def agentbox_failure(exit_code, stderr, stdout="", secrets_in=()):
+    """ApiError for a failed call of agentbox: the code from its --json failure on stderr
+    (one the table does not know is action_failed); without one, sudo's own refusal, else by
+    exit code. detail is agentbox's message without the request's secrets; field comes from
+    the parameters."""
+    said = cli_error(stderr)
+    if said:
+        error, text, params = said
+        if error not in AGENTBOX_ERRORS:
+            error = "action_failed"
+    else:
+        text, params = (stderr.strip() or stdout.strip()).removeprefix("agentbox: "), {}
+        error = "sudo_failed" if text.startswith("sudo: ") else AGENTBOX_EXITS.get(exit_code, "action_failed")
+    detail = hide(text, secrets_in).strip()[:500] or None
+    status, message = AGENTBOX_ERRORS[error]
+    return ApiError(status, error, message, detail, field=error_field(error, params))
+
+
+def error_field(error, params):
+    """The request field a refusal is about: the setting an invalid_setting names (only a
+    known key), memory_mib for invalid_memory."""
+    if error == "invalid_setting":
+        key = params.get("setting")
+        return key if isinstance(key, str) and key in SETTING_KEYS else None
+    if error == "invalid_memory":
+        return "memory_mib"
+    return None
+
+
+def run(*args, stdin=None, timeout=120, secrets_in=()):
+    """agentbox with --actor; its output (stdout) or ApiError. Every call passes --json, so a
+    failure names its code. secrets_in: values that never go back in an error."""
+    actor = getattr(request, "actor", None)
+    argv = [*AGENTBOX, *([f"--actor={actor}"] if actor else []), *args]
+    try:
+        r = subprocess.run(argv, input=stdin, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise ApiError(504, "timeout", "The action did not finish in time")
+    if r.returncode != 0:
+        raise agentbox_failure(r.returncode, r.stderr, r.stdout, secrets_in)
+    return r.stdout
+
+
+def run_json(*args, **kw):
+    out = run(*args, **kw)
+    try:
+        return json.loads(out or "null")
+    except ValueError:
+        raise ApiError(502, "bad_agentbox_answer", "Unreadable answer from agentbox")
+
+
+def hide(text, values):
+    """The text without these secrets (as scrub: whole, without whitespace, line by line)."""
+    for v in values:
+        if not isinstance(v, str):
+            continue
+        parts = {v.strip(), "".join(v.split()), *(line.strip() for line in v.splitlines())}
+        for part in sorted((p for p in parts if len(p) >= 16), key=len, reverse=True):
+            text = text.replace(part, "[hidden]")
+    return text
+
+
+# --- Werte aus Anfragen ---
+
+def value(body, key, required=False):
+    """Text oder ganze Zahl als getrimmter Text; None, wenn er fehlt (oder leer ist)."""
+    v = body.get(key)
+    if v is None or v == "":
+        if required:
+            raise invalid(key, f"{key} is missing")
+        return None
+    if isinstance(v, bool) or not isinstance(v, (str, int)):
+        raise invalid(key, f"{key} must be text or a whole number")
+    v = str(v).strip()
+    if not v and required:
+        raise invalid(key, f"{key} is missing")
+    return v or None
+
+
+def word(body, key, required=True):
+    """Ein Wert, der als Argument steht (Domain, Geraet, ...): nie etwas wie eine Option."""
+    v = value(body, key, required)
+    if v is not None and v.startswith("-"):
+        raise invalid(key, f"invalid {key}")
+    return v
+
+
+def names(body, key):
+    v = body.get(key)
+    if v is None:
+        return []
+    if not isinstance(v, list) or not all(isinstance(o, str) for o in v):
+        raise invalid(key, f"{key} must be a list of names")
+    out = [o.strip() for o in v if o.strip()]
+    if any(o.startswith("-") for o in out):
+        raise invalid(key, f"invalid name in {key}")
+    return out
+
+
+def path_word(v, what):
+    v = unquote(v)
+    if not v or v.startswith("-") or not v.isprintable() or "/" in v:
+        raise ApiError(400, "invalid_field", f"Invalid {what}", field=what)
+    return v
+
+
+def options(url, filters):
+    """Query-Parameter -> --option=wert (nur die bekannten, wie in der alten API)."""
+    try:
+        return query_options(url.query, filters)
+    except ValueError:
+        raise ApiError(400, "invalid_query", "Each query parameter may appear once")
+
+
+V1_DURATIONS = ("15min", "1h", "8h", "7d")
+
+
+def duration_args(body, temporary_only=False):
+    d = body.get("duration")
+    if d in V1_DURATIONS:
+        return [f"--for={d}"]
+    if not temporary_only and d in (None, "permanent"):
+        return []
+    if not temporary_only and d == "default":
+        return ["--temporary"]
+    raise invalid("duration", "duration must be " + ("" if temporary_only else "permanent, default, ")
+                  + "15min, 1h, 8h or 7d")
+
+
+def text_args(body, key):
+    """--key=wert eines optionalen Textfelds (Quelle eines Eintrags der Verdachtsliste)."""
+    v = body.get(key)
+    if v is None:
+        return []
+    if not isinstance(v, str):
+        raise invalid(key, f"{key} must be text")
+    return [f"--{key}={v}"]
+
+
+def note_args(body, required=False):
+    n = body.get("note")
+    if n is None and not required:
+        return []
+    if not isinstance(n, str):
+        raise invalid("note", "note must be text")
+    return [f"--note={n}"]
+
+
+# --- Endpunkte ---
+# Jeder bekommt (handler, Pfad-Teile, url, body) und gibt (Status, Objekt) zurueck.
+
+ROUTES = []
+
+
+def route(method, pattern, secret=(), public=False):
+    """secret: Felder des Bodys, die Geheimnisse tragen (nie in Antwort, Fehler oder Log);
+    public: ohne Anmeldung erreichbar."""
+    def add(fn):
+        ROUTES.append((method, re.compile("/api/v1" + pattern), fn, secret, public))
+        return fn
+    return add
+
+
+VM = r"/vms/(?P<vm>[a-z][a-z0-9-]{1,15})"
+SCOPE = r"/allowlist/(?P<scope>[a-z][a-z0-9-]{1,15})/(?P<domain>[^/]+)"
+IMAGE = r"/images/(?P<image>[a-z0-9][a-z0-9-]{0,31})"
+
+
+def iso(epoch):
+    return datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).isoformat(timespec="seconds") \
+        .replace("+00:00", "Z")
+
+
+@route("GET", "/session")
+def get_session(h, m, url, body):
+    token = h.session()
+    with lock:
+        expires = sessions.get(token)
+    return 200, {"authenticated": True, "expires": iso(expires) if expires else None,
+                 "default_language": default_language()}
+
+
+@route("POST", "/session", secret=("password",), public=True)
+def post_session(h, m, url, body):
+    password = body.get("password")
+    if not isinstance(password, str):
+        raise invalid("password", "password is missing")
+    result, v = h.attempt_login(password)
+    if result == "locked":
+        raise ApiError(429, "too_many_attempts", "Too many failed sign-ins, try again later",
+                       headers=[("Retry-After", str(v))])
+    if result == "wrong":
+        raise ApiError(401, "wrong_password", "Wrong password")
+    token = v.split(";")[0].partition("=")[2]
+    with lock:
+        expires = sessions.get(token)
+    return 200, {"authenticated": True, "expires": iso(expires) if expires else None,
+                 "default_language": default_language()}, [("Set-Cookie", v)]
+
+
+@route("DELETE", "/session", public=True)
+def delete_session(h, m, url, body):
+    token = h.session()
+    with lock:
+        sessions.pop(token, None)
+    if token:
+        signin_activity(h, "signout")
+    return 200, {"authenticated": False}, [("Set-Cookie", "agentbox=; Max-Age=0; Path=/; Secure; HttpOnly; "
+                                                          "SameSite=Strict")]
+
+
+SEMVER = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?")
+
+
+def release():
+    """Die Version dieses Releases (Datei VERSION, dieselbe wie `agentbox version`: paths.VERSION,
+    neben dem Paket); None, wenn es keine gueltige gibt."""
+    try:
+        with open(os.environ.get("AGENTBOX_WEB_RELEASE_FILE", paths.VERSION), encoding="utf-8") as f:
+            text = f.read().strip()
+    except OSError:
+        return None
+    return text if SEMVER.fullmatch(text) else None
+
+
+@route("GET", "/version")
+def get_version(h, m, url, body):
+    # `version` ist der Stand der Oberflaeche (Neuladen anbieten), `release` die Version von Agent Box
+    return 200, {"api": 1, **ui.public(), "release": release()}
+
+
+@route("GET", "/events")
+def get_events(h, m, url, body):
+    serve_events(h, v1=True)
+
+
+@route("GET", "/host")
+def get_host(h, m, url, body):
+    if sampler is None:
+        raise ApiError(503, "readings_unavailable", "Host readings are not available")
+    return 200, sampler.snapshot()
+
+
+@route("GET", "/system")
+def get_system(h, m, url, body):
+    with watcher.lock:
+        status, reboot, services = dict(watcher.status), watcher.reboot, watcher.services
+    return 200, {"watch": status, "host_reboot": reboot, "services": services, "ui": ui.public()}
+
+
+# VMs
+
+@route("GET", "/vms")
+def get_vms(h, m, url, body):
+    return 200, run_json("describe", "--json", timeout=120)
+
+
+@route("POST", "/vms")
+def post_vms(h, m, url, body):
+    name = value(body, "name", required=True)
+    if not VM_NAME.fullmatch(name):
+        raise ApiError(400, "invalid_name", "Invalid VM name (a-z, 0-9 and -, 2 to 16 characters, starting "
+                                            "with a letter)", field="name")
+    args = [f"{opt}={v}" for key, opt in CREATE_FIELDS.items() if (v := value(body, key)) is not None]
+    args += [f"--owner={o}" for o in names(body, "github_owners")]
+    return 201, run_json("create", name, *args, "--json", timeout=600)
+
+
+@route("GET", VM)
+def get_vm(h, m, url, body):
+    return 200, run_json("describe", m["vm"], "--json", timeout=120)
+
+
+@route("DELETE", VM)
+def delete_vm(h, m, url, body):
+    vm = m["vm"]
+    if body.get("confirm") != vm:
+        raise ApiError(400, "confirmation_required", "Confirm by typing the VM's name", field="confirm")
+    data = body.get("delete_data_disk", False)
+    if not isinstance(data, bool):
+        raise invalid("delete_data_disk", "delete_data_disk must be true or false")
+    return 200, run_json("delete", vm, f"--confirm={vm}", *(["--delete-data-disk"] if data else []), "--json",
+                         timeout=600)
+
+
+def lifecycle(command, timeout=300):
+    def handle(h, m, url, body):
+        extra = []
+        if command == "reset":
+            start = body.get("start", True)
+            if not isinstance(start, bool):
+                raise invalid("start", "start must be true or false")
+            extra = [] if start else ["--no-start"]
+        return 200, run_json(command, m["vm"], *extra, "--json", timeout=timeout)
+    handle.__name__ = f"post_{command}"
+    return handle
+
+
+for _command in ("start", "pause", "restart", "reset", "focus"):
+    route("POST", VM + "/" + _command)(lifecycle(_command))
+
+
+@route("DELETE", "/focus")
+def delete_focus(h, m, url, body):
+    return 200, run_json("focus", "off", "--json", timeout=300)
+
+
+@route("PUT", VM + "/github-owners")
+def put_owners(h, m, url, body):
+    owners = names(body, "owners")
+    if not owners:
+        raise ApiError(400, "github_owner_required", "At least one GitHub owner is needed", field="owners")
+    return 200, run_json("set-owners", m["vm"], *owners, "--json")
+
+
+@route("PUT", VM + "/image")
+def put_image(h, m, url, body):
+    image, build = body.get("image"), body.get("build")
+    if not isinstance(image, str) or not IMAGE_NAME.fullmatch(image):
+        raise invalid("image", "invalid image")
+    if build is not None and (not isinstance(build, str) or not BUILD_ID.fullmatch(build)):
+        raise invalid("build", "build must be null or a Build")
+    return 200, run_json("set-image", m["vm"], image, *([f"--build={build}"] if build else []), "--json")
+
+
+@route("PUT", VM + "/memory")
+def put_memory(h, m, url, body):
+    mib = body.get("memory_mib")
+    if isinstance(mib, bool) or not isinstance(mib, int) or mib < 0:
+        raise invalid("memory_mib", "memory_mib must be a whole number of MiB")
+    return 200, run_json("set-memory", m["vm"], str(mib), "--json")
+
+
+@route("PUT", VM + "/claude-token", secret=("token",))
+def put_claude_token(h, m, url, body):
+    token = body.get("token")
+    if not isinstance(token, str) or not token.strip():
+        raise invalid("token", "token is missing")
+    return 200, run_json("set-claude-token", m["vm"], "--no-prompt", "--json", stdin=token, secrets_in=(token,))
+
+
+@route("POST", VM + "/open-web")
+def post_open_web(h, m, url, body):
+    minutes = body.get("minutes", 30)
+    if isinstance(minutes, bool) or not isinstance(minutes, int):
+        raise invalid("minutes", "minutes must be a whole number")
+    return 200, run_json("open-web", m["vm"], str(minutes), "--json")
+
+
+@route("DELETE", VM + "/open-web")
+def delete_open_web(h, m, url, body):
+    return 200, run_json("close-web", m["vm"], "--json")
+
+
+@route("GET", VM + "/logs")
+def get_logs(h, m, url, body):
+    filters = {k: v for k, v in LOG_FILTERS.items()}
+    return 200, run_json("logs", m["vm"], *options(url, filters), "--json", timeout=60)
+
+
+@route("GET", VM + "/blocked")
+def get_blocked(h, m, url, body):
+    return 200, run_json("blocked", m["vm"], "--json")
+
+
+@route("GET", VM + "/alerts")
+def get_alerts(h, m, url, body):
+    return 200, run_json("alerts", m["vm"], "--json")
+
+
+@route("POST", VM + "/alerts/seen")
+def post_alerts_seen(h, m, url, body):
+    d = word(body, "domain", required=False)
+    return 200, run_json("mark-seen", m["vm"], *([d.lower()] if d else []), "--json")
+
+
+@route("GET", VM + "/github-tokens")
+def get_github_tokens(h, m, url, body):
+    return 200, run_json("github-tokens", m["vm"], *options(url, TOKEN_FILTERS), "--json")
+
+
+@route("GET", VM + "/allowlist")
+def get_vm_allowlist(h, m, url, body):
+    return 200, run_json("allowlist", m["vm"], "--json")
+
+
+@route("GET", VM + "/pairings")
+def get_pairings(h, m, url, body):
+    return 200, run_json("pairings", m["vm"], "--json", timeout=60)
+
+
+@route("POST", VM + "/pairing-code")
+def post_pairing_code(h, m, url, body):
+    # der Code gibt vollen Zugriff auf die VM: nur mit ausdruecklicher Bestaetigung
+    if body.get("confirm") is not True:
+        raise ApiError(400, "confirmation_required", "Reveal the Pairing code only with confirm: true",
+                       field="confirm")
+    return 200, run_json("pair", m["vm"], "--json", timeout=300)
+
+
+@route("POST", VM + "/pairings/remove")
+def post_unpair(h, m, url, body):
+    return 200, run_json("unpair", m["vm"], word(body, "device"), "--json")
+
+
+@route("POST", VM + "/pairings/revoke")
+def post_revoke(h, m, url, body):
+    vm = m["vm"]
+    if body.get("confirm") != vm:
+        raise ApiError(400, "confirmation_required", "Confirm by typing the VM's name", field="confirm")
+    return 200, run_json("revoke-pairings", vm, f"--confirm={vm}", "--json", timeout=240)
+
+
+# Allowlist
+
+@route("GET", "/allowlist")
+def get_allowlist(h, m, url, body):
+    vm = (query_value(url, "vm") or "").strip()
+    if vm and not VM_NAME.fullmatch(vm):
+        raise ApiError(404, "vm_not_found", "No such VM", field="vm")
+    return 200, run_json("allowlist", *([vm] if vm else []), "--json")
+
+
+def query_value(url, key):
+    try:
+        values = parse_qs(url.query, max_num_fields=8).get(key, [])
+    except ValueError:
+        raise ApiError(400, "invalid_query", "Too many query parameters")
+    if len(values) > 1:
+        raise ApiError(400, "invalid_query", "Each query parameter may appear once", field=key)
+    return values[0] if values else None
+
+
+def scope(v):
+    if not isinstance(v, str) or v != "all" and not VM_NAME.fullmatch(v):
+        raise invalid("scope", "scope must be all or a VM")
+    return v
+
+
+@route("POST", "/allowlist")
+def post_allowlist(h, m, url, body):
+    s = scope(body.get("scope"))
+    d = word(body, "domain").lower()
+    return 201, run_json("allow", s, d, *duration_args(body), *note_args(body), "--json")
+
+
+@route("DELETE", SCOPE)
+def delete_allowlist(h, m, url, body):
+    return 200, run_json("disallow", scope(m["scope"]), path_word(m["domain"], "domain").lower(), "--json")
+
+
+@route("POST", SCOPE + "/extend")
+def post_extend(h, m, url, body):
+    return 200, run_json("extend", scope(m["scope"]), path_word(m["domain"], "domain").lower(),
+                         *duration_args(body, temporary_only=True), "--json")
+
+
+@route("POST", SCOPE + "/make-permanent")
+def post_make_permanent(h, m, url, body):
+    return 200, run_json("make-permanent", scope(m["scope"]), path_word(m["domain"], "domain").lower(), "--json")
+
+
+@route("PUT", SCOPE + "/note")
+def put_note(h, m, url, body):
+    return 200, run_json("set-note", scope(m["scope"]), path_word(m["domain"], "domain").lower(),
+                         *note_args(body, required=True), "--json")
+
+
+# Watchlist
+
+@route("GET", "/watchlist")
+def get_watchlist(h, m, url, body):
+    return 200, run_json("watchlist", "--json")
+
+
+@route("GET", "/watchlist/check")
+def get_check_domain(h, m, url, body):
+    d = (query_value(url, "domain") or "").strip()
+    if not d or d.startswith("-"):
+        raise ApiError(400, "invalid_domain", "Invalid domain", field="domain")
+    return 200, run_json("check-domain", d.lower(), "--json", timeout=60)
+
+
+@route("GET", "/watchlist/harmless")
+def get_harmless(h, m, url, body):
+    return 200, run_json("harmless", "--json")
+
+
+@route("PUT", r"/watchlist/harmless/(?P<domain>[^/]+)")
+def put_harmless(h, m, url, body):
+    return 200, run_json("mark-harmless", path_word(m["domain"], "domain").lower(), "--json")
+
+
+@route("DELETE", r"/watchlist/harmless/(?P<domain>[^/]+)")
+def delete_harmless(h, m, url, body):
+    return 200, run_json("unmark-harmless", path_word(m["domain"], "domain").lower(), "--json")
+
+
+# Verdachtsliste von Hand und legitime Domains: was starke Merkmale aufhoebe, nur mit
+# --force, das der Leitstand nie uebergibt (agentbox antwortet dann force_required)
+WATCH_ENTRY = r"/watchlist/entries/(?P<domain>[^/]+)"
+LEGITIMATE = r"/watchlist/legitimate/(?P<domain>[^/]+)"
+
+
+@route("POST", "/watchlist/entries")
+def post_watchlist_entry(h, m, url, body):
+    d = word(body, "domain").lower()
+    category = word(body, "category")
+    return 201, run_json("watch-add", d, f"--category={category}", *text_args(body, "source"), *note_args(body),
+                         "--json")
+
+
+@route("DELETE", WATCH_ENTRY)
+def delete_watchlist_entry(h, m, url, body):
+    return 200, run_json("watch-remove", path_word(m["domain"], "domain").lower(), "--json")
+
+
+@route("PUT", WATCH_ENTRY + "/note")
+def put_watchlist_note(h, m, url, body):
+    return 200, run_json("watch-set-note", path_word(m["domain"], "domain").lower(),
+                         *note_args(body, required=True), "--json")
+
+
+@route("GET", "/watchlist/legitimate")
+def get_legitimate(h, m, url, body):
+    return 200, run_json("legitimate", "--json")
+
+
+@route("POST", "/watchlist/legitimate")
+def post_legitimate(h, m, url, body):
+    return 201, run_json("legitimate-add", word(body, "domain").lower(), *note_args(body), "--json", timeout=60)
+
+
+@route("DELETE", LEGITIMATE)
+def delete_legitimate(h, m, url, body):
+    return 200, run_json("legitimate-remove", path_word(m["domain"], "domain").lower(), "--json")
+
+
+@route("PUT", LEGITIMATE + "/note")
+def put_legitimate_note(h, m, url, body):
+    return 200, run_json("legitimate-set-note", path_word(m["domain"], "domain").lower(),
+                         *note_args(body, required=True), "--json")
+
+
+# Activity
+
+@route("GET", "/activity")
+def get_activity(h, m, url, body):
+    return 200, run_json("activity", *options(url, ACTIVITY_FILTERS), "--json", timeout=120)
+
+
+# Images und Builds
+
+@route("GET", "/images")
+def get_images(h, m, url, body):
+    return 200, run_json("images", "--json")
+
+
+@route("POST", "/builds")
+def post_builds(h, m, url, body):
+    """Ein Build; mit reset ein Update: wenn der Build gelingt, setzt seine Unit diese VMs darauf zurueck."""
+    image, reset = body.get("image"), body.get("reset", [])
+    if not isinstance(reset, list) or len(reset) > 64 or \
+            not all(isinstance(v, str) and VM_NAME.fullmatch(v) for v in reset):
+        raise invalid("reset", "reset must be a list of VM names")
+    if image == "all":
+        if reset:
+            raise invalid("reset", "reset needs one Image, not all")
+        return 202, run_json("build", "--all", "--json", timeout=60)
+    if not isinstance(image, str) or not IMAGE_NAME.fullmatch(image):
+        raise invalid("image", "image must be the name of an Image or all")
+    return 202, run_json("build", image, *[f"--reset={v}" for v in reset], "--json", timeout=60)
+
+
+@route("POST", "/updates")
+def post_updates(h, m, url, body):
+    """Update jetzt (#114): Versionen pruefen, jedes Image mit Update bauen, danach (wenn alle
+    Builds gelingen) die VMs aus reset zuruecksetzen; laeuft als Unit, antwortet sofort."""
+    reset = body.get("reset", [])
+    if not isinstance(reset, list) or len(reset) > 64 or \
+            not all(isinstance(v, str) and VM_NAME.fullmatch(v) for v in reset):
+        raise invalid("reset", "reset must be a list of VM names")
+    return 202, run_json("update-now", *[f"--reset={v}" for v in reset], "--json", timeout=60)
+
+
+@route("GET", IMAGE + "/log")
+def get_build_log(h, m, url, body):
+    build = (query_value(url, "build") or "").strip()
+    if build and not BUILD_ID.fullmatch(build):
+        raise ApiError(400, "invalid_build", "Invalid Build", field="build")
+    return 200, run_json("build-log", m["image"], *([build] if build else []),
+                         *options(url, BUILD_LOG_FILTERS), "--json", timeout=60)
+
+
+@route("GET", IMAGE + "/containerfile")
+def get_containerfile(h, m, url, body):
+    """Das Containerfile des Images aus dem installierten Release, als Text (#67); nur vom Host
+    gelesen, nie aus dem Netz geholt."""
+    return 200, run_json("containerfile", m["image"], "--json", timeout=60)
+
+
+# GitHub App und Settings
+
+@route("GET", "/github-app")
+def get_github_app(h, m, url, body):
+    return 200, run_json("github-app", "--json", timeout=120)
+
+
+@route("PUT", "/github-app", secret=("private_key",))
+def put_github_app(h, m, url, body):
+    app_id = body.get("app_id")
+    if isinstance(app_id, bool) or not isinstance(app_id, (str, int)) or not APP_ID.fullmatch(str(app_id).strip()):
+        raise ApiError(400, "invalid_app_id", "Invalid App ID", field="app_id")
+    key = body.get("private_key")
+    if not isinstance(key, str) or not key.strip():
+        raise invalid("private_key", "private_key is missing")
+    return 200, run_json("set-github-app", str(app_id).strip(), "--no-prompt", "--json", stdin=key,
+                         secrets_in=(key,), timeout=120)
+
+
+@route("GET", "/settings")
+def get_settings(h, m, url, body):
+    return 200, run_json("settings", "--json")
+
+
+@route("PATCH", "/settings")
+def patch_settings(h, m, url, body):
+    if not body:
+        raise ApiError(400, "invalid_field", "No setting given")
+    args = []
+    for key, v in body.items():
+        if key not in SETTING_KEYS:
+            raise ApiError(400, "unknown_setting", "Unknown setting", field=str(key)[:40])
+        if setting_text(key, v) is None:
+            raise invalid(key, f"{key} must be " + ("true or false" if key in BOOL_SETTINGS
+                                                     else "text or a whole number"))
+        args.append(f"{key}={setting_text(key, v)}")
+    return 200, run_json("set-settings", *args, "--json", timeout=120)
+
+
+def v1(handler, method, url):
+    """Eine Anfrage an /api/v1/...: CSRF, Route, Anmeldung, Endpunkt, Fehlerformat."""
+    path = url.path
+    status, result, extra, code = 500, None, [], None
+    name, vm, secret, body, read = "-", None, (), {}, method == "GET"
+    try:
+        # Schutz gegen Cross-Site-Requests wie in der alten API: nur das eigene JS setzt
+        # diesen Header; ohne ihn wird der Body nicht gelesen
+        if method != "GET" and handler.headers.get("X-Agentbox") != "1":
+            raise ApiError(403, "csrf_header_missing", "Requests that change something need the header "
+                                                       "X-Agentbox: 1")
+        found, allowed = None, []
+        for r_method, pattern, fn, secret_fields, public in ROUTES:
+            match = pattern.fullmatch(path)
+            if match:
+                allowed.append(r_method)
+                if r_method == method:
+                    found = (match, fn, secret_fields, public)
+        if not found and not handler.session() and not (path == "/api/v1/session"):
+            raise ApiError(401, "unauthenticated", "Not signed in")
+        if not found and allowed:
+            raise ApiError(405, "method_not_allowed", "Method not allowed", headers=[("Allow", ", ".join(allowed))])
+        if not found:
+            raise ApiError(404, "not_found", "Not found")
+        match, fn, secret, public = found
+        name, vm = fn.__name__, match.groupdict().get("vm")
+        if not public and not handler.session():
+            raise ApiError(401, "unauthenticated", "Not signed in")
+        if method != "GET":
+            try:
+                too_big = int(handler.headers.get("Content-Length") or 0) > MAX_BODY
+            except ValueError:
+                too_big = True
+            if too_big:
+                raise ApiError(413, "body_too_large", "The body must be a JSON object of at most 8 KiB")
+            read = True
+            try:
+                body = handler.body()
+            except (ValueError, json.JSONDecodeError):
+                raise ApiError(400, "invalid_body", "The body must be a JSON object of at most 8 KiB")
+        answer = fn(handler, match, url, body)
+        if answer is None:              # der Endpunkt hat selbst geantwortet (events)
+            return
+        status, result, *rest = answer
+        extra = rest[0] if rest else []
+    except ApiError as e:
+        status, code, extra = e.status, e.code, list(e.headers)
+        detail = hide(e.detail, [body.get(f) for f in secret]) if e.detail and secret else e.detail
+        result = api_error(e.code, e.message, detail, e.field)
+    except Exception as e:              # ein Fehler hier darf keine Antwort ohne Format geben
+        log(f"{handler.ip()}: v1 {method} {name}: internal error {type(e).__name__}")
+        status, code, result = 500, "internal_error", api_error("internal_error", "Internal error")
+    if not read and status != 403:
+        # eine fruehe Antwort (401, 404, ...): den Body trotzdem abnehmen, sonst sieht der
+        # Browser statt der Antwort einen Verbindungsabbruch
+        handler.drain()
+    # eigenes Log wie bisher: Aenderungen und Fehler, nie Inhalte (Codes, Tokens, Schluessel)
+    if method != "GET" or status >= 500:
+        log(f"{handler.ip()}: {vm or '-'} v1 {method} {name} -> {'ok' if status < 400 else 'FAILED'}"
+            + (f" {code}" if code else ""))
+    return handler.send_json(status, result, extra=extra)
+
+
+def main():
+    if sys.argv[1:] == ["--hash-password"]:
+        pw = sys.stdin.readline().rstrip("\n")
+        if len(pw) < 16:
+            sys.exit("the password needs at least 16 characters")
+        print(make_hash(pw))
+        return
+    bind, port = bind_port()
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.load_cert_chain(f"{CONF}/cert.pem", f"{CONF}/key.pem")
+    httpd = Server((bind, port), Handler, ctx)
+    start_readings()
+    ui.start()
+    watcher.start()
+    # der gebundene Port: mit AGENTBOX_WEB_PORT=0 waehlt ihn der Kernel (Tests lesen ihn hier)
+    log(f"Control Room running on https://{bind}:{httpd.server_address[1]}")
+    httpd.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

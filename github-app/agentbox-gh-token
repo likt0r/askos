@@ -1,0 +1,35 @@
+#!/usr/bin/python3 -I
+"""Fetches a short-lived GitHub token for one repository (inside the VM).
+
+  agentbox-gh-token <owner>/<repo>
+
+Asks the VM's token service on the Host at AGENTBOX_GH_ADDR (host:port).
+"""
+import json
+import os
+import socket
+import sys
+
+
+def connect():
+    host, _, port = os.environ.get("AGENTBOX_GH_ADDR", "").rpartition(":")
+    if not host or not port.isdigit():
+        sys.exit("agentbox-gh-token: AGENTBOX_GH_ADDR is missing (host:port of the token service)")
+    return socket.create_connection((host, int(port)), timeout=30)
+
+
+def fetch(repo):
+    with connect() as s:
+        s.sendall(f"{repo}\n".encode())
+        s.shutdown(socket.SHUT_WR)
+        data = b"".join(iter(lambda: s.recv(4096), b""))
+    answer = json.loads(data)
+    if "error" in answer:
+        sys.exit(f"agentbox-gh-token: {answer['error']}")
+    return answer["token"]
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        sys.exit(__doc__.strip())
+    print(fetch(sys.argv[1]))

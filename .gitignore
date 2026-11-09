@@ -1,0 +1,14 @@
+# never commit credentials
+*.pem
+*.key
+.env
+.env.*
+secrets/
+# build and editor leftovers
+__pycache__/
+*.pyc
+node_modules/
+web/ui/.nuxt/
+web/ui/.output/
+# the UI build: CI builds it from the lockfile (ADR 0011), `npm run generate` in a VM too
+web/ui/dist/

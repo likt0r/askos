@@ -1,0 +1,804 @@
+#!/usr/bin/python3 -I
+"""Einstufung verdaechtiger Ziele fuer den Allowlist-Proxy.
+
+Wird vom Proxy als Modul geladen und von agentbox als Befehl genutzt:
+  agentbox-suspicious <host> [port]          gibt die Merkmale aus (leer = unauffaellig);
+                                             Exit 2 bei starkem Verdacht, Exit 3 (Grund auf
+                                             stderr), solange die Verdachtsliste von Hand
+                                             unlesbar ist: was stark ist, ist dann unbekannt
+  agentbox-suspicious --json <host> [port]   Merkmale mit Begruendung (agentbox check-domain)
+  agentbox-suspicious --watchlist            Verdachtsliste von Hand und Stand der HaGeZi-Listen
+                                             als JSON (agentbox watchlist)
+  agentbox-suspicious --constants            Kategorien der Verdachtsliste (stark oder nicht) und
+                                             die eingebauten legitimen Domains als JSON
+  agentbox-suspicious --lifts <domain>       was es aufhoebe, die Domain legitim zu machen:
+                                             starke Merkmale (ohne das Blockchain-Muster,
+                                             das bleibt) und Eintraege der Threat-
+                                             Intelligence-Liste darunter, als JSON
+  agentbox-suspicious --self-test            Selbsttest der Erkennung (agentbox setup): startet den
+                                             Proxy neben dieser Datei mit Testlisten
+
+Grundlage: Auswertung von Supply-Chain-Vorfaellen 2024-2026 (Shai-Hulud,
+s1ngularity, chalk/debug, axios, TanStack, keyv, GlassWorm). Feste Domains
+stehen in der Verdachtsliste; die Muster hier fangen auch Domains, die erst
+nach einem Vorfall bekannt werden. False Positives sind in Kauf genommen: das
+Ergebnis ist ein Hinweis, keine Sperre (ausser im offenen Web bei starken
+Merkmalen).
+
+Listen (jeweils inkl. Subdomains, bei Aenderung ohne Neustart neu gelesen; fuer die
+Merkmale bleibt bei einer kaputten Datei der letzte gute Stand, bei der Verdachtsliste
+von Hand auch, wenn sie fehlt. Ist sie kaputt oder fehlt sie ganz, sperrt der Proxy aber
+das offene Web):
+  /etc/agentbox/watchlist.json       Verdachtsliste von Hand (agentbox watch-add/-remove),
+                                     jeder Eintrag mit Kategorie und Quelle
+  /etc/agentbox/legitimate.json      bekannte legitime Domains (agentbox legitimate-add/
+                                     -remove) und die eingebauten (GENUINE): keine
+                                     Muster-Merkmale ausser dem Blockchain-Muster, Treffer der
+                                     HaGeZi-Listen fuer sie und darunter zaehlen nicht (beim
+                                     Einstufen, die Listen liegen ungefiltert)
+                                     Bis agentbox migrate-lists sie anlegt, gelten an ihrer
+                                     Stelle die Textdateien suspicious-domains und
+                                     legitimate-domains (eine Domain pro Zeile).
+  /etc/agentbox/harmless             als harmlos markiert (agentbox mark-harmless): loest
+                                     keine Alerts mehr aus, bleibt aber sonst, wie es ist
+                                     (im offenen Web gesperrt, Freigabe nur mit --force)
+  /var/lib/agentbox/feeds/           HaGeZi-Listen von agentbox-feeds (Timer):
+                                     threat-intelligence (Merkmal threat) und
+                                     newly-registered (Merkmal young)
+Die HaGeZi-Listen haben Millionen Eintraege. Sie liegen sortiert auf der Platte
+und werden per mmap mit binaerer Suche gelesen: jeder Proxy-Prozess teilt die
+Seiten mit allen anderen ueber den Page-Cache und laedt nichts in den Speicher.
+"""
+import ipaddress
+import json
+import math
+import mmap
+import os
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+
+CONF_DIR = os.environ.get("AGENTBOX_CONF_DIR", "/etc/agentbox")
+# Datensaetze des Hosts (schreibt nur agentbox) und die Textdateien davor
+WATCHLIST = os.path.join(CONF_DIR, "watchlist.json")
+LEGITIMATE = os.path.join(CONF_DIR, "legitimate.json")
+LEGACY_WATCHLIST = os.path.join(CONF_DIR, "suspicious-domains")
+LEGACY_LEGITIMATE = os.path.join(CONF_DIR, "legitimate-domains")
+HARMLESS = os.path.join(CONF_DIR, "harmless")
+FEEDS_DIR = os.environ.get("AGENTBOX_FEEDS_DIR", "/var/lib/agentbox/feeds")
+# Dateinamen der HaGeZi-Listen in FEEDS_DIR (agentbox-feeds schreibt sie)
+FEEDS = ("threat-intelligence", "newly-registered")
+FEED_STATUS = os.path.join(FEEDS_DIR, "status.json")
+
+# Bei diesen Merkmalen sperrt der Proxy auch im offenen Web
+STRONG = {"exfil", "c2", "tunnel", "paste", "phishing", "blockchain", "lookalike", "raw-ip", "metadata", "port",
+          "threat"}
+# Kategorien der Verdachtsliste von Hand (zugleich das Merkmal eines Treffers); payload ist schwach
+CATEGORIES = ("exfil", "c2", "tunnel", "paste", "phishing", "blockchain", "payload")
+# was agentbox (lists.py, network.py) in watchlist.json und legitimate.json zulaesst; ein
+# Eintrag, der davon abweicht, macht die Datei kaputt, fuer den Proxy wie fuer agentbox
+WATCH_FIELDS = (("domain", str), ("category", str), ("source", str), ("note", str), ("added", int),
+                ("added_by", str))
+LEGITIMATE_FIELDS = (("domain", str), ("note", str), ("added", int), ("added_by", str))
+MAX_TEXT = 200          # note und source
+DOMAIN = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+")
+# so viele Eintraege der Threat-Intelligence-Liste nennt --lifts hoechstens
+LIFTS_SHOWN = 5
+# Haengen nicht am Namen: gelten auch fuer legitime Domains und loesen auch fuer
+# harmlose Domains Alerts aus
+STRUCTURAL = {"port", "raw-ip", "metadata"}
+
+# Echte Domains der Marken, die gern nachgeahmt werden; zugleich die Vorlagen
+# fuer die Tippfehler-Pruefung (Namen ab MIN_TYPO Zeichen)
+GENUINE = {
+    "npmjs.org", "npmjs.com", "pypi.org", "pythonhosted.org", "python.org", "crates.io",
+    "rust-lang.org", "github.com", "githubusercontent.com", "githubassets.com", "github.io",
+    "ghcr.io", "anthropic.com", "claude.ai", "claude.com", "openai.com", "chatgpt.com",
+    "docker.io", "docker.com", "yarnpkg.com", "nodejs.org", "bun.sh", "opencode.ai",
+}
+BRANDS = ("npm", "npmjs", "pypi", "pythonhosted", "crates", "github", "ghcr", "anthropic",
+          "claude", "openai", "docker", "yarnpkg", "nodejs")
+# Kuerzere Namen sind zu oft echte Woerter oder Kuerzel (pypa): keine Tippfehler-Pruefung,
+# und kuerzere Vorlagen (bun, pypi, ghcr) machen fast jedes Wort zum Tippfehler (bunny)
+MIN_TYPO = 5
+TYPO_TARGETS = sorted({g.split(".")[0] for g in GENUINE if len(g.split(".")[0]) >= MIN_TYPO})
+ODD_TLDS = {"help", "lat", "top", "xyz", "click", "zip", "su", "mov", "icu", "cfd", "sbs", "rest",
+            "cyou", "buzz", "monster", "quest", "loan", "gq", "tk", "ml", "cf", "ga"}
+BLOCKCHAIN = re.compile(r"(^|\.)(solana\.|mainnet|rpc\.)|llamarpc|nodereal|getblock|infura|alchemy|quicknode|quiknode|ankr\.com|tronscan|trongrid")
+METADATA = {"169.254.169.254", "metadata.google.internal", "fd00:ec2::254", "100.100.100.200"}
+# Ein Eintrag der HaGeZi-Listen: Labels aus Buchstaben, Ziffern und Bindestrichen,
+# TLD aus Buchstaben oder Punycode (keine IP-Adressen)
+FEED_ENTRY = re.compile(rb"(?=.{4,253}\Z)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+([a-z]{2,63}|xn--[a-z0-9-]{1,59})")
+
+USAGE = ("agentbox-suspicious <host> [port] | --json <host> [port] | --watchlist | --constants | "
+         "--lifts <domain> | --self-test")
+
+
+# --- Listen -------------------------------------------------------------------
+
+# Pfad -> (Kennung der Datei, Inhalt, warum sie nicht lesbar ist oder None); bei einer
+# kaputten Datei ist der Inhalt ihr letzter guter Stand. Das Urteil haengt an der Kennung:
+# eine kaputte Datei, weg- und zurueckbenannt, bleibt kaputt
+_cache = {}
+
+
+def _read(path, parse, empty):
+    """(Inhalt, None) einer Liste, neu gelesen, wenn sich die Datei geaendert hat; (None,
+    None), wenn es sie nicht gibt. Ist sie nicht lesbar oder kaputt (parse wirft
+    ValueError): (der letzte gute Stand, ohne einen empty, warum)."""
+    hit = _cache.get(path)
+    last = hit[1] if hit else empty
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        return None, None
+    except OSError as e:
+        return last, e.strerror or type(e).__name__
+    key = (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size)
+    if hit is not None and hit[0] == key:
+        return hit[1], hit[2]
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            value, why = parse(f.read()), None
+    except OSError as e:
+        return last, e.strerror or type(e).__name__
+    except ValueError as e:
+        value, why = last, str(e) or type(e).__name__
+    _cache[path] = (key, value, why)
+    return value, why
+
+
+def _entries(text):
+    """Die Liste entries eines Datensatzes ({"entries": [{...}]}); ohne sie ist die Datei
+    kaputt (ValueError, wie fuer agentbox, lists.py)."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        raise ValueError("not valid JSON") from None
+    if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
+        raise ValueError("no list entries")
+    return data["entries"]
+
+
+def _printable(text, limit):
+    return "".join(c if c.isprintable() else "?" for c in text)[:limit]
+
+
+def _problem(e, fields):
+    """What is wrong with an entry of a record, else None; the same checks and texts as
+    in agentbox (lists.py), byte for byte."""
+    if not isinstance(e, dict):
+        return "not a JSON object"
+    for key, typ in fields:
+        if key not in e or isinstance(e[key], bool) or not isinstance(e[key], typ):
+            return f"field {key} missing or of the wrong type"
+    if not DOMAIN.fullmatch(e["domain"]):
+        return f"invalid domain {_printable(e['domain'], 60)}"
+    if fields is WATCH_FIELDS and e["category"] not in CATEGORIES:
+        return f"unknown category {_printable(e['category'], 20)}"
+    if len(e["note"]) > MAX_TEXT or len(e.get("source", "")) > MAX_TEXT:
+        return "text too long"
+    return None
+
+
+def _checked(text, fields):
+    """Die Eintraege eines Datensatzes; ein kaputter oder doppelter macht die ganze Datei
+    kaputt (ValueError), wie fuer agentbox."""
+    entries, seen = [], set()
+    for e in _entries(text):
+        why = _problem(e, fields)
+        if why:
+            raise ValueError(f"broken entry ({why})")
+        if e["domain"] in seen:
+            raise ValueError(f"{e['domain']} listed twice")
+        seen.add(e["domain"])
+        entries.append(e)
+    return entries
+
+
+def _watchlist_record(text):
+    """watchlist.json  ->  {domain: (kategorie, quelle)}; ein Tippfehler in der Kategorie
+    machte einen starken Eintrag sonst schwach."""
+    return {e["domain"]: (e["category"], e["source"]) for e in _checked(text, WATCH_FIELDS)}
+
+
+def _watchlist_text(text):
+    """<domain> <kategorie> # Quelle  ->  {domain: (kategorie, quelle)}"""
+    entries = {}
+    for line in text.splitlines():
+        body, _, source = line.partition("#")
+        parts = body.split()
+        if len(parts) >= 2:
+            entries[parts[0].lower().rstrip(".")] = (parts[1], source.strip())
+    return entries
+
+
+def _domains(text):
+    """Eine Domain pro Zeile (das erste Wort), Kommentare mit #."""
+    out = set()
+    for line in text.splitlines():
+        parts = line.split("#", 1)[0].split()
+        if parts:
+            out.add(parts[0].lower().rstrip("."))
+    return frozenset(out)
+
+
+def _legitimate_record(text):
+    """legitimate.json  ->  ihre Domains; kaputt zaehlen nur die eingebauten (oder im Proxy
+    der letzte gute Stand), das fuegt nur Merkmale hinzu."""
+    return frozenset(e["domain"] for e in _checked(text, LEGITIMATE_FIELDS))
+
+
+def _hand_watchlist():
+    """(Verdachtsliste von Hand, warum sie gerade nicht lesbar ist oder None). Fehlt
+    watchlist.json und die Textdatei davor auch, bleibt ihr letzter guter Stand, wie fuer
+    eine kaputte."""
+    found, why = _read(WATCHLIST, _watchlist_record, {})
+    if found is not None:
+        return found, why and f"{WATCHLIST}: {why}"
+    found, why = _read(LEGACY_WATCHLIST, _watchlist_text, {})
+    if found is None:
+        hit = _cache.get(WATCHLIST)
+        return (hit[1] if hit else {}), f"{WATCHLIST} missing"
+    return found, why and f"{LEGACY_WATCHLIST}: {why}"
+
+
+def hand_watchlist():
+    """Die Verdachtsliste von Hand, {domain: (kategorie, quelle)}: watchlist.json, bis
+    es sie gibt die Textdatei davor; ist sie kaputt, ihr letzter guter Stand."""
+    return _hand_watchlist()[0]
+
+
+def watchlist_unreadable():
+    """Warum die Verdachtsliste von Hand gerade nicht lesbar ist, sonst None: watchlist.json
+    ist kaputt oder nicht lesbar, oder sie fehlt und die Textdatei davor auch. Der Proxy
+    sperrt dann das offene Web, auch mit einem letzten guten Stand im Speicher: was es
+    gesperrt halten muesste, ist unbekannt. agentbox (lists.py) urteilt genauso."""
+    return _hand_watchlist()[1]
+
+
+def _within(host, domains):
+    """Die Eintraege aus domains, die host selbst oder eine uebergeordnete Domain sind."""
+    labels = host.split(".")
+    return [d for d in (".".join(labels[i:]) for i in range(len(labels))) if d in domains]
+
+
+# (die legitimen Domains des Hosts, mit den eingebauten vereinigt): neu gebildet nur, wenn
+# sich die des Hosts aendern, nicht fuer jedes Ziel, das der Proxy einstuft
+_legitimate = (None, GENUINE)
+
+
+def legitimate_domains():
+    """Bekannte legitime Domains: die eingebauten und die des Hosts (legitimate.json, bis
+    es sie gibt die Textdatei davor). Treffer der HaGeZi-Listen fuer sie und ihre
+    Subdomains zaehlen nicht (explain); die Listen liegen ungefiltert."""
+    global _legitimate
+    found = _read(LEGITIMATE, _legitimate_record, frozenset())[0]
+    if found is None:
+        found = _read(LEGACY_LEGITIMATE, _domains, frozenset())[0] or frozenset()
+    if _legitimate[0] is not found:
+        _legitimate = (found, found | GENUINE)
+    return _legitimate[1]
+
+
+def legitimate(host):
+    """Der Eintrag der legitimen Domains, unter den host faellt, sonst None."""
+    hits = _within(host, legitimate_domains())
+    return hits[-1] if hits else None
+
+
+def harmless(host):
+    """Der Eintrag der Harmlos-Liste, unter den host faellt, sonst None."""
+    hits = _within(host, _read(HARMLESS, _domains, frozenset())[0] or frozenset())
+    return hits[-1] if hits else None
+
+
+class SortedList:
+    """Eine sortierte Liste (eine Domain pro Zeile, nach Bytes sortiert), per mmap
+    gelesen. Eine Suche liest ~20 Seiten; ersetzt agentbox-feeds die Datei
+    (Umbenennen), wird beim naechsten Aufruf die neue geoeffnet."""
+
+    def __init__(self, path):
+        self.path = path
+        self.key = None
+        self.map = None
+
+    def current(self):
+        try:
+            st = os.stat(self.path)
+        except OSError:
+            self.drop()
+            return None
+        key = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+        if key != self.key:
+            self.drop()
+            self.key = key
+            if st.st_size:
+                try:
+                    with open(self.path, "rb") as f:
+                        self.map = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+                except (OSError, ValueError):
+                    return None
+                try:
+                    # kein Vorauslesen: von jeder Suche bleiben nur ihre Seiten im Cache
+                    self.map.madvise(mmap.MADV_RANDOM)
+                except (OSError, ValueError, AttributeError):
+                    pass
+        return self.map
+
+    def drop(self):
+        if self.map is not None:
+            self.map.close()
+        self.map = self.key = None
+
+    @staticmethod
+    def contains(m, key):
+        lo, hi = 0, len(m)
+        while lo < hi:
+            mid = (lo + hi) // 2
+            start = m.rfind(b"\n", lo, mid) + 1 or lo
+            end = m.find(b"\n", start, hi)
+            if end < 0:
+                end = hi
+            line = m[start:end]
+            if line == key:
+                return True
+            if line < key:
+                lo = end + 1
+            else:
+                hi = start
+        return False
+
+    def below(self, domain, limit):
+        """Bis zu limit Eintraege, die domain selbst oder eine Subdomain davon sind (liest
+        die ganze Liste, nur fuer seltene Aufrufe)."""
+        m = self.current()
+        if m is None:
+            return []
+        key = domain.encode("ascii", "ignore")
+        out = [domain] if self.contains(m, key) else []
+        suffix, pos = b"." + key + b"\n", 0
+        while len(out) < limit:
+            i = m.find(suffix, pos)
+            if i < 0:
+                break
+            start = m.rfind(b"\n", 0, i) + 1
+            out.append(m[start:i + len(suffix) - 1].decode("ascii", "replace"))
+            pos = i + len(suffix)
+        return out
+
+    def match(self, host):
+        """Der Eintrag, der host oder eine uebergeordnete Domain (ab zwei Labels) ist."""
+        m = self.current()
+        if m is None:
+            return None
+        labels = host.split(".")
+        for i in range(len(labels) - 1):
+            name = ".".join(labels[i:])
+            try:
+                key = name.encode("ascii")
+            except UnicodeEncodeError:
+                continue
+            if self.contains(m, key):
+                return name
+        return None
+
+
+_feeds = {name: SortedList(os.path.join(FEEDS_DIR, name)) for name in FEEDS}
+
+
+def feed_status():
+    """Stand der HaGeZi-Listen, wie agentbox-feeds ihn zuletzt geschrieben hat."""
+    try:
+        with open(FEED_STATUS, encoding="utf-8") as f:
+            status = json.load(f)
+    except (OSError, ValueError):
+        status = {}
+    out = {}
+    for name in FEEDS:
+        s = status.get(name) if isinstance(status, dict) else None
+        s = s if isinstance(s, dict) else {}
+        out[name] = {"present": os.path.isfile(os.path.join(FEEDS_DIR, name)),
+                     **{k: s.get(k) for k in ("entries", "updated", "attempted", "error", "days")}}
+    return out
+
+
+# --- Einstufung ----------------------------------------------------------------
+
+def registrable(host):
+    """Grobe Naeherung der registrierbaren Domain (letzte zwei Labels)."""
+    labels = host.split(".")
+    return ".".join(labels[-2:]) if len(labels) >= 2 else host
+
+
+def entropy(s):
+    if not s:
+        return 0.0
+    counts = {c: s.count(c) for c in set(s)}
+    return -sum(n / len(s) * math.log2(n / len(s)) for n in counts.values())
+
+
+def levenshtein(a, b, limit=None):
+    """Editierabstand; mit limit hoechstens limit + 1 (bricht frueh ab)."""
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        if limit is not None and min(cur) > limit:
+            return limit + 1
+        prev = cur
+    return prev[-1]
+
+
+def normalise(host):
+    return host.lower().strip("[]").rstrip(".")
+
+
+def _reason(signal, code, text, **params):
+    """One Signal with why it applies: the Signal, a stable code for the kind of reason,
+    its parameters (all text) and the English text built from them. The Control Room
+    words the reason from code and parameters (docs/control-room-api.md); the text is the
+    fallback and what the CLI shows."""
+    return {"signal": signal, "code": code, "params": {k: str(v) for k, v in params.items()}, "reason": text}
+
+
+def explain(host, port=443):
+    """Every Signal with why it applies, as a list of _reason(), regardless of the
+    Harmless marks."""
+    host = normalise(host)
+    found = []
+    if port != 443:
+        found.append(_reason("port", "port", f"port {port} instead of 443", port=port))
+    if host in METADATA:
+        found.append(_reason("metadata", "metadata", "address of a cloud metadata service"))
+    try:
+        ipaddress.ip_address(host)
+        found.append(_reason("raw-ip", "raw-ip", "IP address instead of a domain"))
+        return found
+    except ValueError:
+        pass
+
+    watchlist = hand_watchlist()
+    for domain in _within(host, watchlist):
+        category, source = watchlist[domain]
+        found.append(_reason(category, "watchlist", f"Watchlist: {domain}" + (f" ({source})" if source else ""),
+                             domain=domain, **({"source": source} if source else {})))
+    # Bekannt legitim: keine Muster, Treffer der HaGeZi-Listen zaehlen nicht (fuer die Domain
+    # und darunter; ein Eintrag ueber ihr zaehlt weiter fuer ihre Nachbarn)
+    if not legitimate(host):
+        found += _name_signals(host)
+    # ausser dem Blockchain-Muster: das hebt keine legitime Domain auf (nur agentbox allow --force)
+    if BLOCKCHAIN.search(host):
+        found.append(_reason("blockchain", "blockchain-pattern", "pattern of a blockchain RPC service"))
+    return found
+
+
+def _name_signals(host):
+    """Signals from the HaGeZi lists and from patterns in the name, which Legitimate
+    domains do not get, as a list of _reason(); the blockchain pattern is not one of them."""
+    found = []
+    hit = _feeds["threat-intelligence"].match(host)
+    if hit:
+        found.append(_reason("threat", "threat-feed", f"HaGeZi Threat Intelligence Feeds: {hit}", domain=hit))
+    hit = _feeds["newly-registered"].match(host)
+    if hit:
+        found.append(_reason("young", "young-feed", f"newly registered (HaGeZi NRD): {hit}", domain=hit))
+
+    reg = registrable(host)
+    name = reg.split(".")[0]
+    tld = reg.rsplit(".", 1)[-1]
+    # Registry-/Anbieter-Name in fremder Domain (npm-cache.com, pypi-get.com, npmjs.help)
+    brand = next((b for b in BRANDS if b in re.split(r"[-_]", name) or name.startswith(b) or name.endswith(b)), None)
+    if brand:
+        found.append(_reason("lookalike", "brand", f"brand name {brand} in the foreign domain {reg}",
+                             brand=brand, domain=reg))
+    # Tippfehler-Domains (npnjs.com), nur fuer Namen ab MIN_TYPO Zeichen
+    elif len(name) >= MIN_TYPO:
+        for target in TYPO_TARGETS:
+            if abs(len(target) - len(name)) <= 2:
+                d = levenshtein(name, target, 2)
+                if d <= 2:
+                    found.append(_reason("lookalike", "typo", f"typo of {target} (distance {d})",
+                                         target=target, distance=d))
+                    break
+    if tld in ODD_TLDS:
+        found.append(_reason("tld", "tld", f"unusual TLD .{tld}", tld=tld))
+    # Zufaellig wirkende oder sehr lange Labels (DNS-Exfil, generierte Domains)
+    for label in host.split(".")[:-1]:
+        if len(label) > 40 or (len(label) >= 20 and entropy(label) > 3.5) or re.fullmatch(r"[0-9a-f]{16,}", label):
+            found.append(_reason("random-label", "random-label", f"random-looking or very long label {label[:63]}",
+                                 label=label[:63]))
+            break
+    if len(host.split(".")) > 6:
+        found.append(_reason("many-labels", "many-labels", "more than six labels"))
+    return found
+
+
+def classify(host, port=443):
+    """Liefert eine sortierte Liste von Merkmalen; leer = unauffaellig."""
+    return sorted({r["signal"] for r in explain(host, port)})
+
+
+def alerting(host, tags):
+    """Die Merkmale, die einen Alert ausloesen: bei harmlosen Domains nur die, die
+    nicht am Namen haengen. Sperren (offenes Web, Freigabe) richten sich weiter
+    nach allen Merkmalen."""
+    return sorted(set(tags) & STRUCTURAL) if harmless(normalise(host)) else list(tags)
+
+
+def is_strong(tags):
+    return bool(STRONG & set(tags))
+
+
+def report(host, port=443):
+    """For agentbox check-domain: every Signal with why it applies (its English text, and
+    the code and parameters the Control Room words it from)."""
+    host = normalise(host)
+    quiet = harmless(host)
+    signals = [{"signal": r["signal"], "strong": r["signal"] in STRONG, "reason": r["reason"], "code": r["code"],
+                "params": r["params"], "suppressed": bool(quiet) and r["signal"] not in STRUCTURAL}
+               for r in explain(host, port)]
+    return {"domain": host, "port": port, "signals": signals,
+            "alert": any(not s["suppressed"] for s in signals),
+            "strong": is_strong(s["signal"] for s in signals),
+            "harmless": quiet, "legitimate": legitimate(host), "feeds": feed_status()}
+
+
+def lifts(domain):
+    """Fuer agentbox legitimate-add: was es aufhoebe, domain (mit ihren Subdomains) legitim zu
+    machen. Die starken Merkmale aus Mustern und HaGeZi-Listen, die domain selbst hat (auch
+    ein Eintrag ueber ihr; das Blockchain-Muster nicht, das bleibt), und Eintraege der
+    Threat-Intelligence-Liste, die domain oder eine Subdomain sind, auch unter einer
+    legitimen Domain des Hosts (die kann wieder gehen, diese bliebe): die Liste liegt
+    ungefiltert. Nichts unter einer eingebauten, die bleibt. feed_present: ob es die
+    Threat-Intelligence-Liste gibt (sonst ist nicht pruefbar, was darunter steht)."""
+    domain = normalise(domain)
+    feed = _feeds["threat-intelligence"]
+    if _within(domain, GENUINE):
+        return {"domain": domain, "signals": [], "feed_entries": [], "feed_present": True}
+    return {"domain": domain,
+            "signals": sorted({r["signal"] for r in _name_signals(domain) if r["signal"] in STRONG}),
+            "feed_entries": feed.below(domain, LIFTS_SHOWN),
+            "feed_present": feed.current() is not None}
+
+
+def constants():
+    """Fuer agentbox: die Kategorien der Verdachtsliste ({kategorie: stark}) und die
+    eingebauten legitimen Domains."""
+    return {"categories": {c: c in STRONG for c in CATEGORIES}, "genuine": sorted(GENUINE)}
+
+
+def watchlist():
+    """Fuer agentbox watchlist: die Verdachtsliste von Hand (jeder Eintrag mit Kategorie,
+    ob sie stark ist, und Quelle) und der Stand der HaGeZi-Listen."""
+    entries = hand_watchlist()
+    return {"entries": [{"domain": d, "category": c, "strong": c in STRONG, "source": src}
+                        for d, (c, src) in sorted(entries.items())],
+            "feeds": feed_status()}
+
+
+# --- Selbsttest ------------------------------------------------------------------
+
+# Testeintraege, an die Listen des Hosts angehaengt: ein Treffer der Verdachtsliste, legitime
+# Domains (ihre Eintraege in den ungefilterten Testlisten zaehlen nicht, der ueber
+# cdn.vendor-selftest.example aber fuer seine anderen Subdomains)
+SELFTEST_WATCHLIST = ("exfil-selftest.example", "exfil", "self-test")
+SELFTEST_LEGITIMATE = ("legit-selftest.example", "cdn.vendor-selftest.example")
+SELFTEST_FEEDS = {
+    "threat-intelligence": ["evil-selftest.example", "github.com", "objects.githubusercontent.com",
+                            "cdn.legit-selftest.example", "vendor-selftest.example"],
+    "newly-registered": ["npmjs.com", "young-selftest.example"],
+}
+SELFTEST_HARMLESS = ["npm-selftest.example"]
+# (host, erwartete Merkmale, genau) - ohne offenes Web, nichts davon wird aufgeloest. Echte
+# Namen nur fuer die eingebauten legitimen Domains, sonst .example, das die Listen des Hosts
+# nicht nennen; deckt ein Eintrag der Verdachtsliste des Hosts einen Fall doch ab, kommt seine
+# Kategorie zu den erwarteten Merkmalen. Dazu kommt ein Eintrag der Verdachtsliste des Hosts
+# (der erste), wenn sie einen hat.
+SELFTEST_CASES = [
+    ("sub.exfil-selftest.example", {"exfil"}, True),     # Verdachtsliste, per Suffix
+    ("cdn.evil-selftest.example", {"threat"}, True),     # Threat-Intelligence-Liste, per Suffix
+    ("www.young-selftest.example", {"young"}, True),     # Liste neu registrierter Domains
+    ("github.com", set(), True),                         # Listeneintrag, aber legitim (eingebaut)
+    ("objects.githubusercontent.com", set(), True),
+    ("npmjs.com", set(), True),
+    ("cdn.legit-selftest.example", set(), True),         # Listeneintrag, aber legitim (Host)
+    ("cdn.vendor-selftest.example", set(), True),        # Listeneintrag darueber, aber legitim
+    ("api.vendor-selftest.example", {"threat"}, True),   # ... der fuer ihre Nachbarn zaehlt
+    ("githbu.example", {"lookalike"}, True),             # Tippfehler, sechs Zeichen
+    ("pypx.example", set(), True),                       # vier Zeichen: keine Tippfehler-Pruefung
+    ("npm-other.example", {"lookalike"}, True),          # Markenname in fremder Domain
+    ("npm-selftest.example", set(), True),               # harmlos markiert: kein Alert
+    ("plain-selftest.example", set(), True),
+]
+# im offenen Web: stark verdaechtige Ziele bleiben gesperrt (auch harmlos markierte), ohne
+# Aufloesung. Nur Namen unter .example: auch wenn die Erkennung kaputt ist, erreicht der
+# Selbsttest so nie ein echtes Ziel.
+SELFTEST_OPEN = [("x.exfil-selftest.example", "exfil"), ("api.evil-selftest.example", "threat"),
+                 ("www.npm-selftest.example", "lookalike")]
+# danach, mit kaputter Verdachtsliste: das offene Web laesst auch Unauffaelliges nicht durch
+SELFTEST_UNREADABLE = ("free-selftest.example", "Watchlist unreadable")
+# Zeilen des Proxy-Logs; aeltere deutsche Schluesselwoerter zaehlen nicht
+LOG_ALERT = re.compile(r"\] ALERT (\S+) \[(.*)\]$")
+LOG_BLOCKED = re.compile(r"\] BLOCKED (\S+) \((.*)\)$")
+
+
+def _connect(path, host):
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.settimeout(10)
+        s.connect(path)
+        s.sendall(f"CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n".encode())
+        data = b""
+        while chunk := s.recv(4096):
+            data += chunk
+    return data.split(b"\r\n", 1)[0].decode("latin-1")
+
+
+def _selftest_list(conf, record, legacy, add, parse):
+    """Eine Liste des Hosts (der Datensatz, bis es ihn gibt die Textdatei davor) mit
+    einem Testeintrag nach conf kopiert. add(daten, ist_datensatz) haengt ihn an; einen
+    Datensatz, den parse (wie der Proxy) kaputt nennt, gibt es als ValueError zurueck."""
+    for path, is_record in ((record, True), (legacy, False)):
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = f.read()
+        except FileNotFoundError:
+            continue
+        if is_record:
+            try:
+                parse(data)
+            except ValueError as e:
+                raise ValueError(f"{path}: {e}") from None
+            data = json.dumps({"entries": add(_entries(data), True)})
+        else:
+            data = add(data, False)
+        with open(os.path.join(conf, os.path.basename(path)), "w", encoding="utf-8") as f:
+            f.write(data)
+        return
+    raise OSError(f"{os.path.basename(record)} and {os.path.basename(legacy)} missing in {CONF_DIR}")
+
+
+def self_test():
+    """Startet den Proxy neben dieser Datei mit der Verdachtsliste und den legitimen
+    Domains des Hosts (aus CONF_DIR) plus Testeintraegen und Testlisten, schickt
+    CONNECT-Anfragen und prueft dessen Log. Exit 0, wenn alles stimmt."""
+    here = os.path.dirname(os.path.realpath(__file__))
+    proxy = os.path.join(here, "agentbox-proxy")
+    tmp = tempfile.mkdtemp(prefix="agentbox-selftest-")
+    results = []
+    server = None
+    try:
+        conf, feeds = os.path.join(tmp, "conf"), os.path.join(tmp, "feeds")
+        os.mkdir(conf)
+        os.mkdir(feeds)
+        domain, category, source = SELFTEST_WATCHLIST
+        try:
+            _selftest_list(conf, WATCHLIST, LEGACY_WATCHLIST, lambda d, rec: d + [
+                {"domain": domain, "category": category, "source": source, "note": "", "added": 0,
+                 "added_by": "selftest"}] if rec else f"{d}\n{domain} {category} # {source}\n", _watchlist_record)
+            _selftest_list(conf, LEGITIMATE, LEGACY_LEGITIMATE, lambda d, rec: d + [
+                {"domain": legit, "note": "", "added": 0, "added_by": "selftest"} for legit in SELFTEST_LEGITIMATE] if rec
+                else d + "".join(f"\n{legit}" for legit in SELFTEST_LEGITIMATE) + "\n", _legitimate_record)
+        except (OSError, ValueError) as e:
+            print(f"FAILED  lists of the Host: {getattr(e, 'strerror', None) or e}")
+            return 1
+        # was die Verdachtsliste des Hosts dazu sagt, und ein echter Eintrag von ihr: seine Liste
+        # ist mit allen Eintraegen geladen
+        listed = hand_watchlist()
+        cases = [(host, want | {listed[d][0] for d in _within(host, listed)}, exact)
+                 for host, want, exact in SELFTEST_CASES]
+        own = sorted(d for d in listed if d != domain)
+        if own:
+            cases.insert(1, (f"selftest.{own[0]}", {listed[own[0]][0]}, False))
+        # nichts freigegeben, also wird nichts aufgeloest
+        with open(os.path.join(conf, "allowlist.json"), "w") as f:
+            f.write('{"entries": []}\n')
+        with open(os.path.join(conf, "harmless"), "w") as f:
+            f.write("".join(d + "\n" for d in SELFTEST_HARMLESS))
+        for name, entries in SELFTEST_FEEDS.items():
+            with open(os.path.join(feeds, name), "wb") as f:
+                f.write(b"".join(e.encode() + b"\n" for e in sorted(entries)))
+        sock = os.path.join(tmp, "proxy.sock")
+        log = os.path.join(tmp, "proxy.log")
+        env = {"PATH": os.defpath, "LANG": "C.UTF-8", "AGENTBOX_CONF_DIR": conf, "AGENTBOX_FEEDS_DIR": feeds}
+        with open(log, "wb") as err:
+            # -B: als root aus dem Repo gestartet, keine __pycache__-Dateien dort hinterlassen
+            server = subprocess.Popen([sys.executable, "-I", "-B", proxy, "selftest", sock], env=env,
+                                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err)
+        deadline = time.monotonic() + 15
+        answers = {}
+        while True:
+            try:
+                answers[cases[0][0]] = _connect(sock, cases[0][0])
+                break
+            except OSError:
+                if server.poll() is not None or time.monotonic() > deadline:
+                    with open(log, encoding="utf-8", errors="replace") as f:
+                        print("FAILED  the proxy does not start: " + f.read().strip()[-300:])
+                    return 1
+                time.sleep(0.05)
+        for host, _, _ in cases[1:]:
+            answers[host] = _connect(sock, host)
+        with open(os.path.join(conf, "open-selftest"), "w") as f:
+            f.write(f"{int(time.time()) + 600}\n")
+        for host, _ in SELFTEST_OPEN:
+            answers[host] = _connect(sock, host)
+        with open(os.path.join(conf, "watchlist.json"), "w") as f:
+            f.write("{broken")
+        answers[SELFTEST_UNREADABLE[0]] = _connect(sock, SELFTEST_UNREADABLE[0])
+        server.terminate()
+        server.wait(10)
+        alerts, blocks = {}, {}
+        with open(log, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                m = LOG_ALERT.search(line.rstrip("\n"))
+                if m:
+                    alerts[m.group(1)] = set(m.group(2).split(","))
+                m = LOG_BLOCKED.search(line.rstrip("\n"))
+                if m:
+                    blocks[m.group(1)] = m.group(2)
+        for host, want, exact in cases:
+            got = alerts.get(host, set())
+            ok = (got == want if exact else want <= got) and answers[host].split()[1:2] == ["403"]
+            results.append((ok, host, f"expected {','.join(sorted(want)) or '-'}, got "
+                                      f"{','.join(sorted(got)) or '-'} ({answers[host]})"))
+        for host, signal in SELFTEST_OPEN + [SELFTEST_UNREADABLE]:
+            why = blocks.get(host, "")
+            ok = signal in why and answers[host].split()[1:2] == ["403"]
+            results.append((ok, host, f"Open web: expected blocked for {signal}, got "
+                                      f"{why or '-'} ({answers[host]})"))
+    except (OSError, subprocess.SubprocessError, IndexError) as e:
+        print(f"FAILED  self-test aborted: {e}")
+        return 1
+    finally:
+        if server is not None and server.poll() is None:
+            server.kill()
+            server.wait()
+        shutil.rmtree(tmp, ignore_errors=True)
+    for ok, host, detail in results:
+        print(f"{'ok' if ok else 'FAILED':6}  {host}: {detail}")
+    failed = sum(not ok for ok, _, _ in results)
+    if failed:
+        print(f"Self-test of the detection FAILED: {failed} of {len(results)} cases")
+        return 1
+    print(f"Self-test of the detection passed ({len(results)} cases)")
+    return 0
+
+
+def main(args):
+    if args == ["--self-test"]:
+        return self_test()
+    if args == ["--watchlist"]:
+        print(json.dumps(watchlist()))
+        return 0
+    if args == ["--constants"]:
+        print(json.dumps(constants()))
+        return 0
+    if len(args) == 2 and args[0] == "--lifts":
+        print(json.dumps(lifts(args[1])))
+        return 0
+    as_json = args[:1] == ["--json"]
+    args = args[1:] if as_json else args
+    if len(args) not in (1, 2) or len(args) == 2 and not args[1].isdigit():
+        print(USAGE, file=sys.stderr)
+        return 1
+    port = int(args[1]) if len(args) == 2 else 443
+    if as_json:
+        print(json.dumps(report(args[0], port)))
+        return 0
+    found = classify(args[0], port)
+    print(",".join(found))
+    why = watchlist_unreadable()
+    if why:
+        print(why, file=sys.stderr)
+        return 3
+    return 2 if is_strong(found) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

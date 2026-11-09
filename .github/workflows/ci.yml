@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.14'
+      # The Release tooling in the repo root (release-it, see ADR 0009) is what
+      # tests/test_release_it.py runs; without it those tests skip. Only CI and the owner's
+      # machine install it, never a Host (ADR 0003).
+      - if: hashFiles('package-lock.json') != ''
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - if: hashFiles('package-lock.json') != ''
+        run: npm ci
+      # No root, no libvirt, no VM: the tests put fake programs on PATH and set AGENTBOX_ROOT.
+      # There is no UI build here, so tests/test_control_room_ui.py skips; the ui job runs it.
+      - run: python3 -m unittest discover -s tests
+
+  ui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web/ui
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/ui/package-lock.json
+      # Installs exactly the lockfile (ADR 0011) and fails when it and package.json disagree.
+      - run: npm ci
+      - run: npm run prepare:nuxt
+      - run: npm test
+      # Writes web/ui/dist and checks it against what the backend and its CSP expect
+      # (scripts/check-dist.mjs). Only for the test below: the build is not uploaded, an
+      # artifact exists only for a Release (ADR 0011).
+      - run: npm run generate
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.14'
+      # The real backend serves this build: page, deep links, every file it loads, CSP.
+      - run: python3 -m unittest tests.test_control_room_ui
+        working-directory: .
+        env:
+          # without a UI build these tests skip; here that is a failure
+          AGENTBOX_REQUIRE_UI_BUILD: '1'
+
+  # The RPM of this commit (rpm/agentbox.spec, ADR 0009): the source RPM, and from it the RPM
+  # as COPR builds it; then installed in a fresh Fedora container and checked
+  # (rpm/install-test.sh, tests/test_rpm.py), and in another one updated to from an older
+  # Release and removed (rpm/upgrade-test.sh, tests/test_rpm_upgrade.py). Nothing is uploaded:
+  # the RPM is an artifact only of a Release, like the UI; release.yml builds it the same way,
+  # with the same Fedora releases.
+  rpm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # the current and the previous Fedora release (ADR 0009)
+        fedora: ['44', '45']
+    env:
+      IMAGE: quay.io/fedora/fedora:${{ matrix.fedora }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/ui/package-lock.json
+      # The UI goes into the RPM as CI builds it from the lockfile (ADR 0011); the ui job
+      # tests the same build.
+      - run: npm ci && npm run generate
+        working-directory: web/ui
+      - name: Build the source RPM and the RPM
+        run: |
+          docker run --rm -v "$PWD:/src:ro" -v "$RUNNER_TEMP/rpm:/out" "$IMAGE" /src/rpm/build.sh /out
+      - name: Install it in a fresh Fedora container and check it
+        run: |
+          rpm=$(cd "$RUNNER_TEMP/rpm" && ls agentbox-*.noarch.rpm)
+          docker run --rm -v "$PWD:/src:ro" -v "$RUNNER_TEMP/rpm:/out:ro" "$IMAGE" /src/rpm/install-test.sh "/out/$rpm"
+      # An older Release (this commit with a lower version) on a Host in use, updated to this
+      # RPM, reinstalled and removed (#82)
+      - name: Update to it in a fresh Fedora container, then remove it, and check both
+        run: |
+          rpm=$(cd "$RUNNER_TEMP/rpm" && ls agentbox-*.noarch.rpm)
+          docker run --rm -v "$PWD:/src:ro" -v "$RUNNER_TEMP/rpm:/out:ro" "$IMAGE" /src/rpm/upgrade-test.sh "/out/$rpm"

@@ -1,0 +1,173 @@
+# Bekannte legitime Domains (gilt jeweils inkl. Subdomains): nur die Erstbefuellung
+# eines neuen Hosts. agentbox setup installiert sie, agentbox migrate-lists uebernimmt
+# sie einmalig nach /etc/agentbox/legitimate.json; danach aendert sie nur noch
+# agentbox legitimate-add/-remove, Aenderungen hier erreichen den Host nicht mehr.
+#
+# Wirkung (proxy/agentbox-suspicious):
+# - keine Muster-Merkmale (lookalike, tld, random-label, ...) fuer diese Domains, ausser
+#   dem Blockchain-Muster (rpc., mainnet, infura, ...): das bleibt ein starkes Merkmal;
+# - Treffer der HaGeZi-Listen fuer eine davon oder eine Subdomain zaehlen nicht, damit
+#   eine fehlerhafte Liste die normale Arbeit nicht stoert.
+# Die Verdachtsliste von Hand (suspicious-domains) gilt trotzdem. Die Liste gibt
+# nichts frei; das tut nur die Allowlist.
+#
+# Nur Domains, die ihr Betreiber selbst kontrolliert. Keine Hoster fuer beliebige
+# Nutzerinhalte (amazonaws.com, pages.dev, vercel.app, jsdelivr.net, ...): dort
+# liegen echte Bedrohungen, die die Listen kennen.
+
+# GitHub und andere Code-Hoster
+github.com
+githubusercontent.com
+githubassets.com
+github.io
+ghcr.io
+githubcopilot.com
+gitlab.com
+bitbucket.org
+codeberg.org
+sourceforge.net
+
+# KI-Anbieter
+anthropic.com
+claude.ai
+claude.com
+# Artifacts von claude.ai: Nutzerinhalte, aber wie githubusercontent.com vom Betreiber
+# selbst kontrolliert (Registrar und Nameserver wie anthropic.com)
+claudeusercontent.com
+openai.com
+chatgpt.com
+oaistatic.com
+opencode.ai
+models.dev
+ollama.com
+huggingface.co
+hf.co
+mistral.ai
+generativelanguage.googleapis.com
+onorca.dev
+
+# JavaScript und TypeScript
+npmjs.org
+npmjs.com
+npmmirror.com
+yarnpkg.com
+nodejs.org
+pnpm.io
+bun.sh
+bun.com
+deno.land
+deno.com
+jsr.io
+typescriptlang.org
+nodesource.com
+vuejs.org
+nuxt.com
+nuxtjs.org
+vite.dev
+vitejs.dev
+vitest.dev
+react.dev
+reactjs.org
+nextjs.org
+svelte.dev
+tailwindcss.com
+eslint.org
+prettier.io
+playwright.dev
+cypress.io
+
+# Python
+pypi.org
+pythonhosted.org
+python.org
+pypa.io
+pypistats.org
+astral.sh
+readthedocs.org
+anaconda.org
+anaconda.com
+conda.io
+conda-forge.org
+pytorch.org
+scipy.org
+numpy.org
+
+# Rust, Go
+crates.io
+rust-lang.org
+rustup.rs
+docs.rs
+golang.org
+go.dev
+
+# JVM, Android
+gradle.org
+gradle-dn.com
+apache.org
+maven.org
+dl.google.com
+maven.google.com
+android.com
+jetbrains.com
+kotlinlang.org
+adoptium.net
+
+# Weitere Sprachen
+rubygems.org
+ruby-lang.org
+packagist.org
+getcomposer.org
+php.net
+nuget.org
+dot.net
+hex.pm
+hexdocs.pm
+erlang.org
+elixir-lang.org
+haskell.org
+cpan.org
+metacpan.org
+cocoapods.org
+swift.org
+dart.dev
+pub.dev
+flutter.dev
+julialang.org
+r-project.org
+
+# Container und Kubernetes
+docker.io
+docker.com
+quay.io
+gcr.io
+k8s.io
+kubernetes.io
+helm.sh
+
+# Distributionen und Betriebssysteme
+fedoraproject.org
+getfedora.org
+redhat.com
+centos.org
+debian.org
+ubuntu.com
+canonical.com
+archlinux.org
+alpinelinux.org
+kernel.org
+gnu.org
+microsoft.com
+visualstudio.com
+apple.com
+
+# Standards, Dokumentation, Infrastruktur
+openapis.org
+json-schema.org
+w3.org
+ietf.org
+mozilla.org
+stackoverflow.com
+stackexchange.com
+wikipedia.org
+cloudflare.com
+letsencrypt.org

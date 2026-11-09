@@ -1,0 +1,9 @@
+# The service users and groups of Agent Box (rpm/agentbox.spec), created when the package
+# is installed; existing ones are kept with their ids, which Activity readers rely on.
+u agentbox-web   - "Agent Box Control Room"          - -
+u agentbox-proxy - "Agent Box allowlist proxy"       - -
+u agentbox-feeds - "Agent Box Feeds"                 - -
+u agentbox-gh    - "Agent Box GitHub token service"  - -
+# who may write into the Activity journal besides root (ADR 0007): the services through
+# their units, and the members of libvirt
+g agentbox-journal -

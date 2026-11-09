@@ -1,0 +1,22 @@
+# The Control Room (rpm/agentbox.spec). Not enabled by installing: agentbox setup writes the
+# Host setup, the password and the certificate, then enables and starts it. The address
+# and port come from the Host setup (/etc/agentbox/host.json), not from this unit.
+[Unit]
+Description=Agent Box Control Room
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=agentbox-web
+SupplementaryGroups=agentbox-journal
+ExecStart=/usr/libexec/agentbox-web
+# sudo needs new privileges, so no NoNewPrivileges; otherwise narrow
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

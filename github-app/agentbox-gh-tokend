@@ -1,0 +1,152 @@
+#!/usr/bin/python3 -I
+"""Issues short-lived GitHub App tokens for one VM.
+
+Runs per connection (a systemd socket with Accept=yes) as the user agentbox-gh,
+the only one that may read the App's private key. For which GitHub owners a VM
+gets tokens is in its record in the VM registry (/etc/agentbox/vms/<vm>.json).
+
+Request (one line):  <owner>/<repo>
+Answer (JSON):       {"token": ..., "expires_at": ...}  or  {"error": <English text>}
+
+One journal line per request (agentbox/activity.py reads them; never a token):
+  [<vm>] token for <owner>/<repo> until <expires_at>
+  [<vm>] refused: <request as repr()>: <reason>[ <name>=<value>...]: <English text>
+  [<vm>] error: <request as repr()>: <exception as repr()>
+<reason> is a stable code (REASONS) the Control Room words in its language, with its
+parameters (github-status: status, GitHub's HTTP status).
+
+Each token is valid for exactly one repository and expires after an hour.
+Rulesets on GitHub protect main, not the token.
+"""
+import base64
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+# AGENTBOX_ROOT nur fuer Tests (wie beim agentbox-CLI)
+ROOT = os.environ.get("AGENTBOX_ROOT", "")
+CONF_DIR = ROOT + "/etc/agentbox/github"
+REGISTRY = ROOT + "/etc/agentbox/vms"
+VM_NAME = re.compile(r"[a-z][a-z0-9-]{1,15}")      # wie agentbox/registry.py
+API = "https://api.github.com"
+
+PERMS = {
+    "contents": "write", "pull_requests": "write", "issues": "write",
+    "checks": "read", "statuses": "read", "metadata": "read",
+}
+REPO_RE = re.compile(r"^([A-Za-z0-9-]{1,39})/([A-Za-z0-9._-]{1,100})$")
+
+
+# why a request is refused: the stable codes of the journal line (docs/control-room-api.md)
+REASONS = ("invalid-request", "vm-not-registered", "owner-not-allowed", "not-installed", "github-status")
+
+
+class Refused(Exception):
+    """A request turned down: one of REASONS, its parameters (names and values without
+    spaces or colons) and the English text the VM gets."""
+
+    def __init__(self, reason, text, **params):
+        super().__init__(text)
+        self.reason, self.params = reason, params
+
+
+def b64url(data):
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def read_conf(path):
+    with open(path) as f:
+        lines = [l.strip() for l in f]
+    return [l for l in lines if l and not l.startswith("#")]
+
+
+def vm_owners(vm):
+    """GitHub-Owner der VM aus ihrem Registry-Eintrag, klein geschrieben."""
+    try:
+        if not VM_NAME.fullmatch(vm):
+            raise FileNotFoundError
+        with open(f"{REGISTRY}/{vm}.json") as f:
+            owners = json.load(f)["github_owners"]
+    except (FileNotFoundError, ValueError, KeyError, TypeError):
+        raise Refused("vm-not-registered", "the VM is not in the VM registry")
+    return {o.lower() for o in owners if isinstance(o, str)}
+
+
+def app_jwt(app_id):
+    now = int(time.time())
+    header = b64url(json.dumps({"alg": "RS256", "typ": "JWT"}).encode())
+    payload = b64url(json.dumps({"iat": now - 60, "exp": now + 540, "iss": app_id}).encode())
+    signed = f"{header}.{payload}".encode()
+    sig = subprocess.run(
+        ["openssl", "dgst", "-sha256", "-sign", f"{CONF_DIR}/app.pem"],
+        input=signed, capture_output=True, check=True,
+    ).stdout
+    return f"{header}.{payload}.{b64url(sig)}"
+
+
+def api(method, path, bearer, body=None):
+    req = urllib.request.Request(
+        API + path,
+        method=method,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={
+            "Authorization": f"Bearer {bearer}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "agentbox-gh-tokend",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.load(resp)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            raise Refused("not-installed",
+                          f"the GitHub App is not installed on {path.split('/')[2]}/{path.split('/')[3]}")
+        raise Refused("github-status", f"GitHub answered {e.code}", status=int(e.code))
+
+
+def issue(vm, request):
+    match = REPO_RE.match(request)
+    if not match:
+        raise Refused("invalid-request", "the request must be <owner>/<repo>")
+    owner, repo = match.groups()
+
+    if owner.lower() not in vm_owners(vm):
+        raise Refused("owner-not-allowed", f"{owner} is not a GitHub owner of the VM {vm}")
+
+    conf = dict(l.split("=", 1) for l in read_conf(f"{CONF_DIR}/app.conf") if "=" in l)
+    jwt = app_jwt(conf["APP_ID"])
+    installation = api("GET", f"/repos/{owner}/{repo}/installation", jwt)["id"]
+    token = api(
+        "POST", f"/app/installations/{installation}/access_tokens", jwt,
+        {"repositories": [repo], "permissions": PERMS},
+    )
+    return owner, repo, token
+
+
+def main():
+    vm = sys.argv[1]
+    request = sys.stdin.readline(300).strip()
+    try:
+        owner, repo, token = issue(vm, request)
+    except Refused as e:
+        params = "".join(f" {k}={v}" for k, v in e.params.items())
+        print(f"[{vm}] refused: {request!r}: {e.reason}{params}: {e}", file=sys.stderr)
+        print(json.dumps({"error": str(e)}))
+        return
+    except Exception as e:
+        print(f"[{vm}] error: {request!r}: {e!r}", file=sys.stderr)
+        print(json.dumps({"error": "internal error of the token service, see its journal on the Host"}))
+        return
+    print(f"[{vm}] token for {owner}/{repo} until {token['expires_at']}", file=sys.stderr)
+    print(json.dumps({"token": token["token"], "expires_at": token["expires_at"]}))
+
+
+if __name__ == "__main__":
+    main()

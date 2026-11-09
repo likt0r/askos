@@ -1,0 +1,26 @@
+name: PR title
+
+# Its own workflow because it also runs when the title is edited; that must not restart the tests.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions: {}
+
+jobs:
+  # The squash-merge commit message is the PR title, and release-it reads it to compute the
+  # next Release (see CONTRIBUTING.md). The title goes through an environment variable, never
+  # into the script text.
+  pr-title:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check the title against Conventional Commits
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          pattern='^(feat|fix|docs|chore|refactor|test|ci|build|perf|style|revert)(\([a-z0-9._-]+\))?!?: [^[:space:]].*'
+          if ! printf '%s' "$TITLE" | grep -Eq "$pattern"; then
+            echo "::error::PR title must look like 'feat: ...', 'fix: ...' or 'feat!: ...' (see CONTRIBUTING.md). Got: $TITLE"
+            exit 1
+          fi

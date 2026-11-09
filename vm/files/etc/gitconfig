@@ -1,0 +1,14 @@
+[credential "https://github.com"]
+	helper =
+	helper = agentbox
+	useHttpPath = true
+[core]
+	# Hooks from repositories are ignored; only the Agent Box's apply
+	hooksPath = /usr/lib/agentbox/hooks
+[init]
+	defaultBranch = main
+# No SSH out of the VM (no keys, only HTTPS through the proxy): GitHub's SSH
+# addresses become HTTPS, where the credential helper fetches a token
+[url "https://github.com/"]
+	insteadOf = git@github.com:
+	insteadOf = ssh://git@github.com/

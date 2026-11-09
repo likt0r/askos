@@ -1,0 +1,12 @@
+[Unit]
+Description=Agent Box: Data disk (repositories, Orca data, agent transcripts)
+Requires=agentbox-data-format.service
+After=agentbox-data-format.service
+
+[Mount]
+What=/dev/disk/by-id/virtio-agentbox-data
+Where=/var/lib/agentbox-data
+Type=xfs
+
+[Install]
+WantedBy=local-fs.target

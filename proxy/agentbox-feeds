@@ -1,0 +1,296 @@
+#!/usr/bin/python3 -I
+"""Holt die HaGeZi-Listen fuer die Erkennung (ADR 0004). Laeuft als System-User
+agentbox-feeds, gestartet von agentbox-feeds.timer.
+
+  threat-intelligence   HaGeZi Threat Intelligence Feeds (Malware, Phishing, C2,
+                        Scam); Treffer gehoeren zur Verdachtsliste (Merkmal threat)
+  newly-registered      HaGeZi NRD: in den letzten YOUNG_DAYS Tagen registrierte
+                        Domains (Merkmal young)
+
+Quelle ist das GitHub-Repo von HaGeZi (GPL-3.0), dort einmal am Tag neu (NRD
+08:00, TIF 11:00 UTC). Jede Datei kommt ueber HTTPS mit geprueftem Zertifikat
+(auch bei Umleitungen), hoechstens MAX_BYTES gross (auch entpackt). Geprueft
+werden der Kopf (Titel, Anzahl der Eintraege) und jede Zeile. Das Ergebnis liegt
+sortiert in FEEDS_DIR (agentbox-suspicious sucht darin binaer) und ersetzt die vorige
+Liste per Umbenennen. Scheitert eine Datei, bleibt die vorige Liste stehen. Die
+Listen liegen, wie geholt: legitime Domains heben ihre Treffer erst beim Einstufen
+auf (agentbox-suspicious), so zaehlen die Treffer einer entfernten sofort wieder.
+
+Pro Lauf eine Zeile im Journal; Exit 1, wenn eine Liste nicht erneuert wurde.
+Stand jeder Liste in FEEDS_DIR/status.json (agentbox check-domain).
+"""
+import fcntl
+import heapq
+import http.client
+import importlib.machinery
+import importlib.util
+import json
+import os
+import ssl
+import sys
+import time
+import urllib.error
+import urllib.request
+import zlib
+
+
+def _load_suspicious():
+    """Einstufung (liegt neben diesem Programm): Pfade und Eintragsformat."""
+    here = os.path.dirname(os.path.realpath(__file__))
+    loader = importlib.machinery.SourceFileLoader("agentbox_suspicious", os.path.join(here, "agentbox-suspicious"))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+suspicious = _load_suspicious()
+FEEDS_DIR = suspicious.FEEDS_DIR
+
+
+def _setting(name, default):
+    """Aus der Umgebung: der Wert der Einstellungen (Unit), in Tests anderer Server und kleinere Grenzen."""
+    try:
+        return type(default)(os.environ.get(name, default))
+    except ValueError:
+        return default
+
+
+BASE = _setting("AGENTBOX_FEEDS_BASE", "https://raw.githubusercontent.com")
+MAX_BYTES = _setting("AGENTBOX_FEEDS_MAX_BYTES", 256 * 2**20)     # pro Datei, entpackt; heute bis 56 MiB
+MIN_ENTRIES = _setting("AGENTBOX_FEEDS_MIN_ENTRIES", 50000)       # heute je 1,8 bis 3,4 Millionen
+TIMEOUT = 60                         # Sekunden pro Verbindungs- oder Leseschritt
+DEADLINE = 15 * 60                   # Sekunden pro Datei
+# Wie weit "neu registriert" zurueckreicht: young_domain_days der Einstellungen, vom
+# erzeugten Unit (agentbox regenerate) als Umgebungsvariable uebergeben.
+# HaGeZi liefert Baender von je sieben Tagen, bis 35 Tage.
+YOUNG_DAYS = _setting("AGENTBOX_FEEDS_YOUNG_DAYS", 14)
+if YOUNG_DAYS not in (7, 14, 21, 28, 35):
+    YOUNG_DAYS = 14
+NRD_BANDS = ("nrd7", "nrd14-8", "nrd21-15", "nrd28-22", "nrd35-29")
+SOURCES = {
+    "threat-intelligence": ("HaGeZi's Threat Intelligence Feeds",
+                            ["/hagezi/dns-blocklists/main/wildcard/tif-onlydomains.txt"]),
+    "newly-registered": ("Newly Registered Domains",
+                         [f"/hagezi/nrd/main/domains/{band}.txt" for band in NRD_BANDS[:YOUNG_DAYS // 7]]),
+}
+
+
+class Problem(Exception):
+    pass
+
+
+class HttpsOnly(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not newurl.startswith("https://"):
+            raise Problem(f"redirect without HTTPS: {newurl[:100]}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _opener():
+    tls = ssl.create_default_context()
+    tls.minimum_version = ssl.TLSVersion.TLSv1_2
+    # ProxyHandler({}): keine Proxy-Einstellungen aus der Umgebung
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), HttpsOnly(),
+                                       urllib.request.HTTPSHandler(context=tls))
+
+
+def download(url, dest):
+    """Laedt url nach dest (entpackt), mit Groessen- und Zeitgrenze."""
+    if not url.startswith("https://"):
+        raise Problem("HTTPS only")
+    request = urllib.request.Request(url, headers={"Accept-Encoding": "gzip", "User-Agent": "agentbox-feeds"})
+    deadline = time.monotonic() + DEADLINE
+    try:
+        with _opener().open(request, timeout=TIMEOUT) as r, open(dest, "wb") as out:
+            encoding = (r.headers.get("Content-Encoding") or "identity").strip().lower()
+            if encoding not in ("gzip", "identity"):
+                raise Problem(f"unexpected encoding {encoding[:20]}")
+            unzip = zlib.decompressobj(16 + zlib.MAX_WBITS) if encoding == "gzip" else None
+            raw = size = 0
+            while chunk := r.read(16384):
+                raw += len(chunk)
+                if unzip:
+                    if unzip.eof:
+                        raise Problem("data after the end of the gzip data")
+                    chunk = unzip.decompress(chunk)
+                size += len(chunk)
+                if raw > MAX_BYTES or size > MAX_BYTES:
+                    raise Problem(f"larger than {MAX_BYTES} bytes")
+                if time.monotonic() > deadline:
+                    raise Problem(f"takes longer than {DEADLINE} s")
+                out.write(chunk)
+            if unzip and not unzip.eof:
+                raise Problem("gzip data incomplete")
+    except urllib.error.HTTPError as e:
+        raise Problem(f"HTTP {e.code}") from None
+    except urllib.error.URLError as e:
+        raise Problem(f"cannot be reached: {e.reason}") from None
+    except (OSError, http.client.HTTPException, zlib.error, ValueError) as e:   # Abbruch, Zeit, kaputtes gzip
+        raise Problem(f"aborted: {e}") from None
+
+
+def check_and_sort(src, dest, title):
+    """Prueft eine geladene Datei und schreibt ihre Eintraege sortiert nach dest.
+    Liefert (Eintraege, Version)."""
+    declared = version = None
+    titled = False
+    count = invalid = 0
+    prev, ordered = None, True
+    with open(src, "rb") as f, open(dest, "wb") as out:
+        for line in f:
+            line = line.strip().lower()
+            if not line:
+                continue
+            if line.startswith(b"#"):
+                key, _, value = line[1:].decode("ascii", "replace").partition(":")
+                key, value = key.strip(), value.strip()
+                if key == "title" and value.startswith(title.lower()):
+                    titled = True
+                elif key == "number of entries" and value.isdigit():
+                    declared = int(value)
+                elif key == "version" and value.replace(".", "").isdigit():
+                    version = value[:40]
+                continue
+            count += 1
+            if not suspicious.FEED_ENTRY.fullmatch(line):
+                invalid += 1
+                continue
+            if prev is not None and line <= prev:
+                ordered = False
+            prev = line
+            out.write(line + b"\n")
+    if not titled:
+        raise Problem(f"header does not match (title \"{title}\" expected)")
+    if declared is None:
+        raise Problem("header without the number of entries")
+    if count != declared:
+        raise Problem(f"{count} entries instead of {declared}, incomplete")
+    if invalid * 100 > count:
+        raise Problem(f"{invalid} of {count} lines are no domain")
+    if count < MIN_ENTRIES:
+        raise Problem(f"only {count} entries")
+    if not ordered:
+        # TIF ist nicht nach Bytes sortiert; Doppelte entfernt merge()
+        with open(dest, "rb") as f:
+            lines = f.readlines()
+        lines.sort()
+        with open(dest, "wb") as out:
+            out.writelines(lines)
+    return count - invalid, version
+
+
+def merge(parts, dest):
+    """Fuegt sortierte Dateien zu einer zusammen, ohne Doppelte; Anzahl der Eintraege."""
+    files = [open(p, "rb") for p in parts]
+    n, prev = 0, None
+    try:
+        with open(dest, "wb") as out:
+            os.fchmod(out.fileno(), 0o644)
+            for line in heapq.merge(*files):
+                if line != prev:
+                    out.write(line)
+                    n += 1
+                    prev = line
+            out.flush()
+            os.fsync(out.fileno())
+    finally:
+        for f in files:
+            f.close()
+    return n
+
+
+def remove(*paths):
+    for p in paths:
+        try:
+            os.unlink(p)
+        except FileNotFoundError:
+            pass
+
+
+def update(name, title, sources):
+    """Erneuert eine Liste; scheitert eine Datei, bleibt die vorige ganz stehen."""
+    parts, info = [], []
+    final = os.path.join(FEEDS_DIR, name)
+    new = os.path.join(FEEDS_DIR, f".{name}.new")
+    try:
+        for i, path in enumerate(sources):
+            file = path.rsplit("/", 1)[-1]
+            raw = os.path.join(FEEDS_DIR, f".{name}.{i}.download")
+            part = os.path.join(FEEDS_DIR, f".{name}.{i}.part")
+            parts.append(part)
+            try:
+                download(BASE + path, raw)
+                kept, version = check_and_sort(raw, part, title)
+            except Problem as e:
+                raise Problem(f"{file}: {e}") from None
+            finally:
+                remove(raw)
+            info.append({"file": file, "entries": kept, "version": version})
+        entries = merge(parts, new)
+        os.replace(new, final)
+        return {"entries": entries, "sources": info}
+    finally:
+        remove(new, *parts)
+
+
+def write_status(status):
+    tmp = os.path.join(FEEDS_DIR, ".status.json.new")
+    with open(tmp, "w", encoding="utf-8") as f:
+        os.fchmod(f.fileno(), 0o644)
+        json.dump(status, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, os.path.join(FEEDS_DIR, "status.json"))
+
+
+def when(t):
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(t)) if isinstance(t, (int, float)) else "?"
+
+
+def main():
+    if not BASE.startswith("https://"):
+        print("agentbox-feeds: HTTPS only", file=sys.stderr)
+        return 2
+    os.umask(0o022)
+    try:
+        lock = open(os.path.join(FEEDS_DIR, ".lock"), "w")
+    except OSError as e:
+        print(f"agentbox-feeds: {FEEDS_DIR}: {e.strerror}", file=sys.stderr)
+        return 1
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print("agentbox-feeds: already running", file=sys.stderr)
+        return 1
+    try:
+        with open(os.path.join(FEEDS_DIR, "status.json"), encoding="utf-8") as f:
+            status = json.load(f)
+        if not isinstance(status, dict):
+            status = {}
+    except (OSError, ValueError):
+        status = {}
+    said, failed = [], False
+    for name, (title, sources) in SOURCES.items():
+        old = status.get(name) if isinstance(status.get(name), dict) else {}
+        now = int(time.time())
+        extra = {"days": YOUNG_DAYS} if name == "newly-registered" else {}
+        try:
+            result = update(name, title, sources)
+        except (Problem, OSError) as e:
+            failed = True
+            error = str(e)[:300]
+            status[name] = {**old, "attempted": now, "error": error}
+            kept = (f"the previous list stays ({old['entries']} entries of {when(old.get('updated'))})"
+                    if isinstance(old.get("entries"), int) else "no list yet")
+            said.append(f"{name}: FAILED {error}, {kept}")
+            continue
+        status[name] = {**result, **extra, "updated": now, "attempted": now, "error": None}
+        said.append(f"{name}: {result['entries']} entries "
+                    f"(version {', '.join(str(s['version']) for s in result['sources'])})")
+    write_status(status)
+    print("; ".join(said), flush=True)
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

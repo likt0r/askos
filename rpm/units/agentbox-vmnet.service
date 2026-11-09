@@ -1,0 +1,14 @@
+# The rules that let each VM reach only the proxy and the token service on its own network
+# (rpm/agentbox.spec). agentbox regenerate writes them to /etc/agentbox/vm-input.nft.
+[Unit]
+Description=Network rules of the agent VMs
+After=firewalld.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/agentbox/vm-input.nft
+ExecStop=/usr/sbin/nft delete table inet agentbox_vm
+
+[Install]
+WantedBy=multi-user.target

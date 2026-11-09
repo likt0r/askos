@@ -1,0 +1,25 @@
+{
+  "npm": false,
+  "git": {
+    "requireBranch": "main",
+    "requireCommits": true,
+    "commitMessage": "chore: release ${version}",
+    "tagName": "v${version}"
+  },
+  "github": {
+    "release": true,
+    "draft": true
+  },
+  "plugins": {
+    "@release-it/bumper": {
+      "in": "VERSION",
+      "out": "VERSION"
+    },
+    "@release-it/conventional-changelog": {
+      "preset": {
+        "name": "conventionalcommits"
+      },
+      "infile": "CHANGELOG.md"
+    }
+  }
+}

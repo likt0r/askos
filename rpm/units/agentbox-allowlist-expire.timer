@@ -1,0 +1,11 @@
+# Every minute (rpm/agentbox.spec); not enabled by installing.
+[Unit]
+Description=Remove expired temporary Allowlist entries every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

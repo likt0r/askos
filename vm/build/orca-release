@@ -1,0 +1,408 @@
+#!/usr/bin/python3
+"""Orca fuer das Base image, im Build-Container (vm/Containerfile, #113). Laeuft nur dort, nie
+auf dem Host: GitHubs Antworten und die Downloads liest kein Prozess von root auf dem Host.
+
+  orca-release rpm ZIEL --min-age-days N [--version X.Y.Z]
+      waehlt ein Release von Orca auf GitHub (stablyai/orca): mit --version genau dieses
+      (orca_version der Einstellungen), sonst das neueste, also das mit der hoechsten
+      Version, das kein Entwurf und keine Vorabversion ist und vor mindestens N Tagen
+      veroeffentlicht wurde (package_min_age_days). Laedt dessen orca-ide-<v>.x86_64.rpm
+      nur ueber HTTPS nach ZIEL und prueft es gegen den SHA-256, den GitHub fuer die Datei
+      angibt. Gibt die Version aus.
+  orca-release runtime ORCA ZIEL
+      die Node-Laufzeit von Orcas Server, die Orca beim ersten Start sonst selbst laedt, auf
+      demselben Weg: das Archiv von nodejs.org, das das installierte Orca unter ORCA
+      festlegt (resources/app.asar.unpacked/out/shared/node-runtime-pin.js), geprueft
+      gegen den SHA-256 dort, daraus bin/node, geprueft gegen den SHA-256 dort und in
+      Orcas Vorlage (orcad-template/targets/linux-x64-glibc/.runtime-node). Legt es nach
+      ZIEL/node-<SHA-256>/bin/node, wo guest-setup es fuer den Agenten abholt.
+
+Jeder Fehler endet mit Exit 1 und einer Zeile auf stderr, und damit der Build. agentbox
+fetch-versions waehlt das Release nach derselben Regel (agentbox/versions.py; die Tests
+vergleichen beide, tests/test_orca_release.py).
+"""
+import datetime
+import hashlib
+import json
+import os
+import re
+import stat
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+
+REPO = "stablyai/orca"
+API = f"https://api.github.com/repos/{REPO}/releases"
+DOWNLOAD = f"https://github.com/{REPO}/releases/download"
+NODE_DIST = "https://nodejs.org/dist"                 # Orcas Quelle "official" (nodeRuntimeReleaseUrl)
+VERSION = re.compile(r"(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})")
+DIGEST = re.compile(r"sha256:([0-9a-f]{64})")
+PAGES, PER_PAGE = 3, 100              # die Liste ist nach Erstellung sortiert, neueste zuerst
+MAX_API = 64 << 20                    # eine Seite mit 100 Releases: etwa 6 MiB
+MAX_RPM = 1 << 30                     # orca-ide 1.4: 160 MB
+MAX_NODE_ARCHIVE = 200 << 20          # wie Orca (maxArchiveBytes)
+TARGET = "linux-x64-glibc"
+PIN_FILE = "resources/app.asar.unpacked/out/shared/node-runtime-pin.js"
+MARKER = f"resources/orcad-template/targets/{TARGET}/.runtime-node"
+MAX_PIN_FILE = 1 << 20
+PIN_VERSION = re.compile(r"\bNODE_RUNTIME_PIN\s*=\s*\{\s*version:\s*['\"]([0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4})['\"]")
+PIN_ASSET = re.compile(
+    r"['\"]" + TARGET + r"['\"]\s*:\s*\{\s*source:\s*['\"]([a-z]+)['\"],\s*archive:\s*['\"]([^'\"\s]{1,100})['\"],\s*"
+    r"archiveSha256:\s*['\"]([0-9a-f]{64})['\"],\s*executableSha256:\s*['\"]([0-9a-f]{64})['\"],\s*"
+    r"executableSize:\s*([0-9]{1,12})\s*\}")
+CURL = ["curl", "-q", "-sS", "--connect-timeout", "30", "--proto", "=https", "--proto-redir", "=https",
+        "-H", "User-Agent: agentbox-build"]
+
+
+class Failed(Exception):
+    pass
+
+
+# --- welches Release (dieselbe Regel in agentbox/versions.py) ------------------------------------
+
+def version_of(release):
+    """Die Version eines veroeffentlichten Releases (Tag vX.Y.Z, kein Entwurf, keine
+    Vorabversion), sonst None."""
+    if not isinstance(release, dict) or release.get("draft") is not False or release.get("prerelease") is not False:
+        return None
+    tag = release.get("tag_name")
+    if not isinstance(tag, str) or not tag.startswith("v") or not VERSION.fullmatch(tag[1:]):
+        return None
+    return tag[1:]
+
+
+def published(release):
+    """Wann das Release veroeffentlicht wurde (Epoch-Sekunden), None wenn unbekannt."""
+    return _stamp(release.get("published_at"))
+
+
+def _stamp(stamp):
+    """Ein Zeitstempel von GitHub (ISO 8601 mit Zeitzone) als Epoch-Sekunden, sonst None."""
+    if not isinstance(stamp, str):
+        return None
+    try:
+        when = datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return when.timestamp() if when.tzinfo is not None else None
+
+
+def _key(version):
+    return tuple(int(p) for p in version.split("."))
+
+
+def asset_ok(release, version, cutoff, pinned=False):
+    """Ob das RPM des Releases nicht erst kuerzlich angelegt oder ersetzt wurde: created_at und
+    updated_at des Assets spaetestens cutoff (Epoch-Sekunden). Mit pinned (orca_version waehlt
+    das Release auch, wenn es juenger ist) hoechstens eine Stunde nach der Veroeffentlichung,
+    wenn das spaeter ist. Ein Release ohne dieses Asset gilt als ok (rpm_asset meldet es);
+    ein Zeitstempel, den es nicht gibt oder der nicht zu lesen ist, als zu jung."""
+    name = f"orca-ide-{version}.x86_64.rpm"
+    assets = release.get("assets")
+    found = [a for a in assets if isinstance(a, dict) and a.get("name") == name] if isinstance(assets, list) else []
+    if len(found) != 1:
+        return True
+    if pinned:
+        when = published(release)
+        cutoff = max(cutoff, when + 3600) if when is not None else float("-inf")
+    for key in ("created_at", "updated_at"):
+        when = _stamp(found[0].get(key))
+        if when is None or when > cutoff:
+            return False
+    return True
+
+
+def choose(releases, cutoff, pin=None):
+    """Das Release, das ein Build aus GitHubs Liste nimmt: mit pin das veroeffentlichte dieser
+    Version, sonst die hoechste Version unter den veroeffentlichten, die spaetestens zu
+    cutoff (Epoch-Sekunden) erschienen sind und deren RPM nicht juenger ist (asset_ok). None, wenn es keins gibt."""
+    found = []
+    for release in releases if isinstance(releases, list) else []:
+        version = version_of(release)
+        if version is None:
+            continue
+        if pin is not None:
+            if version == pin:
+                return release
+            continue
+        when = published(release)
+        if when is not None and when <= cutoff and asset_ok(release, version, cutoff):
+            found.append((_key(version), len(found), release))
+    return max(found)[2] if found else None
+
+
+def rpm_asset(release, version):
+    """(Name, SHA-256, Groesse) des RPM fuer x86_64 im Release; Failed, wenn es fehlt, keinen
+    SHA-256 hat oder zu gross ist."""
+    name = f"orca-ide-{version}.x86_64.rpm"
+    assets = release.get("assets")
+    found = [a for a in assets if isinstance(a, dict) and a.get("name") == name] if isinstance(assets, list) else []
+    if len(found) != 1 or found[0].get("state") != "uploaded":
+        raise Failed(f"release v{version} has no {name}")
+    asset = found[0]
+    digest = asset.get("digest")
+    digest = DIGEST.fullmatch(digest) if isinstance(digest, str) else None
+    if not digest:
+        raise Failed(f"GitHub names no SHA-256 for {name}")
+    size = asset.get("size")
+    if isinstance(size, bool) or not isinstance(size, int) or not 0 < size <= MAX_RPM:
+        raise Failed(f"{name}: unexpected size {size!r} (at most {MAX_RPM >> 20} MiB)")
+    return name, digest.group(1), size
+
+
+# --- Internet: nur curl, nur HTTPS -----------------------------------------------------------------
+
+def _printable(text):
+    return re.sub(r"[^\x20-\x7e]", "?", text)[-300:]
+
+
+def api(url):
+    """(HTTP-Status, JSON oder None) von GET url bei GitHubs API; Failed, wenn GitHub nicht
+    erreichbar ist oder zu viel antwortet."""
+    argv = [*CURL, "-m", "300", "--max-filesize", str(MAX_API), "-H", "Accept: application/vnd.github+json",
+            "-H", "X-GitHub-Api-Version: 2022-11-28", "-w", "\\n%{http_code}", url]
+    try:
+        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except OSError as e:
+        raise Failed(f"curl: {e.strerror}")
+    # --max-filesize begrenzt keine Antwort ohne Laenge (chunked): hoechstens so viel lesen
+    out = proc.stdout.read(MAX_API + 64)
+    too_big = len(out) > MAX_API + 32
+    if too_big:
+        proc.kill()
+    proc.stdout.close()
+    err = proc.stderr.read(4096).decode("utf-8", "replace")
+    proc.stderr.close()
+    proc.wait()
+    if too_big:
+        raise Failed(f"{url}: response larger than {MAX_API >> 20} MiB")
+    body, _, status = out.rpartition(b"\n")
+    if proc.returncode != 0 or not re.fullmatch(rb"[1-5][0-9][0-9]", status):
+        raise Failed(f"GitHub not reachable ({url}, curl exit {proc.returncode}"
+                     + (f": {_printable(err.strip())}" if err.strip() else "") + ")")
+    try:
+        return int(status), json.loads(body)
+    except (ValueError, RecursionError):
+        return int(status), None
+
+
+def download(url, dest, cap, size=None):
+    """url nach dest, nur ueber HTTPS (auch jede Weiterleitung), hoechstens cap Bytes (bei
+    bekannter size: genau so viele) und, wenn bekannt, genau size; was misslingt, bleibt nicht
+    liegen. curl schreibt in eine Pipe, die hier mit hartem Limit gelesen wird: --max-filesize
+    begrenzt keine Antwort ohne Laenge."""
+    limit = min(cap, size) if size is not None else cap
+    argv = [*CURL, "-f", "-L", "--max-redirs", "5", "-m", "1800", "--max-filesize", str(cap), "-o", "-", url]
+    got = 0
+    try:
+        try:
+            proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except OSError as e:
+            raise Failed(f"{url}: download failed ({type(e).__name__})")
+        try:
+            with open(dest, "wb") as out:
+                while True:
+                    chunk = proc.stdout.read(min(1 << 20, limit + 1 - got))
+                    if not chunk:
+                        break
+                    got += len(chunk)
+                    if got > limit:
+                        break
+                    out.write(chunk)
+        except OSError as e:
+            proc.kill()
+            raise Failed(f"{dest}: {e.strerror}")
+        finally:
+            if got > limit:
+                proc.kill()
+            proc.stdout.close()
+            err = proc.stderr.read(4096).decode("utf-8", "replace")
+            proc.stderr.close()
+            try:
+                proc.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+        if got > limit:
+            raise Failed(f"{url}: more than {limit} bytes delivered")
+        if proc.returncode != 0:
+            raise Failed(f"{url}: download failed (curl exit {proc.returncode}"
+                         + (f": {_printable(err.strip())}" if err.strip() else "") + ")")
+        if size is not None and got != size:
+            raise Failed(f"{url}: {got} bytes downloaded, expected {size}")
+    except Failed:
+        if os.path.lexists(dest):
+            os.remove(dest)
+        raise
+
+
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+# --- orca-release rpm ------------------------------------------------------------------------------
+
+def find(days, pin, now):
+    """Das Release, das der Build nimmt (siehe choose), von GitHub."""
+    if pin is not None:
+        status, release = api(f"{API}/tags/v{pin}")
+        if status == 404:
+            raise Failed(f"Orca {pin} (orca_version): no release v{pin} on GitHub")
+        if status != 200 or not isinstance(release, dict):
+            raise Failed(f"GitHub responds with {status}")
+        if choose([release], now, pin) is None:
+            raise Failed(f"Orca {pin} (orca_version): v{pin} is a draft or a prerelease")
+        if not asset_ok(release, pin, now - days * 86400, pinned=True):
+            raise Failed(f"Orca {pin} (orca_version): the RPM of v{pin} was created or replaced after the release "
+                         f"was published, less than {days} days ago")
+        return release
+    everything = []
+    for page in range(1, PAGES + 1):
+        status, releases = api(f"{API}?per_page={PER_PAGE}&page={page}")
+        if status != 200 or not isinstance(releases, list):
+            raise Failed(f"GitHub responds with {status}")
+        everything += releases
+        if len(releases) < PER_PAGE:
+            break
+    release = choose(everything, now - days * 86400)       # erst nach allen Seiten: die hoechste Version
+    if release is None:
+        raise Failed(f"no release of Orca that is at least {days} days old (among the newest {PAGES * PER_PAGE})"
+                     " and whose RPM is not younger")
+    return release
+
+
+def rpm(dest, days, pin):
+    now = time.time()
+    release = find(days, pin, now)
+    version = version_of(release)
+    name, digest, size = rpm_asset(release, version)
+    when = published(release)
+    print(f"Orca {version}: " + ("pinned (orca_version)" if pin else
+                                 f"the newest release at least {days} days old")
+          + (f", published {time.strftime('%Y-%m-%d %H:%M', time.gmtime(when))} UTC" if when else ""), flush=True)
+    os.makedirs(dest, exist_ok=True)
+    path = os.path.join(dest, name)
+    url = f"{DOWNLOAD}/v{version}/{name}"
+    download(url, path, MAX_RPM, size)
+    found = sha256(path)
+    if found != digest:
+        os.remove(path)
+        raise Failed(f"{name}: SHA-256 {found} instead of {digest} as given by GitHub")
+    print(f"{name}: {size} bytes, SHA-256 as given by GitHub ({digest})", flush=True)
+    return version
+
+
+# --- orca-release runtime --------------------------------------------------------------------------
+
+def _read(path, cap):
+    """Der Inhalt einer regulaeren Datei (keine Verknuepfung), hoechstens cap Bytes."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as e:
+        raise Failed(f"{path}: {e.strerror}")
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise Failed(f"{path}: not a file")
+        data = os.read(fd, cap + 1)
+    finally:
+        os.close(fd)
+    if len(data) > cap:
+        raise Failed(f"{path}: larger than {cap} bytes")
+    return data.decode("utf-8", "replace")
+
+
+def pin_of(orca):
+    """Was das installierte Orca fuer seinen Server festlegt: (Node-Version, Archiv,
+    SHA-256 des Archivs, SHA-256 und Groesse von bin/node)."""
+    text = _read(os.path.join(orca, PIN_FILE), MAX_PIN_FILE)
+    versions, assets = PIN_VERSION.findall(text), PIN_ASSET.findall(text)
+    if len(versions) != 1 or len(assets) != 1:
+        raise Failed(f"{PIN_FILE}: Node version or archive for {TARGET} not found (or not unique)")
+    version, (source, archive, archive_sha, executable_sha, size) = versions[0], assets[0]
+    if source != "official" or archive != f"node-v{version}-linux-x64.tar.gz":
+        raise Failed(f"{PIN_FILE}: unexpected source {source} or archive {archive} for Node {version}")
+    marker = _read(os.path.join(orca, MARKER), 1024).strip()
+    if marker != executable_sha:
+        raise Failed(f"{MARKER} names {marker[:64]!r}, {PIN_FILE} {executable_sha}")
+    return version, archive, archive_sha, executable_sha, int(size)
+
+
+def runtime(orca, dest):
+    version, archive, archive_sha, executable_sha, size = pin_of(orca)
+    url = f"{NODE_DIST}/v{version}/{archive}"
+    print(f"Node {version} for Orca's server: {url}", flush=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, archive)
+        download(url, path, MAX_NODE_ARCHIVE)
+        found = sha256(path)
+        if found != archive_sha:
+            raise Failed(f"{archive}: SHA-256 {found} instead of {archive_sha} as pinned by Orca")
+        member = f"{archive.removesuffix('.tar.gz')}/bin/node"
+        folder = os.path.join(dest, f"node-{executable_sha}")
+        target = os.path.join(folder, "bin", "node")
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        part = os.path.join(tmp, "node")
+        h = hashlib.sha256()
+        try:
+            with tarfile.open(path, "r:gz") as tar:
+                info = tar.getmember(member)
+                if not info.isreg() or info.size != size:
+                    raise Failed(f"{archive}: {member} is not a file of {size} bytes")
+                src = tar.extractfile(info)
+                with open(part, "wb") as out:
+                    for chunk in iter(lambda: src.read(1 << 20), b""):
+                        h.update(chunk)
+                        out.write(chunk)
+        except KeyError:
+            raise Failed(f"{archive}: {member} is missing")
+        except (tarfile.TarError, EOFError, OSError) as e:
+            raise Failed(f"{archive}: not readable ({type(e).__name__})")
+        if h.hexdigest() != executable_sha:
+            raise Failed(f"{member}: SHA-256 {h.hexdigest()} instead of {executable_sha} as pinned by Orca")
+        os.chmod(part, 0o755)
+        os.replace(part, target)
+    print(f"{target}: SHA-256 as pinned by Orca", flush=True)
+    return target
+
+
+# --- Aufruf ----------------------------------------------------------------------------------------
+
+USAGE = "orca-release rpm DEST --min-age-days N [--version X.Y.Z] | orca-release runtime ORCA DEST"
+
+
+def main(argv):
+    if len(argv) == 3 and argv[0] == "runtime":
+        runtime(argv[1], argv[2])
+        return 0
+    if not argv or argv[0] != "rpm":
+        raise Failed(USAGE)
+    positional, opts, rest = [], {}, list(argv[1:])
+    while rest:
+        a = rest.pop(0)
+        if a in ("--min-age-days", "--version"):
+            if not rest or a in opts:
+                raise Failed(USAGE)
+            opts[a] = rest.pop(0)
+        else:
+            positional.append(a)
+    days, pin = opts.get("--min-age-days", ""), opts.get("--version", "")
+    if len(positional) != 1 or not re.fullmatch(r"[0-9]{1,3}", days):
+        raise Failed(USAGE)
+    if pin and not VERSION.fullmatch(pin):
+        raise Failed(f"invalid version of Orca: {_printable(pin)[:40]} (expected: X.Y.Z)")
+    rpm(positional[0], int(days), pin or None)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except Failed as e:
+        print(f"orca-release: {e}", file=sys.stderr)
+        sys.exit(1)

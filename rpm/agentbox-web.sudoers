@@ -1,0 +1,5 @@
+# The Control Room may only call agentbox; agentbox checks context and arguments.
+agentbox-web ALL=(root) NOPASSWD: /usr/bin/agentbox
+# agentbox watch: the one event helper the service keeps running (read only). The line
+# above allows it already; this one keeps it allowed should that one get narrower.
+agentbox-web ALL=(root) NOPASSWD: /usr/bin/agentbox watch

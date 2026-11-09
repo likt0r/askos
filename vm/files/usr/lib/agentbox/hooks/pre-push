@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Agenten pushen nicht auf main/master, sondern auf Branches mit PR.
+# Bremse gegen Versehen, keine Sperre: --no-verify umgeht den Hook.
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  case "$remote_ref" in
+    refs/heads/main | refs/heads/master)
+      echo "agentbox: pushing to ${remote_ref#refs/heads/} is blocked. Push a branch and open a pull request." >&2
+      exit 1 ;;
+  esac
+done
+exit 0

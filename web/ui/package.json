@@ -1,0 +1,26 @@
+{
+  "name": "agentbox-control-room",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prepare:nuxt": "NODE_OPTIONS='--import ./scripts/node-icu-workaround.mjs' nuxt prepare",
+    "dev": "NODE_OPTIONS='--import ./scripts/node-icu-workaround.mjs' nuxt dev",
+    "generate": "NODE_OPTIONS='--import ./scripts/node-icu-workaround.mjs' nuxt generate && node scripts/check-dist.mjs",
+    "test": "NODE_OPTIONS='--import ./scripts/node-icu-workaround.mjs' vitest run"
+  },
+  "dependencies": {
+    "@fontsource-variable/inter": "5.3.0",
+    "@fontsource-variable/jetbrains-mono": "5.3.0",
+    "@iconify-json/lucide": "1.2.150",
+    "@nuxt/ui": "4.12.0",
+    "@nuxtjs/i18n": "10.6.0",
+    "nuxt": "4.6.3",
+    "tailwindcss": "4.3.3"
+  },
+  "devDependencies": {
+    "@nuxt/test-utils": "4.3.4",
+    "@vue/test-utils": "2.5.1",
+    "happy-dom": "21.0.4",
+    "vitest": "5.0.5"
+  }
+}

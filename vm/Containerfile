@@ -1,0 +1,92 @@
+# Das Base image der Agent-VMs: Agenten und alle Schutzmassnahmen. Weitere Images
+# (vm/images/<name>/Containerfile) bauen darauf auf und duerfen keine davon schwaechen;
+# agentbox prueft das nach jedem Build auf dem Host (agentbox/safeguards.py).
+# Bauen: agentbox build base (nimmt diese Datei aus dem installierten Release, macht mit
+# bootc-image-builder die VM-Platte; agentbox/images.py). Build-Kontext: das Verzeichnis
+# ueber vm/, mit github-app/. Vom Host kommen nur diese Dateien und die Build-Argumente;
+# was aus dem Internet geladen wird, waehlt und prueft dieser Container.
+FROM quay.io/fedora/fedora-bootc:44
+
+# Orca-Binary (Electron) braucht seine GUI-Bibliotheken auch im Node-Modus.
+# nodejs-full-i18n: Nodes ICU-Daten (sonst nur eine schwache Abhaengigkeit); ohne sie stuerzt
+# Intl.Segmenter ab (nuxt, vite, consola, string-width ...).
+RUN dnf -y install --setopt=install_weak_deps=False \
+      gtk3 nss alsa-lib cups-libs mesa-libgbm libxkbcommon \
+      git gh nodejs nodejs-full-i18n npm python3 uv rustup libxkbcommon-devel \
+      podman docker-compose \
+      ripgrep jq less nano procps-ng which findutils diffutils patch \
+      tar gzip unzip make gcc gcc-c++ xfsprogs qemu-guest-agent \
+    && dnf clean all
+
+# Mindestalter von Paketen in Tagen: package_min_age_days der Einstellungen, von
+# agentbox build gesetzt. Gilt schon fuer die Agenten hier (npm --before: die neueste
+# Version, die mindestens so alt ist; agentbox check-versions rechnet ebenso) und fuer Orca
+# (unten), danach ueber package-safeguards fuer npm (auch ohne Install-Skripte), pnpm, Bun
+# und uv.
+ARG PACKAGE_MIN_AGE_DAYS=2
+
+# Agenten zuerst mit Fedoras npm (npm 12 fuehrt deren Install-Skripte, die die
+# eigentlichen Programme ablegen, nicht aus); danach npm 12 fuer min-release-age.
+# Bei bootc gehoert nur /usr zum Image, daher --prefix /usr; /root zeigt beim
+# Bauen ins Leere, daher Cache in /tmp. Updates kommen ueber den Neubau.
+RUN export HOME=/tmp npm_config_cache=/tmp/npm-cache \
+    && before="$(date -u -d "-${PACKAGE_MIN_AGE_DAYS} days" +%Y-%m-%dT%H:%M:%SZ)" \
+    && npm install -g --prefix /usr --before "$before" pnpm bun @anthropic-ai/claude-code @openai/codex opencode-ai \
+    && npm install -g --prefix /usr --force --before "$before" npm@12 \
+    && rm -rf /tmp/npm-cache
+
+# Rust ueber rustup statt Fedoras rust: nur so gibt es die Android-Targets.
+# Fest im Image (RUSTUP_HOME setzt system.conf.d), Agenten laden keine
+# Toolchains nach. Version wie in tosk/mise.toml.
+RUN export RUSTUP_HOME=/usr/lib/rustup CARGO_HOME=/usr/lib/cargo \
+    && rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.99.0 \
+       -c clippy,rustfmt,rust-src,rust-analyzer -t aarch64-linux-android,x86_64-linux-android \
+    && ln -s /usr/lib/cargo/bin/* /usr/bin/ \
+    && cargo install --locked --root /usr cargo-ndk@4.1.2 \
+    && rm -rf /usr/lib/cargo/registry /usr/lib/cargo/git /usr/.crates.toml /usr/.crates2.json
+
+# JDK 21 fuer Android-Builds (AGP 8 laeuft nicht mit Fedoras JDK 25).
+# SDK, NDK und Emulator laedt der Agent selbst auf die Datenplatte
+# (tosk: scripts/android-setup.sh).
+RUN curl -fsSL -o /tmp/jdk.tar.gz https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz \
+    && echo "d7f5d5cf865a2902b70ff549b97586a7d3f234e016f041ab447ea740c7d66d1c  /tmp/jdk.tar.gz" | sha256sum -c - \
+    && mkdir -p /usr/lib/jvm/temurin-21 \
+    && tar -xzf /tmp/jdk.tar.gz -C /usr/lib/jvm/temurin-21 --strip-components=1 \
+    && rm /tmp/jdk.tar.gz \
+    && ln -s /usr/lib/jvm/temurin-21/bin/{java,javac,jar,keytool} /usr/bin/
+
+# Orca aus seinem GitHub-Release (stablyai/orca, #113): orca-release nimmt das neueste
+# Release (kein Entwurf, keine Vorabversion), das mindestens PACKAGE_MIN_AGE_DAYS alt ist,
+# oder genau ORCA_VERSION (orca_version der Einstellungen, leer: automatisch; agentbox
+# check-versions rechnet ebenso), laedt dessen RPM fuer x86_64 nur ueber HTTPS und prueft
+# es gegen den SHA-256, den GitHub dafuer angibt. dnf installiert es mit seinen
+# Abhaengigkeiten nach /opt/Orca, bei bootc /var/opt und damit nicht Teil des Images; daher
+# nach /usr/lib/orca (dort startet es agentbox-orca.service, dort liest agentbox seine
+# Version). Dann die Node-Laufzeit seines Servers, die Orca sonst beim ersten Start laedt:
+# von nodejs.org, geprueft gegen die SHA-256, die dieses Orca festlegt; guest-setup legt
+# sie ins Home des Agenten.
+ARG ORCA_VERSION=
+COPY vm/build/orca-release /tmp/orca-release
+RUN python3 -I /tmp/orca-release rpm /tmp/orca --min-age-days "$PACKAGE_MIN_AGE_DAYS" --version "$ORCA_VERSION" \
+    && mkdir -p /var/opt \
+    && dnf -y install --setopt=install_weak_deps=False /tmp/orca/orca-ide-*.x86_64.rpm \
+    && dnf clean all \
+    && mv /opt/Orca /usr/lib/orca \
+    && ln -sfn /usr/lib/orca/resources/bin/orca-ide /usr/bin/orca-ide \
+    && python3 -I /tmp/orca-release runtime /usr/lib/orca /usr/lib/agentbox/orca-runtimes \
+    && rm -rf /tmp/orca /tmp/orca-release
+
+COPY github-app/agentbox-gh-token github-app/git-credential-agentbox /usr/bin/
+COPY github-app/gh /usr/lib/agentbox/bin/gh
+COPY vm/files/ /
+
+# package-safeguards schreibt mit dem Mindestalter (ARG oben) die Konfiguration von
+# npm (auch ohne Install-Skripte), pnpm, Bun und uv.
+RUN /usr/lib/agentbox/package-safeguards "$PACKAGE_MIN_AGE_DAYS"
+
+RUN useradd -u 1000 -U -M -d /var/home/agent -s /bin/bash agent \
+    && chmod 755 /usr/bin/agentbox-gh-token /usr/bin/git-credential-agentbox /usr/lib/agentbox/bin/gh \
+    && systemctl enable agentbox-guest-setup.service agentbox-orca.service qemu-guest-agent.service \
+       'var-lib-agentbox\x2ddata.mount' \
+    && systemctl --global enable podman.socket \
+    && bootc container lint

@@ -1,0 +1,49 @@
+#!/bin/sh
+# Paket-Schutz des Base image: npm ohne Install-Skripte, und npm, pnpm, Bun und uv
+# nehmen nur Paketversionen, die mindestens <tage> alt sind. Laeuft beim Bauen
+# (vm/Containerfile) mit package_min_age_days aus den Einstellungen; nach jedem
+# Build prueft agentbox auf dem Host, dass alles hier Geschriebene so im Image steht.
+#   package-safeguards <tage> [<wurzel>]
+# <wurzel> nur fuer Tests (Standard: das Image selbst).
+set -eu
+
+days=${1:-}
+root=${2:-}
+case "$days" in
+  '' | 0* | *[!0-9]*) echo "package-safeguards: give the days as a whole number from 1" >&2; exit 2 ;;
+esac
+
+npm="$root/usr/lib/node_modules/npm"
+mkdir -p "$root/etc/uv" "$npm" "$root/usr/lib/agentbox" "$root/usr/lib/systemd/system.conf.d"
+
+# npm: globale Konfiguration. Ohne Angabe liest npm (Prefix /usr) /usr/etc/npmrc, das es in
+# einem bootc-Image nicht geben darf; npm 12 bringt Fedoras eingebaute Konfiguration, die auf
+# /etc/npmrc zeigt, nicht mit. Die eingebaute Konfiguration hier tut das wieder.
+cat > "$root/etc/npmrc" <<EOF
+# Package safeguards of the Agent Box (package-safeguards, owned by root)
+ignore-scripts=true
+min-release-age=$days
+EOF
+cat > "$npm/npmrc" <<EOF
+# npm's builtin configuration (package-safeguards): the global one is /etc/npmrc
+globalconfig=/etc/npmrc
+EOF
+
+# uv: Konfigurationsdatei und (unten) Umgebung
+cat > "$root/etc/uv/uv.toml" <<EOF
+exclude-newer = "$days days"
+EOF
+
+# Bun liest seine globale Konfiguration nur aus dem Home; guest-setup legt sie dort ab
+cat > "$root/usr/lib/agentbox/bunfig.toml" <<EOF
+[install]
+# packages only once they are $days days old (in seconds)
+minimumReleaseAge = $((days * 86400))
+EOF
+
+# Umgebung aller Dienste der VM (orca serve, Agenten, Terminals): uv und pnpm (Minuten)
+cat > "$root/usr/lib/systemd/system.conf.d/agentbox-packages.conf" <<EOF
+# Package safeguards of the Agent Box (package-safeguards)
+[Manager]
+DefaultEnvironment="UV_EXCLUDE_NEWER=$days days" "pnpm_config_minimum_release_age=$((days * 1440))"
+EOF

@@ -1,0 +1,175 @@
+name: Release
+
+# The Release button (docs/releasing.md): Actions → Release → Run workflow, on main. release-it
+# bumps VERSION, writes CHANGELOG.md, commits, tags and creates a draft GitHub release; the RPMs
+# of that tag and their SHA256 are attached to it. A maintainer publishes the draft, CI never
+# does. One workflow with its jobs one after another, because a tag pushed with GITHUB_TOKEN
+# starts no other workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run: show the next version and its changelog, change nothing'
+        type: boolean
+        default: true
+      increment:
+        description: 'Increment: auto (from the commits since the last Release), patch, minor or major'
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
+
+# Read-only unless a job says otherwise; inputs reach the scripts only through env.
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      # pushes the release commit and the tag to main and creates the draft release
+      contents: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Refuse to run off main
+        run: |
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::A Release is cut from main only, not from $GITHUB_REF."
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # release-it reads the commits and tags since the last Release
+          fetch-depth: 0
+          # and pushes the release commit and the tag with these credentials
+          persist-credentials: true
+      # No npm cache anywhere in this workflow: what it builds and pushes comes from the
+      # lockfiles alone, not from a cache another run wrote.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      # release-it and its plugins, exactly the lockfile; none of them needs an install script.
+      - run: npm ci --ignore-scripts
+      - name: Run release-it
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+          INCREMENT: ${{ inputs.increment }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          args=(--ci)
+          if [ "$DRY_RUN" = true ]; then
+            args+=(--dry-run)
+          fi
+          case $INCREMENT in
+            auto)
+              # release-it finds no next version when no commit since the last Release raises
+              # one (only docs, chore, ci, ...); a Release started anyway is a PATCH
+              # (CONTRIBUTING.md)
+              next=$(node_modules/.bin/release-it --ci --release-version)
+              if [ -z "$next" ]; then
+                args+=(patch)
+              fi
+              ;;
+            patch|minor|major)
+              args+=("$INCREMENT")
+              ;;
+            *)
+              echo "::error::Unknown increment: $INCREMENT"
+              exit 1
+              ;;
+          esac
+          node_modules/.bin/release-it "${args[@]}"
+      - name: Hand the tag on
+        id: tag
+        if: ${{ !inputs.dry_run }}
+        run: |
+          tag=v$(tr -d '[:space:]' < VERSION)
+          if [ "$(git rev-parse -q --verify "refs/tags/$tag^{commit}")" != "$(git rev-parse HEAD)" ]; then
+            echo "::error::release-it made no tag $tag on the release commit."
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  # The RPM of the tag for the current and the previous Fedora release (ADR 0009), built and
+  # checked as in ci.yml's rpm job; here the installed CLI also has to report the tag. Only
+  # reads: it installs the UI's npm dependencies.
+  rpm:
+    needs: release
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        # the current and the previous Fedora release (ADR 0009), as in ci.yml
+        fedora: ['44', '45']
+    env:
+      IMAGE: quay.io/fedora/fedora:${{ matrix.fedora }}
+      TAG: ${{ needs.release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release.outputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      # The UI goes into the RPM as CI builds it from the lockfile (ADR 0011).
+      - run: npm ci && npm run generate
+        working-directory: web/ui
+      - name: Build the source RPM and the RPM
+        run: |
+          docker run --rm -v "$PWD:/src:ro" -v "$RUNNER_TEMP/rpm:/out" "$IMAGE" /src/rpm/build.sh /out
+      - name: Install it in a fresh Fedora container and check that it reports the tag
+        run: |
+          rpm=$(cd "$RUNNER_TEMP/rpm" && ls agentbox-*.noarch.rpm)
+          docker run --rm -v "$PWD:/src:ro" -v "$RUNNER_TEMP/rpm:/out:ro" "$IMAGE" /src/rpm/install-test.sh "/out/$rpm" "$TAG"
+      # Only the RPM: the source RPM would be caught by `gh release download -p '*.rpm'`.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rpm-fedora-${{ matrix.fedora }}
+          path: ${{ runner.temp }}/rpm/agentbox-*.noarch.rpm
+          if-no-files-found: error
+          retention-days: 7
+
+  # Attaches the RPMs and their SHA256 to the draft release; publishing it is a maintainer's step.
+  attach:
+    needs: [release, rpm]
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # uploads the files to the draft release
+      contents: write
+    env:
+      TAG: ${{ needs.release.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: rpm-fedora-*
+          merge-multiple: true
+          path: rpm
+      - name: Attach the RPMs and SHA256SUMS to the draft release
+        working-directory: rpm
+        run: |
+          if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" != true ]; then
+            echo "::error::The release $TAG is not a draft: CI attaches files only to a draft."
+            exit 1
+          fi
+          sha256sum agentbox-*.noarch.rpm > SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "$TAG" agentbox-*.noarch.rpm SHA256SUMS

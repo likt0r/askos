@@ -1,0 +1,14 @@
+[Unit]
+Description=Agent Box: set up the context, the Data disk and the home
+After=local-fs.target network-online.target
+Wants=network-online.target
+RequiresMountsFor=/var/lib/agentbox-data
+Before=agentbox-orca.service user@1000.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/agentbox/guest-setup
+
+[Install]
+WantedBy=multi-user.target

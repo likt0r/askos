@@ -1,0 +1,36 @@
+# Grundliste fuer einen neuen Host: Domains, die alle VMs erreichen duerfen (inkl. Subdomains).
+# agentbox setup installiert sie nur, wenn es noch keine Allowlist gibt; agentbox migrate-allowlist
+# uebernimmt sie dann als dauerhafte Eintraege fuer alle VMs nach /etc/agentbox/allowlist.json.
+# Danach: agentbox allowlist / allow / disallow. Blockierte Versuche: agentbox blocked <vm>
+
+# GitHub
+github.com
+githubusercontent.com
+
+# KI-Anbieter
+anthropic.com
+claude.ai
+claude.com
+# Artifacts von claude.ai
+claudeusercontent.com
+openai.com
+chatgpt.com
+opencode.ai
+models.dev
+
+# Paket-Registries
+npmjs.org
+yarnpkg.com
+pypi.org
+pythonhosted.org
+crates.io
+# Android (SDK, NDK, Emulator, Google-Maven), Gradle, Maven Central
+dl.google.com
+gradle.org
+repo.maven.apache.org
+
+# Container-Images (Podman im Code-Container)
+docker.io
+docker.com
+ghcr.io
+quay.io
