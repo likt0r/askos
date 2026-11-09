@@ -20,7 +20,9 @@ The terms used here (Host, VM, Reset, Allowlist entry, Alert, …) are defined i
 - **Supply-chain attacks through packages** (install scripts stealing tokens)
 
 It does not try to protect against theft of the machine or targeted attacks on the
-person running it.
+person running it. Where its protection stops short, limit by limit, is in [What it does not
+protect against](ARCHITECTURE.md#what-it-does-not-protect-against); to report a security hole
+privately, see [SECURITY.md](SECURITY.md).
 
 ## Requirements
 
@@ -38,10 +40,9 @@ person running it.
 ## Installing
 
 Agent Box is delivered as **Releases**, one RPM per Fedora release ([ADR
-0009](docs/adr/0009-agent-box-ships-as-a-fedora-rpm.md)). While the repository is private, a
-Release is attached to its GitHub release, unsigned, with a `SHA256SUMS` file, and only accounts
-with access to the repository can download it. With `gh` logged in as such an account, on the
-Host:
+0009](docs/adr/0009-agent-box-ships-as-a-fedora-rpm.md)). A Release is attached to its GitHub
+release, unsigned, with a `SHA256SUMS` file, and anyone can download it. With `gh` logged in as
+any GitHub account, on the Host:
 
 ```sh
 gh release download vX.Y.Z -R likt0r/askos -p '*.rpm' -p SHA256SUMS

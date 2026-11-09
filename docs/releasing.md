@@ -62,10 +62,9 @@ gh release edit vX.Y.Z --draft=false
 
 ## Installing a Release on a Host
 
-While the repository is private, a Release is delivered only as the RPM attached to its GitHub
-release, unsigned, checked by its SHA256 (ADR 0009); only accounts with access to the repository
-can download it. On the Host, with `gh` logged in as such an account (or on another machine,
-copying the files to the Host afterwards):
+A Release is delivered only as the RPM attached to its GitHub release, unsigned, checked by its
+SHA256 (ADR 0009); anyone can download it. On the Host, with `gh` logged in as any GitHub account
+(or on another machine, copying the files to the Host afterwards):
 
 ```
 gh release download vX.Y.Z -R likt0r/askos -p '*.rpm' -p SHA256SUMS
@@ -137,8 +136,8 @@ reinstalls it and removes it.
 
 ### Automatic updates
 
-They are off, and nothing can turn them on yet. While the repository is private, a Release
-exists only as a file attached to its GitHub release: there is no repository for dnf to update
+They are off, and nothing can turn them on yet. A Release exists only as a file attached to its
+GitHub release: there is no repository for dnf to update
 from, so neither dnf nor `dnf5-automatic` (which applies Fedora's updates on the Host) ever
 updates Agent Box, and every update is the `dnf upgrade` above, run by the owner. Once
 Releases are published through COPR (#101), a Host that enables that repository gets them
