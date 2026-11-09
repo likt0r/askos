@@ -2012,14 +2012,20 @@ def scope(v):
 PATTERN_CHARS = re.compile(r"[\x21-\x7e]+")
 
 
+# what is dropped around a pattern: ASCII spaces, tabs, CR and LF, nothing else (str.strip()
+# would also drop other control and Unicode whitespace, which is refused instead)
+PATTERN_AROUND = " \t\r\n"
+
+
 def pattern_arg(v):
-    """--regex=<pattern> of a Regex entry, taken as given but for leading and trailing
-    whitespace (not lowercased: \\D is not \\d); as the value of the option it is never one
-    itself. Anything but printable ASCII without spaces (a NUL byte included, which no
-    process argument can carry) is refused here; agentbox checks the rest."""
-    if not isinstance(v, str) or not PATTERN_CHARS.fullmatch(v.strip()):
+    """--regex=<pattern> of a Regex entry, taken as given but for leading and trailing spaces,
+    tabs, CR and LF (not lowercased: \\D is not \\d); as the value of the option it is never
+    one itself. Anything else but printable ASCII without spaces (a NUL byte included, which
+    no process argument can carry) is refused here; agentbox checks the rest."""
+    pattern = v.strip(PATTERN_AROUND) if isinstance(v, str) else None
+    if pattern is None or not PATTERN_CHARS.fullmatch(pattern):
         raise invalid("regex", "regex must be a pattern of printable ASCII characters without spaces")
-    return f"--regex={v.strip()}"
+    return f"--regex={pattern}"
 
 
 def target_args(body):

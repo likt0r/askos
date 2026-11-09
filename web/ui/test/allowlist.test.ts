@@ -194,15 +194,15 @@ describe('Allowlist view', () => {
     await click('[data-testid="allowlist-add"] [data-testid="regex-test"]')
     expect($('[data-testid="regex-result"]')).not.toBeNull()
 
-    // to Domain (the check is gone), another scope through the select's form control, back to Regex
+    // to Domain (the check is gone), another scope, back to Regex. The scope changes through the
+    // select's hidden form control, which takes a value the way autofill gives it: an input event
     await kind('domain')
-    const native = $('[data-testid="allowlist-add"] select') as HTMLSelectElement | null
-    if (native) {
-      if (![...native.options].some(o => o.value === 'work')) native.insertAdjacentHTML('beforeend', '<option value="work">work</option>')
-      native.value = 'work'
-      native.dispatchEvent(new Event('change', { bubbles: true }))
-      await settle()
-    }
+    const native = must('[data-testid="allowlist-add"] select') as HTMLSelectElement
+    if (![...native.options].some(o => o.value === 'work')) native.insertAdjacentHTML('beforeend', '<option value="work">work</option>')
+    native.value = 'work'
+    native.dispatchEvent(new Event('input', { bubbles: true }))
+    await settle()
+    expect(must('[data-testid="add-scope"]').textContent).toContain('Only work')
     await kind('regex')
     // the preview made before is not this one's: nothing to confirm
     expect($('[data-testid="regex-result"]')).toBeNull()
@@ -214,9 +214,9 @@ describe('Allowlist view', () => {
     await click('[data-testid="add-confirm"]')
     expect(submit().disabled).toBe(false)
     await click('[data-testid="add-submit"]')
-    const scopes = api.calls.filter(c => c.path.startsWith('/regex/check')).map(c => c.path.split('&scope=')[1])
+    expect(api.calls.filter(c => c.path.startsWith('/regex/check')).map(c => c.path.split('&scope=')[1])).toEqual(['all', 'work'])
     expect(changes(api.calls)).toEqual([{ method: 'POST', path: '/allowlist', csrf: '1',
-      body: { scope: scopes.at(-1), regex: pattern, duration: '1h', confirm: true } }])
+      body: { scope: 'work', regex: pattern, duration: '1h', confirm: true } }])
   })
 
   it('marks a stored pattern the rules refuse, which can still be removed', async () => {

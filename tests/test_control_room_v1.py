@@ -419,7 +419,7 @@ ENDPOINTS = [
      ["set-note", "work", "x.org", "--note=fuer --docs", "--json"], 200),
     # Regex entries (ADR 0013): the pattern verbatim, as the value of --regex, never lowercased;
     # in a path under /regex it is the query parameter regex
-    ("POST", "/api/v1/allowlist", {"scope": "work", "regex": " ^Mirror\\d+\\.example$ ", "duration": "1h",
+    ("POST", "/api/v1/allowlist", {"scope": "work", "regex": " \t^Mirror\\d+\\.example$\r\n", "duration": "1h",
                                    "confirm": True},
      ["allow", "work", "--regex=^Mirror\\d+\\.example$", "--confirm-pattern", "--for=1h", "--json"], 201),
     ("POST", "/api/v1/allowlist", {"scope": "all", "regex": "--force", "domain": None, "confirm": True},
@@ -600,6 +600,14 @@ class EndpointTest(V1Test):
             ("DELETE", "/api/v1/allowlist/all/regex?regex=a%00b", None, "invalid_field"),
             ("PUT", "/api/v1/watchlist/harmless/regex?regex=a%0Ab", None, "invalid_field"),
             ("GET", "/api/v1/regex/check?list=watchlist&regex=a%09b", None, "invalid_field"),
+            # only spaces, tabs, CR and LF are dropped around it; other control or Unicode
+            # whitespace is refused, not trimmed away
+            ("POST", "/api/v1/allowlist", {"scope": "all", "regex": "\u001c^a\\.example$", "confirm": True},
+             "invalid_field"),
+            ("POST", "/api/v1/allowlist", {"scope": "all", "regex": "^a\\.example$\u0085", "confirm": True},
+             "invalid_field"),
+            ("POST", "/api/v1/watchlist/legitimate", {"regex": "\u00a0^a\\.example$"}, "invalid_field"),
+            ("DELETE", "/api/v1/allowlist/all/regex?regex=%1Fa", None, "invalid_field"),
             ("DELETE", "/api/v1/allowlist/all/regex", None, "invalid_field"),
             ("DELETE", "/api/v1/allowlist/all/regex?regex=a&regex=b", None, "invalid_query"),
             ("POST", "/api/v1/allowlist/all/regex/extend?regex=a", {}, "invalid_field"),

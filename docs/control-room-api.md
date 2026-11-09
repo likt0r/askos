@@ -110,7 +110,7 @@ else `500 action_failed`, with the message in `detail`:
 | 409 | `migration_required` | the text files from before hold lines the records cannot take (an unknown category, an invalid name): a change would drop them unseen, so `agentbox migrate-lists` on the Host has to take them over first (it names them) |
 | 409 | `watchlist_unreadable` | the hand-maintained Watchlist cannot be read (`watchlist.json` broken, also in a single entry, or missing without the text file from before): the proxy keeps Open web closed. Watchlist changes, allowing without `--force` and opening the web answer this until it is fixed on the Host; recreating a missing one is `409 watchlist_recreate_force_required`. `GET /watchlist` answers with `unreadable` instead, and the Feeds' state |
 | 400 | `invalid_domain`, `invalid_minutes`, `invalid_note`, `invalid_duration`, `invalid_category`, `invalid_source` | values agentbox refused |
-| 400 | `pattern_confirmation_required` | adding a regex Allowlist entry without confirming what its preview showed (`confirm: true`; `allow --regex` without `--confirm-pattern`) |
+| 400 | `pattern_confirmation_required` | adding a regex Allowlist entry without confirming what its preview showed: `POST /allowlist` without `confirm: true`, refused by the backend itself with `field`: `confirm`; the same code from agentbox (`allow --regex` without `--confirm-pattern`) comes without a `field` |
 | 400 | `invalid_pattern` | the pattern of a Regex entry breaks a rule ([ADR 0013](adr/0013-regex-entries-in-every-list.md)): too long, not printable ASCII without spaces, no regular expression, an uppercase letter, a backreference, a lookaround, a quantifier or alternative inside a repeated group, or too many quantifiers in a row that can take the same characters (agentbox names which as the parameter `reason`: `too-long`, `characters`, `syntax`, `uppercase`, `backreference`, `lookaround`, `nested-quantifier`, `too-complex`) |
 | 400 | `pattern_too_broad` | the pattern matches a host of the fixed sample of unrelated hosts (agentbox names it as the parameter `host`); every list but the Watchlist |
 | 400 | `unknown_setting`, `invalid_setting` | Settings (`invalid_setting` has `field`: the key whose value is wrong) |
@@ -315,7 +315,7 @@ temporary entries (Settings).
 A Regex entry ([ADR 0013](adr/0013-regex-entries-in-every-list.md)) is a pattern in place of the
 domain, in every list: in a body `regex` instead of `domain`, in a path the segment `regex` with
 the pattern as the query parameter `regex` (percent-encoded; a domain is never the bare label
-`regex`). The pattern is taken as given, not lowercased; only leading and trailing whitespace is dropped, and anything but printable ASCII without spaces is `400 invalid_field` (`field`: `regex`). It matches the whole host name, no
+`regex`). The pattern is taken as given, not lowercased; only leading and trailing spaces, tabs, CR and LF are dropped, and anything but printable ASCII without spaces is `400 invalid_field` (`field`: `regex`). It matches the whole host name, no
 subdomains of its own accord; the rules it has to follow are in the ADR.
 
 ## Watchlist
