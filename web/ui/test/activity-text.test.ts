@@ -52,6 +52,14 @@ const ENTRIES: ActivityEntry[] = [
 const STORED = ['Frobnicate x', 'Freigabe example.org', 'Pause: something new', 'Allow : No such VM: x',
   'Reset: error: failed to get domain']
 
+// an entry by its stored text, and its row: the list shows ENTRIES in their order, newest first
+function entry(description: string): ActivityEntry {
+  const found = ENTRIES.find(e => e.description === description)
+  if (!found) throw new Error(`no entry "${description}"`)
+  return found
+}
+const row = (description: string) => ENTRIES.indexOf(entry(description))
+
 const EN = [
   'Allow pypi.org for all VMs for 1 hour',
   'Allow evil.example temporarily: This destination has strong Signals and can only be allowed on the Host.',
@@ -106,18 +114,19 @@ describe('Activity in the UI language', () => {
     const { shown, titles } = await list(ENTRIES)
     expect(shown).toEqual(EN)
     // agentbox's text on hover where it says something else
-    expect(titles[0]).toBeUndefined()
-    expect(titles[1]).toBe(ENTRIES[1]!.description)
-    expect(titles[10]).toBeUndefined()
-    expect(titles[13]).toBeUndefined()
+    const refused = ENTRIES.find(e => e.error === 'domain_suspicious')!
+    expect(titles[row('Allow pypi.org for all VMs for 1 hour')]).toBeUndefined()
+    expect(titles[row(refused.description)]).toBe(refused.description)
+    expect(titles[row('Build base-20261109-120000 failed: podman build failed (exit 1)')]).toBeUndefined()
+    expect(titles[row('Freigabe example.org')]).toBeUndefined()
   })
 
   it('in German, and what it cannot word stays as stored', async () => {
     await useNuxtApp().$i18n.setLocale('de')
     const { shown, titles } = await list(ENTRIES)
     expect(shown).toEqual(DE)
-    expect(titles[0]).toBe('Allow pypi.org for all VMs for 1 hour')
-    expect(titles.slice(12)).toEqual([undefined, undefined, undefined, undefined, undefined])
+    expect(titles[row('Allow pypi.org for all VMs for 1 hour')]).toBe('Allow pypi.org for all VMs for 1 hour')
+    expect(STORED.map(d => titles[row(d)])).toEqual(STORED.map(() => undefined))
   })
 
   it('words the token service\'s entries, a refusal with its reason, an error with its message', async () => {
@@ -185,11 +194,10 @@ describe('Activity text (unit)', () => {
   }
 
   it('keeps the stored text without a code, or for an action it does not know', () => {
-    const stored = (description: string) => ENTRIES.find(e => e.description === description)!
-    expect(stored('Freigabe example.org').code).toBeUndefined()
-    expect(activityText(stored('Freigabe example.org'), tr)).toBe('Freigabe example.org')
+    expect(entry('Freigabe example.org').code).toBeUndefined()
+    expect(activityText(entry('Freigabe example.org'), tr)).toBe('Freigabe example.org')
     expect(SENTENCES).not.toHaveProperty('frobnicate')
-    expect(activityText(stored('Frobnicate x'), tr)).toBe('Frobnicate x')
+    expect(activityText(entry('Frobnicate x'), tr)).toBe('Frobnicate x')
     expect(activityText({ ...ENTRIES[0]!, code: undefined }, tr)).toBe(ENTRIES[0]!.description)
   })
 
