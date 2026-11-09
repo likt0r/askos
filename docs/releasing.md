@@ -44,9 +44,12 @@ builds the same tag again. *Re-run all jobs* never helps: it starts with `releas
 before `chore: release X.Y.Z`, and release-it stops because the tag exists. A Release whose RPM
 cannot be built is never published, and neither is one whose run GitHub cannot re-run (a run that
 ended in an internal error, with a job that was never created): delete its draft
-(`gh release delete vX.Y.Z`; the tag stays, so the next Release counts from it), fix the cause on
-`main` and start the next Release. release-it needs at least one commit since the tag
-(`requireCommits`), so a Release that failed for a cause outside the repository needs one as well.
+(`gh release delete vX.Y.Z`), fix the cause on `main` and start the next Release. Its tag, its
+`chore: release X.Y.Z` commit and its section in `CHANGELOG.md` stay, so the next Release counts
+from that tag. release-it needs at least one commit since the tag (`requireCommits`), so a Release
+that failed for a cause outside the repository needs one as well. The next draft's notes list only
+the commits since the tag: add the failed Release's section from `CHANGELOG.md` to them before
+publishing.
 
 ## Publishing the draft
 
