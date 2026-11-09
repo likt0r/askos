@@ -24,7 +24,8 @@ module expects, not the ones the repository happens to contain:
 A derived Image is also compared with the Base Build it was built on (its manifest):
 it must be built on that Build's layers, every safeguard file must be identical, the
 Git hooks and guest-agent wrappers unchanged, and a file it adds or changes where
-environment or configuration is read must not mention a safeguard at all.
+environment or configuration is read must not mention a safeguard at all (Claude Code's
+JSON settings read as Claude Code reads them, escapes decoded; one that does not parse fails).
 
 Paths inside the Image are resolved within its root: a symbolic link never leads out
 of it (an absolute target counts from the Image's root).
@@ -48,6 +49,7 @@ DEVICES_WRAPPER = f"{QGA}/agentbox-devices"
 NM_CONF = "/etc/NetworkManager/conf.d/agentbox.conf"
 PROFILE = "/etc/profile.d/agentbox.sh"
 CLAUDEAI = "ENABLE_CLAUDEAI_MCP_SERVERS"
+CLAUDE_CODE = "/etc/claude-code/"     # Claude Code's managed settings (JSON) on Linux
 MIN_NPM = 12
 
 # The files that make up the safeguards: a derived Image must leave each as the Base has it.
@@ -62,11 +64,11 @@ SEALED = (HOOKS, QGA)
 WATCHED_FILES = ("/etc/environment", "/etc/profile", "/etc/bashrc", "/etc/security/pam_env.conf",
                  "/etc/systemd/system.conf", "/usr/lib/systemd/system.conf", "/etc/systemd/user.conf",
                  "/etc/NetworkManager/NetworkManager.conf", "/etc/xdg/uv/uv.toml", "/etc/gitconfig",
-                 "/etc/claude-code/managed-settings.json")
+                 f"{CLAUDE_CODE}managed-settings.json")
 WATCHED_DIRS = ("/etc/profile.d", "/etc/environment.d", "/usr/lib/environment.d",
                 "/etc/systemd/system.conf.d", "/usr/lib/systemd/system.conf.d", "/usr/local/lib/systemd/system.conf.d",
                 "/etc/systemd/user.conf.d", "/usr/lib/systemd/user.conf.d",
-                "/etc/NetworkManager/conf.d", "/usr/lib/NetworkManager/conf.d", "/etc/claude-code/managed-settings.d")
+                "/etc/NetworkManager/conf.d", "/usr/lib/NetworkManager/conf.d", f"{CLAUDE_CODE}managed-settings.d")
 MENTIONS = re.compile(r"ignore[-_]?scripts|release[-_]?age|exclude[-_]?newer|hooks[-_]?path|_proxy\b|proxy=|"
                       r"git_config|uv_no_config|\bdns\s*=|claudeai", re.IGNORECASE)
 # Variables that would switch a safeguard off again for every service of the VM
@@ -383,9 +385,22 @@ def manifest(root):
             "dirs": {d: listing(root, d) for d in SEALED + WATCHED_DIRS}}
 
 
-def _mentions(root, path):
+def _concern(root, path):
+    """Why a file a derived Image added or changed where environment or configuration is
+    read fails the check, or None. Claude Code's JSON settings are compared as Claude Code
+    reads them, so the check sees decoded escapes ("\\u0041" for "A"). A settings file that
+    does not parse fails as well."""
     content = text(root, path)
-    return content is not None and MENTIONS.search(content) is not None
+    if content is None:
+        return None
+    if path.startswith(CLAUDE_CODE) and path.endswith(".json"):
+        try:
+            content = json.dumps(json.loads(content), ensure_ascii=False)
+        except (ValueError, RecursionError):
+            return f"{path} is new or changed and is not valid JSON"
+    if MENTIONS.search(content):
+        return f"{path} is new or changed and concerns a Safeguard"
+    return None
 
 
 def _compare(root, base):
@@ -406,8 +421,9 @@ def _compare(root, base):
         now, then = listing(root, d), dirs.get(d, {})
         changed += [f"{d}/{n}" for n in sorted(now) if now[n] != then.get(n)]
     for path in changed:
-        if _mentions(root, path):
-            problems.append(f"{path} is new or changed and concerns a Safeguard")
+        problem = _concern(root, path)
+        if problem:
+            problems.append(problem)
     return problems
 
 

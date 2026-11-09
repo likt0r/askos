@@ -365,8 +365,10 @@ visible here and is limited by token scope.
   with the owner's claude.ai account inside the VM would bring them in, so the Image also
   sets `ENABLE_CLAUDEAI_MCP_SERVERS=false` for every service and shell, and each Build is
   checked for it (a Safeguard, see Images and Builds). That variable is a default and does
-  not stop code in the VM: such code can start Claude Code with the variable changed. It
-  would still need a claude.ai login in the VM.
+  not stop code in the VM. Such code can start Claude Code with the variable changed, or
+  switch it back in Claude Code's user or project settings (`env` in `~/.claude/settings.json`
+  or in a repository's `.claude/settings.json`). Either way, it would still need a claude.ai
+  login in the VM.
 - No package-publishing tokens exist anywhere on the box.
 
 Replacing a credential never breaks a working one:
@@ -473,8 +475,9 @@ Host after every Build
   off. A derived Image must also be built on the Base Build's layers, keep every Safeguard
   file, the Git hooks and the guest-agent wrappers identical to the Base Build's manifest, and
   add or change files where environment or configuration is read (Claude Code's managed
-  settings in `/etc/claude-code` among them) only without mentioning a Safeguard. A failed
-  check discards the Build.
+  settings in `/etc/claude-code` among them, read as decoded JSON like Claude Code reads
+  them; one that does not parse fails) only without mentioning a Safeguard. A failed check
+  discards the Build.
 - Anything failing (the Release's files, podman, the check, the disk) leaves the previous
   Build current, deletes what the Build made and records `build.failed` or `build.rejected` in
   Activity with the reason; `build.ok` records a new current Build. The Build's log stays in

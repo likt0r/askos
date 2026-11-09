@@ -339,8 +339,10 @@ class SafeguardTest(ImagesTest):
         self.assertTrue(os.path.isdir(os.path.join(self.dir, "podman", f"localhost_agentbox_base_{self.base}")))
 
     def test_harmless_additions_where_the_environment_is_read_are_fine(self):
-        self.image("cuda", DERIVED + "COPY cuda.sh /etc/profile.d/cuda.sh\n",
-                   **{"cuda.sh": "export PATH=/usr/local/cuda/bin:$PATH\n"})
+        self.image("cuda", DERIVED + "COPY cuda.sh /etc/profile.d/cuda.sh\n"
+                   "COPY managed.json /etc/claude-code/managed-settings.json\n",
+                   **{"cuda.sh": "export PATH=/usr/local/cuda/bin:$PATH\n",
+                      "managed.json": '{"permissions": {"deny": ["Read(./.env)"]}}\n'})
         self.built("cuda")
 
     def test_a_weakened_npm_configuration_is_rejected(self):
@@ -408,6 +410,19 @@ class SafeguardTest(ImagesTest):
         self.rejected("weak", "/etc/profile.d/claude.sh is new or changed and concerns a Safeguard",
                       "/etc/claude-code/managed-settings.json is new or changed and concerns a Safeguard",
                       "/etc/claude-code/managed-settings.d/10-team.json is new or changed and concerns a Safeguard")
+
+    def test_claude_code_settings_hiding_claudeai_connectors_behind_json_escapes_are_rejected(self):
+        """Claude Code decodes JSON escapes: the check reads its settings the same way."""
+        managed = '{"env": {"ENABLE_CL\\u0041UDEAI_MCP_SERVERS": "true"}}\n'
+        team = '{"disable\\u0043laude\\u0041iConnectors": false}\n'
+        self.assertNotRegex(managed + team, "(?i)claudeai")
+        self.image("weak", DERIVED + "COPY managed.json /etc/claude-code/managed-settings.json\n"
+                   "COPY team.json /etc/claude-code/managed-settings.d/10-team.json\n"
+                   "COPY broken.json /etc/claude-code/managed-settings.d/20-broken.json\n",
+                   **{"managed.json": managed, "team.json": team, "broken.json": '{"env": {"A": "1"\n'})
+        self.rejected("weak", "/etc/claude-code/managed-settings.json is new or changed and concerns a Safeguard",
+                      "/etc/claude-code/managed-settings.d/10-team.json is new or changed and concerns a Safeguard",
+                      "/etc/claude-code/managed-settings.d/20-broken.json is new or changed and is not valid JSON")
 
     def test_a_changed_profile_of_the_agent_box_is_rejected(self):
         with open(os.path.join(REPO, "vm/files/etc/profile.d/agentbox.sh")) as f:
