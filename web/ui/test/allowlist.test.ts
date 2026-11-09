@@ -175,6 +175,50 @@ describe('Allowlist view', () => {
     expect(submit().disabled).toBe(true)
   })
 
+  it('never reuses a preview after a switch to Domain and another scope', async () => {
+    const pattern = '^mirror[0-9]+\\.vendor\\.example$'
+    const path = (scope: string) => `GET /regex/check?list=allowlist&regex=${encodeURIComponent(pattern)}&scope=${scope}`
+    const preview = (scope: string) => ok({ list: 'allowlist', regex: pattern, scope, matches: {},
+      preview: { hosts: [], more: 0, watchlist_unreadable: null, truncated: false, reaches_back: now() - 7 * 86400, log_unreadable: null } })
+    const { api } = await openApp('/allowlist', {
+      'GET /allowlist': ok([]),
+      [path('all')]: preview('all'),
+      [path('work')]: preview('work'),
+      'POST /allowlist': { status: 201, body: {} },
+    })
+    const submit = () => must('[data-testid="add-submit"]') as HTMLButtonElement
+    const kind = (k: string) => click(`[data-testid="allowlist-add"] [data-testid="entry-kind"] [data-kind="${k}"]`)
+    await click('[data-testid="allowlist-add-open"]')
+    await kind('regex')
+    await type('[data-testid="add-regex"]', pattern)
+    await click('[data-testid="allowlist-add"] [data-testid="regex-test"]')
+    expect($('[data-testid="regex-result"]')).not.toBeNull()
+
+    // to Domain (the check is gone), another scope through the select's form control, back to Regex
+    await kind('domain')
+    const native = $('[data-testid="allowlist-add"] select') as HTMLSelectElement | null
+    if (native) {
+      if (![...native.options].some(o => o.value === 'work')) native.insertAdjacentHTML('beforeend', '<option value="work">work</option>')
+      native.value = 'work'
+      native.dispatchEvent(new Event('change', { bubbles: true }))
+      await settle()
+    }
+    await kind('regex')
+    // the preview made before is not this one's: nothing to confirm
+    expect($('[data-testid="regex-result"]')).toBeNull()
+    await click('[data-testid="add-confirm"]')
+    expect(submit().disabled).toBe(true)
+
+    // only a preview of the scope it has now lets it be added, for that scope
+    await click('[data-testid="allowlist-add"] [data-testid="regex-test"]')
+    await click('[data-testid="add-confirm"]')
+    expect(submit().disabled).toBe(false)
+    await click('[data-testid="add-submit"]')
+    const scopes = api.calls.filter(c => c.path.startsWith('/regex/check')).map(c => c.path.split('&scope=')[1])
+    expect(changes(api.calls)).toEqual([{ method: 'POST', path: '/allowlist', csrf: '1',
+      body: { scope: scopes.at(-1), regex: pattern, duration: '1h', confirm: true } }])
+  })
+
   it('marks a stored pattern the rules refuse, which can still be removed', async () => {
     const row = { domain: null, regex: '.*', scope: 'all', expires: null, note: '', added_by: 'root', added: now() - 60, expired: false, remaining: null, uses_24h: 0,
       refused: 'regex entry .* refused: too broad: it matches google.com, one of the unrelated hosts it must not match' }

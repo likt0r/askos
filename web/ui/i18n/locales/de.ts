@@ -88,6 +88,7 @@ export default {
     invalid_query: 'Die Abfrage ist ungültig.',
     invalid_name: 'VM-Namen haben 2 bis 16 Kleinbuchstaben, Ziffern oder Bindestriche und beginnen mit einem Buchstaben.',
     confirmation_required: 'Bitte zuerst bestätigen.',
+    pattern_confirmation_required: 'Erst ansehen, was der Ausdruck freigäbe (Zeigen, was er freigibt), und das bestätigen.',
     unauthenticated: 'Bitte melde dich an.',
     wrong_password: 'Falsches Passwort.',
     csrf_header_missing: 'Die Anfrage wurde abgelehnt (Schutz vor Cross-Site-Anfragen).',

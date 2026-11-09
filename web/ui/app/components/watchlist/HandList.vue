@@ -1,8 +1,9 @@
 <script setup lang="ts">
 // The hand-maintained Watchlist on the Host: add an entry (domain or pattern, category, source,
 // note), change its note, remove it (asks first). A pattern (a Regex entry, ADR 0013) is marked
-// and shown verbatim, and can be tested against a host first; a broad one is fine here. Entries of a strong category can only be removed
-// or weakened on the Host with --force (ADR 0009); their row shows the command instead.
+// and shown verbatim, and can be tested against a host first; a broad one is fine here. Entries
+// of a strong category can only be removed or weakened on the Host with --force (ADR 0009);
+// their row shows the command instead.
 // While the list cannot be read (`unreadable`, the reason from the Host) the proxy keeps Open
 // web closed: the alert says so. The Feeds still show (Feeds.vue).
 import type { RegexCheck, Target, Watchlist, WatchlistEntry } from '~/utils/access'
@@ -179,7 +180,7 @@ function remove() {
           <UTooltip v-if="e.regex != null" :text="t('regex.badgeHint')">
             <UBadge color="warning" variant="outline" size="sm" icon="i-lucide-regex" :label="t('regex.badge')" data-testid="entry-regex" />
           </UTooltip>
-<UTooltip v-if="e.refused" :text="e.refused">
+          <UTooltip v-if="e.refused" :text="e.refused">
             <UBadge color="error" variant="subtle" size="sm" icon="i-lucide-ban" :label="t('regex.refused')" data-testid="entry-refused" />
           </UTooltip>
           <span class="break-all font-mono text-sm text-highlighted">{{ entryValue(e) }}</span>

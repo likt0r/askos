@@ -161,7 +161,7 @@ function remove() {
           <UTooltip v-if="d.regex != null" :text="t('watchlist.legitimate.regexHint')">
             <UBadge color="warning" variant="outline" size="sm" icon="i-lucide-regex" :label="t('regex.badge')" data-testid="entry-regex" />
           </UTooltip>
-<UTooltip v-if="d.refused" :text="d.refused">
+          <UTooltip v-if="d.refused" :text="d.refused">
             <UBadge color="error" variant="subtle" size="sm" icon="i-lucide-ban" :label="t('regex.refused')" data-testid="entry-refused" />
           </UTooltip>
           <span class="break-all font-mono text-sm text-highlighted">{{ entryValue(d) }}</span>

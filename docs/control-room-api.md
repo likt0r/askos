@@ -56,7 +56,7 @@ Codes from the backend itself:
 | 400 | `invalid_field` | a field has the wrong type or form (`field` names it) |
 | 400 | `invalid_query` | a query parameter appears twice, or too many |
 | 400 | `invalid_name` | VM name not `^[a-z][a-z0-9-]{1,15}$` |
-| 400 | `confirmation_required` | deleting, revoking pairings, revealing the Pairing code or adding a regex Allowlist entry without the confirmation |
+| 400 | `confirmation_required` | deleting, revoking pairings or revealing the Pairing code without the confirmation |
 | 401 | `unauthenticated` | no valid session |
 | 401 | `wrong_password` | sign-in with a wrong password |
 | 403 | `csrf_header_missing` | `X-Agentbox: 1` missing |
@@ -110,6 +110,7 @@ else `500 action_failed`, with the message in `detail`:
 | 409 | `migration_required` | the text files from before hold lines the records cannot take (an unknown category, an invalid name): a change would drop them unseen, so `agentbox migrate-lists` on the Host has to take them over first (it names them) |
 | 409 | `watchlist_unreadable` | the hand-maintained Watchlist cannot be read (`watchlist.json` broken, also in a single entry, or missing without the text file from before): the proxy keeps Open web closed. Watchlist changes, allowing without `--force` and opening the web answer this until it is fixed on the Host; recreating a missing one is `409 watchlist_recreate_force_required`. `GET /watchlist` answers with `unreadable` instead, and the Feeds' state |
 | 400 | `invalid_domain`, `invalid_minutes`, `invalid_note`, `invalid_duration`, `invalid_category`, `invalid_source` | values agentbox refused |
+| 400 | `pattern_confirmation_required` | adding a regex Allowlist entry without confirming what its preview showed (`confirm: true`; `allow --regex` without `--confirm-pattern`) |
 | 400 | `invalid_pattern` | the pattern of a Regex entry breaks a rule ([ADR 0013](adr/0013-regex-entries-in-every-list.md)): too long, not printable ASCII without spaces, no regular expression, an uppercase letter, a backreference, a lookaround, a quantifier or alternative inside a repeated group, or too many quantifiers in a row that can take the same characters (agentbox names which as the parameter `reason`: `too-long`, `characters`, `syntax`, `uppercase`, `backreference`, `lookaround`, `nested-quantifier`, `too-complex`) |
 | 400 | `pattern_too_broad` | the pattern matches a host of the fixed sample of unrelated hosts (agentbox names it as the parameter `host`); every list but the Watchlist |
 | 400 | `unknown_setting`, `invalid_setting` | Settings (`invalid_setting` has `field`: the key whose value is wrong) |
@@ -299,8 +300,8 @@ temporary entries (Settings).
 
 | Method and path | Body / query | agentbox call, response |
 |---|---|---|
-| `GET /allowlist` | `?vm=<vm>\|all` | `allowlist`: `[{"domain", "regex", "scope", "expires", "note", "added_by", "added", "expired", "remaining", "uses_24h", "refused"}]` (`domain` or, for a Regex entry, `regex`: the pattern, verbatim; the other `null`. `refused`: why the rules refuse a stored pattern, which then allows nothing until it is removed, else `null`. `expires` and `added` epoch seconds, `expires` `null` when permanent, `remaining` seconds, `uses_24h` `null` when unknown) |
-| `POST /allowlist` | `{"scope", "domain", "duration"?, "note"?}` or `{"scope", "regex", "confirm": true, "duration"?, "note"?}` | `allow`: `201`; destinations with strong Signals: `409 domain_suspicious`; any destination while the Watchlist cannot be read: `409 watchlist_unreadable` (also for `extend` and `make-permanent`). With `regex` a Regex entry (`allow --regex --confirm-pattern`): only with `confirm: true`, after the preview of `GET /regex/check` (else `400 confirmation_required`, `field`: `confirm`); a pattern the rules refuse: `400 invalid_pattern` or `400 pattern_too_broad`. It never allows a destination with strong Signals (the proxy checks every connection), so it is never `domain_suspicious` |
+| `GET /allowlist` | `?vm=<vm>\|all` | `allowlist`: `[{"domain", "regex", "scope", "expires", "note", "added_by", "added", "expired", "remaining", "uses_24h", "refused"}]` (`domain` or, for a Regex entry, `regex`: the pattern as stored; the other `null`. `refused`: why the rules refuse a stored pattern, which then allows nothing until it is removed, else `null`. `expires` and `added` epoch seconds, `expires` `null` when permanent, `remaining` seconds, `uses_24h` `null` when unknown) |
+| `POST /allowlist` | `{"scope", "domain", "duration"?, "note"?}` or `{"scope", "regex", "confirm": true, "duration"?, "note"?}` | `allow`: `201`; destinations with strong Signals: `409 domain_suspicious`; any destination while the Watchlist cannot be read: `409 watchlist_unreadable` (also for `extend` and `make-permanent`). With `regex` a Regex entry (`allow --regex --confirm-pattern`): only with `confirm: true`, after the preview of `GET /regex/check` (else `400 pattern_confirmation_required`, `field`: `confirm`); a pattern the rules refuse: `400 invalid_pattern` or `400 pattern_too_broad`. It never allows a destination with strong Signals (the proxy checks every connection), so it is never `domain_suspicious` |
 | `DELETE /allowlist/<scope>/<domain>` | | `disallow` (open tunnels to it are closed) |
 | `POST /allowlist/<scope>/<domain>/extend` | `{"duration": "1h"}` | `extend` |
 | `POST /allowlist/<scope>/<domain>/make-permanent` | | `make-permanent` |
@@ -314,7 +315,7 @@ temporary entries (Settings).
 A Regex entry ([ADR 0013](adr/0013-regex-entries-in-every-list.md)) is a pattern in place of the
 domain, in every list: in a body `regex` instead of `domain`, in a path the segment `regex` with
 the pattern as the query parameter `regex` (percent-encoded; a domain is never the bare label
-`regex`). The pattern is taken verbatim, not lowercased. It matches the whole host name, no
+`regex`). The pattern is taken as given, not lowercased; only leading and trailing whitespace is dropped, and anything but printable ASCII without spaces is `400 invalid_field` (`field`: `regex`). It matches the whole host name, no
 subdomains of its own accord; the rules it has to follow are in the ADR.
 
 ## Watchlist

@@ -43,9 +43,13 @@ const durations = computed(() => ENTRY_DURATIONS.map(d => ({ value: d, label: t(
 const normalized = computed(() => normalizeDomain(domain.value))
 const domainProblem = computed(() => domain.value.trim() && !looksLikeDomain(normalized.value) ? t('allowlist.add.domainInvalid') : null)
 const patternProblem = computed(() => pattern.value.trim() && !looksLikePattern(pattern.value.trim()) ? t('regex.patternInvalid') : null)
+// the preview shown belongs to the pattern and scope as they are now (the check names what it
+// was made for), whatever happened in between
+const previewed = computed(() => !!checked.value && checked.value.regex === pattern.value.trim()
+  && checked.value.scope === scope.value)
 // a pattern only once its preview was shown and confirmed
 const ready = computed(() => isRegex.value
-  ? looksLikePattern(pattern.value.trim()) && !!checked.value && confirmed.value
+  ? looksLikePattern(pattern.value.trim()) && previewed.value && confirmed.value
   : looksLikeDomain(normalized.value))
 const canSubmit = computed(() => ready.value && !busy.value && note.value.length <= 200)
 
@@ -62,8 +66,10 @@ watch(open, (isOpen) => {
   checked.value = null
   confirmed.value = false
 }, { immediate: true })
-// a new pattern or scope needs its own preview and confirmation
+// a new pattern or scope needs its own preview and confirmation; so does coming back from Domain
+// (the check is not there to drop its preview while the form shows a domain)
 watch([pattern, scope, kind], () => {
+  checked.value = null
   confirmed.value = false
   error.value = null
 })
@@ -130,7 +136,7 @@ async function submit() {
           <AccessRegexCheck v-model:checked="checked" list="allowlist" :pattern="pattern" :scope="scope" />
           <UCheckbox
             v-model="confirmed"
-            :disabled="!checked"
+            :disabled="!previewed"
             :label="t('allowlist.add.confirmRegex')"
             :description="t('allowlist.add.confirmRegexHelp')"
             data-testid="add-confirm"

@@ -22,7 +22,7 @@ What a list does with a matching pattern:
 
 ## Consequences
 
-- New refusals have codes (ADR 0012): `invalid_pattern` with the rule broken as the parameter `reason`, `pattern_too_broad` with the sample host it matches; an unconfirmed regex Allowlist entry is `confirmation_required`.
+- New refusals have codes (ADR 0012): `invalid_pattern` with the rule broken as the parameter `reason`, `pattern_too_broad` with the sample host it matches; an unconfirmed regex Allowlist entry is `pattern_confirmation_required`, so the Control Room words it apart from the VM-name confirmations.
 - `agentbox check-regex <list> --regex PATTERN [<host>...]` says whether a pattern can be an entry of a list, which hosts it matches and, for the Allowlist, what it would allow, for the Control Room's test field and preview. It changes nothing.
 - The detection self-test covers one Regex entry per list, in lists of only its own test entries (the text files from before the records have no patterns): a Watchlist pattern raises its Signal, a Legitimate pattern lifts a weak Signal but not a strong one, a Harmless pattern stops an Alert, and an Allowlist pattern lets neither a destination with strong Signals through nor anything while the Watchlist cannot be read.
 - JSON results of the list commands carry both `domain` and `regex`, one of them `null`; `agentbox harmless --json` lists objects instead of strings.

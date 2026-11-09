@@ -1459,6 +1459,7 @@ AGENTBOX_ERRORS = {
     "vm_exists": (409, "A VM of this name exists already"),
     "no_free_network": (409, "No free network left"),
     "confirmation_required": (400, "Confirm by typing the VM's name"),
+    "pattern_confirmation_required": (400, "Confirm what the pattern would allow first, after its preview"),
     "vm_not_running": (409, "The VM is not running"),
     "vm_paused": (409, "The VM is paused; start it first, then try again"),
     "invalid_memory": (400, "Memory limit out of range (at least 1024 MiB, at most the Host's memory)"),
@@ -2006,11 +2007,18 @@ def scope(v):
     return v
 
 
+# what a pattern may consist of, as agentbox's rules say (printable ASCII without spaces); the
+# rest of the rules agentbox checks
+PATTERN_CHARS = re.compile(r"[\x21-\x7e]+")
+
+
 def pattern_arg(v):
-    """--regex=<pattern> of a Regex entry, taken verbatim (not lowercased: \\D is not \\d); as
-    the value of the option it is never one itself, and agentbox checks it."""
-    if not isinstance(v, str) or not v.strip():
-        raise invalid("regex", "regex must be a pattern")
+    """--regex=<pattern> of a Regex entry, taken as given but for leading and trailing
+    whitespace (not lowercased: \\D is not \\d); as the value of the option it is never one
+    itself. Anything but printable ASCII without spaces (a NUL byte included, which no
+    process argument can carry) is refused here; agentbox checks the rest."""
+    if not isinstance(v, str) or not PATTERN_CHARS.fullmatch(v.strip()):
+        raise invalid("regex", "regex must be a pattern of printable ASCII characters without spaces")
     return f"--regex={v.strip()}"
 
 
@@ -2035,7 +2043,8 @@ def post_allowlist(h, m, url, body):
     if target[0].startswith("--regex="):
         # adding one allows what it matches: only after the preview, confirmed (ADR 0013)
         if body.get("confirm") is not True:
-            raise ApiError(400, "confirmation_required", "Confirm what the pattern would allow first", field="confirm")
+            raise ApiError(400, "pattern_confirmation_required", "Confirm what the pattern would allow first, "
+                                                                 "after its preview", field="confirm")
         target.append("--confirm-pattern")
     return 201, run_json("allow", s, *target, *duration_args(body), *note_args(body), "--json")
 
