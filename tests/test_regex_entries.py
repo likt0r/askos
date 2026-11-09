@@ -289,12 +289,35 @@ class AllowlistCliTest(allowlist_tests.CliTest):
             proxy_line("work", f"ALLOWED mirror5.vendor.example (allowlist regex {PATTERN} work)", 100),
             proxy_line("work", f"ALLOWED mirror5.vendor.example (allowlist {PATTERN} work)", 90),     # no domain
         ])
+        self.env = {}
+
+    def run_agentbox(self, *args):
+        """The base's call, with the variables of self.env (a shorter preview, PREVIEW_LINES)."""
+        env = {"PATH": os.path.join(self.dir, "bin") + ":" + os.environ["PATH"], "FAKE_DIR": self.dir,
+               "AGENTBOX_ROOT": self.root, "LANG": "C.UTF-8", "TZ": "UTC", **self.env}
+        r = subprocess.run([allowlist_tests.AGENTBOX, *args], capture_output=True, text=True, env=env, timeout=60)
+        return r.returncode, r.stdout, r.stderr
 
     def failure(self, *args):
         code, out, err = self.run_agentbox(*args, "--json")
         self.assertEqual((code, out), (1, ""), err)
         said = json.loads(err)
         return said["error"], said["params"], said["message"]
+
+    def test_a_preview_cut_short_by_a_full_log_says_how_far_back_it_reaches(self):
+        preview = self.json("check-regex", "allowlist", "--regex", PATTERN, "--scope", "work")["preview"]
+        self.assertFalse(preview["truncated"])
+        self.assertAlmostEqual(preview["reaches_back"], self.now - 7 * 86400, delta=60)
+        # a VM that fills its log pushes older lines out of the newest ones read
+        self.env = {"AGENTBOX_PREVIEW_LINES": "3"}
+        preview = self.json("check-regex", "allowlist", "--regex", PATTERN, "--scope", "work")["preview"]
+        self.assertTrue(preview["truncated"])
+        self.assertAlmostEqual(preview["reaches_back"], self.now - 200, delta=60)
+        self.assertEqual([h["host"] for h in preview["hosts"]], ["mirror5.vendor.example"])
+        first = self.refused("allow", "work", "--regex", PATTERN).splitlines()[0]
+        self.assertTrue(first.startswith("WARNING: the proxy log of these 7 days has more lines than the newest 3 "
+                                         "read, which reach back only to "), first)
+        self.assertTrue(first.endswith(": hosts seen only before then are missing below."), first)
 
     def test_without_confirmation_it_shows_what_it_would_allow_and_changes_nothing(self):
         said = self.refused("allow", "work", "--regex", PATTERN)
@@ -435,6 +458,22 @@ class AllowlistCliTest(allowlist_tests.CliTest):
         self.assertIn("While the Watchlist cannot be read", self.refused("allow", "all", "--regex", PATTERN))
 
 
+    def test_a_stored_pattern_the_rules_refuse_allows_nothing_and_can_go(self):
+        # a hand edit, or a later Release with stricter rules or a larger breadth sample: the
+        # entry stays listed with why, the other entries and commands keep working
+        self.store(rx(".*"), rx(MIRRORS, "work", expires=self.now - 60), allowlist_tests.entry("docs.rs", "work"))
+        rows = {r["domain"] or r["regex"]: r for r in self.json("allowlist")}
+        self.assertEqual(rows[".*"]["refused"], "regex entry .* refused: too broad: it matches google.com, one of "
+                                                 "the unrelated hosts it must not match")
+        self.assertEqual((rows["docs.rs"]["refused"], rows[MIRRORS]["refused"]), (None, None))
+        self.assertIn("[regex entry .* refused: too broad", self.ok("allowlist"))
+        self.assertIn("; it allows nothing]", self.ok("allowlist"))
+        self.assertEqual([e["regex"] for e in self.json("expire-allowlist")["expired"]], [MIRRORS])
+        self.ok("allow", "work", "pypi.org")
+        self.assertEqual(self.json("disallow", "all", "--regex", ".*")["removed"], True)
+        self.assertEqual(sorted(e["domain"] for e in self.stored()), ["docs.rs", "pypi.org"])
+
+
 class CopyTest(vms_tests.VmsTest):
     def test_a_new_vm_copies_the_patterns_of_its_source(self):
         libexec = self.path("usr/libexec")
@@ -521,12 +560,50 @@ class ListsCliTest(lists_tests.CliTest):
                          ("legitimate_domain_not_found", {"regex": mirrors}))
         self.assertEqual([s["signal"] for s in self.check("mirror1.vendor.example")["signals"]], ["young"])
 
-    def test_a_pattern_that_breaks_the_rules_makes_the_record_unreadable_alike(self):
+    def test_a_stored_watchlist_pattern_the_rules_refuse_closes_open_web_until_it_goes(self):
+        path = os.path.join(self.conf, "watchlist.json")
+        lists_tests.write(path, lists_tests.record(lists_tests.watch("exfil.example"), watch_rx(r"(a+)+\.example", "c2")))
+        listing = self.json("watchlist")
+        why = listing["unreadable"]
+        self.assertTrue(why.startswith(f"{path}: regex entry (a+)+\\.example refused: a quantifier or an alternative "
+                                       "inside a repeated group"), why)
+        self.assertTrue(why.endswith("; Open web stays closed until it is removed (agentbox watch-remove --regex)"), why)
+        self.assertEqual([(e["domain"], e["regex"], bool(e["refused"])) for e in listing["entries"]],
+                         [("exfil.example", None, False), (None, r"(a+)+\.example", True)])
+        # the classifier says the same; the other entries still count
+        env = {"PATH": os.environ["PATH"], "LANG": "C.UTF-8", "AGENTBOX_CONF_DIR": self.conf,
+               "AGENTBOX_FEEDS_DIR": self.feeds}
+        r = subprocess.run([sys.executable, "-I", SUSPICIOUS, "x.exfil.example"], capture_output=True, text=True,
+                           env=env, timeout=30)
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (3, "exfil\n", why + "\n"))
+        # Open web stays closed, as in the proxy; the other commands work
+        self.assertEqual(self.refused("open-web", "work", "30"), f"Watchlist unreadable, Open web closed: {why}")
+        self.ok("watch-add", "drop.example", "--category", "paste")
+        # removed by its pattern (its category is strong: with --force), Open web can open again
+        self.assertEqual(self.failure("watch-remove", "--regex", r"(a+)+\.example")[0], "force_required")
+        self.ok("watch-remove", "--regex", r"(a+)+\.example", "--force")
+        self.assertIsNone(self.json("watchlist")["unreadable"])
+
+    def test_a_stored_legitimate_pattern_the_rules_refuse_lifts_nothing_and_can_go(self):
+        lists_tests.write(os.path.join(self.conf, "legitimate.json"),
+                          lists_tests.record(lists_tests.legit("vendor.example"), legit_rx(".*")))
+        [row] = [r for r in self.json("legitimate") if r["regex"]]
+        self.assertTrue(row["refused"].startswith("regex entry .* refused: too broad: it matches google.com"), row)
+        self.assertIn("; it lifts nothing]", self.ok("legitimate"))
+        # it lifts nothing; the other entries count, the commands work
+        self.assertEqual([s["signal"] for s in self.check("fresh.example")["signals"]], [])
+        lists_tests.write(os.path.join(self.feeds, "newly-registered"), b"fresh.example\nmirror1.vendor.example\n")
+        self.assertEqual([s["signal"] for s in self.check("fresh.example")["signals"]], ["young"])
+        self.assertEqual(self.check("mirror1.vendor.example")["legitimate"], "vendor.example")
+        self.ok("legitimate-add", "mirror.example")
+        self.assertEqual(self.json("legitimate-remove", "--regex", ".*")["removed"], True)
+        self.assertEqual([e["domain"] for e in self.stored("legitimate.json")], ["mirror.example", "vendor.example"])
+
+    def test_a_broken_regex_entry_makes_the_record_unreadable_alike(self):
         path = os.path.join(self.conf, "watchlist.json")
         env = {"PATH": os.environ["PATH"], "LANG": "C.UTF-8", "AGENTBOX_CONF_DIR": self.conf,
                "AGENTBOX_FEEDS_DIR": self.feeds}
         cases = [
-            (lists_tests.record(watch_rx("(a+)+")), "broken entry (invalid regex (a+)+ (a quantifier"),
             (lists_tests.record(watch_rx("x"), watch_rx("x", "c2")), "x listed twice"),
             (lists_tests.record(watch_rx("x") | {"domain": "x.example"}), "broken entry (both domain and regex)"),
             (lists_tests.record(watch_rx(7)), "broken entry (field regex missing or of the wrong type)"),
@@ -576,6 +653,24 @@ class ListsProxyTest(detection_tests.ProxyTest):
         self.assertEqual(self.connect("npm-x-mirror.example"), "HTTP/1.1 403 Forbidden")
         self.assertEqual(self.blocked_reason("npm-x-mirror.example"), "suspicious: lookalike")
 
+    def test_a_stored_watchlist_pattern_the_rules_refuse_closes_open_web_the_others_count(self):
+        write(os.path.join(self.conf, "watchlist.json"),
+              lists_tests.record(lists_tests.watch("exfil.example"), watch_rx(r"^(a+)+\.example$", "c2")))
+        self.start()
+        self.assertEqual(self.alert("x.exfil.example"), ["exfil"])
+        self.assertIsNone(self.alert("aaa.example"))
+        self.open_web()
+        self.assertEqual(self.connect("plain.example"), "HTTP/1.1 403 Forbidden")
+        self.assertEqual(self.blocked_reason("plain.example"), "Watchlist unreadable, Open web closed")
+
+    def test_a_stored_legitimate_pattern_the_rules_refuse_lifts_nothing_the_others_count(self):
+        write(os.path.join(self.conf, "watchlist.json"), lists_tests.record())
+        write(os.path.join(self.conf, "legitimate.json"),
+              lists_tests.record(legit_rx(".*"), legit_rx(r"^fresh\.example$")))
+        self.start()
+        self.assertIsNone(self.alert("fresh.example"))
+        self.assertEqual(self.alert("mirror.registry.example"), ["threat", "young"])     # nothing lifted
+
     def test_a_harmless_pattern_the_rules_refuse_counts_as_nothing(self):
         self.harmless("regex .*", r"regex ^(npm-[a-z]+)+\.example$")
         self.start()
@@ -596,7 +691,8 @@ class HarmlessCliTest(detection_tests.CliTest):
         self.run_agentbox("mark-harmless", "--regex", self.MARK)                       # once only
         self.assertEqual(self.read_conf("harmless"), detection_tests.HEADER + f"regex {self.MARK}\ngithbu.com\n".encode())
         self.assertEqual(json.loads(self.run_agentbox("harmless", "--json")[1]),
-                         [{"domain": None, "regex": self.MARK}, {"domain": "githbu.com", "regex": None}])
+                         [{"domain": None, "regex": self.MARK, "refused": None},
+                          {"domain": "githbu.com", "regex": None, "refused": None}])
         self.assertEqual(self.run_agentbox("harmless")[1], f"regex {self.MARK}\ngithbu.com\n")
         rep = json.loads(self.run_agentbox("check-domain", "npm-cache-mirror.example", "--json")[1])
         self.assertEqual((rep["harmless"], rep["harmless_regex"], rep["alert"], rep["strong"]),
@@ -606,6 +702,20 @@ class HarmlessCliTest(detection_tests.CliTest):
         self.assertEqual(self.run_agentbox("unmark-harmless", "--regex", self.MARK),
                          (0, f"pattern {self.MARK} no longer marked harmless\n", ""))
         self.assertEqual(self.read_conf("harmless"), detection_tests.HEADER + b"githbu.com\n")
+
+    def test_a_stored_mark_the_rules_refuse_silences_nothing_and_can_go(self):
+        write(os.path.join(self.conf, "harmless"), f"regex .*\nregex {self.MARK}\n")
+        marks = json.loads(self.run_agentbox("harmless", "--json")[1])
+        self.assertTrue(marks[0]["refused"].startswith("regex entry .* refused: too broad"), marks)
+        self.assertIsNone(marks[1]["refused"])
+        self.assertIn("; it silences nothing]", self.run_agentbox("harmless")[1])
+        # it silences nothing, the other mark does
+        rep = json.loads(self.run_agentbox("check-domain", "npm-cache.example", "--json")[1])
+        self.assertEqual((rep["harmless"], rep["alert"]), (None, True))
+        rep = json.loads(self.run_agentbox("check-domain", "npm-x-mirror.example", "--json")[1])
+        self.assertEqual((rep["harmless"], rep["alert"]), (self.MARK, False))
+        self.assertEqual(self.run_agentbox("unmark-harmless", "--regex", ".*")[0], 0)
+        self.assertEqual(self.read_conf("harmless"), f"regex {self.MARK}\n".encode())
 
     def test_refusals(self):
         for pattern, error in (("[a-z]+\\.[a-z]+", "pattern_too_broad"), ("(a|ab)+", "invalid_pattern")):
@@ -635,11 +745,20 @@ class HarmlessCliTest(detection_tests.CliTest):
 # --- the self-test -------------------------------------------------------------------------
 
 class SelfTestTest(unittest.TestCase):
-    def run_self_test(self, classifier):
+    def run_self_test(self, classifier, conf=os.path.join(REPO, "proxy")):
         r = subprocess.run([sys.executable, "-I", classifier, "--self-test"], capture_output=True, text=True,
-                           env={"PATH": os.environ["PATH"], "LANG": "C.UTF-8",
-                                "AGENTBOX_CONF_DIR": os.path.join(REPO, "proxy")}, timeout=120)
+                           env={"PATH": os.environ["PATH"], "LANG": "C.UTF-8", "AGENTBOX_CONF_DIR": conf}, timeout=120)
         return r.returncode, r.stdout
+
+    def test_it_fails_on_a_watchlist_pattern_the_rules_refuse(self):
+        # Open web stays closed for it, as for a broken Watchlist: setup stops and says which
+        with tempfile.TemporaryDirectory() as conf:
+            shutil.copy(os.path.join(REPO, "proxy", "legitimate-domains"), conf)
+            write(os.path.join(conf, "watchlist.json"), lists_tests.record(watch_rx("(a+)+", "c2")))
+            code, out = self.run_self_test(SUSPICIOUS, conf)
+        self.assertEqual(code, 1)
+        self.assertIn("FAILED  lists of the Host: ", out)
+        self.assertIn("regex entry (a+)+ refused: a quantifier", out)
 
     def test_it_covers_one_pattern_per_list(self):
         code, out = self.run_self_test(SUSPICIOUS)

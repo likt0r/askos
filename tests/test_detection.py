@@ -531,7 +531,8 @@ class HarmlessCliTest(CliTest):
         self.run_agentbox("mark-harmless", "fresh.example")
         self.assertEqual(self.run_agentbox("harmless"), (0, "githbu.com\nfresh.example\n", ""))
         self.assertEqual(json.loads(self.run_agentbox("harmless", "--json")[1]),
-                         [{"domain": "githbu.com", "regex": None}, {"domain": "fresh.example", "regex": None}])
+                         [{"domain": "githbu.com", "regex": None, "refused": None},
+                          {"domain": "fresh.example", "regex": None, "refused": None}])
         self.assertEqual(self.run_agentbox("unmark-harmless", "githbu.com"),
                          (0, "githbu.com no longer marked harmless\n", ""))
         self.assertEqual(self.read_conf("harmless"), HEADER + b"fresh.example\n")

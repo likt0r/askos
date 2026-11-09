@@ -252,14 +252,17 @@ in every command of the four lists (Allowlist, Watchlist, Legitimate domains, Ha
 also to remove or change it ([ADR 0013](docs/adr/0013-regex-entries-in-every-list.md)). It
 matches the whole host name (`re.fullmatch`, lowercase), not subdomains of its own accord. A
 pattern has at most 200 printable ASCII characters without spaces and no uppercase letters,
-backreferences, lookarounds or quantifiers inside a repeated group, and must match none of a
+backreferences, lookarounds or quantifiers inside a repeated group (for
+`^([a-z0-9-]+\.)+example\.org$` take a domain entry, or `^[a-z0-9.-]+\.example\.org$`), and must match none of a
 fixed sample of unrelated hosts (`.*\.com` is refused; on the Watchlist it is fine, a broad
 pattern there only raises false Alerts). A regex Allowlist entry never allows a destination
 with strong Signals, which the proxy checks on every connection (so `--force` does not apply),
 and nothing while the Watchlist cannot be read. `allow --regex` first lists the hosts of the
 scope's proxy log of the last 7 days the pattern would allow and adds it only with
 `--confirm-pattern`; `agentbox check-regex` tells whether a pattern can be an entry of a list
-and which hosts it matches. A regex Legitimate domain lifts only weak Signals.
+and which hosts it matches. A regex Legitimate domain lifts only weak Signals. A stored
+pattern the rules refuse (a hand edit, or stricter rules in a later Release) counts as nothing,
+on the Watchlist keeps Open web closed, and is listed with the reason until you remove it.
 When a temporary entry expires, new connections are refused but tunnels already open keep
 running; a timer removes expired entries every minute and records each in Activity
 (`agentbox-allowlist-expire.timer`). Removing an entry, or the end of Open web, closes the

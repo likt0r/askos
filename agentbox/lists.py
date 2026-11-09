@@ -184,11 +184,9 @@ def _problem(kind, e):
         if key not in e or isinstance(e[key], bool) or not isinstance(e[key], typ):
             return f"field {key} missing or of the wrong type"
     if name == "regex":
+        # a pattern the rules refuse is no broken entry: it counts as nothing (_refused)
         if "domain" in e:
             return "both domain and regex"
-        why = patterns.problem(e["regex"], broad=kind is not WATCHLIST)
-        if why:
-            return f"invalid regex {clean(e['regex'], False)[:60]} ({why[1]})"
     elif not DOMAIN.fullmatch(e["domain"]):
         return f"invalid domain {clean(e['domain'], False)[:60]}"
     if "category" in kind["fields"] and e["category"] not in categories():
@@ -328,10 +326,27 @@ def read(kind, create=False):
     return (_from_legacy(kind, legacy, int(time.time()))[0] if legacy else []), legacy
 
 
+def _refused(kind, e):
+    """Why the rules refuse a stored Regex entry, else None (patterns.refused; the Watchlist
+    does without the breadth check)."""
+    return patterns.refused(e, broad=kind is not WATCHLIST)
+
+
+def refused_watchlist(entries):
+    """Why the Watchlist counts as unreadable for a Regex entry the rules refuse, as the
+    classifier says it (its _watchlist_record), else None: it raises no Signal, so the proxy
+    keeps Open web closed until it is removed."""
+    why = next((w for w in (_refused(WATCHLIST, e) for e in entries) if w), None)
+    return why and f"{record_file(WATCHLIST)}: {why}; Open web stays closed until it is removed " \
+                   f"(agentbox watch-remove --regex)"
+
+
 def readable_watchlist():
     """Ends the command while the proxy keeps Open web closed for an unreadable Watchlist
-    (agentbox open-web), also for a broken entry."""
-    read(WATCHLIST)
+    (agentbox open-web), also for a broken entry or a Regex entry the rules refuse."""
+    why = refused_watchlist(read(WATCHLIST)[0])
+    if why:
+        raise Unreadable(why)
 
 
 def _write(kind, entries, legacy=None):
@@ -379,19 +394,23 @@ def find(entries, ref):
 # --- the Watchlist ------------------------------------------------------------------
 
 def _shown(e):
-    """A Watchlist entry as the commands show it: domain and regex (one of them null), strong."""
-    return {**patterns.both(e), "strong": categories()[e["category"]]}
+    """A Watchlist entry as the commands show it: domain and regex (one of them null), strong,
+    and refused (why the rules refuse a stored pattern, else null)."""
+    return {**patterns.both(e), "strong": categories()[e["category"]], "refused": _refused(WATCHLIST, e)}
 
 
 def watchlist(args):
     """agentbox watchlist [--json]: the hand-maintained Watchlist and the state of the
     Feeds (when each was last fetched, entries, the last error). While the Watchlist
-    cannot be read, why (unreadable) in place of its entries; the Feeds still show."""
+    cannot be read, why (unreadable) in place of its entries; the Feeds still show. A Regex
+    entry the rules refuse is listed (refused) and makes it unreadable for Open web, as for
+    the proxy, until it is removed."""
     positional, opts = _parse(args, {"json": False})
     if positional:
         die("too many arguments: " + clean(positional[0], False)[:60], error="invalid_argument")
     try:
-        entries, unreadable = [_shown(e) for e in _sorted(read(WATCHLIST)[0])], None
+        stored = read(WATCHLIST)[0]
+        entries, unreadable = [_shown(e) for e in _sorted(stored)], refused_watchlist(stored)
     except Unreadable as e:
         entries, unreadable = [], e.why
     rep = _classifier("--watchlist")
@@ -406,7 +425,8 @@ def watchlist(args):
     if unreadable:
         print(f"{UNREADABLE}: {unreadable}")
     for e in entries:
-        print(f"{e['domain'] or 'regex ' + e['regex']:<32} {e['category']:<11} {e['source']}".rstrip())
+        what = e["domain"] or "regex " + clean(e["regex"], False)
+        print(f"{what:<32} {e['category']:<11} {'[refused] ' if e['refused'] else ''}{e['source']}".rstrip())
     print(feed_line(result["feeds"]))
 
 
@@ -504,15 +524,18 @@ def legitimate(args):
         die("too many arguments: " + clean(positional[0], False)[:60], error="invalid_argument")
     own = read(LEGITIMATE)[0]
     builtin = genuine()
-    rows = [{**patterns.both(e), "builtin": False} for e in own if e.get("domain") not in builtin]
-    rows += [{"domain": d, "regex": None, "note": "", "added": None, "added_by": None, "builtin": True}
-             for d in builtin]
+    rows = [{**patterns.both(e), "builtin": False, "refused": _refused(LEGITIMATE, e)} for e in own
+            if e.get("domain") not in builtin]
+    rows += [{"domain": d, "regex": None, "note": "", "added": None, "added_by": None, "builtin": True,
+              "refused": None} for d in builtin]
     rows.sort(key=lambda e: (e["domain"] is None, e["domain"] or e["regex"]))
     if "json" in opts:
         print(json.dumps(rows, ensure_ascii=False))
         return
     for r in rows:
-        print(f"{r['domain'] or 'regex ' + r['regex']:<32} {'built-in' if r['builtin'] else r['note']}".rstrip())
+        what = r["domain"] or "regex " + clean(r["regex"], False)
+        said = "built-in" if r["builtin"] else (f"[{r['refused']}; it lifts nothing] " if r["refused"] else "") + r["note"]
+        print(f"{what:<32} {said}".rstrip())
 
 
 def _refuse_lifts(domain):

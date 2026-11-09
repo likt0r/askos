@@ -65,7 +65,7 @@ FIELDS = {"scope": str, "expires": (int, type(None)), "note": str, "added": int,
 # the preview of a regex entry: the hosts of the proxy log of these days that it matches,
 # from at most so many of the newest lines, at most so many of them shown
 PREVIEW_DAYS = 7
-PREVIEW_LINES = 200_000
+PREVIEW_LINES = paths.tunable("AGENTBOX_PREVIEW_LINES", 200_000)
 PREVIEW_SHOWN = 100
 LOGGED = re.compile(r"\[[a-z0-9-]+\] (ALLOWED|BLOCKED) ([a-z0-9.-]+) \(")
 
@@ -222,11 +222,9 @@ def _problem(e):
         if key not in e or isinstance(e[key], bool) or not isinstance(e[key], kind):
             return f"field {key} missing or of the wrong type"
     if name == "regex":
+        # a pattern the rules refuse is no broken entry: it allows nothing (patterns.refused)
         if "domain" in e:
             return "both domain and regex"
-        why = patterns.problem(e["regex"])
-        if why:
-            return f"invalid regex {clean(e['regex'], False)[:60]} ({why[1]})"
     elif not DOMAIN.fullmatch(e["domain"]):
         return f"invalid domain {clean(e['domain'], False)[:60]}"
     if e["scope"] != ALL and (not registry.NAME.fullmatch(e["scope"]) or registry.reserved(e["scope"])):
@@ -429,7 +427,9 @@ def preview(scope, pattern):
     that the pattern matches, each with how often it was allowed and blocked, its Signals
     and whether one is strong (then it stays blocked), as
     {"hosts": [...], "more": hosts not shown, "watchlist_unreadable": why or None (then it
-    allows nothing), "truncated": whether the log had more lines than were read,
+    allows nothing), "truncated": whether the log had more lines than were read (a VM can
+    fill its log), "reaches_back": how far back what was read reaches (epoch seconds: the
+    oldest line read when truncated, else the start of the PREVIEW_DAYS),
     "log_unreadable": why the proxy log could not be read, else None}."""
     now = int(time.time())
     names = registry.names() if scope == ALL else [scope]
@@ -457,10 +457,13 @@ def preview(scope, pattern):
         die("agentbox-suspicious: invalid answer", error="action_failed")
     rows = [{"host": h, **counts[h], "signals": [str(s) for s in rep["hosts"][h]["signals"]],
              "strong": rep["hosts"][h]["strong"]} for h in shown]
+    truncated = len(log) >= PREVIEW_LINES
+    times = [int(e["__REALTIME_TIMESTAMP"]) // 10**6 for e in log
+             if str(e.get("__REALTIME_TIMESTAMP", "")).isdigit()] if truncated else []
     return {"hosts": rows, "more": len(hosts) - len(shown),
             "watchlist_unreadable": clean(rep["watchlist_unreadable"], False)[:300]
-            if rep["watchlist_unreadable"] else None, "truncated": len(log) >= PREVIEW_LINES,
-            "log_unreadable": unreadable}
+            if rep["watchlist_unreadable"] else None, "truncated": truncated,
+            "reaches_back": min(times) if times else now - PREVIEW_DAYS * 86400, "log_unreadable": unreadable}
 
 
 def preview_text(scope, pattern, p):
@@ -470,8 +473,11 @@ def preview_text(scope, pattern, p):
                 f"allow for {scope_text(scope)} cannot be shown.")
     lines = [f"pattern {pattern} for {scope_text(scope)} matches "
              + (f"{len(p['hosts']) + p['more']} hosts" if p["hosts"] else "no host")
-             + f" of the proxy log of the last {PREVIEW_DAYS} days"
-             + (f" (its newest {PREVIEW_LINES} lines)" if p["truncated"] else "") + (":" if p["hosts"] else "")]
+             + f" of the proxy log of the last {PREVIEW_DAYS} days" + (":" if p["hosts"] else "")]
+    if p["truncated"]:
+        lines.insert(0, f"WARNING: the proxy log of these {PREVIEW_DAYS} days has more lines than the newest "
+                        f"{PREVIEW_LINES} read, which reach back only to {when(p['reaches_back'])}: hosts seen "
+                        f"only before then are missing below.")
     for h in p["hosts"]:
         seen = f"allowed {h['allowed']}x, blocked {h['blocked']}x"
         stays = f"; stays blocked, strong Signals: {', '.join(h['signals'])}" if h["strong"] else ""
@@ -488,7 +494,8 @@ def preview_text(scope, pattern, p):
 def show(args):
     """agentbox allowlist [<vm>|all] [--json]: every entry, those that apply to a
     VM (its own and those for all VMs), or those for all VMs; with remaining time
-    and uses in the last 24 hours. Each row has domain and regex, one of them null."""
+    and uses in the last 24 hours. Each row has domain and regex, one of them null, and
+    refused: why the rules refuse a stored pattern (it allows nothing until removed), else null."""
     positional, opts = _parse(args, {"json": False})
     if len(positional) > 1:
         die("too many arguments: " + clean(positional[1], False)[:60], error="invalid_argument")
@@ -505,15 +512,17 @@ def show(args):
         expired = e["expires"] is not None and e["expires"] <= now
         rows.append({**patterns.both(e), "expired": expired,
                      "remaining": None if e["expires"] is None else max(0, e["expires"] - now),
-                     "uses_24h": None if counts is None else counts[(patterns.key(e), e["scope"])]})
+                     "uses_24h": None if counts is None else counts[(patterns.key(e), e["scope"])],
+                     "refused": patterns.refused(e)})
     if "json" in opts:
         print(json.dumps(rows, ensure_ascii=False))
         return
     for r in rows:
         left = "permanent" if r["expires"] is None else "expired" if r["expired"] else "until " + _until(r["expires"])
         used = "?" if r["uses_24h"] is None else f"{r['uses_24h']}x"
-        what = r["domain"] or f"regex {r['regex']}"
-        print(f"{what:<40} {scope_text(r['scope']):<16} {left:<18} {used:>6}  {r['note']}".rstrip())
+        what = r["domain"] or f"regex {clean(r['regex'], False)}"
+        note = f"[{r['refused']}; it allows nothing] {r['note']}" if r["refused"] else r["note"]
+        print(f"{what:<40} {scope_text(r['scope']):<16} {left:<18} {used:>6}  {note}".rstrip())
 
 
 def allow(args):

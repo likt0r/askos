@@ -720,7 +720,7 @@ class ListTest(CliTest):
         docs = rows[1]
         self.assertAlmostEqual(docs.pop("remaining"), 3600, delta=60)
         self.assertEqual(docs, {**entry("docs.rs", "priv", expires=self.now + 3600, note="Rust"), "regex": None,
-                                "expired": False, "uses_24h": 1})
+                                "expired": False, "uses_24h": 1, "refused": None})
         self.assertEqual((rows[0]["uses_24h"], rows[0]["remaining"], rows[0]["expired"]), (2, None, False))
         self.assertEqual((rows[2]["expired"], rows[2]["remaining"], rows[2]["uses_24h"]), (True, 0, 0))
         self.assertEqual(rows[3]["uses_24h"], 1)

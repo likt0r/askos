@@ -187,10 +187,13 @@ PATTERN_REASONS = {
     "characters": "only printable ASCII characters without spaces are allowed",
     "syntax": "not a regular expression",
     "uppercase": "an uppercase letter, but host names are compared in lowercase",
-    "backreference": r"a backreference (\1, (?P=name), (?(1)...)), which can backtrack without end",
+    "backreference": r"a backreference (\1, (?P=name), (?(1)...)), which may backtrack for very long",
     "lookaround": "a lookahead or lookbehind ((?=...), (?!...), (?<=...), (?<!...))",
+    # refused also where a delimiter would keep it fast (^(?:[a-z]+\.){1,5}example\.org$): the
+    # rule stays simple; a domain entry or a pattern without the repeated group does it instead
     "nested-quantifier": "a quantifier or an alternative inside a repeated group, such as (a+)+ or (a|ab)+, "
-                         "which can backtrack without end",
+                         "which may backtrack for very long (a domain entry covers subdomains, or write it "
+                         "without the repeated group, such as ^[a-z0-9.-]+\\.example\\.org$)",
     "too-complex": "more than two quantifiers or alternatives in a row that can take the same characters, "
                    "such as .*a.*b.*c: matching would take too long",
 }
@@ -402,10 +405,20 @@ def _ways_item(op, av, follow):
 _cache = {}
 
 
+class Refused(ValueError):
+    """A record that reads, but holds a Regex entry the rules refuse: value is what it gives
+    without such entries, the message why it counts as unreadable all the same."""
+
+    def __init__(self, why, value):
+        super().__init__(why)
+        self.value = value
+
+
 def _read(path, parse, empty):
     """(Inhalt, None) einer Liste, neu gelesen, wenn sich die Datei geaendert hat; (None,
     None), wenn es sie nicht gibt. Ist sie nicht lesbar oder kaputt (parse wirft
-    ValueError): (der letzte gute Stand, ohne einen empty, warum)."""
+    ValueError): (der letzte gute Stand, ohne einen empty, warum); parse raising Refused:
+    (what it read without the refused entries, why)."""
     hit = _cache.get(path)
     last = hit[1] if hit else empty
     try:
@@ -422,6 +435,8 @@ def _read(path, parse, empty):
             value, why = parse(f.read()), None
     except OSError as e:
         return last, e.strerror or type(e).__name__
+    except Refused as e:
+        value, why = e.value, str(e)
     except ValueError as e:
         value, why = last, str(e) or type(e).__name__
     _cache[path] = (key, value, why)
@@ -444,10 +459,10 @@ def _printable(text, limit):
     return "".join(c if c.isprintable() else "?" for c in text)[:limit]
 
 
-def _problem(e, fields, broad=True):
+def _problem(e, fields):
     """What is wrong with an entry of a record, else None; the same checks and texts as
     in agentbox (lists.py), byte for byte. An entry names a domain, or as a Regex entry a
-    pattern (regex) that keeps the rules (pattern_problem; broad: with the breadth check)."""
+    pattern (regex); whether the rules take that pattern is refused_entry's question."""
     if not isinstance(e, dict):
         return "not a JSON object"
     name = "regex" if "regex" in e else "domain"
@@ -457,9 +472,6 @@ def _problem(e, fields, broad=True):
     if name == "regex":
         if "domain" in e:
             return "both domain and regex"
-        why = pattern_problem(e["regex"], broad)
-        if why:
-            return f"invalid regex {_printable(e['regex'], 60)} ({why[1]})"
     elif not DOMAIN.fullmatch(e["domain"]):
         return f"invalid domain {_printable(e['domain'], 60)}"
     if fields is WATCH_FIELDS and e["category"] not in CATEGORIES:
@@ -469,13 +481,26 @@ def _problem(e, fields, broad=True):
     return None
 
 
-def _checked(text, fields, broad=True):
+def refused_entry(e, broad=True):
+    """Why the rules refuse a stored Regex entry's pattern (a hand edit, or a later Release
+    with stricter rules or a larger BREADTH_SAMPLE), as English text, else None. Such an
+    entry counts as nothing, in the proxy as in agentbox (patterns.py), which lists it with
+    this text and removes it by its pattern: on the Allowlist it allows nothing, as a
+    Harmless mark it silences nothing, as a Legitimate domain it lifts nothing, and on the
+    Watchlist, where it would raise a Signal, Open web stays closed until it is gone."""
+    if not isinstance(e, dict) or not isinstance(e.get("regex"), str):
+        return None
+    why = pattern_problem(e["regex"], broad)
+    return f"regex entry {_printable(e['regex'], 60)} refused: {why[1]}" if why else None
+
+
+def _checked(text, fields):
     """Die Eintraege eines Datensatzes; ein kaputter oder doppelter macht die ganze Datei
     kaputt (ValueError), wie fuer agentbox. A domain and a Regex entry of the same text are
     two entries."""
     entries, seen = [], set()
     for e in _entries(text):
-        why = _problem(e, fields, broad)
+        why = _problem(e, fields)
         if why:
             raise ValueError(f"broken entry ({why})")
         key = ("regex", e["regex"]) if "regex" in e else ("domain", e["domain"])
@@ -507,16 +532,26 @@ EMPTY = Listed()
 
 
 def _listed(entries, value, broad=True):
-    """Listed of a record's checked entries; value(entry) is what an entry stands for."""
-    return Listed({e["domain"]: value(e) for e in entries if "domain" in e},
-                  [(e["regex"], re.compile(e["regex"]), value(e)) for e in entries if "regex" in e])
+    """(Listed of a record's checked entries without the Regex entries the rules refuse,
+    why the first of these is refused or None); value(entry) is what an entry stands for."""
+    refused = [why for why in (refused_entry(e, broad) for e in entries) if why]
+    kept = [e for e in entries if not refused_entry(e, broad)]
+    return (Listed({e["domain"]: value(e) for e in kept if "domain" in e},
+                   [(e["regex"], re.compile(e["regex"]), value(e)) for e in kept if "regex" in e]),
+            refused[0] if refused else None)
 
 
 def _watchlist_record(text):
     """watchlist.json  ->  Listed of (kategorie, quelle); ein Tippfehler in der Kategorie
     machte einen starken Eintrag sonst schwach. Its patterns need no breadth check: a
-    broad one only raises false Alerts."""
-    return _listed(_checked(text, WATCH_FIELDS, broad=False), lambda e: (e["category"], e["source"]))
+    broad one only raises false Alerts. A pattern the rules refuse raises no Signal, so what
+    Open web would have to keep blocked is unknown: the record reads without it, but counts
+    as unreadable (Refused) until it is removed."""
+    listed, refused = _listed(_checked(text, WATCH_FIELDS), lambda e: (e["category"], e["source"]), broad=False)
+    if refused:
+        raise Refused(f"{refused}; Open web stays closed until it is removed (agentbox watch-remove --regex)",
+                      listed)
+    return listed
 
 
 def _watchlist_text(text):
@@ -564,8 +599,9 @@ def _marks(text):
 
 def _legitimate_record(text):
     """legitimate.json  ->  Listed; kaputt zaehlen nur die eingebauten (oder im Proxy
-    der letzte gute Stand), das fuegt nur Merkmale hinzu."""
-    return _listed(_checked(text, LEGITIMATE_FIELDS), lambda e: None)
+    der letzte gute Stand), das fuegt nur Merkmale hinzu. A pattern the rules refuse lifts
+    nothing, which only adds Signals; the other entries count."""
+    return _listed(_checked(text, LEGITIMATE_FIELDS), lambda e: None)[0]
 
 
 def _hand_watchlist():

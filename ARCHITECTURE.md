@@ -251,8 +251,12 @@ flowchart LR
   lines) the pattern would allow, each with whether strong Signals keep it blocked, and adds
   it only with `--confirm-pattern`; `agentbox check-regex` answers the same for a pattern
   without adding it, and whether given hosts match. Scope, expiry, notes, uses and closing
-  tunnels work as for a domain entry; a pattern the rules refuse (a hand edit) allows
-  nothing.
+  tunnels work as for a domain entry. The preview reads at most the newest 200,000 log lines
+  and says first, with how far back it reaches, when a VM filled its log beyond them. A stored
+  pattern the rules refuse (a hand edit, or a later Release with stricter rules or a larger
+  sample) counts as nothing while the other entries keep working: it allows, silences or lifts
+  nothing; on the Watchlist it keeps Open web and regex Allowlist entries closed until it is
+  removed. The CLI lists it with the reason (`refused`) and removes it by its pattern.
 - **Open web** lets a VM reach any public domain for a limited time. Destinations with strong
   **Signals** stay blocked, which includes **Watchlist** entries of a strong category and
   those of the threat-intelligence list; a `payload` entry only raises an Alert. While the

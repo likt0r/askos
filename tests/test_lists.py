@@ -360,9 +360,9 @@ class LegitimateTest(CliTest):
     def test_listing_marks_the_built_in_domains(self):
         rows = self.json("legitimate")
         self.assertIn({"domain": "registry.example", "regex": None, "note": "Paketquelle", "added": 1793700000,
-                       "added_by": "bewr", "builtin": False}, rows)
+                       "added_by": "bewr", "builtin": False, "refused": None}, rows)
         self.assertIn({"domain": "github.com", "regex": None, "note": "", "added": None, "added_by": None,
-                       "builtin": True}, rows)
+                       "builtin": True, "refused": None}, rows)
         self.assertEqual([r["domain"] for r in rows], sorted(r["domain"] for r in rows))
         text = self.ok("legitimate").splitlines()
         self.assertIn("github.com                       built-in", text)

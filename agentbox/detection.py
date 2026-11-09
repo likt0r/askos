@@ -188,13 +188,17 @@ def check_domain(args):
 
 def harmless(args):
     """agentbox harmless [--json]: the Harmless marks, domains and (with --json as
-    {"domain": null, "regex": p}) Regex entries"""
+    {"domain": null, "regex": p}) Regex entries; refused: why the rules refuse a stored pattern
+    (it silences nothing until removed), else null"""
     opts = flags(args, {"--json"})
     marks = harmless_marks()
     if "--json" in opts:
-        print(json.dumps([patterns.both(m) for m in marks]))
+        print(json.dumps([{**patterns.both(m), "refused": patterns.refused(m)} for m in marks]))
     else:
-        print("".join((m.get("domain") or f"regex {m['regex']}") + "\n" for m in marks), end="")
+        for m in marks:
+            refused = patterns.refused(m)
+            print(m.get("domain") or f"regex {clean(m['regex'], False)}"
+                  + (f"  [{refused}; it silences nothing]" if refused else ""))
 
 
 def _shown(ref):

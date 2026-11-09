@@ -16,7 +16,11 @@ unrelated hosts; the Watchlist does without it (a broad pattern there only raise
 Alerts).
 
 Stored. A record entry has the field regex in place of domain; a Harmless mark is the line
-"regex <pattern>". Commands take the pattern with --regex PATTERN where they take a domain,
+"regex <pattern>". A stored pattern the rules refuse (a hand edit, or a later Release with
+stricter rules) counts as nothing: on the Allowlist it allows nothing, as a Harmless mark it
+silences nothing, as a Legitimate domain it lifts nothing, and on the Watchlist Open web stays
+closed until it is removed. It is listed with the reason (refused) and removed by its pattern;
+the other entries keep working. Commands take the pattern with --regex PATTERN where they take a domain,
 and remove or change an entry by the same value.
 """
 import types
@@ -66,6 +70,14 @@ def checked(pattern, broad=True):
     if why:
         die(f"--regex {shown}: {why[1]}", error="invalid_pattern", reason=why[0])
     return pattern
+
+
+def refused(e, broad=True):
+    """Why the rules refuse a stored Regex entry (a hand edit, or a later Release with stricter
+    rules or a larger breadth sample), else None (the classifier's refused_entry, the same text
+    the proxy goes by). Such an entry counts as nothing, but stays listed with this reason and
+    can be removed by its pattern; the other entries keep working."""
+    return rules().refused_entry(e, broad) if "regex" in e else None
 
 
 def compiled(pattern):
