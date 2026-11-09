@@ -4,17 +4,24 @@ Each row quotes one promise of [ARCHITECTURE.md](../ARCHITECTURE.md) (or an ADR)
 tests that fail when the promise is broken. `tests/test_claims.py` checks the table in every
 test run and fails it with the row's number when the quoted words no longer occur verbatim under
 the linked heading (removed, reworded or moved), when that heading was renamed, or when a named
-test no longer exists. So a change that weakens a quoted promise and drops the test that
-defended it, or a doc edit that drops the promise, does not pass unnoticed.
+test no longer exists or is skipped. So a change that weakens a quoted promise and drops the
+test that defended it, or a doc edit that drops the promise, does not pass unnoticed.
 
 - **Claim**: in double quotes, the words that carry the promise, exactly as they stand in the
   document, Markdown included; line wraps and runs of spaces do not count. The check sees only
   the quoted words: whatever a row leaves out of its quote can change without the check
   noticing. So a row quotes the whole sentence, or, where the tests defend only part of it, the
   part that carries the promise, never just a lead-in to it. A pipe is written `\|`.
-- **Section**: a link to the heading the sentence sits under (subsections count as under it).
+- **Section**: a link to the heading the sentence sits under. The quote is looked for in the
+  whole section under that heading, its subsections included, so it has to be distinctive
+  there: a quote that occurs more than once in its section fails the check, since one of its
+  places could go without notice.
 - **Defended by**: `test_module.TestClass.test_name` in backticks, separated by `<br>`. Each
-  test fails when the promise is broken; a test that only touches its area is not enough.
+  test fails when the promise is broken; a test that only touches its area is not enough. A test
+  that a decorator skips (`@unittest.skip`, a skipped class, or a `skipIf`/`skipUnless` that
+  holds where the check runs) fails the check. A test that skips itself while it runs
+  (`self.skipTest`, a `setUpModule` that raises `SkipTest`) cannot be seen beforehand, so a row
+  names only tests that run both on the Host and in CI.
 
 A pull request that changes a promise, or a test that defends one, updates its row in the same
 pull request. A promise without a defending test has no row; those are listed on

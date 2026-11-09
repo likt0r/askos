@@ -1,6 +1,7 @@
-"""The claims table (docs/claims.md, #10): the words each row quotes still occur verbatim under
-the heading it links, and every test it names as defending them still exists. Only the quoted
-words are checked: what a row leaves out of its quote may change unnoticed.
+"""The claims table (docs/claims.md, #10): the words each row quotes still occur verbatim, and
+once, under the heading it links, and every test it names as defending them still exists and
+is not skipped by a decorator. Only the quoted words are checked: what a row leaves out of its
+quote may change unnoticed.
 
 check() reads such a table. ClaimsTableTest runs it on docs/claims.md; FixtureTest on small
 tables and documents in a temporary directory, so that a removed sentence, a renamed heading
@@ -13,6 +14,7 @@ import re
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(TESTS)
@@ -104,8 +106,12 @@ def check_claim(claim, section, base, docs):
     under = [text for _, s, text in named if s == slug]
     if not under:
         return [f'the link to "{heading}" ends in #{slug}, its anchor is #{named[0][1]}']
-    if words(claim[1:-1]) not in under[0]:
+    found = under[0].count(words(claim[1:-1]))
+    if not found:
         return [f'the claim is not under "{heading}" in {target}']
+    if found > 1:
+        # removing one of them would go unnoticed
+        return [f'the claim occurs {found} times under "{heading}" in {target}: quote more of its sentence']
     return []
 
 
@@ -135,6 +141,16 @@ def check_tests(defended, loader):
         if not (len(found) == 1 and isinstance(found[0], unittest.TestCase) and found[0].id() == name):
             why = str(why).strip().splitlines()[-1] if why and str(why).strip() else ""
             problems.append(f"no test {name}" + (f" ({why})" if why else ""))
+            continue
+        # a skip decorator on the test or its class: @skip, or a skipIf/skipUnless that holds
+        # here (a skip that depends on the machine cannot be told apart from one that does not);
+        # a test that skips itself while it runs is not seen here
+        test = found[0]
+        for owner in (getattr(type(test), test._testMethodName), type(test)):
+            if getattr(owner, "__unittest_skip__", False):
+                problems.append(f"{name} is skipped here ({getattr(owner, '__unittest_skip_why__', '')}): "
+                                "it defends nothing")
+                break
     return problems
 
 
@@ -268,6 +284,25 @@ class FixtureTest(unittest.TestCase):
                                     "tests/test_nothing_here.py does not exist"]])
         self.assertIn("test_that_was_deleted", problems[0].split(" (", 2)[2])
         self.assertIn("NoSuchTest", problems[1].split(" (", 2)[2])
+
+    def test_a_skipped_test_fails(self):
+        # patched where check() loads the named tests from, whichever name this module runs under
+        import test_claims as named
+        method = named.FixtureTest.test_a_changed_word_fails
+        row = (KERNEL, VMS, "`test_claims.FixtureTest.test_a_changed_word_fails`")
+        for owner in (method, named.FixtureTest):
+            with self.subTest(owner=owner.__name__), \
+                    mock.patch.object(owner, "__unittest_skip__", True, create=True), \
+                    mock.patch.object(owner, "__unittest_skip_why__", "flaky", create=True):
+                self.assertEqual(self.check(row), ["row 1 (line 5): test_claims.FixtureTest.test_a_changed_word_fails "
+                                                   "is skipped here (flaky): it defends nothing"])
+        self.assertEqual(self.check(row), [])
+
+    def test_a_claim_found_more_than_once_fails(self):
+        # removing one of them would go unnoticed
+        self.assertEqual(self.check(('"KVM VM"', VMS, OK), ('"VM"', VMS, OK)),
+                         ['row 2 (line 6): the claim occurs 3 times under "VMs" in ../ARCHITECTURE.md: '
+                          "quote more of its sentence"])
 
     def test_unknown_tokens_fail(self):
         self.assertEqual(self.check((KERNEL, VMS, "`test_claims.FixtureTest`"),
