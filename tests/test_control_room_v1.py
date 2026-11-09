@@ -417,11 +417,33 @@ ENDPOINTS = [
     ("POST", "/api/v1/allowlist/all/x.org/make-permanent", {}, ["make-permanent", "all", "x.org", "--json"], 200),
     ("PUT", "/api/v1/allowlist/work/x.org/note", {"note": "fuer --docs"},
      ["set-note", "work", "x.org", "--note=fuer --docs", "--json"], 200),
+    # Regex entries (ADR 0013): the pattern verbatim, as the value of --regex, never lowercased;
+    # in a path under /regex it is the query parameter regex
+    ("POST", "/api/v1/allowlist", {"scope": "work", "regex": " ^Mirror\\d+\\.example$ ", "duration": "1h",
+                                   "confirm": True},
+     ["allow", "work", "--regex=^Mirror\\d+\\.example$", "--confirm-pattern", "--for=1h", "--json"], 201),
+    ("POST", "/api/v1/allowlist", {"scope": "all", "regex": "--force", "domain": None, "confirm": True},
+     ["allow", "all", "--regex=--force", "--confirm-pattern", "--json"], 201),
+    ("DELETE", "/api/v1/allowlist/work/regex?regex=%5Ea%2Fb%2B%5C.example%24", None,
+     ["disallow", "work", "--regex=^a/b+\\.example$", "--json"], 200),
+    ("POST", "/api/v1/allowlist/all/regex/extend?regex=x%26y", {"duration": "1h"},
+     ["extend", "all", "--regex=x&y", "--for=1h", "--json"], 200),
+    ("POST", "/api/v1/allowlist/all/regex/make-permanent?regex=x", {}, ["make-permanent", "all", "--regex=x", "--json"],
+     200),
+    ("PUT", "/api/v1/allowlist/all/regex/note?regex=x", {"note": "n"}, ["set-note", "all", "--regex=x", "--note=n",
+                                                                       "--json"], 200),
+    ("GET", "/api/v1/regex/check?list=allowlist&regex=%5Ea%24&host=A.example&scope=work", None,
+     ["check-regex", "allowlist", "--regex=^a$", "a.example", "--scope=work", "--json"], 200),
+    ("GET", "/api/v1/regex/check?list=watchlist&regex=.*", None, ["check-regex", "watchlist", "--regex=.*", "--json"],
+     200),
     ("GET", "/api/v1/watchlist", None, ["watchlist", "--json"], 200),
     ("GET", "/api/v1/watchlist/check?domain=Paste.Example", None, ["check-domain", "paste.example", "--json"], 200),
     ("GET", "/api/v1/watchlist/harmless", None, ["harmless", "--json"], 200),
     ("PUT", "/api/v1/watchlist/harmless/cdn.example", None, ["mark-harmless", "cdn.example", "--json"], 200),
     ("DELETE", "/api/v1/watchlist/harmless/cdn.example", None, ["unmark-harmless", "cdn.example", "--json"], 200),
+    ("PUT", "/api/v1/watchlist/harmless/regex?regex=%5Ecdn%5B0-9%5D%2B%5C.example%24", None,
+     ["mark-harmless", "--regex=^cdn[0-9]+\\.example$", "--json"], 200),
+    ("DELETE", "/api/v1/watchlist/harmless/regex?regex=x", None, ["unmark-harmless", "--regex=x", "--json"], 200),
     ("POST", "/api/v1/watchlist/entries", {"domain": "Drop.Example", "category": "paste", "source": "Vorfall",
                                            "note": "--force"},
      ["watch-add", "drop.example", "--category=paste", "--source=Vorfall", "--note=--force", "--json"], 201),
@@ -430,6 +452,11 @@ ENDPOINTS = [
     ("DELETE", "/api/v1/watchlist/entries/drop.example", None, ["watch-remove", "drop.example", "--json"], 200),
     ("PUT", "/api/v1/watchlist/entries/drop.example/note", {"note": ""},
      ["watch-set-note", "drop.example", "--note=", "--json"], 200),
+    ("POST", "/api/v1/watchlist/entries", {"regex": "^Drop[0-9]+\\.xyz$", "category": "paste"},
+     ["watch-add", "--regex=^Drop[0-9]+\\.xyz$", "--category=paste", "--json"], 201),
+    ("DELETE", "/api/v1/watchlist/entries/regex?regex=x", None, ["watch-remove", "--regex=x", "--json"], 200),
+    ("PUT", "/api/v1/watchlist/entries/regex/note?regex=x", {"note": ""},
+     ["watch-set-note", "--regex=x", "--note=", "--json"], 200),
     ("GET", "/api/v1/watchlist/legitimate", None, ["legitimate", "--json"], 200),
     ("POST", "/api/v1/watchlist/legitimate", {"domain": "Mirror.Example", "note": "Spiegel"},
      ["legitimate-add", "mirror.example", "--note=Spiegel", "--json"], 201),
@@ -437,6 +464,11 @@ ENDPOINTS = [
      200),
     ("PUT", "/api/v1/watchlist/legitimate/mirror.example/note", {"note": "x"},
      ["legitimate-set-note", "mirror.example", "--note=x", "--json"], 200),
+    ("POST", "/api/v1/watchlist/legitimate", {"regex": "^m[0-9]\\.example$", "note": "n"},
+     ["legitimate-add", "--regex=^m[0-9]\\.example$", "--note=n", "--json"], 201),
+    ("DELETE", "/api/v1/watchlist/legitimate/regex?regex=x", None, ["legitimate-remove", "--regex=x", "--json"], 200),
+    ("PUT", "/api/v1/watchlist/legitimate/regex/note?regex=x", {"note": "x"},
+     ["legitimate-set-note", "--regex=x", "--note=x", "--json"], 200),
     ("GET", "/api/v1/activity?kind=alert,build&vm=work&search=x%20y&lines=10", None,
      ["activity", "--kind=alert,build", "--vm=work", "--search=x y", "--lines=10", "--json"], 200),
     ("GET", "/api/v1/images", None, ["images", "--json"], 200),
@@ -553,6 +585,24 @@ class EndpointTest(V1Test):
             ("POST", "/api/v1/watchlist/legitimate", {"domain": "x.org", "note": 1}, "invalid_field"),
             ("DELETE", "/api/v1/watchlist/legitimate/-x.org", None, "invalid_field"),
             ("PUT", "/api/v1/watchlist/legitimate/x.org/note", {"note": None}, "invalid_field"),
+            # a regex Allowlist entry only confirmed, after the preview
+            ("POST", "/api/v1/allowlist", {"scope": "all", "regex": "^a\\.example$"}, "confirmation_required"),
+            ("POST", "/api/v1/allowlist", {"scope": "all", "regex": "^a\\.example$", "confirm": "yes"},
+             "confirmation_required"),
+            ("POST", "/api/v1/allowlist", {"scope": "all", "regex": "^a$", "domain": "a.org", "confirm": True},
+             "invalid_field"),
+            ("POST", "/api/v1/allowlist", {"scope": "all", "regex": 5, "confirm": True}, "invalid_field"),
+            ("POST", "/api/v1/allowlist", {"scope": "all", "regex": " ", "confirm": True}, "invalid_field"),
+            ("DELETE", "/api/v1/allowlist/all/regex", None, "invalid_field"),
+            ("DELETE", "/api/v1/allowlist/all/regex?regex=a&regex=b", None, "invalid_query"),
+            ("POST", "/api/v1/allowlist/all/regex/extend?regex=a", {}, "invalid_field"),
+            ("GET", "/api/v1/regex/check?list=allow&regex=a", None, "invalid_field"),
+            ("GET", "/api/v1/regex/check?list=watchlist", None, "invalid_field"),
+            ("GET", "/api/v1/regex/check?list=allowlist&regex=a&host=--x", None, "invalid_field"),
+            ("GET", "/api/v1/regex/check?list=allowlist&regex=a&scope=Every", None, "invalid_field"),
+            ("POST", "/api/v1/watchlist/entries", {"regex": ["a"], "category": "exfil"}, "invalid_field"),
+            ("PUT", "/api/v1/watchlist/harmless/regex", None, "invalid_field"),
+            ("PUT", "/api/v1/watchlist/entries/regex/note?regex=a", {}, "invalid_field"),
             ("GET", "/api/v1/activity?vm=a&vm=b", None, "invalid_query"),
             ("POST", "/api/v1/builds", {"image": "../x"}, "invalid_field"),
             ("POST", "/api/v1/builds", {"image": "all", "reset": ["work"]}, "invalid_field"),
@@ -710,6 +760,24 @@ class ErrorTest(V1Test):
                 self.assertError(answer, 500, "action_failed")
                 self.assertEqual(answer[1]["error"]["detail"], "a new refusal")
                 self.assertNotIn("field", answer[1]["error"])
+
+    def test_what_a_pattern_breaks_goes_to_the_ui(self):
+        # which rule, or which host of the breadth check's sample, so the UI can word it
+        body = {"regex": "(a+)+", "category": "c2"}
+        answer = self.fails(failure("invalid_pattern", "--regex (a+)+: a quantifier ...", reason="nested-quantifier"),
+                            path="/api/v1/watchlist/entries", body=body)
+        self.assertError(answer, 400, "invalid_pattern")
+        self.assertEqual(answer[1]["error"]["params"], {"reason": "nested-quantifier"})
+        answer = self.fails(failure("pattern_too_broad", "--regex .*: too broad", host="google.com"),
+                            path="/api/v1/watchlist/entries", body=body)
+        self.assertError(answer, 400, "pattern_too_broad")
+        self.assertEqual(answer[1]["error"]["params"], {"host": "google.com"})
+        # only those parameters, in their form; other codes pass none
+        for stderr in (failure("invalid_pattern", "x", reason="<b>x</b>", pattern="(a+)+"),
+                       failure("pattern_too_broad", "x", host=["google.com"]),
+                       failure("vm_not_found", "No such VM: lab", vm="lab")):
+            with self.subTest(stderr=stderr):
+                self.assertNotIn("params", self.fails(stderr, path="/api/v1/watchlist/entries", body=body)[1]["error"])
 
     def test_an_invalid_setting_names_its_field(self):
         # the UI shows the message next to that input: the setting comes from the parameters,

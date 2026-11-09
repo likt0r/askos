@@ -9,17 +9,20 @@ export class ApiError extends Error {
   readonly code: string
   readonly field?: string
   readonly detail?: string
+  /** what the UI words some refusals with (`reason` of invalid_pattern, `host` of pattern_too_broad) */
+  readonly params?: Record<string, string>
   /** seconds from a Retry-After header (login brake, too many streams) */
   readonly retryAfter?: number
 
   constructor(status: number, code: string, message: string,
-    extra: { field?: string, detail?: string, retryAfter?: number } = {}) {
+    extra: { field?: string, detail?: string, params?: Record<string, string>, retryAfter?: number } = {}) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.code = code
     this.field = extra.field
     this.detail = extra.detail
+    this.params = extra.params
     this.retryAfter = extra.retryAfter
   }
 }
@@ -31,6 +34,13 @@ let unauthenticatedHandler: (() => void) | null = null
 /** Called when a request (other than the session endpoints) answers 401: the session ended. */
 export function onUnauthenticated(handler: (() => void) | null) {
   unauthenticatedHandler = handler
+}
+
+/** An error's parameters: only text values. */
+function stringParams(p: unknown): Record<string, string> | undefined {
+  if (!p || typeof p !== 'object' || Array.isArray(p)) return undefined
+  const out = Object.fromEntries(Object.entries(p).filter(([, v]) => typeof v === 'string')) as Record<string, string>
+  return Object.keys(out).length ? out : undefined
 }
 
 function retryAfterSeconds(header: string | null): number | undefined {
@@ -70,12 +80,13 @@ export async function api<T = unknown>(path: string, options: { method?: Method,
     }
   }
   if (response.ok) return data as T
-  const error = (data as { error?: { code?: unknown, message?: unknown, field?: unknown, detail?: unknown } } | null)?.error
+  const error = (data as { error?: { code?: unknown, message?: unknown, field?: unknown, detail?: unknown, params?: unknown } } | null)?.error
   const code = typeof error?.code === 'string' ? error.code : `http_${response.status}`
   const err = new ApiError(response.status, code,
     typeof error?.message === 'string' ? error.message : response.statusText || 'Request failed', {
       field: typeof error?.field === 'string' ? error.field : undefined,
       detail: typeof error?.detail === 'string' ? error.detail : undefined,
+      params: stringParams(error?.params),
       retryAfter: retryAfterSeconds(response.headers.get('Retry-After')),
     })
   if (response.status === 401 && code === 'unauthenticated' && !path.startsWith('/session')) {

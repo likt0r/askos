@@ -41,6 +41,9 @@ Every error has the same shape and an HTTP status that fits:
 - `code`: stable, snake_case; the UI translates it. New codes may be added.
 - `message`: short English text, a fallback when the UI has no translation.
 - `field` (optional): the request field that is wrong.
+- `params` (optional): the parameters the UI words a refusal with, for the codes that have
+  them: `invalid_pattern` (`reason`) and `pattern_too_broad` (`host`), each only in the form
+  agentbox gives it.
 - `detail` (optional): agentbox's own message (English, untranslated, for diagnosis);
   never shown as the main text.
 
@@ -53,7 +56,7 @@ Codes from the backend itself:
 | 400 | `invalid_field` | a field has the wrong type or form (`field` names it) |
 | 400 | `invalid_query` | a query parameter appears twice, or too many |
 | 400 | `invalid_name` | VM name not `^[a-z][a-z0-9-]{1,15}$` |
-| 400 | `confirmation_required` | deleting, revoking pairings or revealing the Pairing code without the confirmation |
+| 400 | `confirmation_required` | deleting, revoking pairings, revealing the Pairing code or adding a regex Allowlist entry without the confirmation |
 | 401 | `unauthenticated` | no valid session |
 | 401 | `wrong_password` | sign-in with a wrong password |
 | 403 | `csrf_header_missing` | `X-Agentbox: 1` missing |
@@ -297,11 +300,22 @@ temporary entries (Settings).
 | Method and path | Body / query | agentbox call, response |
 |---|---|---|
 | `GET /allowlist` | `?vm=<vm>\|all` | `allowlist`: `[{"domain", "regex", "scope", "expires", "note", "added_by", "added", "expired", "remaining", "uses_24h", "refused"}]` (`domain` or, for a Regex entry, `regex`: the pattern, verbatim; the other `null`. `refused`: why the rules refuse a stored pattern, which then allows nothing until it is removed, else `null`. `expires` and `added` epoch seconds, `expires` `null` when permanent, `remaining` seconds, `uses_24h` `null` when unknown) |
-| `POST /allowlist` | `{"scope", "domain", "duration"?, "note"?}` | `allow`: `201`; destinations with strong Signals: `409 domain_suspicious`; any destination while the Watchlist cannot be read: `409 watchlist_unreadable` (also for `extend` and `make-permanent`) |
+| `POST /allowlist` | `{"scope", "domain", "duration"?, "note"?}` or `{"scope", "regex", "confirm": true, "duration"?, "note"?}` | `allow`: `201`; destinations with strong Signals: `409 domain_suspicious`; any destination while the Watchlist cannot be read: `409 watchlist_unreadable` (also for `extend` and `make-permanent`). With `regex` a Regex entry (`allow --regex --confirm-pattern`): only with `confirm: true`, after the preview of `GET /regex/check` (else `400 confirmation_required`, `field`: `confirm`); a pattern the rules refuse: `400 invalid_pattern` or `400 pattern_too_broad`. It never allows a destination with strong Signals (the proxy checks every connection), so it is never `domain_suspicious` |
 | `DELETE /allowlist/<scope>/<domain>` | | `disallow` (open tunnels to it are closed) |
 | `POST /allowlist/<scope>/<domain>/extend` | `{"duration": "1h"}` | `extend` |
 | `POST /allowlist/<scope>/<domain>/make-permanent` | | `make-permanent` |
 | `PUT /allowlist/<scope>/<domain>/note` | `{"note"}` | `set-note` |
+| `DELETE /allowlist/<scope>/regex?regex=<pattern>` | | `disallow --regex`: the Regex entry with exactly this pattern (open tunnels it allowed are closed) |
+| `POST /allowlist/<scope>/regex/extend?regex=<pattern>` | `{"duration": "1h"}` | `extend --regex` |
+| `POST /allowlist/<scope>/regex/make-permanent?regex=<pattern>` | | `make-permanent --regex` |
+| `PUT /allowlist/<scope>/regex/note?regex=<pattern>` | `{"note"}` | `set-note --regex` |
+| `GET /regex/check?list=<list>&regex=<pattern>&host=<host>&scope=<vm\|all>` | `list`: `allowlist`, `watchlist`, `legitimate` or `harmless`; `host` and `scope` (`allowlist` only, default `all`) optional | `check-regex`: `{"list", "regex", "scope", "matches": {"<host>": bool}, "preview": null \| {"hosts": [{"host", "allowed", "blocked", "signals", "strong"}], "more", "watchlist_unreadable", "truncated", "log_unreadable"}}`: whether the pattern can be an entry of that list (else `400 invalid_pattern` or `400 pattern_too_broad`, as adding it would answer), whether `host` matches it, and for the Allowlist the preview: the hosts of the scope's proxy log of the last 7 days (`ALLOWED` and `BLOCKED` lines) it matches, how often each was allowed and blocked, its Signals and whether a strong one keeps it blocked; `more`: hosts beyond the 100 shown; `watchlist_unreadable`: why the Watchlist cannot be read (then the pattern allows nothing), else `null`; `truncated`: the log had more than the 200,000 lines read; `log_unreadable`: why the proxy log could not be read (`hosts` then empty), else `null`. Changes nothing |
+
+A Regex entry ([ADR 0013](adr/0013-regex-entries-in-every-list.md)) is a pattern in place of the
+domain, in every list: in a body `regex` instead of `domain`, in a path the segment `regex` with
+the pattern as the query parameter `regex` (percent-encoded; a domain is never the bare label
+`regex`). The pattern is taken verbatim, not lowercased. It matches the whole host name, no
+subdomains of its own accord; the rules it has to follow are in the ADR.
 
 ## Watchlist
 
@@ -312,13 +326,21 @@ temporary entries (Settings).
 | `GET /watchlist/harmless` | | `harmless`: `[{"domain", "regex", "refused"}]`, the Harmless marks: a domain, or the pattern of a Regex entry (the other `null`); `refused`: why the rules refuse a stored pattern, which then silences nothing until it is removed, else `null` |
 | `PUT /watchlist/harmless/<domain>` | | `mark-harmless` |
 | `DELETE /watchlist/harmless/<domain>` | | `unmark-harmless` |
+| `PUT /watchlist/harmless/regex?regex=<pattern>` | | `mark-harmless --regex`: a pattern the rules refuse is `400 invalid_pattern` or `400 pattern_too_broad` |
+| `DELETE /watchlist/harmless/regex?regex=<pattern>` | | `unmark-harmless --regex` |
 | `POST /watchlist/entries` | `{"domain", "category", "source"?, "note"?}` | `watch-add`: `201` with the entry; an existing entry is changed. `category`: `exfil`, `c2`, `tunnel`, `paste`, `phishing`, `blockchain` (strong) or `payload`. Lowering a strong entry to `payload`: `409 force_required`; adding one while `watchlist.json` is missing (it would recreate the Watchlist and open Open web again): `409 watchlist_recreate_force_required` |
-| `DELETE /watchlist/entries/<domain>` | | `watch-remove`: `{"domain", "removed"}`; an entry of a strong category: `409 force_required` |
+| `DELETE /watchlist/entries/<domain>` | | `watch-remove`: `{"domain", "regex", "removed"}`; an entry of a strong category: `409 force_required` |
 | `PUT /watchlist/entries/<domain>/note` | `{"note"}` | `watch-set-note` |
+| `POST /watchlist/entries` | `{"regex", "category", "source"?, "note"?}` | `watch-add --regex`: a Regex entry, as above; no breadth check here (a broad pattern only raises false Alerts), a pattern the other rules refuse is `400 invalid_pattern` |
+| `DELETE /watchlist/entries/regex?regex=<pattern>` | | `watch-remove --regex`: `{"domain", "regex", "removed"}`; one of a strong category: `409 force_required` |
+| `PUT /watchlist/entries/regex/note?regex=<pattern>` | `{"note"}` | `watch-set-note --regex` |
 | `GET /watchlist/legitimate` | | `legitimate`: `[{"domain", "regex", "note", "added", "added_by", "builtin", "refused"}]` (`domain`, or `regex` for a Regex entry, the other `null`; `refused`: why the rules refuse a stored pattern, which then lifts nothing until it is removed, else `null`), built-in ones with `added` and `added_by` `null` |
 | `POST /watchlist/legitimate` | `{"domain", "note"?}` | `legitimate-add`: `201`; a domain with strong Signals, or with threat-intelligence entries at or below it (also ones another Legitimate domain lifts now), or any new one while the threat-intelligence list has not been fetched: `409 force_required` |
-| `DELETE /watchlist/legitimate/<domain>` | | `legitimate-remove`: `{"domain", "removed"}`; built-in ones: `409 builtin_entry` |
+| `DELETE /watchlist/legitimate/<domain>` | | `legitimate-remove`: `{"domain", "regex", "removed"}`; built-in ones: `409 builtin_entry` |
 | `PUT /watchlist/legitimate/<domain>/note` | `{"note"}` | `legitimate-set-note` |
+| `POST /watchlist/legitimate` | `{"regex", "note"?}` | `legitimate-add --regex`: `201`; it lifts only weak Signals, so it is never `force_required`; a pattern the rules refuse is `400 invalid_pattern` or `400 pattern_too_broad` |
+| `DELETE /watchlist/legitimate/regex?regex=<pattern>` | | `legitimate-remove --regex`: `{"domain", "regex", "removed"}` |
+| `PUT /watchlist/legitimate/regex/note?regex=<pattern>` | `{"note"}` | `legitimate-set-note --regex` |
 
 Changes that would lift strong Signals need `--force`, which only the CLI on the Host passes
 ([ADR 0009](adr/0009-watchlist-and-legitimate-domains-live-on-the-host.md)).

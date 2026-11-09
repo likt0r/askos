@@ -90,6 +90,74 @@ describe('Allowlist view', () => {
     expect($('[data-testid="allowlist-add"]')).toBeNull()
   })
 
+  it('adds a Regex entry only after its preview and an explicit confirmation', async () => {
+    const pattern = '^mirror[0-9]+\\.vendor\\.example$'
+    const check = `GET /regex/check?list=allowlist&regex=${encodeURIComponent(pattern)}&scope=work`
+    const { api } = await openApp('/allowlist?vm=work', {
+      'GET /allowlist?vm=work': ok([]),
+      [check]: ok({
+        list: 'allowlist', regex: pattern, scope: 'work', matches: {},
+        preview: { hosts: [
+          { host: 'mirror1.vendor.example', allowed: 0, blocked: 3, signals: [], strong: false },
+          { host: 'mirror9.vendor.example', allowed: 0, blocked: 1, signals: ['lookalike'], strong: true },
+        ], more: 0, watchlist_unreadable: null, truncated: false, log_unreadable: null },
+      }),
+      'POST /allowlist': { status: 201, body: {} },
+    })
+    await click('[data-testid="allowlist-add-open"]')
+    await click('[data-testid="allowlist-add"] [data-testid="entry-kind"] [data-kind="regex"]')
+    expect($('[data-testid="add-domain"]')).toBeNull()
+    await type('[data-testid="add-regex"]', ` ${pattern} `)
+    const submit = () => must('[data-testid="add-submit"]') as HTMLButtonElement
+    expect(submit().disabled).toBe(true)
+
+    // the preview: what it would allow, and what stays blocked for its strong Signals
+    await click('[data-testid="allowlist-add"] [data-testid="regex-test"]')
+    expect(must('[data-testid="regex-result"]').textContent).toContain('It matches 2 hosts of the proxy log of the last 7 days:')
+    expect($$('[data-testid="regex-preview-host"]').map(h => [h.dataset.host, h.dataset.strong])).toEqual([
+      ['mirror1.vendor.example', 'false'], ['mirror9.vendor.example', 'true']])
+    expect(must('[data-testid="regex-preview-host"][data-host="mirror9.vendor.example"]').textContent).toContain('stays blocked: strong Signals')
+    expect(submit().disabled).toBe(true)
+    await click('[data-testid="add-confirm"]')
+    expect(submit().disabled).toBe(false)
+    // a changed pattern needs its own preview and confirmation
+    await type('[data-testid="add-regex"]', `${pattern}x`)
+    expect(submit().disabled).toBe(true)
+    expect($('[data-testid="regex-result"]')).toBeNull()
+    await type('[data-testid="add-regex"]', pattern)
+    await click('[data-testid="allowlist-add"] [data-testid="regex-test"]')
+    await click('[data-testid="add-confirm"]')
+    await click('[data-testid="add-submit"]')
+
+    expect(changes(api.calls)).toEqual([{ method: 'POST', path: '/allowlist', csrf: '1',
+      body: { scope: 'work', regex: pattern, duration: '1h', confirm: true } }])
+  })
+
+  it('shows a Regex entry verbatim, marked as one, and changes it by its pattern', async () => {
+    const pattern = '^mirror[0-9]+\\.vendor\\.example$'
+    const path = `/allowlist/all/regex/note?regex=${encodeURIComponent(pattern)}`
+    const { api } = await openApp('/allowlist', {
+      'GET /allowlist': ok([{ domain: null, regex: pattern, scope: 'all', expires: null, note: '', added_by: 'root', added: now() - 60, expired: false, remaining: null, uses_24h: 2 },
+        ...entries()]),
+      [`PUT ${path}`]: ok({}),
+      [`DELETE /allowlist/all/regex?regex=${encodeURIComponent(pattern)}`]: ok({}),
+    })
+    const r = must(`[data-testid="allowlist-entry"][data-regex="${pattern}"]`)
+    expect(r.querySelector('[data-testid="entry-regex"]')!.textContent).toContain('Regex')
+    expect(r.textContent).toContain(pattern)
+    expect(r.querySelector('[data-testid="entry-uses"]')!.textContent).toBe('used 2 times in 24 h')
+    await click(r.querySelector('[data-testid="entry-note-edit"]')!)
+    await type('[data-testid="note-input"]', 'mirrors')
+    await click('[data-testid="note-save"]')
+    await click(must(`[data-testid="allowlist-entry"][data-regex="${pattern}"]`).querySelector('[data-testid="entry-remove"]')!)
+    expect(document.body.textContent).toContain(`Remove ${pattern}?`)
+    await click('[data-testid="confirm-action"]')
+    expect(changes(api.calls)).toEqual([
+      { method: 'PUT', path, body: { note: 'mirrors' }, csrf: '1' },
+      { method: 'DELETE', path: `/allowlist/all/regex?regex=${encodeURIComponent(pattern)}`, body: undefined, csrf: '1' },
+    ])
+  })
+
   it('refuses a destination with strong Signals and says why and that only the CLI can force it', async () => {
     const { api } = await openApp('/allowlist', {
       'GET /allowlist': ok([]),

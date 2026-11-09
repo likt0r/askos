@@ -119,6 +119,7 @@ export default {
     },
     // parts of the sentences above
     parts: {
+      pattern: 'pattern {pattern}',
       allVms: '{domain} for all VMs',
       for: 'for {duration}',
       by: 'by {duration}',

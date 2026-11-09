@@ -119,6 +119,7 @@ export default {
     },
     // Teile der Sätze oben
     parts: {
+      pattern: 'Regex {pattern}',
       allVms: '{domain} für alle VMs',
       for: 'für {duration}',
       by: 'um {duration}',

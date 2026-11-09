@@ -1,10 +1,11 @@
 <script setup lang="ts">
-// The hand-maintained Watchlist on the Host: add an entry (domain, category, source, note),
-// change its note, remove it (asks first). Entries of a strong category can only be removed
+// The hand-maintained Watchlist on the Host: add an entry (domain or pattern, category, source,
+// note), change its note, remove it (asks first). A pattern (a Regex entry, ADR 0013) is marked
+// and shown verbatim, and can be tested against a host first; a broad one is fine here. Entries of a strong category can only be removed
 // or weakened on the Host with --force (ADR 0009); their row shows the command instead.
 // While the list cannot be read (`unreadable`, the reason from the Host) the proxy keeps Open
 // web closed: the alert says so. The Feeds still show (Feeds.vue).
-import type { Watchlist, WatchlistEntry } from '~/utils/access'
+import type { RegexCheck, Target, Watchlist, WatchlistEntry } from '~/utils/access'
 import { WATCHLIST_CATEGORIES } from '~/utils/access'
 
 const props = defineProps<{ watchlist: Watchlist | null, error?: unknown }>()
@@ -20,7 +21,7 @@ const entries = computed(() => {
   const q = filter.value.trim().toLowerCase()
   const all = props.watchlist?.entries ?? []
   return q
-    ? all.filter(e => e.domain.includes(q) || e.category.includes(q) || e.source.toLowerCase().includes(q) || e.note.toLowerCase().includes(q))
+    ? all.filter(e => entryValue(e).toLowerCase().includes(q) || e.category.includes(q) || e.source.toLowerCase().includes(q) || e.note.toLowerCase().includes(q))
     : all
 })
 const visible = computed(() => (showAll.value || filter.value ? entries.value : entries.value.slice(0, 12)))
@@ -31,16 +32,21 @@ function category(c: string) {
 const categories = computed(() => WATCHLIST_CATEGORIES.map(c => ({ label: category(c), value: c })))
 
 // adding
+const kind = ref<'domain' | 'regex'>('domain')
 const domainInput = ref('')
+const patternInput = ref('')
+const checked = ref<RegexCheck | null>(null)
 const newCategory = ref<string>('exfil')
 const source = ref('')
 const note = ref('')
 const adding = ref(false)
 const addError = ref<unknown>(null)
 const domain = computed(() => normalizeDomain(domainInput.value))
-const canAdd = computed(() => looksLikeDomain(domain.value) && source.value.length <= 200 && note.value.length <= 200)
+const pattern = computed(() => patternInput.value.trim())
+const canAdd = computed(() => (kind.value === 'regex' ? looksLikePattern(pattern.value) : looksLikeDomain(domain.value))
+  && source.value.length <= 200 && note.value.length <= 200)
 // an existing strong entry lowered to payload, or a missing Watchlist created again: only the CLI may do that
-const lowering = ref<string | null>(null)
+const lowering = ref<Target | null>(null)
 // which of the two: the Watchlist would be created again (its own code, never the wording)
 const recreating = ref(false)
 
@@ -50,21 +56,22 @@ async function add() {
   addError.value = null
   lowering.value = null
   recreating.value = false
-  const d = domain.value
+  const entry: Target = kind.value === 'regex' ? { domain: null, regex: pattern.value } : { domain: domain.value, regex: null }
   try {
     await api('/watchlist/entries', {
       method: 'POST',
-      body: { domain: d, category: newCategory.value, ...(source.value.trim() ? { source: source.value.trim() } : {}), ...(note.value.trim() ? { note: note.value.trim() } : {}) },
+      body: { ...(entry.regex != null ? { regex: entry.regex } : { domain: entry.domain }), category: newCategory.value, ...(source.value.trim() ? { source: source.value.trim() } : {}), ...(note.value.trim() ? { note: note.value.trim() } : {}) },
     })
-    toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t('watchlist.hand.added', { domain: d, category: category(newCategory.value) }) })
+    toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t('watchlist.hand.added', { domain: entryValue(entry), category: category(newCategory.value) }) })
     domainInput.value = ''
+    patternInput.value = ''
     source.value = ''
     note.value = ''
     emit('changed')
   }
   catch (e) {
     if (e instanceof ApiError && (e.code === 'force_required' || e.code === 'watchlist_recreate_force_required')) {
-      lowering.value = d
+      lowering.value = entry
       recreating.value = e.code === 'watchlist_recreate_force_required'
     }
     addError.value = e
@@ -113,17 +120,20 @@ async function run(request: () => Promise<unknown>, done: string) {
   }
 }
 
-const entryPath = (d: string) => `/watchlist/entries/${encodeURIComponent(d)}`
+const path = (e: Target, action = '') => entryPath('/watchlist/entries', e, action)
+/** what the commands shown for the Host take for an entry */
+const cli = (e: Target | null) => (e ? cliTarget(e) : '')
+const targetValue = computed(() => (target.value ? entryValue(target.value) : ''))
 
 function saveNote() {
   const e = target.value!
-  void run(() => api(`${entryPath(e.domain)}/note`, { method: 'PUT', body: { note: noteText.value.trim() } }),
-    t('watchlist.hand.noteSaved', { domain: e.domain }))
+  void run(() => api(path(e, 'note'), { method: 'PUT', body: { note: noteText.value.trim() } }),
+    t('watchlist.hand.noteSaved', { domain: entryValue(e) }))
 }
 
 function remove() {
   const e = target.value!
-  void run(() => api(entryPath(e.domain), { method: 'DELETE' }), t('watchlist.hand.removed', { domain: e.domain }))
+  void run(() => api(path(e), { method: 'DELETE' }), t('watchlist.hand.removed', { domain: entryValue(e) }))
 }
 </script>
 
@@ -144,11 +154,14 @@ function remove() {
     <UAlert v-if="props.watchlist?.unreadable" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="t('errors.watchlist_unreadable')" :description="props.watchlist.unreadable" role="alert" data-testid="hand-list-unreadable" />
 
     <form class="grid gap-2 rounded-lg border border-default p-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,1.2fr)_minmax(0,2fr)_minmax(0,2fr)_auto]" novalidate data-testid="watch-add" @submit.prevent="add">
-      <UInput v-model="domainInput" placeholder="exfil.example" autocomplete="off" spellcheck="false" class="font-mono" :aria-label="t('watchlist.hand.domain')" data-testid="watch-add-domain" />
+      <AccessEntryKind v-model="kind" size="xs" class="sm:col-span-5" />
+      <UInput v-if="kind === 'domain'" v-model="domainInput" placeholder="exfil.example" autocomplete="off" spellcheck="false" class="font-mono" :aria-label="t('watchlist.hand.domain')" data-testid="watch-add-domain" />
+      <UInput v-else v-model="patternInput" placeholder="^npm-[a-z]+\.(com|net)$" autocomplete="off" spellcheck="false" class="font-mono" :aria-label="t('regex.pattern')" data-testid="watch-add-regex" />
       <USelect v-model="newCategory" :items="categories" :aria-label="t('watchlist.hand.category')" data-testid="watch-add-category" />
       <UInput v-model="source" :placeholder="t('watchlist.hand.sourcePlaceholder')" :aria-label="t('watchlist.hand.source')" data-testid="watch-add-source" />
       <UInput v-model="note" :placeholder="`${t('watchlist.hand.note')} (${t('watchlist.hand.optional')})`" :aria-label="t('watchlist.hand.note')" data-testid="watch-add-note" />
       <UButton type="submit" icon="i-lucide-plus" :label="t('watchlist.hand.add')" :loading="adding" :disabled="!canAdd" data-testid="watch-add-submit" />
+      <AccessRegexCheck v-if="kind === 'regex'" v-model:checked="checked" list="watchlist" :pattern="patternInput" class="sm:col-span-5" />
     </form>
     <p v-if="source.length > 200 || note.length > 200" class="text-sm text-error">
       {{ t('watchlist.hand.tooLong') }}
@@ -156,13 +169,18 @@ function remove() {
     <UAlert v-if="addError" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="recreating ? t('watchlist.hand.recreateTitle') : errorText(addError)" role="alert" data-testid="watch-add-error">
       <template v-if="lowering" #description>
         {{ recreating ? t('watchlist.hand.onlyCliRecreate') : t('watchlist.hand.onlyCli') }}
-        <code class="mt-1 block break-all font-mono text-xs">sudo agentbox watch-add {{ lowering }} --category {{ newCategory }} --force</code>
+        <code class="mt-1 block break-all font-mono text-xs">sudo agentbox watch-add {{ cli(lowering) }} --category {{ newCategory }} --force</code>
       </template>
     </UAlert>
 
     <ul v-if="visible.length" class="divide-y divide-default rounded-lg border border-default bg-default" data-testid="hand-watchlist">
-      <li v-for="e in visible" :key="e.domain" class="flex flex-col gap-1 px-4 py-2 sm:flex-row sm:items-start sm:gap-3" data-testid="watchlist-entry" :data-domain="e.domain">
-        <span class="break-all font-mono text-sm text-highlighted sm:w-56 sm:shrink-0">{{ e.domain }}</span>
+      <li v-for="e in visible" :key="e.regex != null ? `regex:${e.regex}` : e.domain!" class="flex flex-col gap-1 px-4 py-2 sm:flex-row sm:items-start sm:gap-3" data-testid="watchlist-entry" :data-domain="e.domain ?? undefined" :data-regex="e.regex ?? undefined">
+        <span class="flex flex-wrap items-center gap-1 sm:w-56 sm:shrink-0">
+          <UTooltip v-if="e.regex != null" :text="t('regex.badgeHint')">
+            <UBadge color="warning" variant="outline" size="sm" icon="i-lucide-regex" :label="t('regex.badge')" data-testid="entry-regex" />
+          </UTooltip>
+          <span class="break-all font-mono text-sm text-highlighted">{{ entryValue(e) }}</span>
+        </span>
         <span class="flex flex-wrap gap-1 sm:w-48 sm:shrink-0">
           <UBadge :color="e.strong ? 'error' : 'warning'" variant="subtle" size="sm" :label="category(e.category)" />
           <UBadge v-if="!e.strong" color="neutral" variant="outline" size="sm" :label="t('watchlist.hand.weak')" />
@@ -191,7 +209,7 @@ function remove() {
             variant="ghost"
             size="sm"
             icon="i-lucide-trash-2"
-            :aria-label="t('watchlist.hand.removeOne', { domain: e.domain })"
+            :aria-label="t('watchlist.hand.removeOne', { domain: entryValue(e) })"
             data-testid="watch-remove"
             @click="openDialog('remove', e)"
           />
@@ -210,7 +228,7 @@ function remove() {
       @click="showAll = !showAll"
     />
 
-    <UModal v-model:open="noteOpen" :title="t('watchlist.hand.noteTitle', { domain: target?.domain })">
+    <UModal v-model:open="noteOpen" :title="t('watchlist.hand.noteTitle', { domain: targetValue })">
       <template #body>
         <form class="space-y-3" @submit.prevent="saveNote">
           <UInput v-model="noteText" class="w-full" autofocus data-testid="watch-note-input" />
@@ -229,18 +247,18 @@ function remove() {
     </UModal>
 
     <!-- a strong entry: only the command for the Host, nothing to confirm -->
-    <UModal v-if="target?.strong" v-model:open="removeOpen" :title="t('watchlist.hand.removeTitle', { domain: target.domain })">
+    <UModal v-if="target?.strong" v-model:open="removeOpen" :title="t('watchlist.hand.removeTitle', { domain: targetValue })">
       <template #body>
         <div class="space-y-2 text-sm" data-testid="watch-remove-cli">
           <p>{{ t('watchlist.hand.onlyCli') }}</p>
-          <code class="block break-all rounded bg-elevated p-2 font-mono text-xs">sudo agentbox watch-remove {{ target.domain }} --force</code>
+          <code class="block break-all rounded bg-elevated p-2 font-mono text-xs">sudo agentbox watch-remove {{ cli(target) }} --force</code>
         </div>
       </template>
     </UModal>
     <AccessConfirmDialog
       v-else
       v-model:open="removeOpen"
-      :title="t('watchlist.hand.removeTitle', { domain: target?.domain })"
+      :title="t('watchlist.hand.removeTitle', { domain: targetValue })"
       :description="t('watchlist.hand.removeText')"
       :confirm-label="t('watchlist.hand.remove')"
       :busy="busy"
