@@ -170,6 +170,13 @@ BREADTH_SAMPLE = (
     "iii.ch", "jjj.se", "kkk.no", "nnn.at", "ppp.br", "rrr.in", "sss.com.au", "ttt.tv", "uuu.cc",
     "vvv.io", "www.qx7-vendor.com", "ab.cd.ef.gh.ij.example.org", "xn--80ak6aa92e.com",
     "s0me-very-long-label-made-up-for-the-breadth-check-of-patterns.net", "192.0.2.1", "1.1.1.1",
+    # long and many-label names, as data sent out in DNS-shaped hosts looks: a pattern that
+    # only asks for length or for many labels (^[a-z0-9.-]{80,}$) is no narrow one
+    "q" * 63 + ".net", ("7f3a9c0e1b5d4f2a8c6e0b9d7f1a3c5e" * 2)[:63] + ".io",
+    ".".join(["a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b"] * 3 + ["x9-y8-z7"]) + ".com",
+    ".".join(["b" * 63] * 3 + ["c" * 57]) + ".net", ".".join(["mx"] * 83) + ".com",
+    "a.b.c.d.e.f.g.h.i.j.k.l.example.net", "1.2.3.4.5.6.7.8.org",
+    "data-0.data-1.data-2.data-3.data-4.data-5.data-6.cdn.example.com",
 )
 # characters a host can have when a pattern is tried on it (PATTERN_HOST, lowercased)
 _HOST_CHARS = frozenset(chr(c) for c in range(0x21, 0x7f)) - frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ")

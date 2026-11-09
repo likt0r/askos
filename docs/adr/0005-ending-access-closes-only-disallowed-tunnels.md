@@ -7,3 +7,5 @@ The proxy checks a destination when a tunnel opens; until now tunnels then ran w
 - **A Temporary allowlist entry expires:** running tunnels continue; new ones are refused.
 
 Tunnels to allowed destinations are never closed by the proxy, and there are no idle or lifetime timeouts.
+
+_Amended by [ADR 0013](0013-regex-entries-in-every-list.md) (2026-11-09):_ a regex Allowlist entry counts as an entry here: removing it closes the tunnels it allowed that nothing else allows, and when a temporary one expires its tunnels keep running.

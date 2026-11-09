@@ -87,6 +87,23 @@ class RulesTest(unittest.TestCase):
                 # the Watchlist does without the breadth check: there it only raises false Alerts
                 self.assertIsNone(self.reason(pattern, broad=False))
 
+    def test_length_or_many_labels_alone_are_too_broad(self):
+        # data sent out in DNS-shaped names is long, or has many labels: a pattern that asks for
+        # nothing else matches hosts of the sample that are like that
+        for pattern in (r"^[a-z0-9.-]{80,}$", r"^[a-z0-9]{40,63}\.[a-z]+$",
+                        r"^[a-z]\.[a-z]\.[a-z]\.[a-z]\.[a-z]\.[a-z]\.[a-z0-9.-]+$"):
+            with self.subTest(pattern=pattern):
+                self.assertEqual(self.reason(pattern), "too-broad")
+        # with a repeated group it does not even get there
+        self.assertEqual(self.reason(r"^([a-z0-9-]+\.){6,}[a-z]+$"), "nested-quantifier")
+        # every host of the sample is one a pattern is tried on, and a tight pattern still passes
+        self.assertTrue(all(RULES.PATTERN_HOST.fullmatch(h) and all(len(label) <= 63 for label in h.split("."))
+                            for h in RULES.BREADTH_SAMPLE))
+        self.assertEqual(max(len(h) for h in RULES.BREADTH_SAMPLE), 253)
+        for pattern in (MIRRORS, r"^[a-z0-9-]{1,63}\.s3\.[a-z0-9-]+\.example\.com$", r"^npm-[a-z]+\.(com|net)$"):
+            with self.subTest(pattern=pattern):
+                self.assertIsNone(RULES.pattern_problem(pattern))
+
     def test_each_rule(self):
         cases = {
             "x" * 201: "too-long",
