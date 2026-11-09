@@ -107,8 +107,12 @@ The set of domains VMs may reach through the proxy.
 _Avoid_: whitelist, base list
 
 **Allowlist entry**:
-One domain on the Allowlist, including its subdomains, valid either for all VMs or for one VM (its scope), with a note and who added it when (German UI: Freigabe).
+One domain or pattern on the Allowlist (a domain including its subdomains), valid either for all VMs or for one VM (its scope), with a note and who added it when (German UI: Freigabe).
 _Avoid_: exception, rule, base list entry
+
+**Regex entry**:
+An entry of the Allowlist, the Watchlist, the Legitimate domains or the Harmless marks whose value is a regular expression instead of a domain, matched against the whole host name (no subdomains of its own accord). On the Allowlist it never allows a destination with strong Signals, checked on every connection, and adding it shows what it would allow and needs a confirmation; as a Legitimate domain it lifts only weak Signals (German UI: Regex-Eintrag).
+_Avoid_: wildcard, glob, pattern rule
 
 **Temporary allowlist entry**:
 An Allowlist entry with an expiry time (15 minutes, 1 hour, 8 hours or 7 days, extendable), after which it allows no new connections and disappears on its own; connections already open keep running (German UI: vorübergehende Freigabe).

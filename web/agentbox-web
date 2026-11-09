@@ -763,7 +763,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     # die eigenen Freigaben der VM als Domains (die bisherige Oberflaeche);
                     # alles mit Geltungsbereich und Ablauf: GET /api/allowlist?vm=<vm>
                     entries = agentbox_json("allowlist", ctx, "--json")
-                    return self.send_json(200, [e["domain"] for e in entries if e.get("scope") == ctx])
+                    return self.send_json(200, [e["domain"] for e in entries
+                                                if e.get("scope") == ctx and e.get("domain")])
                 if what == "owners":
                     ok, out = agentbox("owners", ctx, timeout=30)
                     return self.send_json(200, [l for l in out.splitlines() if l.strip()] if ok else [])
@@ -1491,6 +1492,8 @@ AGENTBOX_ERRORS = {
     "watchlist_unreadable": (409, "The Watchlist on the Host cannot be read; Open web stays closed until "
                                   "it is fixed there"),
     "invalid_domain": (400, "Invalid domain"),
+    "invalid_pattern": (400, "This pattern cannot be a Regex entry"),
+    "pattern_too_broad": (400, "This pattern is too broad: it matches unrelated hosts"),
     "invalid_minutes": (400, "Minutes out of range (Settings: longest Open web)"),
     "invalid_note": (400, "Invalid note (one line of printable characters)"),
     "invalid_duration": (400, "Invalid duration"),

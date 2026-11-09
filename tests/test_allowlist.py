@@ -517,7 +517,8 @@ class AllowTest(CliTest):
         result = self.json("allow", "all", "example.org", "--for=8h", "--note", " Doku ")
         self.assertAlmostEqual(result.pop("added"), time.time(), delta=60)
         expires = result.pop("expires")
-        self.assertEqual(result, {"domain": "example.org", "scope": "all", "note": "Doku", "added_by": result["added_by"],
+        self.assertEqual(result, {"domain": "example.org", "regex": None, "scope": "all", "note": "Doku",
+                                  "added_by": result["added_by"],
                                   "message": f"all VMs: example.org allowed until {self.until(expires)}"})
 
     def test_an_existing_entry_is_widened_never_shortened(self):
@@ -599,7 +600,7 @@ class DisallowTest(CliTest):
         self.assertEqual([(e["domain"], e["scope"]) for e in self.stored()],
                          [("example.org", "all"), ("pypi.org", "work")])
         self.assertEqual(self.json("disallow", "all", "example.org"),
-                         {"scope": "all", "domain": "example.org", "removed": True,
+                         {"scope": "all", "domain": "example.org", "regex": None, "removed": True,
                           "message": "all VMs: example.org removed"})
         self.assertEqual([e["domain"] for e in self.stored()], ["pypi.org"])
 
@@ -718,8 +719,8 @@ class ListTest(CliTest):
                          [("github.com", "all"), ("docs.rs", "priv"), ("old.example", "work"), ("pypi.org", "work")])
         docs = rows[1]
         self.assertAlmostEqual(docs.pop("remaining"), 3600, delta=60)
-        self.assertEqual(docs, {**entry("docs.rs", "priv", expires=self.now + 3600, note="Rust"), "expired": False,
-                                "uses_24h": 1})
+        self.assertEqual(docs, {**entry("docs.rs", "priv", expires=self.now + 3600, note="Rust"), "regex": None,
+                                "expired": False, "uses_24h": 1})
         self.assertEqual((rows[0]["uses_24h"], rows[0]["remaining"], rows[0]["expired"]), (2, None, False))
         self.assertEqual((rows[2]["expired"], rows[2]["remaining"], rows[2]["uses_24h"]), (True, 0, 0))
         self.assertEqual(rows[3]["uses_24h"], 1)

@@ -69,7 +69,7 @@ SOCKETS = (f"{JOURNAL_RUN}/socket", paths.host("/run/systemd/journal/socket"))
 # Commands that change nothing are not recorded; every other command is, so a
 # new command is recorded unless it is listed here. (watch writes only bookkeeping,
 # the wakes files, and records its own entries, responding.py.)
-READ_ONLY = {"status", "logs", "blocked", "alerts", "allowlist", "owners", "activity", "check-domain",
+READ_ONLY = {"status", "logs", "blocked", "alerts", "allowlist", "owners", "activity", "check-domain", "check-regex",
              "watchlist", "legitimate", "harmless", "pairings", "settings", "github-app", "github-tokens", "images", "build-log",
              "containerfile", "describe", "watch", "version"}
 # Commands that record their own entries (one per VM or entry) instead of one for the call;
@@ -269,7 +269,7 @@ def _arg(args, i):
 
 
 # Allowlist and list commands: options that take a value, and the durations of --for
-_VALUED = ("--for", "--note", "--category", "--source")
+_VALUED = ("--for", "--note", "--category", "--source", "--regex")
 _DURATIONS = {"15min": "15 minutes", "1h": "1 hour", "8h": "8 hours", "7d": "7 days"}
 # The Watchlist's categories, as the classifier's CATEGORIES (tests/test_lists.py checks
 # that): a description names only one of these, never what a request passed as --category.
@@ -324,16 +324,26 @@ def _forced(a, text, params):
     return (f"{text} with --force", {**params, "force": True}) if "--force" in a else (text, params)
 
 
+def _entry(a, p, i):
+    """The entry a list command names: (its text, its parameter), the domain at position i, or
+    the pattern of --regex (a Regex entry, ADR 0013)."""
+    pattern = _opt(a, "--regex")
+    if pattern is not None:
+        return f"pattern {pattern}", {"regex": pattern}
+    return _arg(p, i), {"domain": _arg(p, i)}
+
+
 def _listed(what, duration=None, temporary=False, force=False):
     """Description of an Allowlist command `<vm|all> <domain>`: `what` with the domain (and
     "for all VMs"), then the duration of --for after `duration` ("for", "by") or "temporarily"
-    (--temporary), and --force where the command takes it. Parameters: domain, scope (a VM or
-    all), duration (15min, 1h, 8h, 7d), the flags temporary and force."""
+    (--temporary), and --force where the command takes it. Parameters: domain, or regex for a
+    Regex entry (--regex), scope (a VM or all), duration (15min, 1h, 8h, 7d), the flags
+    temporary and force."""
     def describe(a):
         p = _positional(a)
-        scope, domain = _arg(p, 0), _arg(p, 1)
-        text = what.format(domain + (" for all VMs" if scope == "all" else ""))
-        params = {"domain": domain, "scope": "all" if scope == "all" else _name(scope)}
+        scope, (shown, given) = _arg(p, 0), _entry(a, p, 1)
+        text = what.format(shown + (" for all VMs" if scope == "all" else ""))
+        params = {**given, "scope": "all" if scope == "all" else _name(scope)}
         d = _opt(a, "--for")
         if duration and d in _DURATIONS:
             text, params["duration"] = f"{text} {duration} {_DURATIONS[d]}", d
@@ -345,19 +355,19 @@ def _listed(what, duration=None, temporary=False, force=False):
 
 def _domain(what, force=False):
     """Description of a command `<domain>` (Watchlist, Legitimate domains, Harmless marks):
-    `what` with the domain, and --force where the command takes it."""
+    `what` with the domain (or the pattern of --regex), and --force where the command takes it."""
     def describe(a):
-        domain = _arg(_positional(a), 0)
-        text, params = what.format(domain), {"domain": domain}
+        shown, params = _entry(a, _positional(a), 0)
+        text = what.format(shown)
         return _forced(a, text, params) if force else (text, params)
     return describe
 
 
 def _watch_add(a):
-    domain, category = _arg(_positional(a), 0), _opt(a, "--category")
+    (shown, given), category = _entry(a, _positional(a), 0), _opt(a, "--category")
     category = category if category in WATCH_CATEGORIES else None
-    return _forced(a, f"Watchlist: add {domain}" + (f" ({category})" if category else ""),
-                   {"domain": domain, "category": category})
+    return _forced(a, f"Watchlist: add {shown}" + (f" ({category})" if category else ""),
+                   {**given, "category": category})
 
 
 def _mark_seen(a):

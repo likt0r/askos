@@ -135,6 +135,8 @@ export default {
     invalid_category: 'Diese Kategorie ist nicht erlaubt.',
     invalid_source: 'Diese Quelle ist nicht erlaubt.',
     invalid_domain: 'Das ist keine gültige Domain.',
+    invalid_pattern: 'Dieses Muster kann kein Regex-Eintrag sein: ein regulärer Ausdruck mit höchstens 200 Zeichen, ohne Leerzeichen, Großbuchstaben, Rückverweise, Lookarounds oder verschachtelte Quantoren.',
+    pattern_too_broad: 'Dieses Muster ist zu breit: es passt auf fremde Hosts wie verbreitete öffentliche Domains.',
     invalid_minutes: 'Das ist keine gültige Anzahl Minuten.',
     invalid_note: 'Diese Notiz ist nicht erlaubt.',
     invalid_duration: 'Das ist keine gültige Dauer.',

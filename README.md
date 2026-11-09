@@ -194,6 +194,8 @@ agentbox set-memory lab 32768       # memory limit in MiB, from the VM's next st
 agentbox blocked priv               # what a VM tried to reach and was refused
 agentbox allow priv docs.rs         # add an Allowlist entry for one VM
 agentbox allow all crates.io --for 8h --note "Rust crates"   # for all VMs, for 8 hours
+agentbox allow priv --regex '^mirror[0-9]+\.vendor\.example$'  # a Regex entry: shows what it would allow
+agentbox allow priv --regex '^mirror[0-9]+\.vendor\.example$' --confirm-pattern   # ... and adds it
 agentbox allowlist priv             # what applies to a VM: remaining time, uses in 24 h, note
 agentbox extend priv docs.rs --for 1h   # a temporary entry runs an hour longer
 agentbox disallow priv docs.rs      # remove it; open tunnels to it are closed
@@ -204,6 +206,8 @@ agentbox check-domain example.com   # a domain's Signals and why
 agentbox watchlist                  # the hand-maintained Watchlist and the Feeds' state
 agentbox watch-add drop.example --category exfil --source "incident 11/2026"   # a new Watchlist entry
 agentbox watch-remove drop.example --force   # remove one (strong categories only with --force)
+agentbox watch-add --regex '^npm-[a-z]+\.(com|net)$' --category phishing   # a family of lookalikes
+agentbox check-regex harmless --regex '^ci[0-9]+\.example$' ci7.example   # can it be an entry, does it match
 agentbox legitimate                 # the Legitimate domains, the Host's and the built-in ones
 agentbox legitimate-add pnpm.io --note "pnpm registry"   # no pattern Signals or Feed hits for it
 agentbox mark-harmless foo.example  # a false positive: no more Alerts (blocking stays)
@@ -243,6 +247,19 @@ expiry, `set-note` changes the note, `disallow` removes it. Destinations with st
 need `--force` for `allow`, `extend` and `make-permanent`; the Control Room never passes it.
 While the Watchlist cannot be read, every destination needs it: which Signals are strong is
 unknown then.
+An entry can also be a pattern, a **Regex entry**: `--regex PATTERN` in place of the domain,
+in every command of the four lists (Allowlist, Watchlist, Legitimate domains, Harmless marks),
+also to remove or change it ([ADR 0013](docs/adr/0013-regex-entries-in-every-list.md)). It
+matches the whole host name (`re.fullmatch`, lowercase), not subdomains of its own accord. A
+pattern has at most 200 printable ASCII characters without spaces and no uppercase letters,
+backreferences, lookarounds or quantifiers inside a repeated group, and must match none of a
+fixed sample of unrelated hosts (`.*\.com` is refused; on the Watchlist it is fine, a broad
+pattern there only raises false Alerts). A regex Allowlist entry never allows a destination
+with strong Signals, which the proxy checks on every connection (so `--force` does not apply),
+and nothing while the Watchlist cannot be read. `allow --regex` first lists the hosts of the
+scope's proxy log of the last 7 days the pattern would allow and adds it only with
+`--confirm-pattern`; `agentbox check-regex` tells whether a pattern can be an entry of a list
+and which hosts it matches. A regex Legitimate domain lifts only weak Signals.
 When a temporary entry expires, new connections are refused but tunnels already open keep
 running; a timer removes expired entries every minute and records each in Activity
 (`agentbox-allowlist-expire.timer`). Removing an entry, or the end of Open web, closes the

@@ -182,7 +182,7 @@ class WatchlistTest(CliTest):
         self.ok("watch-add", "exfil.example", "--category", "payload", "--force")
         self.assertEqual(self.check("exfil.example")["strong"], False)
         self.assertEqual(self.json("watch-remove", "exfil.example"),
-                         {"domain": "exfil.example", "removed": True,
+                         {"domain": "exfil.example", "regex": None, "removed": True,
                           "message": "exfil.example removed from the Watchlist"})
         self.assertEqual(self.stored("watchlist.json"), [])
         self.assertEqual(self.check("exfil.example")["signals"], [])
@@ -191,7 +191,7 @@ class WatchlistTest(CliTest):
         self.ok("watch-remove", "exfil.example", "--force")
         self.forget_activity()
         self.assertEqual(self.json("watch-remove", "exfil.example"),
-                         {"domain": "exfil.example", "removed": False,
+                         {"domain": "exfil.example", "regex": None, "removed": False,
                           "message": "exfil.example is not on the Watchlist"})
         self.assertEqual(self.activity(), [])
         self.assertEqual(self.refused("watch-set-note", "other.example", "--note", "x"),
@@ -359,9 +359,10 @@ class LegitimateTest(CliTest):
 
     def test_listing_marks_the_built_in_domains(self):
         rows = self.json("legitimate")
-        self.assertIn({"domain": "registry.example", "note": "Paketquelle", "added": 1793700000, "added_by": "bewr",
-                       "builtin": False}, rows)
-        self.assertIn({"domain": "github.com", "note": "", "added": None, "added_by": None, "builtin": True}, rows)
+        self.assertIn({"domain": "registry.example", "regex": None, "note": "Paketquelle", "added": 1793700000,
+                       "added_by": "bewr", "builtin": False}, rows)
+        self.assertIn({"domain": "github.com", "regex": None, "note": "", "added": None, "added_by": None,
+                       "builtin": True}, rows)
         self.assertEqual([r["domain"] for r in rows], sorted(r["domain"] for r in rows))
         text = self.ok("legitimate").splitlines()
         self.assertIn("github.com                       built-in", text)
@@ -476,7 +477,8 @@ class LegitimateTest(CliTest):
         self.assertEqual(self.refused("legitimate-set-note", "github.com", "--note", "x"),
                          "github.com is built in and stays legitimate")
         self.assertEqual(self.json("legitimate-add", "github.com"),
-                         {"domain": "github.com", "builtin": True, "message": "github.com is built in and legitimate already"})
+                         {"domain": "github.com", "regex": None, "builtin": True,
+                          "message": "github.com is built in and legitimate already"})
         self.assertEqual(self.activity(), [("legitimate-remove", "failed",
                                             "Remove the Legitimate domain github.com: github.com is built in and "
                                             "stays legitimate"),
@@ -493,7 +495,7 @@ class LegitimateTest(CliTest):
         self.assertEqual(self.stored("legitimate.json"), [])
         self.forget_activity()
         self.assertEqual(self.json("legitimate-remove", "registry.example"),
-                         {"domain": "registry.example", "removed": False,
+                         {"domain": "registry.example", "regex": None, "removed": False,
                           "message": "registry.example is not an added Legitimate domain"})
         self.assertEqual(self.activity(), [])
 

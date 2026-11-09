@@ -135,6 +135,8 @@ export default {
     invalid_category: 'That category is not allowed.',
     invalid_source: 'That source is not allowed.',
     invalid_domain: 'That is not a valid domain.',
+    invalid_pattern: 'This pattern cannot be a Regex entry: a regular expression of at most 200 characters, without spaces, uppercase letters, backreferences, lookarounds or nested quantifiers.',
+    pattern_too_broad: 'This pattern is too broad: it matches unrelated hosts such as common public domains.',
     invalid_minutes: 'That is not a valid number of minutes.',
     invalid_note: 'That note is not allowed.',
     invalid_duration: 'That is not a valid duration.',
