@@ -407,16 +407,32 @@ it again.
 
 Agents run containers with the agent's rootless Podman. `docker` is Podman under that name
 (`podman-docker`), so `docker run` and `docker build` are `podman run` and `podman build`.
-`podman compose` and `docker compose` both run the Docker Compose CLI plugin, which talks to
-the agent's Podman socket through the Docker API (`DOCKER_HOST`, set for services and
-shells). Containers, and the containers that run a Dockerfile's `RUN` lines, have no DNS
-and no route out, the same as the rest of the VM, so they get the Host's proxy. Podman gives
-every container the proxy variables and the VM's `/etc/hosts`, which has `host.agentbox`
-(`/etc/containers/containers.conf.d/50-agentbox.conf`), and gives `podman build` the proxy
-for its `RUN` lines. Compose builds through the Docker API, where Podman passes no proxy of
-its own. They get it as build arguments from the agent's `~/.docker/config.json`, which the
-VM writes at every start. The Allowlist applies as to everything else, and a tool that
-ignores the proxy variables gets nowhere.
+`podman compose` and `docker compose` both run
+[podman-compose](https://github.com/containers/podman-compose), which builds with `podman
+build` and starts containers with `podman run`. It may not support every feature of Docker
+Compose. Tools that use the Docker API reach the agent's Podman socket through `DOCKER_HOST`,
+which is set for services and shells. Containers have no DNS and no route out, the same as
+the rest of the VM.
+
+Builds get the Host's proxy: Podman passes it into a Dockerfile's `RUN` lines, and the
+VM's `/etc/hosts`, which has `host.agentbox`, comes along
+(`/etc/containers/containers.conf.d/50-agentbox.conf`). Running containers do not get the
+proxy, by the owner's decision: compose services call each other by name over HTTP
+(`http://api:8080`), and a proxy in every container would send those calls to the Host,
+where they fail. No general `NO_PROXY` can list every service name. A service that needs the
+internet gets the proxy by hand in its compose file, with its fellow services' names in
+`NO_PROXY`:
+
+```yaml
+services:
+  worker:
+    environment:
+      HTTPS_PROXY: http://host.agentbox:3128
+      NO_PROXY: localhost,127.0.0.1,api,db
+```
+
+The Allowlist applies as to everything else, and a tool that ignores the proxy variables
+gets nowhere.
 
 The proxy lets only HTTPS through, so a Dockerfile must fetch packages over HTTPS from
 allowlisted mirrors. Plain HTTP gets `405 Method Not Allowed`, which hits Debian's and

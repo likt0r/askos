@@ -10,13 +10,13 @@ FROM quay.io/fedora/fedora-bootc:44
 # Orca-Binary (Electron) braucht seine GUI-Bibliotheken auch im Node-Modus.
 # nodejs-full-i18n: Nodes ICU-Daten (sonst nur eine schwache Abhaengigkeit); ohne sie stuerzt
 # Intl.Segmenter ab (nuxt, vite, consola, string-width ...).
-# podman-docker: /usr/bin/docker runs podman (docker compose = podman compose, which runs the
-# docker-compose CLI plugin against the agent's Podman socket); /etc/containers/nodocker
-# (vm/files) silences its notice. Proxy for containers: etc/containers/containers.conf.d.
+# podman-docker: /usr/bin/docker runs podman, so docker compose is podman compose, which runs
+# podman-compose (compose_providers in etc/containers/containers.conf.d, with the proxy for
+# builds); /etc/containers/nodocker (vm/files) silences its notice.
 RUN dnf -y install --setopt=install_weak_deps=False \
       gtk3 nss alsa-lib cups-libs mesa-libgbm libxkbcommon \
       git gh nodejs nodejs-full-i18n npm python3 uv rustup libxkbcommon-devel \
-      podman podman-docker docker-compose \
+      podman podman-docker podman-compose \
       ripgrep jq less nano procps-ng which findutils diffutils patch \
       tar gzip unzip make gcc gcc-c++ xfsprogs qemu-guest-agent \
     && dnf clean all

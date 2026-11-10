@@ -1,9 +1,0 @@
-{
-  "proxies": {
-    "default": {
-      "httpProxy": "http://host.agentbox:3128",
-      "httpsProxy": "http://host.agentbox:3128",
-      "noProxy": "localhost,127.0.0.1,.localhost,host.agentbox"
-    }
-  }
-}
