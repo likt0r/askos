@@ -10,8 +10,8 @@ APP_ID=<id> line each, app-<id>.pem is each App's key. Only once the owner is on
 of the VM's are they asked, in ascending App ID, for an installation on the
 repository; the first one installed there issues the token. GitHub's 404 means
 not installed there: the next App is asked. Any other answer from GitHub ends the
-request (github-status), so a passing failure of one App never lets another App
-issue the token.
+request (github-status), and so does an App whose key cannot sign (app-key), so a
+passing failure of one App never lets another App issue the token.
 
 Request (one line):  <owner>/<repo>
 Answer (JSON):       {"token": ..., "expires_at": ...}  or  {"error": <English text>}
@@ -21,7 +21,9 @@ One journal line per request (agentbox/activity.py reads them; never a token):
   [<vm>] refused: <request as repr()>: <reason>[ <name>=<value>...]: <English text>
   [<vm>] error: <request as repr()>: <exception as repr()>
 <reason> is a stable code (REASONS) the Control Room words in its language, with its
-parameters (github-status: status, GitHub's HTTP status).
+parameters (github-status: status, GitHub's HTTP status, and app_id, the App that got
+it; app-key: app_id; not-installed: app_id when the App GitHub named for the repository
+then had no installation).
 
 Each token is valid for exactly one repository and expires after an hour.
 Rulesets on GitHub protect main, not the token.
@@ -52,7 +54,8 @@ APP_ID = re.compile(r"[1-9][0-9]{0,11}")            # as agentbox/github.py
 
 
 # why a request is refused: the stable codes of the journal line (docs/control-room-api.md)
-REASONS = ("invalid-request", "vm-not-registered", "owner-not-allowed", "not-installed", "github-status")
+REASONS = ("invalid-request", "vm-not-registered", "owner-not-allowed", "not-installed", "github-status",
+           "app-key")
 
 
 class Refused(Exception):
@@ -108,6 +111,10 @@ def app_jwt(app_id):
     return f"{header}.{payload}.{b64url(sig)}"
 
 
+class NotFound(Exception):
+    """GitHub answered 404."""
+
+
 def api(method, path, bearer, body=None):
     req = urllib.request.Request(
         API + path,
@@ -124,9 +131,9 @@ def api(method, path, bearer, body=None):
         with urllib.request.urlopen(req, timeout=15) as resp:
             return json.load(resp)
     except urllib.error.HTTPError as e:
+        e.close()
         if e.code == 404:
-            raise Refused("not-installed",
-                          f"the GitHub App is not installed on {path.split('/')[2]}/{path.split('/')[3]}")
+            raise NotFound()
         raise Refused("github-status", f"GitHub answered {e.code}", status=int(e.code))
 
 
@@ -140,17 +147,28 @@ def issue(vm, request):
         raise Refused("owner-not-allowed", f"{owner} is not a GitHub owner of the VM {vm}")
 
     for app_id in app_ids():
-        jwt = app_jwt(app_id)
+        try:
+            jwt = app_jwt(app_id)
+        except (OSError, subprocess.CalledProcessError):
+            raise Refused("app-key", f"the key of GitHub App {app_id} cannot sign (missing or broken: "
+                                     f"agentbox set-github-app {app_id})", app_id=app_id)
         try:
             installation = api("GET", f"/repos/{owner}/{repo}/installation", jwt)["id"]
+        except NotFound:
+            continue
         except Refused as e:
-            if e.reason == "not-installed":
-                continue
-            raise
-        token = api(
-            "POST", f"/app/installations/{installation}/access_tokens", jwt,
-            {"repositories": [repo], "permissions": PERMS},
-        )
+            raise Refused(e.reason, f"{e} (GitHub App {app_id})", **e.params, app_id=app_id)
+        try:
+            token = api(
+                "POST", f"/app/installations/{installation}/access_tokens", jwt,
+                {"repositories": [repo], "permissions": PERMS},
+            )
+        except NotFound:
+            # removed in between: the next App is not asked either
+            raise Refused("not-installed", f"GitHub App {app_id} is no longer installed on {owner}/{repo}",
+                          app_id=app_id)
+        except Refused as e:
+            raise Refused(e.reason, f"{e} (GitHub App {app_id})", **e.params, app_id=app_id)
         return owner, repo, app_id, token
     raise Refused("not-installed", f"no GitHub App is installed on {owner}/{repo}")
 

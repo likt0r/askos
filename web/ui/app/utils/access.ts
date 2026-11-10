@@ -303,6 +303,7 @@ export const TOKEN_REASONS: Record<string, string[]> = {
   'owner-not-allowed': [],
   'not-installed': [],
   'github-status': ['status'],
+  'app-key': ['app_id'],
 }
 
 /** Why the token service refused, in the UI language from its code and parameters; null for a

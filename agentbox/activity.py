@@ -674,7 +674,7 @@ GITHUB = {"token for": ("github.token", "ok"), "refused:": ("github.refused", "f
 # the rest of a refusal "<reason>[ <name>=<value>...]: <text>"
 ISSUED = re.compile(r"(\S+) until (\S+?)(?: by App ([1-9][0-9]{0,11}))?")
 REFUSAL = re.compile(r"([a-z][a-z-]{0,31})((?: [a-z][a-z0-9_]{0,27}=[A-Za-z0-9._/-]{1,64}){0,8}): (.*)")
-TOKEN_PARAMS = {"request", "repository", "reason", "expires", "message", "app_id"}        # the entry's own
+TOKEN_PARAMS = {"request", "repository", "reason", "expires", "message"}        # the entry's own
 REQUEST = re.compile(r"""('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"): (.*)""")
 REPOSITORY = re.compile(r"[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}")      # what the token service accepts
 

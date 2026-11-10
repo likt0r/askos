@@ -394,6 +394,7 @@ export default {
         'owner-not-allowed': 'ihr Owner ist kein GitHub-Owner der VM',
         'not-installed': 'die GitHub App ist auf dem Repository nicht installiert',
         'github-status': 'GitHub antwortete mit dem Fehler {status}',
+        'app-key': 'der Schlüssel der GitHub App {app_id} kann nicht signieren (fehlt oder ist kaputt)',
       },
       truncated: 'Es gibt weitere Einträge; wähle einen kürzeren Zeitraum.',
     },

@@ -89,6 +89,7 @@ describe('why a GitHub token was refused', () => {
     expect(tokenReason(request({ reason_code: 'not-installed' }), EN)).toBe('the GitHub App is not installed on the repository')
     expect(tokenReason(request({ reason_code: 'github-status', reason_params: { status: '502' } }), EN)).toBe('GitHub answered with the error 502')
     expect(tokenReason(request({ reason_code: 'github-status', reason_params: { status: '502' } }), DE)).toBe('GitHub antwortete mit dem Fehler 502')
+    expect(tokenReason(request({ reason_code: 'app-key', reason_params: { app_id: '9' } }), EN)).toBe('the key of GitHub App 9 cannot sign (missing or broken)')
     expect(tokenReason(request({ reason_code: 'github-status' }), DE)).toBe('the English text')
     expect(tokenReason(request({ reason_code: 'owner-not-allowed' }), DE)).toBe('ihr Owner ist kein GitHub-Owner der VM')
     expect(tokenReason(request({ reason_code: null }), DE)).toBe('the English text')

@@ -551,7 +551,7 @@ class TokenServiceTest(unittest.TestCase):
         def refused_by_github(*_, **__):
             raise urllib.error.HTTPError("https://api.github.com/x", 502, "Bad Gateway", {}, None)
 
-        cases = [("priv", "likt0r/askos", "github-status", {"status": "502"}),
+        cases = [("priv", "likt0r/askos", "github-status", {"status": "502", "app_id": "1"}),
                  ("priv", "someone/repo", "owner-not-allowed", {}),
                  ("priv", "no slash", "invalid-request", {}),
                  ("lab", "likt0r/askos", "vm-not-registered", {})]
@@ -590,11 +590,13 @@ class SeveralAppsTest(unittest.TestCase):
         vm_records.write(self.root, record("priv", 2, github_owners=["likt0r", "correctiv"]))
         os.makedirs(self.root + "/etc/agentbox/github")
         # out of order on purpose, with a comment and an odd line
-        self.conf("APP_ID=900\n# personal\nAPP_ID=80\nAPP_ID=0x1\n")
+        self.conf("APP_ID=10\n# personal\nAPP_ID=9\nAPP_ID=0x1\n")
         loader = importlib.machinery.SourceFileLoader("agentbox_gh_tokend", TOKEND)
         self.tokend = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
         loader.exec_module(self.tokend)
         self.installed = {}         # App ID -> {repository: status of /installation, 200 or an error}
+        self.gone = set()           # Apps whose installation is gone by the time the token is asked for
+        self.broken = set()         # Apps whose key cannot sign
         self.asked = []             # (App ID, method, path)
 
     def conf(self, text):
@@ -613,7 +615,14 @@ class SeveralAppsTest(unittest.TestCase):
             if status != 200:
                 raise urllib.error.HTTPError(req.full_url, status, "x", {}, None)
             return io.BytesIO(json.dumps({"id": int(app) * 10}).encode())
+        if app in self.gone:
+            raise urllib.error.HTTPError(req.full_url, 404, "x", {}, None)
         return io.BytesIO(json.dumps({"token": f"ghs_from_{app}", "expires_at": "2026-11-10T12:00:00Z"}).encode())
+
+    def jwt(self, app_id):
+        if app_id in self.broken:
+            raise subprocess.CalledProcessError(1, ["openssl"])
+        return f"jwt-{app_id}"
 
     def request(self, line, vm="priv"):
         import contextlib
@@ -622,7 +631,7 @@ class SeveralAppsTest(unittest.TestCase):
         err, out = io.StringIO(), io.StringIO()
         with mock.patch.object(self.tokend, "REGISTRY", self.root + "/etc/agentbox/vms"), \
                 mock.patch.object(self.tokend, "CONF_DIR", self.root + "/etc/agentbox/github"), \
-                mock.patch.object(self.tokend, "app_jwt", lambda app_id: f"jwt-{app_id}"), \
+                mock.patch.object(self.tokend, "app_jwt", self.jwt), \
                 mock.patch.object(self.tokend.urllib.request, "urlopen", self.urlopen), \
                 mock.patch.object(sys, "argv", ["agentbox-gh-tokend", vm]), \
                 mock.patch.object(sys, "stdin", io.StringIO(line + "\n")), \
@@ -631,23 +640,23 @@ class SeveralAppsTest(unittest.TestCase):
         return json.loads(out.getvalue()), err.getvalue()
 
     def test_repository_installed_only_on_the_second_app(self):
-        self.installed = {"900": {"correctiv/site": 200}}
+        self.installed = {"10": {"correctiv/site": 200}}
         answer, log = self.request("correctiv/site")
-        self.assertEqual(answer, {"token": "ghs_from_900", "expires_at": "2026-11-10T12:00:00Z"})
-        self.assertEqual(self.asked, [("80", "GET", "/repos/correctiv/site/installation"),
-                                      ("900", "GET", "/repos/correctiv/site/installation"),
-                                      ("900", "POST", "/app/installations/9000/access_tokens")])
-        self.assertEqual(log, "[priv] token for correctiv/site until 2026-11-10T12:00:00Z by App 900\n")
+        self.assertEqual(answer, {"token": "ghs_from_10", "expires_at": "2026-11-10T12:00:00Z"})
+        self.assertEqual(self.asked, [("9", "GET", "/repos/correctiv/site/installation"),
+                                      ("10", "GET", "/repos/correctiv/site/installation"),
+                                      ("10", "POST", "/app/installations/100/access_tokens")])
+        self.assertEqual(log, "[priv] token for correctiv/site until 2026-11-10T12:00:00Z by App 10\n")
 
     def test_the_first_app_installed_there_issues_the_token(self):
-        self.installed = {"80": {"likt0r/askos": 200}, "900": {"likt0r/askos": 200}}
+        self.installed = {"9": {"likt0r/askos": 200}, "10": {"likt0r/askos": 200}}
         answer, log = self.request("likt0r/askos")
-        self.assertEqual(answer["token"], "ghs_from_80")
-        self.assertEqual([a for a, _, _ in self.asked], ["80", "80"])
-        self.assertTrue(log.endswith(" by App 80\n"), log)
+        self.assertEqual(answer["token"], "ghs_from_9")
+        self.assertEqual([a for a, _, _ in self.asked], ["9", "9"])
+        self.assertTrue(log.endswith(" by App 9\n"), log)
 
     def test_no_app_installed(self):
-        for conf in ("APP_ID=900\nAPP_ID=80\n", "", None):
+        for conf in ("APP_ID=10\nAPP_ID=9\n", "", None):
             with self.subTest(conf=conf):
                 if conf is None:
                     os.remove(self.root + "/etc/agentbox/github/app.conf")
@@ -662,14 +671,40 @@ class SeveralAppsTest(unittest.TestCase):
         for status in (401, 403, 500, 502):
             with self.subTest(status=status):
                 self.asked = []
-                self.installed = {"80": {"likt0r/askos": status}, "900": {"likt0r/askos": 200}}
+                self.installed = {"9": {"likt0r/askos": status}, "10": {"likt0r/askos": 200}}
                 answer, log = self.request("likt0r/askos")
-                self.assertEqual(answer, {"error": f"GitHub answered {status}"})
-                self.assertEqual([a for a, _, _ in self.asked], ["80"])
-                self.assertIn(f": github-status status={status}: ", log)
+                self.assertEqual(answer, {"error": f"GitHub answered {status} (GitHub App 9)"})
+                self.assertEqual([a for a, _, _ in self.asked], ["9"])
+                self.assertEqual(log, f"[priv] refused: 'likt0r/askos': github-status status={status} app_id=9: "
+                                      f"GitHub answered {status} (GitHub App 9)\n")
+
+    def test_an_app_whose_key_cannot_sign_stops_and_is_named(self):
+        # app.conf names it, its app-<id>.pem is missing or broken: refused, the next App not asked
+        self.broken = {"9"}
+        self.installed = {"10": {"likt0r/askos": 200}}
+        answer, log = self.request("likt0r/askos")
+        message = "the key of GitHub App 9 cannot sign (missing or broken: agentbox set-github-app 9)"
+        self.assertEqual(answer, {"error": message})
+        self.assertEqual(log, f"[priv] refused: 'likt0r/askos': app-key app_id=9: {message}\n")
+        self.assertEqual(self.asked, [])
+
+    def test_the_real_signer_with_a_missing_key_is_refused_by_app_id(self):
+        from unittest import mock
+        with mock.patch.object(self.tokend, "CONF_DIR", self.root + "/etc/agentbox/github"):
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.tokend.app_jwt("9")
+
+    def test_an_installation_gone_before_the_token_names_the_repository(self):
+        self.installed = {"9": {"likt0r/askos": 200}, "10": {"likt0r/askos": 200}}
+        self.gone = {"9"}
+        answer, log = self.request("likt0r/askos")
+        self.assertEqual(answer, {"error": "GitHub App 9 is no longer installed on likt0r/askos"})
+        self.assertEqual(log, "[priv] refused: 'likt0r/askos': not-installed app_id=9: GitHub App 9 is no longer "
+                              "installed on likt0r/askos\n")
+        self.assertEqual([a for a, _, _ in self.asked], ["9", "9"])
 
     def test_owner_check_comes_before_any_app_is_asked(self):
-        self.installed = {"80": {"someone/repo": 200}}
+        self.installed = {"9": {"someone/repo": 200}}
         answer, _ = self.request("someone/repo")
         self.assertEqual(answer, {"error": "someone is not a GitHub owner of the VM priv"})
         self.assertEqual(self.asked, [])
@@ -677,17 +712,23 @@ class SeveralAppsTest(unittest.TestCase):
     def test_activity_reads_the_app_that_issued_the_token(self):
         sys.path.insert(0, REPO)
         from agentbox import activity
-        self.installed = {"900": {"correctiv/site": 200}}
+        self.installed = {"10": {"correctiv/site": 200}}
         _, log = self.request("correctiv/site")
         entry = activity.github_entry({"__REALTIME_TIMESTAMP": "1793700000000000",
                                        "SYSLOG_IDENTIFIER": "agentbox-gh-priv", "MESSAGE": log.strip()})
         self.assertEqual((entry["code"], entry["params"]), ("github.token", {
-            "repository": "correctiv/site", "expires": "2026-11-10T12:00:00Z", "app_id": "900"}))
-        self.assertEqual(entry["description"], "GitHub token for correctiv/site until 2026-11-10T12:00:00Z by App 900")
+            "repository": "correctiv/site", "expires": "2026-11-10T12:00:00Z", "app_id": "10"}))
+        self.assertEqual(entry["description"], "GitHub token for correctiv/site until 2026-11-10T12:00:00Z by App 10")
         # a line from before there were several Apps
         entry = activity.github_entry({"__REALTIME_TIMESTAMP": "1793700000000000", "SYSLOG_IDENTIFIER": "agentbox-gh-priv",
                                        "MESSAGE": "[priv] token for likt0r/askos until 2026-11-10T12:00:00Z"})
         self.assertEqual(entry["params"], {"repository": "likt0r/askos", "expires": "2026-11-10T12:00:00Z"})
+        # a refusal names the App it stopped at
+        self.broken = {"9"}
+        _, log = self.request("likt0r/askos")
+        entry = activity.github_entry({"__REALTIME_TIMESTAMP": "1793700000000000",
+                                       "SYSLOG_IDENTIFIER": "agentbox-gh-priv", "MESSAGE": log.strip()})
+        self.assertEqual((entry["code"], entry["reason"], entry["params"]["app_id"]), ("github.refused", "app-key", "9"))
 
 
 if __name__ == "__main__":

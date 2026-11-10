@@ -398,6 +398,7 @@ export default {
         'owner-not-allowed': 'its owner is not a GitHub owner of the VM',
         'not-installed': 'the GitHub App is not installed on the repository',
         'github-status': 'GitHub answered with the error {status}',
+        'app-key': 'the key of GitHub App {app_id} cannot sign (missing or broken)',
       },
       truncated: 'There are more entries; choose a shorter period.',
     },
