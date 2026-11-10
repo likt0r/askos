@@ -403,6 +403,21 @@ the laptop, where `localhost` is the laptop ("Can't reach 127.0.0.1:3000"), and 
 panel offers only the system browser. A tab opened before the update stays that way; open
 it again.
 
+### Containers in a VM
+
+Agents run containers with the agent's rootless Podman. `docker` and `docker compose` work
+as well: `DOCKER_HOST` points them at the agent's Podman socket, for services and shells.
+Containers, and the containers that run a Dockerfile's `RUN` lines, have no DNS and no
+route out, the same as the rest of the VM, so they get the Host's proxy. Podman gives every
+container the proxy variables and the VM's `/etc/hosts`, where `host.agentbox` is
+(`/etc/containers/containers.conf.d/50-agentbox.conf`). Builds through the Docker API
+(`docker build`, `docker compose build`) get the proxy as build arguments from the client's
+`~/.docker/config.json`, which the VM writes at every start. The Allowlist applies as to
+everything else. The proxy lets only HTTPS through, so package sources in a Dockerfile must
+use HTTPS: Debian's `http://deb.debian.org` gets `405 Method Not Allowed`, and switching it
+to `https://` needs `ca-certificates` in the image. A tool that ignores the proxy
+variables gets nowhere.
+
 ### Images and Builds
 
 An **Image** is defined in this repository, ships with each Release and is built on the Host

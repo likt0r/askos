@@ -22,6 +22,7 @@ import stat
 import subprocess
 import sys
 import time
+import tomllib
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -32,6 +33,8 @@ from test_vms import VmsTest  # noqa: E402
 from vm_records import record  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO)
+from agentbox import safeguards  # noqa: E402
 with open(os.path.join(REPO, "VERSION")) as f:
     RELEASE = f.read().strip()         # the Release of the CLI under test (a checkout's VERSION)
 COMMIT = "abcdef0123456789abcdef0123456789abcdef01"     # of main, named by Builds from before ADR 0010
@@ -1293,6 +1296,64 @@ class DefinitionTest(ImagesTest):
         code, out, err = self.run_agentbox("containerfile", "base", "--json")
         self.assertEqual((code, out), (1, ""))
         self.assertIn("no Containerfile for Image base in the installed Release (vm/Containerfile is missing)", err)
+
+
+class ContainersTest(ImagesTest):
+    """#27: docker and docker compose reach the agent's rootless Podman, and containers,
+    build containers included, reach the outside through the Host's proxy as the VM does,
+    with NO_PROXY as local as the services' and host.agentbox resolvable. Only a real VM can
+    run them; this checks what the Base image carries."""
+
+    PROXY = "http://host.agentbox:3128"
+    SOCKET = "unix:///run/user/1000/podman/podman.sock"
+
+    def setUp(self):
+        super().setUp()
+        self.built()
+        self.root = self.rootfs("base")
+        self.env = safeguards.systemd_environment(self.root)
+
+    def read(self, rel):
+        with open(os.path.join(self.root, rel.lstrip("/"))) as f:
+            return f.read()
+
+    def test_docker_reaches_the_agents_podman_from_services_and_shells(self):
+        self.assertEqual(self.env["DOCKER_HOST"], self.SOCKET)
+        self.assertIn('export DOCKER_HOST="unix:///run/user/$(id -u)/podman/podman.sock"\n',
+                      self.read("/etc/profile.d/agentbox.sh"))
+        self.assertNotIn("CONTAINER_HOST", self.read("/etc/profile.d/agentbox.sh"))    # podman stays local
+        self.assertNotIn("CONTAINER_HOST", self.env)
+        self.assertIn("systemctl --global enable podman.socket", self.read_repo("vm/Containerfile"))
+
+    def test_every_container_and_podman_itself_get_the_proxy_and_the_vms_hosts(self):
+        conf = tomllib.loads(self.read("/etc/containers/containers.conf.d/50-agentbox.conf"))
+        wanted = {name: self.PROXY for name in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")}
+        wanted.update(NO_PROXY=self.env["NO_PROXY"], no_proxy=self.env["no_proxy"])
+        self.assertEqual(self.env["NO_PROXY"], "localhost,127.0.0.1,.localhost,host.agentbox")
+        for table in ("containers", "engine"):
+            with self.subTest(table=table):
+                env = conf[table]["env"]
+                # appended, so Podman's own defaults (PATH, TERM) stay
+                self.assertEqual(env[-1], {"append": True})
+                self.assertEqual(dict(e.split("=", 1) for e in env[:-1]), wanted)
+        self.assertIs(conf["containers"]["http_proxy"], True)
+        # containers created through the Docker API would start from the image's hosts file
+        self.assertEqual(conf["containers"]["base_hosts_file"], "/etc/hosts")
+        self.assertIn('echo "$gw host.agentbox" >> /etc/hosts', self.read(safeguards.GUEST_SETUP))
+
+    def test_builds_through_the_docker_api_get_the_proxy_from_the_agents_docker_config(self):
+        """Podman passes no proxy into RUN of a build through its Docker API; the Docker CLI
+        and Compose send the one of their config as build arguments."""
+        config = json.loads(self.read("/usr/lib/agentbox/docker-config.json"))
+        self.assertEqual(config, {"proxies": {"default": {
+            "httpProxy": self.PROXY, "httpsProxy": self.PROXY, "noProxy": self.env["NO_PROXY"]}}})
+        # the home is fresh at every start: guest-setup puts it there each time
+        self.assertIn('install -m 600 -o agent -g agent /usr/lib/agentbox/docker-config.json '
+                      '"$HOME_DIR/.docker/config.json"', self.read(safeguards.GUEST_SETUP))
+
+    def read_repo(self, rel):
+        with open(os.path.join(REPO, rel)) as f:
+            return f.read()
 
 
 if __name__ == "__main__":
