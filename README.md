@@ -411,8 +411,10 @@ Agents run containers with the agent's rootless Podman. `docker` is Podman under
 [podman-compose](https://github.com/containers/podman-compose), which builds with `podman
 build` and starts containers with `podman run`. It may not support every feature of Docker
 Compose. Tools that use the Docker API reach the agent's Podman socket through `DOCKER_HOST`,
-which is set for services and shells. Containers have no DNS and no route out, the same as
-the rest of the VM.
+which is set for services and shells. A build sent straight to the Docker API on that socket
+(docker-py, Testcontainers' image builds) gets no proxy, because Podman passes none there. If
+such a build needs the internet, pass `HTTPS_PROXY=http://host.agentbox:3128` (and `NO_PROXY`)
+as build arguments. Containers have no DNS and no route out, the same as the rest of the VM.
 
 Builds get the Host's proxy: Podman passes it into a Dockerfile's `RUN` lines, and the
 VM's `/etc/hosts`, which has `host.agentbox`, comes along
@@ -428,7 +430,9 @@ services:
   worker:
     environment:
       HTTPS_PROXY: http://host.agentbox:3128
+      https_proxy: http://host.agentbox:3128
       NO_PROXY: localhost,127.0.0.1,api,db
+      no_proxy: localhost,127.0.0.1,api,db
 ```
 
 The Allowlist applies as to everything else, and a tool that ignores the proxy variables
