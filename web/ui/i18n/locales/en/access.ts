@@ -396,9 +396,14 @@ export default {
         'invalid-request': 'the request is not owner/repository',
         'vm-not-registered': 'the VM is not in the VM registry',
         'owner-not-allowed': 'its owner is not a GitHub owner of the VM',
-        'not-installed': 'the GitHub App is not installed on the repository',
+        'not-installed': 'no GitHub App of the Host is installed on the repository',
         'github-status': 'GitHub answered with the error {status}',
         'app-key': 'the key of GitHub App {app_id} cannot sign (missing or broken)',
+      },
+      // the same when the refusal names the App it stopped at
+      reasonsWithApp: {
+        'not-installed': 'GitHub App {app_id} is no longer installed on the repository',
+        'github-status': 'GitHub answered GitHub App {app_id} with the error {status}',
       },
       truncated: 'There are more entries; choose a shorter period.',
     },

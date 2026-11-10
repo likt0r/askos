@@ -307,12 +307,16 @@ export const TOKEN_REASONS: Record<string, string[]> = {
 }
 
 /** Why the token service refused, in the UI language from its code and parameters; null for a
- * code it does not know or a missing parameter. */
+ * code it does not know or a missing parameter. A refusal that stopped at one of several GitHub
+ * Apps names it (`app_id`, askos#25) where the reason has a wording for that. */
 export function refusalText(code: string | null | undefined, params: unknown, tr: Translator): string | null {
   const p = paramsOf(params)
   const needs = code ? TOKEN_REASONS[code] : undefined
+  if (!needs || !filled(p, needs)) return null
+  const withApp = `access.tokens.reasonsWithApp.${code}`
+  if (filled(p, ['app_id']) && tr.te(withApp)) return tr.t(withApp, p)
   const key = `access.tokens.reasons.${code}`
-  return needs && filled(p, needs) && tr.te(key) ? tr.t(key, p) : null
+  return tr.te(key) ? tr.t(key, p) : null
 }
 
 /** Why the token service refused a request, in the UI language; else its English text. */

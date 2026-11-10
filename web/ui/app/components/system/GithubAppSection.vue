@@ -135,6 +135,8 @@ async function remove() {
     await api(`/github-app/${app.id}`, { method: 'DELETE' })
     removeOpen.value = false
     saved.value = null
+    // a new key for the App just removed has nothing left to replace
+    if (editing.value === 'replace' && appId.value === String(app.id)) cancelEdit()
     toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t('githubApp.remove.done', { id: app.id }) })
     void load()
   }

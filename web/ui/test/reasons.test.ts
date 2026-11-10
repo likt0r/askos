@@ -86,7 +86,9 @@ describe('why a GitHub token was refused', () => {
   })
 
   it('is worded from its code and parameters, else the token service\'s text', () => {
-    expect(tokenReason(request({ reason_code: 'not-installed' }), EN)).toBe('the GitHub App is not installed on the repository')
+    expect(tokenReason(request({ reason_code: 'not-installed' }), EN)).toBe('no GitHub App of the Host is installed on the repository')
+    expect(tokenReason(request({ reason_code: 'not-installed', reason_params: { app_id: '9' } }), EN)).toBe('GitHub App 9 is no longer installed on the repository')
+    expect(tokenReason(request({ reason_code: 'github-status', reason_params: { status: '502', app_id: '9' } }), DE)).toBe('GitHub antwortete GitHub App 9 mit dem Fehler 502')
     expect(tokenReason(request({ reason_code: 'github-status', reason_params: { status: '502' } }), EN)).toBe('GitHub answered with the error 502')
     expect(tokenReason(request({ reason_code: 'github-status', reason_params: { status: '502' } }), DE)).toBe('GitHub antwortete mit dem Fehler 502')
     expect(tokenReason(request({ reason_code: 'app-key', reason_params: { app_id: '9' } }), EN)).toBe('the key of GitHub App 9 cannot sign (missing or broken)')

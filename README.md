@@ -159,6 +159,10 @@ replaced (the other Apps stay), and the token service uses it from its next requ
 delete the old key on GitHub and the downloaded file. `sudo agentbox remove-github-app <APP_ID>`
 removes an App and its key from the Host.
 
+Coming from a release with a single App: its key file `/etc/agentbox/github/app.pem` is no
+longer read. Add the App again with `sudo agentbox set-github-app <APP_ID> < key.pem`, then
+delete the old file: `sudo rm /etc/agentbox/github/app.pem`.
+
 ### Pairing Orca
 
 ```sh

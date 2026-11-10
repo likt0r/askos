@@ -206,13 +206,16 @@ describe('GitHub App section', () => {
     await waitFor(() => expect(must('[data-testid="app-replaced"]').textContent).toContain('GitHub App 123456 checked and stored.'))
   })
 
-  it('removes one App only after confirmation', async () => {
+  it('removes one App only after confirmation, closing a new key begun for it', async () => {
     const { api } = await openApp('/system', { 'GET /github-app': ok(APP), 'DELETE /github-app/777': ok({ id: 777, removed: true }) })
+    await click(inApp(777, 'app-replace-open'))
+    expect($('[data-testid="app-replace"]')).not.toBeNull()
     await click(inApp(777, 'app-remove-open'))
     expect(changes(api.calls)).toEqual([])
     expect(document.body.textContent).toContain('Remove GitHub App 777?')
     await click('[data-testid="confirm-action"]')
     expect(changes(api.calls)).toEqual([{ method: 'DELETE', path: '/github-app/777', body: undefined, csrf: '1' }])
+    await waitFor(() => expect($('[data-testid="app-replace"]')).toBeNull())
   })
 
   it('says a key GitHub rejected changed nothing, and forgets it', async () => {
