@@ -52,7 +52,7 @@ import sys
 import threading
 import time
 
-from . import paths, registry, settings
+from . import paths, registry, settings, vmenv
 from .errors import Fail, die
 from .guest import TIME
 from .sanitize import clean, field, message_text, redact
@@ -71,7 +71,7 @@ SOCKETS = (f"{JOURNAL_RUN}/socket", paths.host("/run/systemd/journal/socket"))
 # the wakes files, and records its own entries, responding.py.)
 READ_ONLY = {"status", "logs", "blocked", "alerts", "allowlist", "owners", "activity", "check-domain", "check-regex",
              "watchlist", "legitimate", "harmless", "pairings", "settings", "github-app", "github-tokens", "images", "build-log",
-             "containerfile", "describe", "watch", "version"}
+             "containerfile", "describe", "watch", "version", "env"}
 # Commands that record their own entries (one per VM or entry) instead of one for the call;
 # fetch-versions records none, and check-versions only the start of an automatic update
 # (build.automatic); otherwise they change only their records of what is available
@@ -383,6 +383,21 @@ def _mark_seen(a):
     return _said(f"Mark the Alerts for {domain} as seen", domain=domain) if domain else _said("Mark Alerts as seen")
 
 
+def _set_env(a):
+    """The variables as NAME=value (their values are not secret, vmenv.py), only those whose
+    name has the form of one, and the flag replace."""
+    pairs = [p for p in _positional(a)[1:] if vmenv.NAME.fullmatch(p.partition("=")[0]) and "=" in p]
+    if "--replace" in a:
+        return _said("Replace the VM variables" + (": " + ", ".join(pairs) if pairs else " with none"),
+                     env=pairs, replace=True)
+    return _said("Set VM variables" + (": " + ", ".join(pairs) if pairs else ""), env=pairs)
+
+
+def _unset_env(a):
+    names = [n for n in _positional(a)[1:] if vmenv.NAME.fullmatch(n)]
+    return _said("Remove VM variables" + (": " + ", ".join(names) if names else ""), names=names)
+
+
 def _create(a):
     image = _name(_opt(a, "--image"), settings.IMAGE)
     return _said("Create the VM" + (f" with Image {image}" if image else ""), image=image)
@@ -445,6 +460,8 @@ DESCRIBE = {
                         if "--delete-data-disk" in a else _said("Delete the VM"),
     "set-memory": lambda a: _said(f"Memory limit {_arg(a, 1)} MiB", mib=_arg(a, 1))
                             if re.fullmatch(r"[0-9]{1,9}", _arg(a, 1)) else _said("Change the memory limit"),
+    "set-env": _set_env,
+    "unset-env": _unset_env,
     "allow": _listed("Allow {}", "for", temporary=True, force=True),
     "disallow": _listed("Remove the Allowlist entry {}"),
     "extend": _listed("Extend the Allowlist entry {}", "by", force=True),

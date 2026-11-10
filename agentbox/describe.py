@@ -199,6 +199,8 @@ def vm(rec, units, observed, backing, now=None, current=None, starts=None):
         "memory_mib": rec["memory_mib"],
         "data_disk_gib": rec["data_disk_gib"],
         "github_owners": list(rec["github_owners"]),
+        # the VM variables in the record; the VM has them from its next start (not secret)
+        "env": dict(rec.get("env", {})),
         "created": rec["created"],
         "image": rec["image"],
         "build_pin": rec["build"],
@@ -281,6 +283,8 @@ def describe(args):
               + (f", {disk['age_days']} days old" if disk["age_days"] is not None else "")
               + (", the next Reset brings " + v["next_build"] if v["reset_changes_build"] else ""))
         print(f"  Memory:       {v['memory_mib']} MiB, Data disk {v['data_disk_gib']} GiB")
+        if v["env"]:
+            print(f"  VM variables: {', '.join(v['env'])} (agentbox env {v['name']})")
         print(f"  Agents:       {agents or 'none'}")
         print(f"  Devices:      {devs or 'none'}")
     for p in result["problems"]:

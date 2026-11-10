@@ -207,6 +207,8 @@ agentbox status                     # VMs, memory, agents
 agentbox create lab --owner likt0r --copy-allowlist-from priv   # a new VM
 agentbox delete lab --confirm lab   # delete a VM, its Data disk is archived
 agentbox set-memory lab 32768       # memory limit in MiB, from the VM's next start or Restart
+agentbox set-env lab DATABASE_URL=postgres://db.example/app   # a VM variable, from the next start or Restart
+agentbox env lab                    # the VM's VM variables
 agentbox blocked priv               # what a VM tried to reach and was refused
 agentbox allow priv docs.rs         # add an Allowlist entry for one VM
 agentbox allow all crates.io --for 8h --note "Rust crates"   # for all VMs, for 8 hours
@@ -359,6 +361,22 @@ start; a running VM keeps running with its current memory until its next Restart
 (`agentbox restart <name>`; a reboot inside the VM is not enough). A paused VM is refused,
 because its saved memory belongs to the old definition: start it first. The Control Room
 changes it on the VM's overview (`PUT /api/v1/vms/<name>/memory`).
+
+`agentbox set-env <name> NAME=VALUE [NAME=VALUE ...]` adds or changes **VM variables**:
+environment variables for `orca serve`, the agents and terminals it starts, and login shells
+in that VM (a `DATABASE_URL`, a tool's mode). `--replace` makes the given ones the whole list
+(`set-env <name> --replace` alone removes them all), `agentbox unset-env <name> NAME ...`
+removes some, `agentbox env <name>` shows them. They are not secret: `describe`, the Control
+Room and Activity show them. Like the memory limit they apply when the VM starts next; a
+running or paused VM keeps the variables it started with until its next Restart or Reset (a
+reboot inside the VM is not enough). Names a Safeguard or Agent Box itself reads are refused
+(`HTTPS_PROXY`, `npm_config_ignore_scripts`, `PATH`, `LD_*`, `AGENTBOX_*`, everything in the
+Image's `DefaultEnvironment`, ...), so a VM variable never switches a Safeguard off; other
+names, `npm_config_registry` or `UV_INDEX_URL` among them, are fine. At most 64 variables,
+names of `A-Z`, `a-z`, `0-9` and `_` up to 64 characters, values up to 4 KiB without line
+breaks. The Control Room edits them as a table on the VM's overview
+(`PUT /api/v1/vms/<name>/env`, which replaces the whole list; requests there are limited to
+8 KiB).
 
 `agentbox delete <name> --confirm <name>` stops the VM and removes everything the Host
 had for it. The System disk is deleted; the Data disk is moved to

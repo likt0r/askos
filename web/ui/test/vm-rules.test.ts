@@ -1,7 +1,7 @@
 // The VM views' rules match the CLI's (agentbox/registry.py, vms.py, guest.py).
 import { describe, expect, it } from 'vitest'
 import {
-  defaultLogFilters, hidePairingCodes, lifecycleActions, logFilterProblems, logQuery, memoryInUse,
+  defaultLogFilters, envFromRows, hidePairingCodes, lifecycleActions, logFilterProblems, logQuery, memoryInUse,
   nameProblem, parseOwners, pinnableBuilds, wholeNumber,
 } from '~/utils/vmRules'
 import { notResponding } from '~/utils/vm'
@@ -25,6 +25,35 @@ describe('VM names', () => {
     for (const word of ['off', 'all', 'new', 'vms', 'github-app', 'v1', 'v23']) expect(nameProblem(word, [])).toBe('reserved')
     expect(nameProblem('va', [])).toBeNull()
     expect(nameProblem('work', ['work', 'priv'])).toBe('exists')
+  })
+})
+
+describe('VM variables', () => {
+  it('takes the rows as names and values, as agentbox/vmenv.py checks them', () => {
+    const { env, problems, tooMany } = envFromRows([
+      { name: 'DATABASE_URL', value: 'postgres://db/x' }, { name: ' NODE_ENV ', value: '' }, { name: '', value: '' },
+      { name: '_a1', value: 'Grüße "x" $HOME' }, { name: 'constructor', value: '1' }, { name: '__proto__', value: '2' },
+    ])
+    expect(Object.entries(env)).toEqual([['DATABASE_URL', 'postgres://db/x'], ['NODE_ENV', ''], ['_a1', 'Grüße "x" $HOME'],
+      ['constructor', '1'], ['__proto__', '2']])
+    expect(problems).toEqual({})
+    expect(tooMany).toBe(false)
+  })
+
+  it('says what is wrong per row: the name, a name twice, a control character, a value over 4 KiB', () => {
+    const { env, problems } = envFromRows([
+      { name: '1A', value: 'x' }, { name: 'A-B', value: 'x' }, { name: 'A'.repeat(65), value: 'x' }, { name: '', value: 'x' },
+      { name: 'A', value: '1' }, { name: 'A', value: '2' }, { name: 'B', value: 'a\nb' }, { name: 'C', value: 'tab\tok' },
+      { name: 'D', value: 'ü'.repeat(2049) }, { name: 'E', value: 'x'.repeat(4096) },
+    ])
+    expect(problems).toEqual({ 0: 'name', 1: 'name', 2: 'name', 3: 'name', 5: 'twice', 6: 'value', 8: 'long' })
+    expect(Object.keys(env)).toEqual(['A', 'C', 'E'])
+  })
+
+  it('takes at most 64 variables', () => {
+    const rows = Array.from({ length: 65 }, (_, i) => ({ name: `V${i}`, value: 'x' }))
+    expect(envFromRows(rows.slice(0, 64)).tooMany).toBe(false)
+    expect(envFromRows(rows).tooMany).toBe(true)
   })
 })
 

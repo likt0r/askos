@@ -35,6 +35,12 @@ Controls the agent VMs on this Host.
                 delete a VM; its Data disk is archived, or deleted with --delete-data-disk
   agentbox set-memory <vm> <mib> [--json]            memory limit (1024 MiB up to the Host's memory); applies
                                                      from the next start, for a running VM after a Restart
+  agentbox env <vm> [--json]                         the VM's VM variables (environment variables for orca
+                                                     serve, agents, terminals and shells)
+  agentbox set-env <vm> NAME=VALUE [NAME=VALUE ...] [--replace] [--json]
+                add or change VM variables (--replace: these are all of them); names a Safeguard or
+                Agent Box reads are refused; applies from the next start, for a running VM after a Restart
+  agentbox unset-env <vm> NAME [NAME ...] [--json]   remove VM variables; applies like set-env
   agentbox start|wake|pause|restart <vm> [--json]
   agentbox reset <vm> [--no-start] [--json]          fresh System disk from the VM's Image
   agentbox focus <vm|off> [--json]                   pause every other VM

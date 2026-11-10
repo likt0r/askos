@@ -392,6 +392,87 @@ describe('memory limit', () => {
   })
 })
 
+describe('VM variables', () => {
+  const SET = (env: Record<string, string>, applies: string | null) => OK({ vm: 'work', env, changed: applies !== null,
+    state: applies === 'next_start' ? 'shut off' : 'running', applies, message: 'deutsch' })
+  const WITH = { ...WORK, reset_due: false, env: { DATABASE_URL: 'postgres://db/x', NODE_ENV: 'development' } }
+
+  it('lists them in the overview, none when there are none', async () => {
+    fakeApi({ 'GET /session': SIGNED_IN })
+    const { es } = await openApp('/vms/work/web', [WITH])
+    expect(text('overview-env-list')).toContain('DATABASE_URL')
+    expect(text('overview-env-list')).toContain('postgres://db/x')
+    es.emit('vm', { ...WITH, env: {} })
+    await flushPromises()
+    expect(text('overview-env-none')).toContain('None.')
+  })
+
+  it('saves the whole table for the next Restart, which can follow right away', async () => {
+    const api = fakeApi({ 'GET /session': SIGNED_IN, 'PUT /vms/work/env': SET({ NODE_ENV: 'test', FLAG: 'a "b" $c' }, 'next_restart'),
+      'POST /vms/work/restart': OK({ vm: 'work', state: 'running' }) })
+    await openApp('/vms/work/web', [WITH])
+    await click('env-change')
+    expect(text('env-applies')).toBe('Applies at the next Restart or Reset. Until then the VM keeps the VM variables it started with.')
+    expect(byTestId('env-save').attributes('disabled')).toBeDefined()     // nothing changed yet
+    await click('env-remove-0')
+    await type('env-value-0', 'test')
+    await click('env-add')
+    await type('env-name-1', 'FLAG')
+    await type('env-value-1', 'a "b" $c')
+    await submit('env-dialog')
+    const put = api.calls.find(c => c.method === 'PUT')!
+    expect(put.path).toBe('/vms/work/env')
+    expect(put.headers['x-agentbox']).toBe('1')
+    expect(put.body).toEqual({ env: { NODE_ENV: 'test', FLAG: 'a "b" $c' } })
+    expect(text('env-saved-text')).toBe('VM variables of work saved. They apply at the next Restart.')
+    expect(text('env-agents')).toBe('One agent is working right now.')
+    await click('env-restart')
+    expect(api.calls.filter(c => c.path === '/vms/work/restart').map(c => c.method)).toEqual(['POST'])
+    expect(exists('env-saved')).toBe(false)
+  })
+
+  it('applies to a stopped VM at its next start; removing every row sends an empty list', async () => {
+    const api = fakeApi({ 'GET /session': SIGNED_IN, 'PUT /vms/work/env': SET({}, 'next_start') })
+    await openApp('/vms/work/web', [{ ...WITH, state: 'stopped' }])
+    await click('env-change')
+    expect(text('env-applies')).toBe('Applies when the VM starts next.')
+    await click('env-remove-1')
+    await click('env-remove-0')
+    await submit('env-dialog')
+    expect(api.calls.find(c => c.method === 'PUT')!.body).toEqual({ env: {} })
+    expect(exists('env-dialog')).toBe(false)
+    expect(document.body.textContent).toContain('VM variables of work saved')
+    expect(api.calls.some(c => c.path === '/vms/work/restart')).toBe(false)
+  })
+
+  it('says at the row what is wrong before sending', async () => {
+    const api = fakeApi({ 'GET /session': SIGNED_IN })
+    await openApp('/vms/work/web', [WITH])
+    await click('env-change')
+    await type('env-name-0', 'NODE-ENV')
+    expect(text('env-problem-0')).toBe('A-Z, a-z, 0-9 and _, not starting with a digit, at most 64 characters.')
+    await type('env-name-0', 'NODE_ENV')
+    expect(text('env-problem-1')).toBe('This name is given twice.')
+    expect(byTestId('env-save').attributes('disabled')).toBeDefined()
+    await submit('env-dialog')
+    expect(api.calls.some(c => c.method === 'PUT')).toBe(false)
+  })
+
+  it('names the variable agentbox refuses and stays open', async () => {
+    fakeApi({
+      'GET /session': SIGNED_IN,
+      'PUT /vms/work/env': { status: 400, body: { error: { code: 'env_name_reserved', message: 'x', field: 'env', params: { name: 'HTTPS_PROXY' } } } },
+    })
+    await openApp('/vms/work/web', [WITH])
+    await click('env-change')
+    await click('env-add')
+    await type('env-name-2', 'HTTPS_PROXY')
+    await submit('env-dialog')
+    expect(text('env-error')).toBe('HTTPS_PROXY: a Safeguard or Agent Box itself sets or reads this variable, it cannot be a VM variable.')
+    expect(exists('env-dialog')).toBe(true)
+  })
+})
+
 describe('deleting a VM', () => {
   it('needs the typed name, archives the Data disk by default, and goes back to the list', async () => {
     const api = fakeApi({

@@ -22,6 +22,8 @@ export interface Vm {
   memory_mib?: number
   data_disk_gib?: number
   github_owners?: string[]
+  /** the VM variables of the record (names and values, not secret); the VM has them from its next start */
+  env?: Record<string, string>
   image?: string
   build_pin?: string | null
   image_build?: string | null

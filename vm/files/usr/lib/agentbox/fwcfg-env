@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Variables from one fw_cfg entry into the environment of orca serve and of shells
+# (agentbox/vmenv.py writes the entry on the Host). guest-setup runs it at every boot,
+# before it appends the fixed values of Agent Box, so those win.
+#   fwcfg-env <entry file> <env file> <agent-env file>
+# The entry has one line NAME=<base64 of the value> per variable, or "none". A missing
+# entry means no variables: a VM whose new definition was postponed while it was paused
+# has none yet. A line that is no variable is left out with a message in the journal.
+# Nothing here is evaluated: the value is decoded with base64 -d and written quoted,
+#  - into <env file> as systemd's EnvironmentFile= reads it back: in double quotes, with
+#    a backslash before ", \, ` and $;
+#  - into <agent-env file> as bash reads it back: export NAME=<printf %q>.
+set -euo pipefail
+
+entry=${1:?entry file} env_file=${2:?env file} agent_env=${3:?agent-env file}
+[ -r "$entry" ] || exit 0
+
+n=0
+while IFS= read -r line || [ -n "$line" ]; do
+  n=$((n + 1))
+  [ -n "$line" ] && [ "$line" != none ] || continue
+  name=${line%%=*}
+  b64=${line#*=}
+  if [[ "$line" != *=* || ! "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    echo "fwcfg-env: $(basename "$entry"): line $n is no variable, left out" >&2
+    continue
+  fi
+  if ! printf '%s' "$b64" | base64 -d > /dev/null 2>&1; then
+    echo "fwcfg-env: $(basename "$entry"): $name is not base64, left out" >&2
+    continue
+  fi
+  # the Host never sends a line break or NUL in a value (bash would drop a NUL)
+  all=$(printf '%s' "$b64" | base64 -d | wc -c)
+  kept=$(printf '%s' "$b64" | base64 -d | tr -d '\000\n\r' | wc -c)
+  if [ "$all" -ne "$kept" ]; then
+    echo "fwcfg-env: $(basename "$entry"): $name has a line break or NUL, left out" >&2
+    continue
+  fi
+  value=$(printf '%s' "$b64" | base64 -d)
+  quoted=${value//\\/\\\\}
+  quoted=${quoted//\"/\\\"}
+  quoted=${quoted//\`/\\\`}
+  quoted=${quoted//\$/\\\$}
+  printf '%s="%s"\n' "$name" "$quoted" >> "$env_file"
+  printf 'export %s=%q\n' "$name" "$value" >> "$agent_env"
+done < "$entry"

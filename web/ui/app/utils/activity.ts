@@ -160,6 +160,10 @@ export const SENTENCES: Record<string, Sentence> = {
   'create': either('image', 'createImage', 'create'),
   'delete': flagged('delete_data_disk', 'deleteWithDisk', 'delete'),
   'set-memory': either('mib', 'setMemory', 'setMemoryAny'),
+  // the variables as NAME=value (not secret), all of them with replace (none: all removed)
+  'set-env': (p, tr) => (flag(p, 'replace') ? (has(p, 'env') ? say(tr, 'replaceEnv', { env: p.env }) : say(tr, 'clearEnv'))
+    : has(p, 'env') ? say(tr, 'setEnv', { env: p.env }) : null),
+  'unset-env': (p, tr) => (has(p, 'names') ? say(tr, 'unsetEnv', { names: p.names }) : null),
   'allow': listed('allow', 'for'),
   'disallow': listed('disallow'),
   'extend': listed('extend', 'by'),

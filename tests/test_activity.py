@@ -341,6 +341,28 @@ class RecordTest(ActivityTest):
              "Memory limit 512 MiB: memory limit (MiB) must be a whole number from 1024 to 1048576"),
         ])
 
+    def test_vm_variables(self):
+        """set-env with names and values (not secret), --replace as a flag, unset-env with the
+        names; the same values again change nothing; a refused name is a failed entry."""
+        for args, code in ((["set-env", "work", "A=1", "B=x y"], 0), (["set-env", "work", "A=1"], 0),
+                           (["set-env", "work", "HTTPS_PROXY="], 1), (["set-env", "work", "C=3", "--replace"], 0),
+                           (["unset-env", "work", "C", "--json"], 0), (["env", "work"], 0)):
+            self.assertEqual(self.run_agentbox("--actor", FIREFOX, *args)[0], code, args)
+        entries = self.entries()
+        self.assertEqual([(e["AGENTBOX_ACTION"], e["AGENTBOX_VM"], e["AGENTBOX_OUTCOME"], e["AGENTBOX_DESCRIPTION"])
+                          for e in entries], [
+            ("set-env", "work", "ok", "Set VM variables: A=1, B=x y"),
+            ("set-env", "work", "failed", "Set VM variables: HTTPS_PROXY=: HTTPS_PROXY cannot be a VM variable: "
+                                          "a Safeguard or Agent Box itself sets or reads it"),
+            ("set-env", "work", "ok", "Replace the VM variables: C=3"),
+            ("unset-env", "work", "ok", "Remove VM variables: C"),
+        ])
+        self.assertEqual(entries[0]["AGENTBOX_PARAM_ENV"], "A=1, B=x y")
+        self.assertEqual((entries[1]["AGENTBOX_ERROR"], entries[1]["AGENTBOX_ERROR_PARAM_NAME"]),
+                         ("env_name_reserved", "HTTPS_PROXY"))
+        self.assertEqual((entries[2]["AGENTBOX_PARAM_ENV"], entries[2]["AGENTBOX_PARAM_REPLACE"]), ("C=3", "true"))
+        self.assertEqual(entries[3]["AGENTBOX_PARAM_NAMES"], "C")
+
     def write_conf(self, name, text):
         with open(self.path(f"etc/agentbox/{name}"), "w") as f:
             f.write(text)

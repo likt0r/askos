@@ -146,6 +146,35 @@ export function mibAsGib(mib: number): string {
   return Number.isInteger(v) ? String(v) : v.toFixed(1)
 }
 
+// --- VM variables (agentbox/vmenv.py) --------------------------------------------------
+
+export const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/
+export const MAX_ENV_VARIABLES = 64
+export const MAX_ENV_VALUE_BYTES = 4096
+
+export interface EnvRow { name: string, value: string }
+export type EnvRowProblem = 'name' | 'twice' | 'value' | 'long'
+
+/** The rows of the VM variables dialog as the list PUT /vms/<vm>/env takes, with what is
+ * wrong per row (by index). A row without name and value is left out. The names a Safeguard
+ * or Agent Box reads are agentbox's to refuse (env_name_reserved), so the UI never drifts
+ * from safeguards.py. */
+export function envFromRows(rows: readonly EnvRow[]): { env: Record<string, string>, problems: Record<number, EnvRowProblem>, tooMany: boolean } {
+  // no prototype: names such as constructor or __proto__ are names like any other
+  const env: Record<string, string> = Object.create(null)
+  const problems: Record<number, EnvRowProblem> = {}
+  rows.forEach((row, i) => {
+    const name = row.name.trim()
+    if (!name && !row.value) return
+    if (!ENV_NAME.test(name)) problems[i] = 'name'
+    else if (Object.hasOwn(env, name)) problems[i] = 'twice'
+    else if (/[\u0000-\u0008\u000a-\u001f\u007f-\u009f]/.test(row.value)) problems[i] = 'value'
+    else if (new TextEncoder().encode(row.value).length > MAX_ENV_VALUE_BYTES) problems[i] = 'long'
+    else env[name] = row.value
+  })
+  return { env, problems, tooMany: Object.keys(env).length > MAX_ENV_VARIABLES }
+}
+
 /** What the VM's buttons may do in its state. */
 export function lifecycleActions(vm: Pick<Vm, 'state'>) {
   const s = vm.state

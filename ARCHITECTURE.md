@@ -72,11 +72,11 @@ flowchart LR
 - Each VM is one record in the **VM registry** (`/etc/agentbox/vms/<name>.json`, root-owned).
   `agentbox regenerate` derives everything else from it: the libvirt network and the domain
   (through virt-install), the proxy, token-service and Orca-port units, the nftables rules,
-  the storage pool of the disks, the Data disk and the Claude-token placeholder. Running it
-  again changes nothing; a changed definition applies at the VM's next start, and not while
-  the VM is paused. A VM network whose resolver differs from the current definition is
-  defined again and, when active, stopped and started, since libvirt's dnsmasq reads its
-  options only when the network starts; a VM running on it has no network until its next
+  the storage pool of the disks, the Data disk, the Claude-token placeholder and the file of
+  its VM variables. Running it again changes nothing; a changed definition applies at the
+  VM's next start, and not while the VM is paused. A VM network whose resolver differs from
+  the current definition is defined again and, when active, stopped and started, since
+  libvirt's dnsmasq reads its options only when the network starts; a VM running on it has no network until its next
   Restart (libvirt does not reconnect a running VM to a restarted network), which
   `regenerate` says. It also opens the ports the VMs reach in the firewalld zone `libvirt`
   (as setup does, step 5), before any VM network comes up, so it needs firewalld running. A socket whose unit text changed is restarted after systemd read it, so
@@ -88,8 +88,8 @@ flowchart LR
   no Allowlist entries of its own (optionally a one-time copy of another VM's own entries,
   [ADR 0001](docs/adr/0001-vm-is-the-unit-of-separation.md)) and a System disk, then runs
   `regenerate`. It refuses names the CLI or the Control Room use themselves and anything an
-  earlier VM of that name left behind (Data disk, Claude token, Observer, domain, network),
-  so nothing carries over between VMs. The VM starts on its first `agentbox pair` or Orca
+  earlier VM of that name left behind (Data disk, Claude token, VM variables, Observer,
+  domain, network), so nothing carries over between VMs. The VM starts on its first `agentbox pair` or Orca
   connection.
 - `agentbox set-memory` changes a VM's memory limit (1024 MiB up to the Host's memory, as
   in `create`): it writes the record and defines the domain again (the `regenerate` step for
@@ -104,10 +104,29 @@ flowchart LR
   is refused, since its saved memory belongs to the old definition; started again, it can be
   changed. The command says which applies (next start or next Restart) and is recorded in
   Activity like every change.
+- **VM variables** ([ADR 0014](docs/adr/0014-vm-variables-are-checked-on-the-host-and-passed-as-an-fw-cfg-file.md))
+  are environment variables of one VM (`"env"` in its record), for what a
+  project needs in the VM and that is not secret (a `DATABASE_URL`, a tool's mode): `agentbox
+  env`, `set-env <vm> NAME=VALUE... [--replace]`, `unset-env`, and a table on the VM's page
+  in the Control Room. They reach `orca serve`, the agents and terminals it starts (all
+  inherit its environment) and login shells. A change applies at the VM's next start, so a
+  running or paused VM keeps the variables it started with until a Restart or Reset; a
+  reboot inside the VM keeps the QEMU process and is not enough. The command holds the
+  registry lock, the record's lock and the VM's lifecycle lock, as `set-memory` does, checks
+  everything first and changes nothing on any error; it saves the record, then writes the
+  file the VM reads at boot (a run that dies in between is finished by `regenerate`). A
+  paused VM is not refused: the domain is not defined again, it only names that file. At most
+  64 variables, names `^[A-Za-z_][A-Za-z0-9_]*$` up to 64 characters, values up to 4 KiB of
+  UTF-8 without control characters other than tab (so no NUL and no line break). VM
+  variables never switch a Safeguard off: the Host refuses every name a Safeguard or Agent
+  Box itself reads (see Images and Builds).
+  `systemctl set-environment` is not used, so services started apart from `orca serve` (the
+  user manager `user@1000`, rootless Podman) do not see them; containers never inherit them
+  anyway.
 - `agentbox delete` needs the name typed again (`--confirm`). It moves the record into a
   marker under `/var/lib/agentbox/pending`, so nothing wakes or regenerates the VM, then
-  stops the VM and removes its domain (with any Pause), network, units, Claude token,
-  Observer directory and its own Allowlist entries. The System disk is deleted, the Data disk archived
+  stops the VM and removes its domain (with any Pause), network, units, Claude token, VM
+  variables, Observer directory and its own Allowlist entries. The System disk is deleted, the Data disk archived
   under `/var/lib/agentbox/archive` unless deleting it is asked for. The VM's nftables rule
   stays until its network is gone; running `delete` again finishes an interrupted run.
   Create, delete and `regenerate` hold one lock, so two creates never get the same network.
@@ -118,8 +137,19 @@ flowchart LR
   on every **Reset**.
   **Data disk** keeps repositories, Orca's identity and pairings, agent transcripts and
   build caches. Agent settings and hooks are not kept, so nothing planted there survives a Reset.
-- A VM learns its name, Orca port and Claude token from the Host at boot (QEMU fw_cfg);
-  the token never touches the Data disk.
+- A VM learns its name, Orca port, Pairing address, Claude token and VM variables from the
+  Host at boot (QEMU fw_cfg); the token never touches the Data disk. The token and the VM
+  variables are files QEMU reads (`root:qemu`, mode 0640, in directories of mode 0750),
+  never values in virt-install's `--sysinfo`, which it splits at commas: the VM variables
+  are `/var/lib/agentbox/vm-env/<vm>.env`, entry `opt/agentbox/env`, one line
+  `NAME=<base64 of the value>` per variable, or `none` without any (QEMU refuses empty
+  fw_cfg files). `guest-setup` hands them on with `/usr/lib/agentbox/fwcfg-env` at every
+  boot, before `orca serve` starts: it checks each name again, decodes the value with
+  `base64 -d`, evaluates nothing, leaves a bad line out with a message in the journal, and
+  writes the variables quoted into `/run/agentbox/env` (the unit's `EnvironmentFile`) and
+  `/run/agentbox/agent-env` (sourced by `/etc/profile.d/agentbox.sh` for shells), before
+  the fixed values of Agent Box, which so win. A domain defined before the entry existed has
+  none, which counts as no variables.
 - The Host never mounts a VM's disks. It reads a VM's journal (`agentbox logs`, and the
   Pairing code for `agentbox pair`) by having the VM's guest agent run `journalctl` inside
   the VM, without a shell and under a time limit, through a wrapper in the Image that starts
@@ -603,6 +633,17 @@ Host after every Build
   settings in `/etc/claude-code` among them, read as decoded JSON like Claude Code reads
   them; one that does not parse fails) only without mentioning a Safeguard. A failed check
   discards the Build.
+- A VM variable (see VMs) is set at runtime and never passes through this check, and
+  `/run/agentbox/env` overrides systemd's `DefaultEnvironment` for `orca serve`. So the Host
+  checks every name when it is set: it refuses names the check's own patterns know (the
+  variables that switch a Safeguard off and anything mentioning one: proxy variables in
+  either case, `GIT_CONFIG*`, `UV_NO_CONFIG`, `*IGNORE_SCRIPTS`, `*RELEASE_AGE`,
+  `UV_EXCLUDE_NEWER`, `*HOOKS_PATH`, `*CLAUDEAI*`), what Agent Box sets for the VM or every
+  process reads first (`PATH`, `HOME`, `XDG_RUNTIME_DIR`, `LD_*`, `NODE_OPTIONS`, `BASH_ENV`,
+  `ENV`, `CLAUDE_CODE_OAUTH_TOKEN`, `AGENTBOX_*`, `ORCA_PORT`, `PAIRING_ADDRESS`) and every
+  variable of the Image's `DefaultEnvironment`, held to those files by a test. Broad prefixes
+  such as `npm_config_*` or `UV_*` stay allowed: only what a Safeguard or Agent Box itself
+  reads is blocked.
 - Anything failing (the Release's files, podman, the check, the disk) leaves the previous
   Build current, deletes what the Build made and records `build.failed` or `build.rejected` in
   Activity with the reason; `build.ok` records a new current Build. The Build's log stays in
@@ -1084,7 +1125,9 @@ otherwise in `lib/agentbox` under their own prefix.
   undermine one in a way it does not look for (a wrapper earlier on `PATH`, a service that
   rewrites a file at boot); a Release is reviewed, the check catches convenient edits. A
   repository's own `.npmrc`, `pyproject.toml` or `.git/config` inside a VM can still loosen
-  npm, uv or Git for that repository.
+  npm, uv or Git for that repository, and so can a VM variable that points a tool at another
+  configuration file (`npm_config_userconfig`, `npm_config_globalconfig`): those names are
+  not refused.
 - **Builds run as root on the Host** (podman, bootc-image-builder) from the installed
   Release's Containerfiles: what a Release is cut from (`main`). Branch protection on `main`
   and installing only reviewed code are what keep agents' branches out of them.

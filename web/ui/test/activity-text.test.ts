@@ -169,7 +169,7 @@ describe('Activity in the UI language', () => {
       domain: 'd.example', scope: 'all', duration: '1h', target: 'priv', image: 'base', build: '20261101', mib: '8192',
       minutes: '30', category: 'paste', list: 'watchlist', legacy: 'old-file', migrated: '2', skipped: '0', owners: 'a',
       app_id: '1', settings: 'reset_time', reason: 'idle', signals: 'young', images: 'base', release: '0.3.0',
-      repository: 'a/b', request: 'a/b', folder: '/home/a/foo', files: '3', bytes: '120',
+      repository: 'a/b', request: 'a/b', folder: '/home/a/foo', files: '3', bytes: '120', env: 'A=1', names: 'A',
     }
     // a reason the sentence knows, where it is a code of its own
     const reasons: Record<string, string> = { 'wake.not-responding': 'system-not-booted', 'github.refused': 'not-installed' }
@@ -209,6 +209,19 @@ describe('Activity text (unit)', () => {
       .toBe(`activity.actions.disallow ${JSON.stringify({ entry: pattern('^m$') })}`)
     expect(activityText(coded(0, 'mark-harmless', { regex: '^m$' }, 'stored'), tr))
       .toBe(`activity.actions.markHarmless ${JSON.stringify({ domain: pattern('^m$') })}`)
+  })
+
+  it('words VM variables with their values, all of them with replace, and the names removed', () => {
+    const say = (key: string, values: Record<string, string>) => `activity.actions.${key} ${JSON.stringify(values)}`
+    expect(activityText(coded(0, 'set-env', { env: 'A=1, B=x y' }, 'stored'), tr)).toBe(say('setEnv', { env: 'A=1, B=x y' }))
+    expect(activityText(coded(0, 'set-env', { env: 'A=1', replace: 'true' }, 'stored'), tr)).toBe(say('replaceEnv', { env: 'A=1' }))
+    expect(activityText(coded(0, 'set-env', { replace: 'true' }, 'stored'), tr)).toBe('activity.actions.clearEnv')
+    expect(activityText(coded(0, 'set-env', {}, 'Set VM variables'), tr)).toBe('Set VM variables')
+    expect(activityText(coded(0, 'unset-env', { names: 'A, B' }, 'stored'), tr)).toBe(say('unsetEnv', { names: 'A, B' }))
+    // a refusal adds its translated error
+    const refused = coded(0, 'set-env', { env: 'HTTPS_PROXY=' }, 'stored',
+      { outcome: 'failed', error: 'env_name_reserved', error_params: { name: 'HTTPS_PROXY' } })
+    expect(activityText(refused, tr)).toBe(`${say('setEnv', { env: 'HTTPS_PROXY=' })}: errors.env_name_reserved {"field":"","name":"HTTPS_PROXY"}`)
   })
 
   it('keeps it when a parameter the sentence needs is missing or not text', () => {

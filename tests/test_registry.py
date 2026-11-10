@@ -375,7 +375,9 @@ class RegenerateTest(RegistryTest):
                                        "entry1.name=opt/agentbox/orca_port,entry1=6802,"
                                        "entry2.name=opt/agentbox/claude_token,"
                                        f"entry2.file={self.path('etc/agentbox/secrets/claude-priv')},"
-                                       "entry3.name=opt/agentbox/pairing_address,entry3=192.0.2.8"),
+                                       "entry3.name=opt/agentbox/pairing_address,entry3=192.0.2.8,"
+                                       "entry4.name=opt/agentbox/env,"
+                                       f"entry4.file={self.path('var/lib/agentbox/vm-env/priv.env')}"),
                          ("--network", "network=agentbox-priv,mac=52:54:00:77:02:02,model=virtio"),
                          ("--channel", "unix,target.type=virtio,target.name=org.qemu.guest_agent.0")]:
             with self.subTest(opt=opt):
@@ -393,6 +395,9 @@ class RegenerateTest(RegistryTest):
 
     def test_creates_data_disk_token_placeholder_and_observer_directory(self):
         self.run_agentbox("regenerate")
+        # no VM variables yet: "none", as QEMU refuses empty fw_cfg files (test_vm_env.py)
+        self.assertEqual(self.read("var/lib/agentbox/vm-env/priv.env"), "none\n")
+        self.assertEqual(self.mode("var/lib/agentbox/vm-env/priv.env"), 0o640)
         creates = [c["argv"] for c in self.calls("qemu-img") if c["argv"][0] == "create"]
         self.assertEqual(creates, [["create", "-q", "-f", "qcow2", self.path(f"var/lib/agentbox/vms/{vm}-data.qcow2"),
                                     "300G"] for vm in ("work", "priv")])
@@ -644,7 +649,8 @@ class RegenerateTest(RegistryTest):
 
     def test_first_run_reports_what_it_did(self):
         result = self.json("regenerate")
-        self.assertEqual(result, {"vms": {vm: ["network", "units", "data-disk", "claude-token", "observer", "domain"]
+        self.assertEqual(result, {"vms": {vm: ["network", "units", "data-disk", "claude-token", "vm-env", "observer",
+                                               "domain"]
                                           for vm in ("work", "priv")}, "firewall": True, "storage": True,
                                   "retention": 90, "timers": True,
                                   "zone": ["port 53/udp open", "port 53/tcp open", "port 443/tcp open", "port 9100/tcp open",
@@ -675,7 +681,7 @@ class RegenerateTest(RegistryTest):
     def test_paused_vm_keeps_its_definition_until_it_runs_again(self):
         self.scenario(vms={"priv": {"uuid": PRIV_UUID, "managed_save": True, "state": "shut off"}})
         self.assertEqual(self.json("regenerate")["vms"]["priv"],
-                         ["network", "units", "data-disk", "claude-token", "observer", "domain-postponed"])
+                         ["network", "units", "data-disk", "claude-token", "vm-env", "observer", "domain-postponed"])
         self.assertEqual([c["dom"] for c in self.calls("define")], ["agentbox-work"])
         self.scenario(vms={"priv": {"uuid": PRIV_UUID}})
         os.remove(os.path.join(self.dir, "domains.json"))
