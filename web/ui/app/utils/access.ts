@@ -232,12 +232,15 @@ export interface GithubApp {
   owner: string | null
   html_url: string | null
   install_url: string | null
+  installations: { id: number | null, account: string | null, type: string | null, repository_selection: string | null, suspended: boolean, html_url: string | null, vms: string[] }[]
+  /** why this App could not be asked (its key, GitHub's answer for it); the other Apps are still listed */
+  error: { error: string, message: string, params?: Record<string, unknown> } | null
 }
 
-/** `GET /github-app` */
+/** `GET /github-app`: every App on the Host, ascending by App ID (askos#25) */
 export interface GithubAppOverview {
-  app: GithubApp
-  installations: { id: number | null, account: string | null, type: string | null, repository_selection: string | null, suspended: boolean, html_url: string | null, vms: string[] }[]
+  apps: GithubApp[]
+  /** GitHub owners of VMs that no App is installed on */
   missing: { owner: string, vms: string[] }[]
 }
 
@@ -300,15 +303,20 @@ export const TOKEN_REASONS: Record<string, string[]> = {
   'owner-not-allowed': [],
   'not-installed': [],
   'github-status': ['status'],
+  'app-key': ['app_id'],
 }
 
 /** Why the token service refused, in the UI language from its code and parameters; null for a
- * code it does not know or a missing parameter. */
+ * code it does not know or a missing parameter. A refusal that stopped at one of several GitHub
+ * Apps names it (`app_id`, askos#25) where the reason has a wording for that. */
 export function refusalText(code: string | null | undefined, params: unknown, tr: Translator): string | null {
   const p = paramsOf(params)
   const needs = code ? TOKEN_REASONS[code] : undefined
+  if (!needs || !filled(p, needs)) return null
+  const withApp = `access.tokens.reasonsWithApp.${code}`
+  if (filled(p, ['app_id']) && tr.te(withApp)) return tr.t(withApp, p)
   const key = `access.tokens.reasons.${code}`
-  return needs && filled(p, needs) && tr.te(key) ? tr.t(key, p) : null
+  return tr.te(key) ? tr.t(key, p) : null
 }
 
 /** Why the token service refused a request, in the UI language; else its English text. */

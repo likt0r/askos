@@ -1522,6 +1522,7 @@ AGENTBOX_ERRORS = {
     "invalid_private_key": (400, "This is not the GitHub App's private key (.pem file)"),
     "invalid_app_id": (400, "Invalid App ID"),
     "github_app_missing": (409, "No GitHub App is set up"),
+    "github_app_not_found": (404, "No GitHub App with this App ID is set up"),
     "invalid_github_owner": (400, "Invalid GitHub owner name"),
     "github_owner_required": (400, "At least one GitHub owner is needed"),
     "journal_failed": (502, "Reading the journal failed"),
@@ -2296,6 +2297,14 @@ def put_github_app(h, m, url, body):
         raise invalid("private_key", "private_key is missing")
     return 200, run_json("set-github-app", str(app_id).strip(), "--no-prompt", "--json", stdin=key,
                          secrets_in=(key,), timeout=120)
+
+
+@route("DELETE", r"/github-app/(?P<app_id>[^/]+)")
+def delete_github_app(h, m, url, body):
+    """One of several Apps: the token service no longer uses it, its key leaves the Host."""
+    if not APP_ID.fullmatch(m["app_id"]):
+        raise ApiError(400, "invalid_app_id", "Invalid App ID", field="app_id")
+    return 200, run_json("remove-github-app", m["app_id"], "--json")
 
 
 @route("GET", "/settings")

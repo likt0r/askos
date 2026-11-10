@@ -60,7 +60,7 @@ def prepare(state):
                                                      "activity_retention_days": 30}, indent=2) + "\n")
     vm_records.write("/", vm_records.record("work", 1, github_owners=["likt0r"]), vm_records.record("priv", 2))
     write("/etc/agentbox/github/app.conf", "APP_ID=123456\n", 0o640, "agentbox-gh")
-    write("/etc/agentbox/github/app.pem", "-----BEGIN RSA PRIVATE KEY-----\nfake\n-----END RSA PRIVATE KEY-----\n",
+    write("/etc/agentbox/github/app-123456.pem", "-----BEGIN RSA PRIVATE KEY-----\nfake\n-----END RSA PRIVATE KEY-----\n",
           0o640, "agentbox-gh")
     # a Build of the Base image and the System disks on it (fake disks: qemu-img metadata as JSON)
     image = f"/var/lib/agentbox/images/{BUILD}.qcow2"

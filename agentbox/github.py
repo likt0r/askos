@@ -1,20 +1,27 @@
-"""The GitHub App behind the token service: replacing its ID and key, where it
-is installed and which VMs rely on that, and the tokens each VM got.
+"""The GitHub Apps behind the token service: adding one or replacing its key,
+removing one, where each is installed and which VMs rely on that, and the tokens
+each VM got.
 
-set-github-app checks a new App ID and private key with GitHub before they
-replace the working ones: it signs a JWT with the new key (RS256, like the token
-service) and asks GET /app, whose answer must name the same App. Only then are
-app.pem (owner agentbox-gh, mode 0400) and app.conf (group agentbox-gh, 0640)
-replaced, each with one rename. The token service starts a new process for
-every request and reads both files then, so the next request uses them without
-a restart.
+The Host keeps any number of Apps (one per trust boundary, e.g. an organisation's
+App and a personal one): app.conf (group agentbox-gh, 0640) names them, one
+APP_ID=<id> line each, and app-<id>.pem (owner agentbox-gh, mode 0400) is each
+App's key. The token service asks them in ascending App ID for an installation
+on the repository; the first one installed there issues the token.
+
+set-github-app checks an App ID and private key with GitHub before it stores
+them: it signs a JWT with the new key (RS256, like the token service) and asks
+GET /app, whose answer must name the same App. Only then is the App's key
+written, and then app.conf names the App, each with one rename; other Apps stay
+as they are. remove-github-app takes the App out of app.conf first, then deletes
+its key. The token service starts a new process for every request and reads the
+files then, so the next request uses them without a restart.
 
 The key comes in on stdin and reaches openssl through a pipe (/dev/fd), every
 JWT reaches curl on stdin: neither ever stands on a command line, in output, in
 an error message or in Activity.
 
-github-app compares the App's installations (GET /app/installations) with the
-GitHub owners of every VM; github-tokens shows what a VM asked the token service
+github-app compares the installations of every App (GET /app/installations) with
+the GitHub owners of every VM; github-tokens shows what a VM asked the token service
 for, read from its log the way Activity reads it.
 """
 import base64
@@ -29,12 +36,11 @@ import sys
 import time
 
 from . import activity, paths, registry, state_files
-from .errors import die
+from .errors import Fail, die
 from .sanitize import clean, redact
 
 API = "https://api.github.com"
 CONF_DIR = os.path.join(paths.CONF, "github")
-KEY_FILE = os.path.join(CONF_DIR, "app.pem")
 CONF_FILE = os.path.join(CONF_DIR, "app.conf")
 SERVICE_USER = "agentbox-gh"         # the token service; only it reads the key (rpm/agentbox.sysusers)
 APP_ID = re.compile(r"[1-9][0-9]{0,11}")
@@ -76,8 +82,13 @@ def _sign_with_key(key):
     return sign
 
 
-def _sign_with_file(data):
-    return _openssl(["dgst", "-sha256", "-sign", KEY_FILE, "-passin", "pass:"], data)
+def key_file(app_id):
+    """Where the App's private key is stored."""
+    return os.path.join(CONF_DIR, f"app-{app_id}.pem")
+
+
+def _sign_with_file(path):
+    return lambda data: _openssl(["dgst", "-sha256", "-sign", path, "-passin", "pass:"], data)
 
 
 def _b64url(data):
@@ -168,33 +179,46 @@ def _private_key(raw):
     return pem
 
 
-def _conf_with(app_id):
-    """app.conf with this APP_ID; any other lines stay."""
+def _read_conf():
+    """(App IDs app.conf names, ascending, as text; its other lines)."""
     try:
         with open(CONF_FILE, "rb") as f:
-            lines = [l for l in state_files.lines(f.read()) if not l.startswith(b"APP_ID=")]
+            lines = state_files.lines(f.read())
     except FileNotFoundError:
         lines = []
     except OSError as e:
         die(f"{CONF_FILE}: {e.strerror}", error="action_failed", path=CONF_FILE)
-    return b"".join(l + b"\n" for l in [b"APP_ID=" + app_id.encode(), *lines])
+    ids = {l[len(b"APP_ID="):].strip().decode("ascii", "replace") for l in lines if l.startswith(b"APP_ID=")}
+    return (sorted((i for i in ids if APP_ID.fullmatch(i)), key=int),
+            [l for l in lines if l and not l.startswith(b"APP_ID=")])
+
+
+def _write_conf(ids, others, gid):
+    """app.conf naming these Apps, ascending; its other lines stay."""
+    lines = [b"APP_ID=" + i.encode() for i in sorted(set(ids), key=int)] + others
+    state_files.write_atomic(CONF_FILE, b"".join(l + b"\n" for l in lines), 0o640, gid)
+
+
+def _app_id_argument(args, usage):
+    """The one App ID among the arguments, or die without echoing any of them: one
+    might be a key pasted by mistake."""
+    given = [a for a in args if a not in ("--no-prompt", "--json")]
+    if len(given) != 1:
+        die(usage, 2, error="invalid_argument")
+    if not APP_ID.fullmatch(given[0]):
+        die("invalid App ID: a number, as GitHub shows it under App ID in the App's settings", 2,
+            error="invalid_app_id")
+    if not os.path.isdir(CONF_DIR):
+        die(f"{CONF_DIR} is missing (the package creates it)", error="action_failed", path=CONF_DIR)
+    return given[0]
 
 
 def set_github_app(args):
-    """agentbox set-github-app <app-id> [--no-prompt] [--json]  (private key on stdin)"""
-    flags = {"--no-prompt", "--json"}
-    given = [a for a in args if a not in flags]
-    # nothing of the arguments is echoed: one of them might be a key pasted by mistake
-    if len(given) != 1:
-        die("usage: agentbox set-github-app <app-id> [--no-prompt] [--json], the key on stdin", 2,
-            error="invalid_argument")
-    app_id = given[0]
-    if not APP_ID.fullmatch(app_id):
-        die("invalid App ID: a number, as GitHub shows it under App ID in the App's settings", 2,
-            error="invalid_app_id")
+    """agentbox set-github-app <app-id> [--no-prompt] [--json]  (private key on stdin): adds
+    the App, or replaces the key of the App with this ID."""
+    app_id = _app_id_argument(args, "usage: agentbox set-github-app <app-id> [--no-prompt] [--json], "
+                                    "the key on stdin")
     as_json = "--json" in args
-    if not os.path.isdir(CONF_DIR):
-        die(f"{CONF_DIR} is missing (the package creates it)", error="action_failed", path=CONF_DIR)
     uid, gid = _service_user()
     if "--no-prompt" not in args:
         # with --json stdout carries only the result
@@ -216,32 +240,56 @@ def set_github_app(args):
     if answer.get("id") != int(app_id):
         die("GitHub names another App for this key; nothing changed", error="github_app_rejected")
     app = _app(answer, app_id)
-    with state_files.locked(KEY_FILE):
-        # the key first: a request in between gets the new key with the old ID, if
-        # the ID changed at all, and is refused by GitHub; the next one works
-        state_files.write_atomic(KEY_FILE, key, 0o400, gid, uid)
-        state_files.write_atomic(CONF_FILE, _conf_with(app_id), 0o640, gid)
+    with state_files.locked(CONF_FILE):
+        ids, others = _read_conf()
+        # the key first: app.conf names an App only once its key is there
+        state_files.write_atomic(key_file(app_id), key, 0o400, gid, uid)
+        if app_id not in ids:
+            _write_conf([*ids, app_id], others, gid)
+    added = app_id not in ids
     if as_json:
-        print(json.dumps({**app, "stored": True}, ensure_ascii=False))
+        print(json.dumps({**app, "stored": True, "added": added}, ensure_ascii=False))
     else:
-        print(f"GitHub App {app_id} ({app['slug'] or '?'}) checked and saved. "
+        print(f"GitHub App {app_id} ({app['slug'] or '?'}) checked and {'added' if added else 'saved'}. "
               f"The token service uses it from the next request on.")
+
+
+# --- remove-github-app -------------------------------------------------------
+
+def remove_github_app(args):
+    """agentbox remove-github-app <app-id> [--json]: the token service no longer uses
+    the App, and its key is deleted from the Host. The other Apps stay."""
+    app_id = _app_id_argument(args, "usage: agentbox remove-github-app <app-id> [--json]")
+    _, gid = _service_user()
+    path = key_file(app_id)
+    with state_files.locked(CONF_FILE):
+        ids, others = _read_conf()
+        if app_id not in ids and not os.path.lexists(path):
+            die(f"GitHub App {app_id} is not set up", error="github_app_not_found", app_id=int(app_id))
+        # app.conf first: the token service never asks an App whose key is gone
+        if app_id in ids:
+            _write_conf([i for i in ids if i != app_id], others, gid)
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            die(f"{path}: {e.strerror}", error="action_failed", path=path)
+    if "--json" in args:
+        print(json.dumps({"id": int(app_id), "removed": True}))
+    else:
+        print(f"GitHub App {app_id} removed; the token service no longer uses it. "
+              f"Delete its key on GitHub as well.")
 
 
 # --- github-app --------------------------------------------------------------
 
-def _stored_app_id():
-    try:
-        with open(CONF_FILE, "rb") as f:
-            conf = dict(l.split(b"=", 1) for l in state_files.lines(f.read()) if b"=" in l)
-    except FileNotFoundError:
-        conf = {}
-    except OSError as e:
-        die(f"{CONF_FILE}: {e.strerror}", error="action_failed", path=CONF_FILE)
-    app_id = conf.get(b"APP_ID", b"").strip().decode("ascii", "replace")
-    if not APP_ID.fullmatch(app_id) or not os.path.exists(KEY_FILE):
+def _stored_app_ids():
+    """The App IDs app.conf names, ascending, or die when there is none."""
+    ids, _ = _read_conf()
+    if not ids:
         die("no GitHub App is set up: agentbox set-github-app", error="github_app_missing")
-    return app_id
+    return ids
 
 
 def _call(path, jwt):
@@ -264,62 +312,83 @@ def _installation(i):
             "html_url": _text(url, 300) if isinstance(url, str) and url.startswith("https://github.com/") else None}
 
 
+def _installations_of(app_id):
+    """The App as GitHub describes it and its installations; or, when its key or GitHub's
+    answer for it is no use, the App ID with the error (the other Apps are still shown).
+    GitHub not reachable at all ends the command."""
+    path = key_file(app_id)
+    try:
+        if not os.path.exists(path):
+            die(f"{path} is missing (a new key with agentbox set-github-app)", error="invalid_private_key")
+        jwt = _jwt(app_id, _sign_with_file(path))
+        if jwt is None:
+            die(f"{path}: cannot sign with it (a new key with agentbox set-github-app)",
+                error="invalid_private_key")
+        app = _call("/app", jwt)
+        if not isinstance(app, dict) or app.get("id") != int(app_id):
+            die("GitHub names another App than app.conf", error="github_app_rejected")
+        found = []
+        for page in range(1, MAX_PAGES + 1):
+            batch = _call(f"/app/installations?per_page={PER_PAGE}&page={page}", jwt)
+            if not isinstance(batch, list):
+                die("unexpected answer from GitHub to /app/installations", error="github_unavailable",
+                    path="/app/installations")
+            found += [_installation(i) for i in batch if isinstance(i, dict)]
+            if len(batch) < PER_PAGE:
+                break
+    except Fail as e:
+        if e.error == "github_unavailable" and "path" not in e.params:
+            raise
+        return {**_app({}, app_id), "installations": [],
+                "error": {"error": e.error, "message": e.message, "params": e.params}}
+    return {**_app(app, app_id), "installations": sorted(found, key=lambda i: (i["account"] or "").lower()),
+            "error": None}
+
+
 def overview():
-    """The App, its installations with the VMs relying on each, and the GitHub
-    owners of VMs without an installation."""
-    app_id = _stored_app_id()
-    jwt = _jwt(app_id, _sign_with_file)
-    if jwt is None:
-        die(f"{KEY_FILE}: cannot sign with it (a new key with agentbox set-github-app)",
-            error="invalid_private_key")
-    app = _call("/app", jwt)
-    if not isinstance(app, dict) or app.get("id") != int(app_id):
-        die("GitHub names another App than app.conf", error="github_app_rejected")
-    found = []
-    for page in range(1, MAX_PAGES + 1):
-        batch = _call(f"/app/installations?per_page={PER_PAGE}&page={page}", jwt)
-        if not isinstance(batch, list):
-            die("unexpected answer from GitHub to /app/installations", error="github_unavailable",
-                path="/app/installations")
-        found += [_installation(i) for i in batch if isinstance(i, dict)]
-        if len(batch) < PER_PAGE:
-            break
-    installed = {i["account"].lower(): i for i in found if i["account"]}
-    for i in found:
-        i["vms"] = []
+    """Every App (ascending App ID) with its installations and the VMs relying on each,
+    and the GitHub owners of VMs that no App is installed on."""
+    apps = [_installations_of(app_id) for app_id in _stored_app_ids()]
+    installed = {}
+    for app in apps:
+        for i in app["installations"]:
+            i["vms"] = []
+            if i["account"]:
+                installed.setdefault(i["account"].lower(), []).append(i)
     missing = {}
     records, problems = registry.scan()
     for name, problem in problems:
         print(f"agentbox: {problem}", file=sys.stderr, flush=True)
     for rec in sorted(records, key=lambda r: r["name"]):
         for owner in rec["github_owners"]:
-            if owner.lower() in installed:
-                vms = installed[owner.lower()]["vms"]
-            else:
-                vms = missing.setdefault(owner.lower(), {"owner": owner, "vms": []})["vms"]
-            if rec["name"] not in vms:
-                vms.append(rec["name"])
-    return {"app": _app(app, app_id), "installations": sorted(found, key=lambda i: (i["account"] or "").lower()),
-            "missing": sorted(missing.values(), key=lambda m: m["owner"].lower())}
+            lists = [i["vms"] for i in installed.get(owner.lower(), [])] or \
+                [missing.setdefault(owner.lower(), {"owner": owner, "vms": []})["vms"]]
+            for vms in lists:
+                if rec["name"] not in vms:
+                    vms.append(rec["name"])
+    return {"apps": apps, "missing": sorted(missing.values(), key=lambda m: m["owner"].lower())}
 
 
 def github_app(args):
-    """agentbox github-app [--json]: the App, where it is installed, which VMs rely on that."""
+    """agentbox github-app [--json]: every App, where it is installed, which VMs rely on that."""
     if any(a != "--json" for a in args):
         die("usage: agentbox github-app [--json]", 2, error="invalid_argument")
     result = overview()
     if "--json" in args:
         print(json.dumps(result, ensure_ascii=False))
         return
-    app = result["app"]
-    print(f"GitHub App {app['id']} {app['slug'] or '?'} ({app['name'] or '?'}), owned by {app['owner'] or '?'}")
-    print(f"Install link: {app['install_url'] or '-'}")
-    print("Installed on:" if result["installations"] else "Not installed anywhere.")
     selection = {"all": "all repos", "selected": "selected repos"}
-    for i in result["installations"]:
-        print(f"  {i['account'] or '?':<20} {i['type'] or '?':<13} "
-              f"{selection.get(i['repository_selection'], i['repository_selection'] or '?'):<15} "
-              f"VMs: {', '.join(i['vms']) or '-'}" + ("  [suspended]" if i["suspended"] else ""))
+    for app in result["apps"]:
+        if app["error"]:
+            print(f"GitHub App {app['id']}: {app['error']['message']}")
+            continue
+        print(f"GitHub App {app['id']} {app['slug'] or '?'} ({app['name'] or '?'}), owned by {app['owner'] or '?'}")
+        print(f"Install link: {app['install_url'] or '-'}")
+        print("Installed on:" if app["installations"] else "Not installed anywhere.")
+        for i in app["installations"]:
+            print(f"  {i['account'] or '?':<20} {i['type'] or '?':<13} "
+                  f"{selection.get(i['repository_selection'], i['repository_selection'] or '?'):<15} "
+                  f"VMs: {', '.join(i['vms']) or '-'}" + ("  [suspended]" if i["suspended"] else ""))
     if result["missing"]:
         print("Missing Installations (these VMs get no tokens for these GitHub owners):")
         for m in result["missing"]:
@@ -408,4 +477,5 @@ def github_tokens(args):
         print("agentbox: there are more entries (raise --lines or narrow --since)", file=sys.stderr)
 
 
-COMMANDS = {"set-github-app": set_github_app, "github-app": github_app, "github-tokens": github_tokens}
+COMMANDS = {"set-github-app": set_github_app, "remove-github-app": remove_github_app, "github-app": github_app,
+            "github-tokens": github_tokens}

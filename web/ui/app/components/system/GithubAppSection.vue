@@ -1,9 +1,10 @@
 <script setup lang="ts">
-// The GitHub App in System: where it is installed and which VMs rely on each Installation,
-// GitHub owners of VMs without one (missing Installations), the link to install it
-// elsewhere, and replacing App ID and private key (checked with GitHub before they replace
-// the working ones; the key is never shown again).
-import type { GithubAppOverview } from '~/utils/access'
+// The GitHub Apps in System (several since askos#25, one per trust boundary): for each, where
+// it is installed and which VMs rely on each Installation, and the link to install it
+// elsewhere; GitHub owners of VMs that no App is installed on (missing Installations); adding
+// an App, replacing one App's key (checked with GitHub before it is stored; the key is never
+// shown again) and removing an App.
+import type { GithubApp, GithubAppOverview } from '~/utils/access'
 
 const { t } = useI18n()
 const errorText = useErrorText()
@@ -12,21 +13,28 @@ const toast = useToast()
 const overview = ref<GithubAppOverview | null>(null)
 const loading = ref(false)
 const error = ref<unknown>(null)
-const copied = ref(false)
+const copied = ref<number | null>(null)
 
-const replacing = ref(false)
+// the form: a new App, or a new key for the App with this ID
+const editing = ref<'add' | 'replace' | null>(null)
 const appId = ref('')
 const key = ref('')
 const keyFile = ref<string | null>(null)
 const confirming = ref(false)
 const saving = ref(false)
 const saveError = ref<unknown>(null)
-const saved = ref<{ id: number, slug: string | null } | null>(null)
+const saved = ref<{ id: number, added: boolean } | null>(null)
+
+const removing = ref<GithubApp | null>(null)
+const removeOpen = ref(false)
+const removeBusy = ref(false)
+const removeError = ref<unknown>(null)
 
 const appIdValid = computed(() => /^[1-9]\d{0,11}$/.test(appId.value.trim()))
 const keyLooksRight = computed(() => /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(key.value))
-const canReplace = computed(() => appIdValid.value && keyLooksRight.value && !saving.value)
+const canSave = computed(() => appIdValid.value && keyLooksRight.value && !saving.value)
 const missingApp = computed(() => error.value instanceof ApiError && error.value.code === 'github_app_missing')
+const known = computed(() => overview.value?.apps.some(a => String(a.id) === appId.value.trim()) ?? false)
 
 async function load() {
   loading.value = true
@@ -35,6 +43,7 @@ async function load() {
     error.value = null
   }
   catch (e) {
+    overview.value = null
     error.value = e
   }
   finally {
@@ -42,32 +51,35 @@ async function load() {
   }
 }
 
-async function copyLink() {
-  const link = overview.value?.app.install_url
-  if (!link) return
+function appError(app: GithubApp) {
+  return app.error ? new ApiError(0, app.error.error, app.error.message) : null
+}
+
+async function copyLink(app: GithubApp) {
+  if (!app.install_url) return
   try {
-    await navigator.clipboard.writeText(link)
-    copied.value = true
-    setTimeout(() => (copied.value = false), 2000)
+    await navigator.clipboard.writeText(app.install_url)
+    copied.value = app.id
+    setTimeout(() => (copied.value = null), 2000)
   }
   catch {
     toast.add({ color: 'warning', title: t('githubApp.copyFailed') })
   }
 }
 
-function startReplace() {
-  appId.value = overview.value ? String(overview.value.app.id) : ''
+function startEdit(mode: 'add' | 'replace', app?: GithubApp) {
+  appId.value = app ? String(app.id) : ''
   key.value = ''
   keyFile.value = null
   saveError.value = null
   saved.value = null
-  replacing.value = true
+  editing.value = mode
 }
 
-function cancelReplace() {
+function cancelEdit() {
   key.value = ''
   keyFile.value = null
-  replacing.value = false
+  editing.value = null
 }
 
 async function chooseFile(event: Event) {
@@ -83,8 +95,8 @@ async function chooseFile(event: Event) {
   keyFile.value = file.name
 }
 
-async function replace() {
-  if (!canReplace.value) return
+async function save() {
+  if (!canSave.value) return
   const body = { app_id: Number(appId.value.trim()), private_key: key.value }
   // the key leaves the page with the request
   key.value = ''
@@ -92,11 +104,11 @@ async function replace() {
   saving.value = true
   saveError.value = null
   try {
-    const r = await api<{ id: number, slug: string | null }>('/github-app', { method: 'PUT', body })
-    saved.value = { id: r?.id ?? body.app_id, slug: r?.slug ?? null }
+    const r = await api<{ id: number, added?: boolean }>('/github-app', { method: 'PUT', body })
+    saved.value = { id: r?.id ?? body.app_id, added: r?.added ?? false }
     confirming.value = false
-    replacing.value = false
-    toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t('githubApp.replace.done', { id: saved.value.id }) })
+    editing.value = null
+    toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t(saved.value.added ? 'githubApp.add.done' : 'githubApp.replace.done', { id: saved.value.id }) })
     void load()
   }
   catch (e) {
@@ -105,6 +117,34 @@ async function replace() {
   }
   finally {
     saving.value = false
+  }
+}
+
+function askRemove(app: GithubApp) {
+  removing.value = app
+  removeError.value = null
+  removeOpen.value = true
+}
+
+async function remove() {
+  const app = removing.value
+  if (!app) return
+  removeBusy.value = true
+  removeError.value = null
+  try {
+    await api(`/github-app/${app.id}`, { method: 'DELETE' })
+    removeOpen.value = false
+    saved.value = null
+    // a new key for the App just removed has nothing left to replace
+    if (editing.value === 'replace' && appId.value === String(app.id)) cancelEdit()
+    toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t('githubApp.remove.done', { id: app.id }) })
+    void load()
+  }
+  catch (e) {
+    removeError.value = e
+  }
+  finally {
+    removeBusy.value = false
   }
 }
 
@@ -120,10 +160,13 @@ onMounted(load)
       </h2>
       <span class="flex-1" />
       <UButton color="neutral" variant="ghost" size="sm" icon="i-lucide-refresh-cw" :loading="loading" :aria-label="t('access.common.refresh')" @click="load" />
-      <UButton v-if="!replacing" color="neutral" variant="outline" size="sm" icon="i-lucide-key-round" :label="t('githubApp.replace.open')" data-testid="app-replace-open" @click="startReplace" />
+      <UButton v-if="!editing" color="neutral" variant="outline" size="sm" icon="i-lucide-plus" :label="t('githubApp.add.open')" data-testid="app-add-open" @click="startEdit('add')" />
     </div>
+    <p class="text-sm text-muted">
+      {{ t('githubApp.intro') }}
+    </p>
 
-    <UAlert v-if="saved" color="success" variant="subtle" icon="i-lucide-circle-check" :title="t('githubApp.replace.done', { id: saved.id })" :description="t('githubApp.replace.doneText')" data-testid="app-replaced" />
+    <UAlert v-if="saved" color="success" variant="subtle" icon="i-lucide-circle-check" :title="t(saved.added ? 'githubApp.add.done' : 'githubApp.replace.done', { id: saved.id })" :description="t(saved.added ? 'githubApp.add.doneText' : 'githubApp.replace.doneText')" data-testid="app-replaced" />
 
     <UAlert
       v-if="error"
@@ -139,33 +182,6 @@ onMounted(load)
     </p>
 
     <template v-if="overview">
-      <div class="space-y-2 rounded-lg border border-default p-4 text-sm" data-testid="app-info">
-        <div class="flex flex-wrap items-center gap-2">
-          <span class="font-medium text-highlighted">{{ overview.app.name ?? overview.app.slug ?? '?' }}</span>
-          <UBadge color="neutral" variant="subtle" size="sm" :label="t('githubApp.appId', { id: overview.app.id })" />
-          <span v-if="overview.app.owner" class="text-muted">{{ t('githubApp.owner', { owner: overview.app.owner }) }}</span>
-          <span class="flex-1" />
-          <UButton v-if="overview.app.html_url" :to="overview.app.html_url" target="_blank" rel="noopener noreferrer" color="neutral" variant="link" size="sm" trailing-icon="i-lucide-external-link" :label="t('githubApp.onGithub')" />
-        </div>
-        <div v-if="overview.app.install_url" class="space-y-1">
-          <p class="text-muted">
-            {{ t('githubApp.installLink') }}
-          </p>
-          <div class="flex flex-wrap items-center gap-2">
-            <code class="min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded bg-elevated px-2 py-1 font-mono text-xs" data-testid="install-url">{{ overview.app.install_url }}</code>
-            <UButton
-              color="neutral"
-              variant="outline"
-              size="sm"
-              :icon="copied ? 'i-lucide-check' : 'i-lucide-copy'"
-              :label="copied ? t('githubApp.copied') : t('githubApp.copy')"
-              data-testid="install-copy"
-              @click="copyLink"
-            />
-          </div>
-        </div>
-      </div>
-
       <div v-if="overview.missing.length" class="space-y-2" data-testid="app-missing">
         <UAlert color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="t('githubApp.missing.title', overview.missing.length)" :description="t('githubApp.missing.text')" />
         <ul class="divide-y divide-default rounded-lg border border-warning/40">
@@ -177,41 +193,73 @@ onMounted(load)
         </ul>
       </div>
 
-      <div class="space-y-2">
-        <h3 class="font-medium text-highlighted">
-          {{ t('githubApp.installations.title') }}
-        </h3>
-        <p v-if="!overview.installations.length" class="text-sm text-muted">
-          {{ t('githubApp.installations.none') }}
-        </p>
-        <ul v-else class="divide-y divide-default rounded-lg border border-default bg-default">
-          <li v-for="i in overview.installations" :key="i.id ?? i.account ?? ''" class="flex flex-col gap-1 px-4 py-2.5 text-sm sm:flex-row sm:items-center sm:gap-3" data-testid="installation" :data-account="i.account">
-            <span class="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-              <UIcon :name="i.type === 'Organization' ? 'i-lucide-building-2' : 'i-lucide-user'" class="size-4 text-muted" />
-              <span class="font-medium text-highlighted">{{ i.account ?? '?' }}</span>
-              <UBadge color="neutral" variant="subtle" size="sm" :label="i.repository_selection === 'all' ? t('githubApp.installations.allRepos') : t('githubApp.installations.someRepos')" />
-              <UBadge v-if="i.suspended" color="error" variant="subtle" size="sm" :label="t('githubApp.installations.suspended')" />
-            </span>
-            <span class="text-xs text-muted">
-              {{ i.vms.length ? t('githubApp.installations.vms', { vms: i.vms.join(', ') }) : t('githubApp.installations.noVms') }}
-            </span>
-            <UButton v-if="i.html_url" :to="i.html_url" target="_blank" rel="noopener noreferrer" color="neutral" variant="link" size="xs" trailing-icon="i-lucide-external-link" :label="t('githubApp.installations.settings')" class="self-start px-0 sm:self-center" />
-          </li>
-        </ul>
+      <div v-for="app in overview.apps" :key="app.id" class="space-y-3 rounded-lg border border-default p-4 text-sm" data-testid="app-info" :data-app-id="app.id">
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="font-medium text-highlighted">{{ app.name ?? app.slug ?? '?' }}</span>
+          <UBadge color="neutral" variant="subtle" size="sm" :label="t('githubApp.appId', { id: app.id })" />
+          <span v-if="app.owner" class="text-muted">{{ t('githubApp.owner', { owner: app.owner }) }}</span>
+          <span class="flex-1" />
+          <UButton v-if="app.html_url" :to="app.html_url" target="_blank" rel="noopener noreferrer" color="neutral" variant="link" size="sm" trailing-icon="i-lucide-external-link" :label="t('githubApp.onGithub')" />
+          <UButton v-if="!editing" color="neutral" variant="outline" size="xs" icon="i-lucide-key-round" :label="t('githubApp.replace.open')" data-testid="app-replace-open" @click="startEdit('replace', app)" />
+          <UButton color="error" variant="ghost" size="xs" icon="i-lucide-trash-2" :label="t('githubApp.remove.open')" data-testid="app-remove-open" @click="askRemove(app)" />
+        </div>
+
+        <UAlert v-if="app.error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(appError(app))" :description="app.error.message" data-testid="app-item-error" />
+
+        <div v-if="app.install_url" class="space-y-1">
+          <p class="text-muted">
+            {{ t('githubApp.installLink') }}
+          </p>
+          <div class="flex flex-wrap items-center gap-2">
+            <code class="min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded bg-elevated px-2 py-1 font-mono text-xs" data-testid="install-url">{{ app.install_url }}</code>
+            <UButton
+              color="neutral"
+              variant="outline"
+              size="sm"
+              :icon="copied === app.id ? 'i-lucide-check' : 'i-lucide-copy'"
+              :label="copied === app.id ? t('githubApp.copied') : t('githubApp.copy')"
+              data-testid="install-copy"
+              @click="copyLink(app)"
+            />
+          </div>
+        </div>
+
+        <div v-if="!app.error" class="space-y-2">
+          <h3 class="font-medium text-highlighted">
+            {{ t('githubApp.installations.title') }}
+          </h3>
+          <p v-if="!app.installations.length" class="text-muted">
+            {{ t('githubApp.installations.none') }}
+          </p>
+          <ul v-else class="divide-y divide-default rounded-lg border border-default bg-default">
+            <li v-for="i in app.installations" :key="i.id ?? i.account ?? ''" class="flex flex-col gap-1 px-4 py-2.5 sm:flex-row sm:items-center sm:gap-3" data-testid="installation" :data-account="i.account">
+              <span class="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                <UIcon :name="i.type === 'Organization' ? 'i-lucide-building-2' : 'i-lucide-user'" class="size-4 text-muted" />
+                <span class="font-medium text-highlighted">{{ i.account ?? '?' }}</span>
+                <UBadge color="neutral" variant="subtle" size="sm" :label="i.repository_selection === 'all' ? t('githubApp.installations.allRepos') : t('githubApp.installations.someRepos')" />
+                <UBadge v-if="i.suspended" color="error" variant="subtle" size="sm" :label="t('githubApp.installations.suspended')" />
+              </span>
+              <span class="text-xs text-muted">
+                {{ i.vms.length ? t('githubApp.installations.vms', { vms: i.vms.join(', ') }) : t('githubApp.installations.noVms') }}
+              </span>
+              <UButton v-if="i.html_url" :to="i.html_url" target="_blank" rel="noopener noreferrer" color="neutral" variant="link" size="xs" trailing-icon="i-lucide-external-link" :label="t('githubApp.installations.settings')" class="self-start px-0 sm:self-center" />
+            </li>
+          </ul>
+        </div>
       </div>
     </template>
 
-    <form v-if="replacing" class="space-y-3 rounded-lg border border-default p-4" novalidate data-testid="app-replace" @submit.prevent="confirming = true">
+    <form v-if="editing" class="space-y-3 rounded-lg border border-default p-4" novalidate data-testid="app-replace" @submit.prevent="confirming = true">
       <div>
         <h3 class="font-medium text-highlighted">
-          {{ t('githubApp.replace.title') }}
+          {{ editing === 'add' ? t('githubApp.add.title') : t('githubApp.replace.title', { id: appId }) }}
         </h3>
         <p class="text-sm text-muted">
-          {{ t('githubApp.replace.intro') }}
+          {{ editing === 'add' ? t('githubApp.add.intro') : t('githubApp.replace.intro') }}
         </p>
       </div>
-      <UFormField :label="t('githubApp.replace.appId')" name="app_id" :error="appId && !appIdValid ? t('errors.invalid_app_id') : undefined">
-        <UInput v-model="appId" inputmode="numeric" autocomplete="off" class="w-full sm:w-48" data-testid="app-id" />
+      <UFormField :label="t('githubApp.replace.appId')" name="app_id" :error="appId && !appIdValid ? t('errors.invalid_app_id') : undefined" :help="editing === 'add' && known ? t('githubApp.add.known') : undefined">
+        <UInput v-model="appId" inputmode="numeric" autocomplete="off" :disabled="editing === 'replace'" class="w-full sm:w-48" data-testid="app-id" />
       </UFormField>
       <UFormField :label="t('githubApp.replace.key')" name="private_key" :help="keyFile ? t('githubApp.replace.fromFile', { file: keyFile }) : t('githubApp.replace.keyHelp')">
         <div class="space-y-2">
@@ -237,19 +285,29 @@ onMounted(load)
       </p>
       <UAlert v-if="saveError" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(saveError)" :description="t('githubApp.replace.nothingChanged')" role="alert" data-testid="app-replace-error" />
       <div class="flex flex-wrap justify-end gap-2">
-        <UButton color="neutral" variant="outline" :label="t('access.common.cancel')" :disabled="saving" @click="cancelReplace" />
-        <UButton type="submit" icon="i-lucide-shield-check" :label="t('githubApp.replace.submit')" :disabled="!canReplace" data-testid="app-replace-submit" />
+        <UButton color="neutral" variant="outline" :label="t('access.common.cancel')" :disabled="saving" @click="cancelEdit" />
+        <UButton type="submit" icon="i-lucide-shield-check" :label="editing === 'add' ? t('githubApp.add.submit') : t('githubApp.replace.submit')" :disabled="!canSave" data-testid="app-replace-submit" />
       </div>
     </form>
 
     <AccessConfirmDialog
       v-model:open="confirming"
-      :title="t('githubApp.replace.confirmTitle')"
-      :description="t('githubApp.replace.confirmText', { id: appId })"
-      :confirm-label="t('githubApp.replace.confirm')"
+      :title="editing === 'add' && !known ? t('githubApp.add.confirmTitle') : t('githubApp.replace.confirmTitle')"
+      :description="editing === 'add' && !known ? t('githubApp.add.confirmText', { id: appId }) : t('githubApp.replace.confirmText', { id: appId })"
+      :confirm-label="editing === 'add' && !known ? t('githubApp.add.confirm') : t('githubApp.replace.confirm')"
       color="warning"
       :busy="saving"
-      @confirm="replace"
+      @confirm="save"
+    />
+
+    <AccessConfirmDialog
+      v-model:open="removeOpen"
+      :title="t('githubApp.remove.confirmTitle', { id: removing?.id ?? '' })"
+      :description="t('githubApp.remove.confirmText')"
+      :confirm-label="t('githubApp.remove.confirm')"
+      :busy="removeBusy"
+      :error="removeError ? errorText(removeError) : null"
+      @confirm="remove"
     />
   </section>
 </template>

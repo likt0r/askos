@@ -89,10 +89,11 @@ Controls the agent VMs on this Host.
   agentbox unmark-harmless <domain> [--json]
   agentbox owners <vm> [--json]                      GitHub owners for App tokens
   agentbox set-owners <vm> <owner>... [--json]
-  agentbox set-github-app <app-id> [--no-prompt] [--json]   replace the App ID and private key (stdin),
-                                                     checked with GitHub first
-  agentbox github-app [--json]                       where the App is installed, which VMs need that,
-                                                     GitHub owners without an Installation, install link
+  agentbox set-github-app <app-id> [--no-prompt] [--json]   add a GitHub App or replace its private key
+                                                     (stdin), checked with GitHub first
+  agentbox remove-github-app <app-id> [--json]       the token service no longer uses this App
+  agentbox github-app [--json]                       where each App is installed, which VMs need that,
+                                                     GitHub owners without an Installation, install links
   agentbox github-tokens <vm> [--since T] [--until T] [--lines N] [--json]
                                                      repositories the VM got tokens for, and refusals
   agentbox observe <vm> [--json]                     pair the Host with Orca in the VM (for agent status)

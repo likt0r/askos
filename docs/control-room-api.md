@@ -129,6 +129,7 @@ else `500 action_failed`, with the message in `detail`:
 | 502 | `github_unavailable` | GitHub not reachable or answered with an error |
 | 400 | `invalid_private_key`, `invalid_app_id` | not the App's `.pem` / not an App ID |
 | 409 | `github_app_missing` | no GitHub App set up |
+| 404 | `github_app_not_found` | no GitHub App with this App ID set up (`DELETE /github-app/<id>`; parameter `app_id`) |
 | 400 | `invalid_github_owner`, `github_owner_required` | GitHub owners |
 | 502 | `journal_failed` | reading the Host's journal failed |
 | 400 | `invalid_argument` | any other value or option agentbox refused |
@@ -426,15 +427,15 @@ first:
 | `watch-remove`, `legitimate-add` | `domain`, `force` |
 | `migrate-lists` | the command none; each list taken over: `list` (`watchlist`, `legitimate`), `legacy` (the old file), `migrated` and `skipped` (numbers), or `created` |
 | `set-owners` | `owners` |
-| `set-github-app` | `app_id` |
+| `set-github-app`, `remove-github-app` | `app_id` |
 | `set-settings` | `settings` (the keys) |
 | `build` | `image` or `all`, `reset` (the VMs of an Update) |
 | `update-now` | `reset` |
 | `set-image` | `image`, `build` (a Build pin) |
 | `signin`, `signin.failed`, `signin.locked`, `signout` | none (address and device are no parameters) |
 | `alert` | `domain`, `signals` |
-| `github.token` | `repository`, `expires` (GitHub's expiry, ISO 8601) |
-| `github.refused` | `request` (as the VM sent it), `repository` (when the request names one), `reason` (a stable code, below) and its parameters (`status`) |
+| `github.token` | `repository`, `expires` (GitHub's expiry, ISO 8601), `app_id` (the App that issued it; not in lines from before there were several Apps) |
+| `github.refused` | `request` (as the VM sent it), `repository` (when the request names one), `reason` (a stable code, below) and its parameters (`status`, `app_id`) |
 | `github.error` | `request`, `repository`, `message` (the token service's error, English) |
 | `wake.not-responding` | `reason` |
 | `reset.automatic`, `reset.postponed`, `reset.failed` | `reason`; onto a newer Build also `image`, `build` |
@@ -469,7 +470,7 @@ The token service writes one English line per request, never the token
 (`github-app/agentbox-gh-tokend`):
 
 ```text
-[<vm>] token for <owner>/<repo> until <expires_at>
+[<vm>] token for <owner>/<repo> until <expires_at> by App <app-id>
 [<vm>] refused: '<request>': <reason>[ <name>=<value>...]: <English text>
 [<vm>] error: '<request>': <error>
 ```
@@ -485,8 +486,9 @@ reason and an error by its `message`.
 | `invalid-request` | the request is not `<owner>/<repo>` |
 | `vm-not-registered` | the VM has no record in the VM registry |
 | `owner-not-allowed` | the repository's owner is not one of the VM's GitHub owners |
-| `not-installed` | the GitHub App is not installed on the repository (a missing Installation) |
-| `github-status` | GitHub answered with another error; parameter `status`, GitHub's HTTP status |
+| `not-installed` | no GitHub App is installed on the repository (a missing Installation): every App answered 404; with the parameter `app_id` when that App's installation was gone by the time it asked for the token |
+| `github-status` | GitHub answered with another error; parameters `status`, GitHub's HTTP status, and `app_id`, the App that got it. The Apps after it are not asked |
+| `app-key` | the key of the App `app_id` (a parameter) cannot sign: its file is missing or broken. The Apps after it are not asked |
 
 ## Host and System
 
@@ -530,8 +532,9 @@ Progress arrives live as `build` and `build-log` events; the log endpoint fills 
 
 | Method and path | Body | agentbox call, response |
 |---|---|---|
-| `GET /github-app` | | `github-app`: the App, its Installations, VMs relying on them, missing Installations, the installation link; `502 github_unavailable` when GitHub cannot be asked |
-| `PUT /github-app` | `{"app_id": 123456, "private_key": "-----BEGIN ..."}` | `set-github-app` (key on stdin, checked with GitHub first) |
+| `GET /github-app` | | `github-app`: `{"apps": [{"id", "slug", "name", "owner", "html_url", "install_url", "installations": [{"id", "account", "type", "repository_selection", "suspended", "html_url", "vms"}], "error"}], "missing": [{"owner", "vms"}]}`, every App ascending by App ID; `error` is `null`, or `{"error", "message", "params"}` for an App whose key or GitHub's answer for it is no use (`invalid_private_key`, `github_app_rejected`, `github_unavailable`), listed without installations and counting as installed nowhere (its owners are in `missing` until it is fixed; the token service refuses there as well); `missing`: GitHub owners of VMs that no App is installed on; the old UI's unversioned `GET /api/github-app` answers with the same; `409 github_app_missing` without any App, `502 github_unavailable` when GitHub cannot be reached |
+| `PUT /github-app` | `{"app_id": 123456, "private_key": "-----BEGIN ..."}` | `set-github-app` (key on stdin, checked with GitHub first): adds the App, or replaces the key of the App with this ID; the other Apps stay. The App as in `GET`, without installations, plus `"stored": true` and `"added"` (whether it is a new App) |
+| `DELETE /github-app/<app_id>` | | `remove-github-app`: `{"id", "removed": true}`; the token service no longer asks the App, its key is deleted; `404 github_app_not_found` |
 | `GET /settings` | | `settings`: `{"settings": {"<key>": {"value", "default", "is_default", "applies_later", "allowed"}}}` |
 | `PATCH /settings` | `{"<key>": <value>, ...}` | `set-settings`: `{"changed": {"<key>": {"from", "to"}}, "applies_later": {"<key>": "<text>"}, "regenerated": ...}`; all or nothing; `"default"` restores the default and removes the key from settings.json; an `invalid_setting` error has `field`, the key whose value is wrong |
 

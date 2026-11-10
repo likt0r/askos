@@ -83,6 +83,7 @@ COMMAND_KINDS = {"allow": "allowlist", "disallow": "allowlist", "open-web": "all
                  "migrate-allowlist": "allowlist", "pair": "pairing", "observe": "pairing", "unpair": "pairing",
                  "revoke-pairings": "pairing", "set-settings": "settings",
                  "set-claude-token": "credentials", "set-owners": "credentials", "set-github-app": "credentials",
+                 "remove-github-app": "credentials",
                  "build": "build", "set-image": "build", "update-now": "build"}
 
 MAX_ACTOR = 100
@@ -447,8 +448,12 @@ DESCRIBE = {
     "set-owners": _owners,
     "set-claude-token": lambda a: _said("Set the Claude token"),
     # the App ID only when it is one: never echo what might be a pasted key
-    "set-github-app": lambda a: _said(f"Replace the GitHub App (App ID {_arg(a, 0)})", app_id=_arg(a, 0))
-                                if re.fullmatch(r"[1-9][0-9]{0,11}", _arg(a, 0)) else _said("Replace the GitHub App"),
+    "set-github-app": lambda a: _said(f"Add or replace the GitHub App (App ID {_arg(a, 0)})", app_id=_arg(a, 0))
+                                if re.fullmatch(r"[1-9][0-9]{0,11}", _arg(a, 0))
+                                else _said("Add or replace the GitHub App"),
+    "remove-github-app": lambda a: _said(f"Remove the GitHub App (App ID {_arg(a, 0)})", app_id=_arg(a, 0))
+                                   if re.fullmatch(r"[1-9][0-9]{0,11}", _arg(a, 0))
+                                   else _said("Remove a GitHub App"),
     "pair": lambda a: _said("Show the Pairing code"),
     "observe": lambda a: _said("Pair the Host as Observer"),
     "unpair": lambda a: _said("Remove a single device"),
@@ -664,9 +669,10 @@ ALERT = re.compile(r"\[[a-z0-9-]+\] ALERT (\S+) \[([^\]]*)\]")
 TOKEN = re.compile(r"\[[a-z0-9-]+\] (token for|refused:|error:) (.*)")
 GITHUB = {"token for": ("github.token", "ok"), "refused:": ("github.refused", "failed"),
           "error:": ("github.error", "failed")}
-# the parts of a token service line: "<owner>/<repo> until <expiry>", or "<request as repr()>: <rest>",
+# the parts of a token service line: "<owner>/<repo> until <expiry>[ by App <app-id>]" (without the
+# App before there were several), or "<request as repr()>: <rest>",
 # the rest of a refusal "<reason>[ <name>=<value>...]: <text>"
-ISSUED = re.compile(r"(\S+) until (\S+)")
+ISSUED = re.compile(r"(\S+) until (\S+?)(?: by App ([1-9][0-9]{0,11}))?")
 REFUSAL = re.compile(r"([a-z][a-z-]{0,31})((?: [a-z][a-z0-9_]{0,27}=[A-Za-z0-9._/-]{1,64}){0,8}): (.*)")
 TOKEN_PARAMS = {"request", "repository", "reason", "expires", "message"}        # the entry's own
 REQUEST = re.compile(r"""('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"): (.*)""")
@@ -864,11 +870,11 @@ def _token_request(action, rest):
         m = ISSUED.fullmatch(rest)
         repo = m.group(1) if m and REPOSITORY.fullmatch(m.group(1)) else None
         return {"_repository": repo, "_request": repo, "_reason": None, "_code": None, "_code_params": {},
-                "_expires": redact(m.group(2))[:40] if m else None}
+                "_expires": redact(m.group(2))[:40] if m else None, "_app_id": m.group(3) if m else None}
     m = REQUEST.fullmatch(rest)
     if not m:
         return {"_repository": None, "_request": None, "_reason": redact(rest)[:MAX_DESCRIPTION], "_code": None,
-                "_code_params": {}, "_expires": None}
+                "_code_params": {}, "_expires": None, "_app_id": None}
     try:
         # the token service logs the request with repr(); a string literal, nothing else
         request = str(ast.literal_eval(m.group(1)))
@@ -884,7 +890,8 @@ def _token_request(action, rest):
             if name not in TOKEN_PARAMS:
                 params[name] = redact(value)
     return {"_repository": request if REPOSITORY.fullmatch(request) else None, "_request": request,
-            "_reason": redact(why)[:MAX_DESCRIPTION], "_code": code, "_code_params": params, "_expires": None}
+            "_reason": redact(why)[:MAX_DESCRIPTION], "_code": code, "_code_params": params, "_expires": None,
+            "_app_id": None}
 
 
 def _token_entry(action, fields):
@@ -896,8 +903,9 @@ def _token_entry(action, fields):
     request, repo, reason = fields["_request"], fields["_repository"], fields["_reason"]
     asked = request if request is not None else "?"
     if action == "github.token":
-        params = {"repository": repo, "expires": fields["_expires"]}
-        text = f"GitHub token for {repo or '?'} until {fields['_expires'] or '?'}"
+        params = {"repository": repo, "expires": fields["_expires"], "app_id": fields["_app_id"]}
+        text = f"GitHub token for {repo or '?'} until {fields['_expires'] or '?'}" + \
+            (f" by App {fields['_app_id']}" if fields["_app_id"] else "")
     elif action == "github.refused":
         params = {"request": request, "repository": repo, "reason": fields["_code"], **fields["_code_params"]}
         text = f"GitHub token for {asked} refused: {reason}"
