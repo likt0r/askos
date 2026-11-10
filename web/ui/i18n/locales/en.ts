@@ -162,6 +162,7 @@ export default {
     invalid_private_key: 'That is not the App\'s private key (.pem).',
     invalid_app_id: 'That is not an App ID.',
     github_app_missing: 'No GitHub App is set up.',
+    github_app_not_found: 'No GitHub App with this App ID is set up.',
     invalid_github_owner: 'That is not a valid GitHub owner.',
     github_owner_required: 'At least one GitHub owner is needed.',
     journal_failed: 'Reading the Host\'s journal failed.',

@@ -190,6 +190,7 @@ export const SENTENCES: Record<string, Sentence> = {
   'set-owners': (p, tr) => (has(p, 'owners') ? say(tr, 'setOwners', { owners: p.owners }) : null),
   'set-claude-token': plain('setClaudeToken'),
   'set-github-app': either('app_id', 'setGithubAppId', 'setGithubApp', 'id'),
+  'remove-github-app': either('app_id', 'removeGithubAppId', 'removeGithubApp', 'id'),
   'pair': plain('pair'),
   'observe': plain('observe'),
   'unpair': plain('unpair'),

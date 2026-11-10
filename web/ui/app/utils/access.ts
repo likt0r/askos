@@ -232,12 +232,15 @@ export interface GithubApp {
   owner: string | null
   html_url: string | null
   install_url: string | null
+  installations: { id: number | null, account: string | null, type: string | null, repository_selection: string | null, suspended: boolean, html_url: string | null, vms: string[] }[]
+  /** why this App could not be asked (its key, GitHub's answer for it); the other Apps are still listed */
+  error: { error: string, message: string, params?: Record<string, unknown> } | null
 }
 
-/** `GET /github-app` */
+/** `GET /github-app`: every App on the Host, ascending by App ID (askos#25) */
 export interface GithubAppOverview {
-  app: GithubApp
-  installations: { id: number | null, account: string | null, type: string | null, repository_selection: string | null, suspended: boolean, html_url: string | null, vms: string[] }[]
+  apps: GithubApp[]
+  /** GitHub owners of VMs that no App is installed on */
   missing: { owner: string, vms: string[] }[]
 }
 

@@ -1,7 +1,8 @@
 // A VM's Access tab and System's GitHub App section against a fake backend: GitHub owners
 // (missing Installations marked, edit), the Claude token (checked by the backend, never
-// shown again), GitHub tokens and refused requests; the App's Installations, missing ones,
-// the install link, replacing App ID and key (asked first, the key never shown again).
+// shown again), GitHub tokens and refused requests; every GitHub App with its Installations,
+// missing ones, the install links, adding an App, replacing one App's key (asked first, the
+// key never shown again) and removing an App.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resetSessionForTests } from '~/composables/useSession'
 import { resetLiveForTests } from '~/composables/useLive'
@@ -12,12 +13,28 @@ const TOKEN = 'sk-ant-oat01-' + 'Q'.repeat(90)
 const KEY = '-----BEGIN RSA PRIVATE KEY-----\nMIIEsecretsecretsecret\n-----END RSA PRIVATE KEY-----\n'
 
 const APP = {
-  app: { id: 123456, slug: 'agentbox-titan', name: 'Agent Box titan', owner: 'likt0r', html_url: 'https://github.com/apps/agentbox-titan', install_url: 'https://github.com/apps/agentbox-titan/installations/new' },
-  installations: [
-    { id: 1, account: 'likt0r', type: 'User', repository_selection: 'all', suspended: false, html_url: 'https://github.com/settings/installations/1', vms: ['priv', 'work'] },
-    { id: 2, account: 'old-org', type: 'Organization', repository_selection: 'selected', suspended: true, html_url: null, vms: [] },
+  apps: [
+    {
+      id: 777, slug: null, name: null, owner: null, html_url: null, install_url: null, installations: [],
+      error: { error: 'github_unavailable', message: 'GitHub answers /app with HTTP 401: Bad credentials', params: { path: '/app', status: 401 } },
+    },
+    {
+      id: 123456, slug: 'agentbox-titan', name: 'Agent Box titan', owner: 'likt0r', html_url: 'https://github.com/apps/agentbox-titan', install_url: 'https://github.com/apps/agentbox-titan/installations/new',
+      installations: [
+        { id: 1, account: 'likt0r', type: 'User', repository_selection: 'all', suspended: false, html_url: 'https://github.com/settings/installations/1', vms: ['priv', 'work'] },
+        { id: 2, account: 'old-org', type: 'Organization', repository_selection: 'selected', suspended: true, html_url: null, vms: [] },
+      ],
+      error: null,
+    },
   ],
   missing: [{ owner: 'acme-corp', vms: ['work'] }],
+}
+const INSTALL_URL = 'https://github.com/apps/agentbox-titan/installations/new'
+
+function inApp(id: number, testid: string) {
+  const el = must(`[data-testid="app-info"][data-app-id="${id}"]`).querySelector(`[data-testid="${testid}"]`)
+  if (!el) throw new Error(`not found: ${testid} of App ${id}`)
+  return el as HTMLElement
 }
 
 const TOKENS = {
@@ -129,13 +146,18 @@ describe('Access tab', () => {
 })
 
 describe('GitHub App section', () => {
-  it('shows the Installations, the VMs relying on each, missing ones and the install link', async () => {
+  it('shows every App with its Installations, the VMs relying on each, missing ones and the install link', async () => {
     const writeText = vi.fn(async () => {})
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
     await openApp('/system', { 'GET /github-app': ok(APP) })
     const section = must('[data-testid="github-app"]')
-    expect(must('[data-testid="app-info"]').textContent).toContain('Agent Box titan')
-    expect(must('[data-testid="app-info"]').textContent).toContain('App ID 123456')
+    expect($$('[data-testid="app-info"]').map(a => a.dataset.appId)).toEqual(['777', '123456'])
+    const titan = must('[data-testid="app-info"][data-app-id="123456"]')
+    expect(titan.textContent).toContain('Agent Box titan')
+    expect(titan.textContent).toContain('App ID 123456')
+    // an App GitHub refused stays listed with its error, so it can get a new key or be removed
+    expect(inApp(777, 'app-item-error').textContent).toContain('GitHub answers /app with HTTP 401: Bad credentials')
+    expect(inApp(777, 'app-remove-open')).toBeTruthy()
     expect($$('[data-testid="installation"]').map(i => i.dataset.account)).toEqual(['likt0r', 'old-org'])
     expect(must('[data-account="likt0r"]').textContent).toContain('VMs: priv, work')
     expect(must('[data-account="old-org"]').textContent).toContain('suspended')
@@ -143,28 +165,54 @@ describe('GitHub App section', () => {
     expect(must('[data-testid="app-missing"]').textContent).toContain('One missing Installation')
     expect(must('[data-testid="missing-owner"]').textContent).toContain('acme-corp')
     expect(must('[data-testid="missing-owner"]').textContent).toContain('needed by work')
-    expect(must('[data-testid="install-url"]').textContent).toBe(APP.app.install_url)
+    expect(must('[data-testid="install-url"]').textContent).toBe(INSTALL_URL)
     await click('[data-testid="install-copy"]')
-    expect(writeText).toHaveBeenCalledWith(APP.app.install_url)
+    expect(writeText).toHaveBeenCalledWith(INSTALL_URL)
     expect(section.textContent).toContain('Copied')
   })
 
-  it('replaces App ID and key only after confirmation; the key is gone from the page', async () => {
+  it('adds an App only after confirmation; the key is gone from the page', async () => {
     const { api } = await openApp('/system', {
       'GET /github-app': ok(APP),
-      'PUT /github-app': ok({ ...APP.app, id: 654321, stored: true }),
+      'PUT /github-app': ok({ id: 654321, slug: 'org-app', stored: true, added: true }),
     })
-    await click('[data-testid="app-replace-open"]')
+    await click('[data-testid="app-add-open"]')
     await type('[data-testid="app-id"]', '654321')
     await type('[data-testid="app-key"]', KEY)
     await click('[data-testid="app-replace-submit"]')
     expect(changes(api.calls)).toEqual([])
-    expect(document.body.textContent).toContain('Replace the GitHub App?')
+    expect(document.body.textContent).toContain('Add the GitHub App?')
     await click('[data-testid="confirm-action"]')
     expect(changes(api.calls)).toEqual([{ method: 'PUT', path: '/github-app', body: { app_id: 654321, private_key: KEY }, csrf: '1' }])
-    await waitFor(() => expect(must('[data-testid="app-replaced"]').textContent).toContain('GitHub App 654321 checked and stored.'))
+    await waitFor(() => expect(must('[data-testid="app-replaced"]').textContent).toContain('GitHub App 654321 checked and added.'))
     expect($('[data-testid="app-replace"]')).toBeNull()
     expect(document.body.innerHTML).not.toContain('MIIEsecret')
+  })
+
+  it('replaces the key of one App, its App ID fixed', async () => {
+    const { api } = await openApp('/system', {
+      'GET /github-app': ok(APP),
+      'PUT /github-app': ok({ id: 123456, slug: 'agentbox-titan', stored: true, added: false }),
+    })
+    await click(inApp(123456, 'app-replace-open'))
+    const id = must('[data-testid="app-id"]')
+    expect(((id.matches('input') ? id : id.querySelector('input')) as HTMLInputElement).value).toBe('123456')
+    expect(((id.matches('input') ? id : id.querySelector('input')) as HTMLInputElement).disabled).toBe(true)
+    await type('[data-testid="app-key"]', KEY)
+    await click('[data-testid="app-replace-submit"]')
+    expect(document.body.textContent).toContain('Replace the key?')
+    await click('[data-testid="confirm-action"]')
+    expect(changes(api.calls)).toEqual([{ method: 'PUT', path: '/github-app', body: { app_id: 123456, private_key: KEY }, csrf: '1' }])
+    await waitFor(() => expect(must('[data-testid="app-replaced"]').textContent).toContain('GitHub App 123456 checked and stored.'))
+  })
+
+  it('removes one App only after confirmation', async () => {
+    const { api } = await openApp('/system', { 'GET /github-app': ok(APP), 'DELETE /github-app/777': ok({ id: 777, removed: true }) })
+    await click(inApp(777, 'app-remove-open'))
+    expect(changes(api.calls)).toEqual([])
+    expect(document.body.textContent).toContain('Remove GitHub App 777?')
+    await click('[data-testid="confirm-action"]')
+    expect(changes(api.calls)).toEqual([{ method: 'DELETE', path: '/github-app/777', body: undefined, csrf: '1' }])
   })
 
   it('says a key GitHub rejected changed nothing, and forgets it', async () => {
@@ -182,6 +230,6 @@ describe('GitHub App section', () => {
   it('says when no App is set up, or GitHub cannot be asked', async () => {
     await openApp('/system', { 'GET /github-app': fail(409, 'github_app_missing') })
     expect(must('[data-testid="app-error"]').textContent).toContain('No GitHub App is set up.')
-    expect(must('[data-testid="app-replace-open"]')).toBeTruthy()
+    expect(must('[data-testid="app-add-open"]')).toBeTruthy()
   })
 })
