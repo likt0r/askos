@@ -357,7 +357,10 @@ one minimal request to Anthropic and replaces the VM's token only if Anthropic a
 (it takes effect at the VM's next start). `agentbox set-github-app <APP_ID>` takes an
 App's private key (`.pem`) the same way, adding the App or replacing its key.
 `agentbox github-app` lists every App's installations with the VMs whose GitHub owners rely
-on each, the owners of VMs where no App is installed, and each App's link for installing it. `agentbox github-tokens <vm>` lists, per
+on each, the owners of VMs where no App is installed, and each App's link for installing it.
+An App GitHub cannot be asked for (a revoked key, an error) is listed with its error and counts
+as installed nowhere: its owners show as missing until it is fixed, and the token service
+refuses there too. `agentbox github-tokens <vm>` lists, per
 repository, the tokens the VM got and its refused requests with the reason; it takes
 `--since`, `--until` and `--lines` (default 1000) like `activity`. In the Control Room API,
 `POST /api/<vm>/claude-token` takes `{"token": "..."}` and answers with a message;

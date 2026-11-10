@@ -408,7 +408,8 @@ visible here and is limited by token scope.
   one App means it is not installed there and the next one is asked; no App installed is
   `not-installed`. Any other answer from GitHub (an error status, a key GitHub refuses) ends the
   request with `github-status`, so a passing failure of one App never lets another App issue
-  the token.
+  the token. A key that cannot sign (its file missing or broken) ends it as well, with
+  `app-key`; every refusal that stops at an App names its App ID.
 - **Claude:** one **Claude token** per VM from `claude setup-token`, stored on the Host and passed in at
   boot; revocable per VM. Such tokens cannot load an organisation's managed settings, and
   cannot fetch the account's claude.ai connectors (Gmail, Drive, Calendar, ...): those would
@@ -445,7 +446,9 @@ Replacing a credential never breaks a working one:
   (`GET /app/installations`) next to the GitHub owners of every VM: which VMs rely on each
   installation, which owners no App is installed on (those VMs get no tokens there), and each
   App's link for installing it (`https://github.com/apps/<slug>/installations/new`). An App
-  whose key or answer is no use is listed with its error, the others as usual.
+  whose key or answer is no use is listed with its error, the others as usual; it counts as
+  installed nowhere, so its owners show as missing until it is fixed (the token service
+  refuses there as well).
 - `agentbox github-tokens <vm>` reads the token service's log the way Activity does and
   lists the repositories a VM got tokens for and the requests it was refused, with reasons.
   The token service logs one English line per request, never the token; a refusal names a
