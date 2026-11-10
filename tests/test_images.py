@@ -1318,8 +1318,12 @@ class ContainersTest(ImagesTest):
 
     def test_docker_reaches_the_agents_podman_from_services_and_shells(self):
         self.assertEqual(self.env["DOCKER_HOST"], self.SOCKET)
-        self.assertIn('export DOCKER_HOST="unix:///run/user/$(id -u)/podman/podman.sock"\n',
-                      self.read("/etc/profile.d/agentbox.sh"))
+        # shells: the agent gets its socket, root and other users podman-docker's (unset here)
+        for uid, before, after in (("1000", "", self.SOCKET), ("1000", "unix:///elsewhere", self.SOCKET),
+                                   ("0", self.SOCKET, "unset"), ("0", "", "unset"),
+                                   ("1001", "unix:///mine", "unix:///mine")):
+            with self.subTest(uid=uid, before=before):
+                self.assertEqual(self.shell_docker_host(uid, before), after)
         self.assertNotIn("CONTAINER_HOST", self.read("/etc/profile.d/agentbox.sh"))    # podman stays local
         self.assertNotIn("CONTAINER_HOST", self.env)
         containerfile = self.read_repo("vm/Containerfile")
@@ -1353,6 +1357,21 @@ class ContainersTest(ImagesTest):
         # the home is fresh at every start: guest-setup puts it there each time
         self.assertIn('install -m 600 -o agent -g agent /usr/lib/agentbox/docker-config.json '
                       '"$HOME_DIR/.docker/config.json"', self.read(safeguards.GUEST_SETUP))
+
+    def shell_docker_host(self, uid, docker_host):
+        """DOCKER_HOST after a shell of user uid read the profile, with docker_host set before."""
+        bin_dir = os.path.join(self.dir, f"id-{uid}")
+        os.makedirs(bin_dir, exist_ok=True)
+        with open(os.path.join(bin_dir, "id"), "w") as f:
+            f.write(f"#!/bin/sh\necho {uid}\n")
+        os.chmod(os.path.join(bin_dir, "id"), 0o755)
+        env = {"PATH": f"{bin_dir}:/usr/bin:/bin"}
+        if docker_host:
+            env["DOCKER_HOST"] = docker_host
+        profile = os.path.join(self.root, "etc/profile.d/agentbox.sh")
+        r = subprocess.run(["sh", "-c", '. "$1"; echo "${DOCKER_HOST-unset}"', "sh", profile],
+                           env=env, capture_output=True, text=True, check=True)
+        return r.stdout.strip()
 
     def read_repo(self, rel):
         with open(os.path.join(REPO, rel)) as f:
