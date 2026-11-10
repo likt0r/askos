@@ -63,7 +63,7 @@ twice (at least 16 characters), creates the certificate and does the Host steps 
 with, the firewall zone of the VM networks, the units, and the Control Room. Then:
 
 ```sh
-sudo agentbox set-github-app <APP_ID> < key.pem   # the GitHub App (see below), checked with GitHub first
+sudo agentbox set-github-app <APP_ID> < key.pem   # a GitHub App (see below), checked with GitHub first
 sudo agentbox build base                     # the first Build of the Base image, from the installed Release (10–20 min)
 journalctl -fu agentbox-build@base           #   follow it until it says the Build is the current one
 sudo agentbox create priv --owner <owner>    # a VM: network, Orca port, disks (see below)
@@ -143,11 +143,21 @@ App: they take the Containerfiles of the installed Release (see Images and Build
 For an organisation admin to install it from the link `agentbox github-app` shows, the App
 must be installable by any account (*Where can this GitHub App be installed?*).
 
-To rotate the key or switch to another App later, generate a new private key on GitHub
-and run `sudo agentbox set-github-app <APP_ID> < new-key.pem`. It signs a JWT with the new
-key and asks GitHub for the App first; only if GitHub accepts it are the App ID and key
-replaced, and the token service uses them from its next request on. Then delete the old
-key on GitHub and the downloaded file.
+A Host can hold several Apps. Use one App per trust boundary: for example an App owned by an
+organisation and installable only there, whose key its admins may hold, plus a personal App
+for your private repositories. One App installed on both would let anyone with its key reach
+the private repositories. Add each with `sudo agentbox set-github-app <APP_ID> < key.pem`.
+There is nothing to map: for a repository, the token service asks the Apps in ascending App
+ID and the first one installed there issues the token. If an App answers with anything but
+"not installed" (an error, a revoked key), the request is refused rather than tried with the
+next App. `agentbox github-app` lists every App with its installations and install link.
+
+To rotate an App's key, generate a new private key on GitHub and run
+`sudo agentbox set-github-app <APP_ID> < new-key.pem` with that App's ID. It signs a JWT with
+the new key and asks GitHub for the App first; only if GitHub accepts it is that App's key
+replaced (the other Apps stay), and the token service uses it from its next request on. Then
+delete the old key on GitHub and the downloaded file. `sudo agentbox remove-github-app <APP_ID>`
+removes an App and its key from the Host.
 
 ### Pairing Orca
 
@@ -222,9 +232,10 @@ agentbox build-log base             # the running or newest Build's log (--json 
 agentbox set-image priv base --build 20261101-1530   # back to an earlier Build at the next Reset
 agentbox set-image priv rust        # another Image, always its current Build, at the next Reset
 agentbox set-claude-token priv      # store a token from `claude setup-token`, checked first
-agentbox github-app                 # where the GitHub App is installed, owners without it, install link
+agentbox github-app                 # where each GitHub App is installed, owners without one, install links
 agentbox github-tokens priv         # repositories priv got tokens for, refused requests
-agentbox set-github-app 123456 < key.pem   # replace App ID and key, checked with GitHub first
+agentbox set-github-app 123456 < key.pem   # add an App or replace its key, checked with GitHub first
+agentbox remove-github-app 123456   # the token service no longer uses this App
 agentbox pair priv                  # current Orca pairing code (starts the VM if needed)
 agentbox pairings priv              # the VM's Paired devices
 agentbox logs priv                  # the VM's journal, current boot, last 200 entries
@@ -343,10 +354,10 @@ Credentials are read from stdin by the CLI and from the request body by the Cont
 and never shown again: not in output, error messages, logs or Activity.
 `agentbox set-claude-token <vm>` takes the token from `claude setup-token`, checks it with
 one minimal request to Anthropic and replaces the VM's token only if Anthropic accepts it
-(it takes effect at the VM's next start). `agentbox set-github-app <APP_ID>` takes the
-App's private key (`.pem`) the same way. `agentbox github-app` lists the App's installations
-with the VMs whose GitHub owners rely on each, the owners of VMs where the App is not
-installed, and the link for installing it. `agentbox github-tokens <vm>` lists, per
+(it takes effect at the VM's next start). `agentbox set-github-app <APP_ID>` takes an
+App's private key (`.pem`) the same way, adding the App or replacing its key.
+`agentbox github-app` lists every App's installations with the VMs whose GitHub owners rely
+on each, the owners of VMs where no App is installed, and each App's link for installing it. `agentbox github-tokens <vm>` lists, per
 repository, the tokens the VM got and its refused requests with the reason; it takes
 `--since`, `--until` and `--lines` (default 1000) like `activity`. In the Control Room API,
 `POST /api/<vm>/claude-token` takes `{"token": "..."}` and answers with a message;

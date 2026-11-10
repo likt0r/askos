@@ -11,6 +11,9 @@ github.json:
                   with its private key (checked with the real openssl)
   app             the answer to GET /app (default: an App with that ID)
   installations   what GET /app/installations pages through (default [])
+  apps            several Apps instead, each with the four keys above (and status and
+                  answer, for that App's requests once its JWT is accepted); the JWT's iss
+                  picks the App
   status, answer  answer every request with this status and body instead (JSON; a string as it is)
   exit            end with this exit code and no answer (no connection)
 
@@ -36,29 +39,30 @@ def b64(part):
     return base64.urlsafe_b64decode(part + "=" * (-len(part) % 4))
 
 
-def jwt_problem(jwt, gh):
-    """Why GitHub would refuse this JWT, or None."""
+def jwt_problem(jwt, apps):
+    """(Why GitHub would refuse this JWT, or None; the App it is for)."""
     try:
         head, claims, signature = jwt.split(".")
         header, payload, sig = json.loads(b64(head)), json.loads(b64(claims)), b64(signature)
     except (ValueError, TypeError):
-        return "A JSON web token could not be decoded"
+        return "A JSON web token could not be decoded", None
     if header.get("alg") != "RS256":
-        return "A JSON web token could not be decoded"
+        return "A JSON web token could not be decoded", None
     now = time.time()
     iat, exp = payload.get("iat"), payload.get("exp")
     if not isinstance(iat, int) or iat > now + 1:
-        return "'Issued at' claim ('iat') must be an Integer representing a time in the past."
+        return "'Issued at' claim ('iat') must be an Integer representing a time in the past.", None
     if not isinstance(exp, int) or exp <= now or exp - iat > 600:
-        return "'Expiration time' claim ('exp') is too far in the future."
-    if str(payload.get("iss")) != str(gh["app_id"]):
-        return "Integration not found"
+        return "'Expiration time' claim ('exp') is too far in the future.", None
+    gh = next((a for a in apps if str(payload.get("iss")) == str(a["app_id"])), None)
+    if gh is None:
+        return "Integration not found", None
     with tempfile.NamedTemporaryFile(dir=DIR) as f:
         f.write(sig)
         f.flush()
         r = subprocess.run(["openssl", "dgst", "-sha256", "-verify", gh["public_key"], "-signature", f.name],
                            input=f"{head}.{claims}".encode(), capture_output=True)
-    return None if r.returncode == 0 else "A JSON web token could not be decoded"
+    return (None if r.returncode == 0 else "A JSON web token could not be decoded"), gh
 
 
 def answer(url, headers, gh):
@@ -67,9 +71,11 @@ def answer(url, headers, gh):
     auth = [h for h in headers if h.lower().startswith("authorization: bearer ")]
     if len(auth) != 1:
         return 401, {"message": "Requires authentication"}
-    problem = jwt_problem(auth[0].split(" ", 2)[2], gh)
+    problem, gh = jwt_problem(auth[0].split(" ", 2)[2], gh.get("apps") or [gh])
     if problem:
         return 401, {"message": problem, "documentation_url": "https://docs.github.com/rest"}
+    if "status" in gh:          # one of several Apps answered so
+        return gh["status"], gh.get("answer")
     u = urlparse(url)
     if u.scheme != "https" or u.netloc != "api.github.com":
         return 404, {"message": "Not Found"}

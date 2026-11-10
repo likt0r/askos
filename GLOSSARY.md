@@ -169,11 +169,11 @@ A GitHub account or organisation for whose repositories a VM may obtain tokens.
 _Avoid_: org, allowed accounts
 
 **GitHub App**:
-The App the Host's token service signs in as to issue GitHub tokens; its ID and private key exist only on the Host and are replaced only after GitHub accepted them.
+An App the Host's token service signs in as to issue GitHub tokens; a Host keeps any number of them, one per trust boundary (an organisation's, a personal one). Each App's ID and private key exist only on the Host and are stored only after GitHub accepted them. For a repository, the first App (in ascending App ID) installed on it issues the token.
 _Avoid_: bot, OAuth app, integration
 
 **Installation**:
-The GitHub App installed on one account or organisation; a VM gets tokens only for GitHub owners with an Installation. A GitHub owner of a VM without one is a missing Installation (German UI: fehlende Installation).
+A GitHub App installed on one account or organisation; a VM gets tokens only for GitHub owners with an Installation of one of the Apps. A GitHub owner of a VM that no App is installed on is a missing Installation (German UI: fehlende Installation).
 _Avoid_: grant, org access
 
 ## Claude

@@ -27,7 +27,7 @@ flowchart LR
     cli["agentbox CLI (root)"]
     proxy["Allowlist proxy per VM<br/>:3128 on the VM network"]
     gh["GitHub token service per VM<br/>:9100 on the VM network"]
-    key[("GitHub App key<br/>readable only by agentbox-gh")]
+    key[("GitHub App keys<br/>readable only by agentbox-gh")]
     subgraph vmnet["Isolated network per VM (10.77.N.0/24)"]
       vm["VM<br/>orca serve, agents, Docker"]
     end
@@ -393,11 +393,22 @@ visible here and is limited by token scope.
 - **GitHub:** a GitHub App issues installation tokens valid for one repository and one hour,
   with contents, issues and pull requests write, checks and statuses read, and no
   workflows or administration rights, so agents cannot create repositories or change CI.
-  The App key is readable only by the `agentbox-gh` system user. A VM asks the token service
+  The App keys are readable only by the `agentbox-gh` system user. A VM asks the token service
   over its network; each VM may only get tokens for the **GitHub owners** in its registry record. Git uses a
   credential helper, `gh` a wrapper, both fetching a fresh token per use. The token service
-  is the App's only use: Builds take the installed Release's files and ask GitHub nothing
+  is the Apps' only use: Builds take the installed Release's files and ask GitHub nothing
   (see Images and Builds).
+- **Several GitHub Apps:** the Host keeps any number of Apps, one per trust boundary (an
+  organisation's App whose key its admins may hold, a personal App for private repositories).
+  `/etc/agentbox/github/app.conf` (group `agentbox-gh`, mode 0640) names them, one
+  `APP_ID=<id>` line each, and `app-<id>.pem` (owner `agentbox-gh`, mode 0400) is each App's
+  key. There is no mapping from GitHub owners to Apps: only once the owner check passed does
+  the token service ask the Apps in ascending App ID for `GET /repos/{owner}/{repo}/installation`,
+  and the first App installed there issues the token; its log line names that App. A 404 from
+  one App means it is not installed there and the next one is asked; no App installed is
+  `not-installed`. Any other answer from GitHub (an error status, a key GitHub refuses) ends the
+  request with `github-status`, so a passing failure of one App never lets another App issue
+  the token.
 - **Claude:** one **Claude token** per VM from `claude setup-token`, stored on the Host and passed in at
   boot; revocable per VM. Such tokens cannot load an organisation's managed settings, and
   cannot fetch the account's claude.ai connectors (Gmail, Drive, Calendar, ...): those would
@@ -424,14 +435,17 @@ Replacing a credential never breaks a working one:
   at the VM's next start.
 - `agentbox set-github-app` reads the App's private key from stdin, lets openssl parse it
   (unencrypted RSA only), signs a JWT with it and asks GitHub `GET /app`, whose answer must
-  name the given App ID. Only then are `app.pem` (owner `agentbox-gh`, mode 0400) and
-  `app.conf` replaced, each in one rename. The token service starts a process per request
-  and reads both then, so it uses the new App from the next request on, without a restart;
-  if the App ID changes, a request in the instant between the two renames is refused.
-- `agentbox github-app` signs a JWT with the stored key and lists the App's installations
+  name the given App ID. Only then is the App's key written to `app-<id>.pem` (owner `agentbox-gh`, mode 0400), and
+  then `app.conf` names the App, each in one rename; the other Apps stay as they are, so
+  replacing one App's key never touches another's. The token service starts a process per
+  request and reads the files then, so it uses the new key or App from the next request on,
+  without a restart. `agentbox remove-github-app <id>` takes the App out of `app.conf` first,
+  then deletes its key; it asks GitHub nothing.
+- `agentbox github-app` signs a JWT with each stored key and lists every App's installations
   (`GET /app/installations`) next to the GitHub owners of every VM: which VMs rely on each
-  installation, which owners have none (those VMs get no tokens there), and the App's link
-  for installing it (`https://github.com/apps/<slug>/installations/new`).
+  installation, which owners no App is installed on (those VMs get no tokens there), and each
+  App's link for installing it (`https://github.com/apps/<slug>/installations/new`). An App
+  whose key or answer is no use is listed with its error, the others as usual.
 - `agentbox github-tokens <vm>` reads the token service's log the way Activity does and
   lists the repositories a VM got tokens for and the requests it was refused, with reasons.
   The token service logs one English line per request, never the token; a refusal names a
@@ -720,8 +734,9 @@ of `'self'` plus the sha256 hashes of the inline scripts and styles of that `ind
 computed when it is loaded; a changed `index.html` is a new version, sent to open pages as a
 `version` event. Without a new build the old UI is served as before; with one, it stays at
 `/legacy/`. The backend also serves the Activity timeline (`GET /api/activity` with the filters of `agentbox activity`) and
-credentials: `POST /api/<vm>/claude-token`, `POST /api/github-app` (App ID and private key),
-`GET /api/github-app` (installations and missing GitHub owners) and
+credentials: `POST /api/<vm>/claude-token`, `POST /api/github-app` (App ID and private key:
+adds the App or replaces its key), `GET /api/github-app` (every App's installations and missing
+GitHub owners) and
 `GET /api/<vm>/github-tokens`. Tokens and keys travel only in the request body and on to
 `agentbox` on stdin. Images and Builds: `GET /api/images`, `GET /api/images/<image>/log`,
 `POST /api/build` and `POST /api/<vm>/set-image`.

@@ -575,5 +575,120 @@ class TokenServiceTest(unittest.TestCase):
                                  params)
 
 
+class SeveralAppsTest(unittest.TestCase):
+    """agentbox-gh-tokend with several Apps (askos#25): it asks them in ascending App ID for
+    an installation on the repository, and the first one installed there issues the token.
+    GitHub and the Apps' keys stand in-process: app_jwt names the App, a fake urlopen answers
+    per App."""
+
+    def setUp(self):
+        import importlib.machinery
+        import importlib.util
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = tmp.name
+        vm_records.write(self.root, record("priv", 2, github_owners=["likt0r", "correctiv"]))
+        os.makedirs(self.root + "/etc/agentbox/github")
+        # out of order on purpose, with a comment and an odd line
+        self.conf("APP_ID=900\n# personal\nAPP_ID=80\nAPP_ID=0x1\n")
+        loader = importlib.machinery.SourceFileLoader("agentbox_gh_tokend", TOKEND)
+        self.tokend = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+        loader.exec_module(self.tokend)
+        self.installed = {}         # App ID -> {repository: status of /installation, 200 or an error}
+        self.asked = []             # (App ID, method, path)
+
+    def conf(self, text):
+        with open(self.root + "/etc/agentbox/github/app.conf", "w") as f:
+            f.write(text)
+
+    def urlopen(self, req, timeout=None):
+        import io
+        import urllib.error
+        app = req.get_header("Authorization").removeprefix("Bearer jwt-")
+        path = req.full_url.removeprefix("https://api.github.com")
+        self.asked.append((app, req.get_method(), path))
+        if path.endswith("/installation"):
+            repo = "/".join(path.split("/")[2:4])
+            status = self.installed.get(app, {}).get(repo, 404)
+            if status != 200:
+                raise urllib.error.HTTPError(req.full_url, status, "x", {}, None)
+            return io.BytesIO(json.dumps({"id": int(app) * 10}).encode())
+        return io.BytesIO(json.dumps({"token": f"ghs_from_{app}", "expires_at": "2026-11-10T12:00:00Z"}).encode())
+
+    def request(self, line, vm="priv"):
+        import contextlib
+        import io
+        from unittest import mock
+        err, out = io.StringIO(), io.StringIO()
+        with mock.patch.object(self.tokend, "REGISTRY", self.root + "/etc/agentbox/vms"), \
+                mock.patch.object(self.tokend, "CONF_DIR", self.root + "/etc/agentbox/github"), \
+                mock.patch.object(self.tokend, "app_jwt", lambda app_id: f"jwt-{app_id}"), \
+                mock.patch.object(self.tokend.urllib.request, "urlopen", self.urlopen), \
+                mock.patch.object(sys, "argv", ["agentbox-gh-tokend", vm]), \
+                mock.patch.object(sys, "stdin", io.StringIO(line + "\n")), \
+                contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+            self.tokend.main()
+        return json.loads(out.getvalue()), err.getvalue()
+
+    def test_repository_installed_only_on_the_second_app(self):
+        self.installed = {"900": {"correctiv/site": 200}}
+        answer, log = self.request("correctiv/site")
+        self.assertEqual(answer, {"token": "ghs_from_900", "expires_at": "2026-11-10T12:00:00Z"})
+        self.assertEqual(self.asked, [("80", "GET", "/repos/correctiv/site/installation"),
+                                      ("900", "GET", "/repos/correctiv/site/installation"),
+                                      ("900", "POST", "/app/installations/9000/access_tokens")])
+        self.assertEqual(log, "[priv] token for correctiv/site until 2026-11-10T12:00:00Z by App 900\n")
+
+    def test_the_first_app_installed_there_issues_the_token(self):
+        self.installed = {"80": {"likt0r/askos": 200}, "900": {"likt0r/askos": 200}}
+        answer, log = self.request("likt0r/askos")
+        self.assertEqual(answer["token"], "ghs_from_80")
+        self.assertEqual([a for a, _, _ in self.asked], ["80", "80"])
+        self.assertTrue(log.endswith(" by App 80\n"), log)
+
+    def test_no_app_installed(self):
+        for conf in ("APP_ID=900\nAPP_ID=80\n", "", None):
+            with self.subTest(conf=conf):
+                if conf is None:
+                    os.remove(self.root + "/etc/agentbox/github/app.conf")
+                else:
+                    self.conf(conf)
+                answer, log = self.request("likt0r/askos")
+                self.assertEqual(answer, {"error": "no GitHub App is installed on likt0r/askos"})
+                self.assertEqual(log, "[priv] refused: 'likt0r/askos': not-installed: no GitHub App is installed "
+                                      "on likt0r/askos\n")
+
+    def test_another_error_from_one_app_stops_before_the_next_is_asked(self):
+        for status in (401, 403, 500, 502):
+            with self.subTest(status=status):
+                self.asked = []
+                self.installed = {"80": {"likt0r/askos": status}, "900": {"likt0r/askos": 200}}
+                answer, log = self.request("likt0r/askos")
+                self.assertEqual(answer, {"error": f"GitHub answered {status}"})
+                self.assertEqual([a for a, _, _ in self.asked], ["80"])
+                self.assertIn(f": github-status status={status}: ", log)
+
+    def test_owner_check_comes_before_any_app_is_asked(self):
+        self.installed = {"80": {"someone/repo": 200}}
+        answer, _ = self.request("someone/repo")
+        self.assertEqual(answer, {"error": "someone is not a GitHub owner of the VM priv"})
+        self.assertEqual(self.asked, [])
+
+    def test_activity_reads_the_app_that_issued_the_token(self):
+        sys.path.insert(0, REPO)
+        from agentbox import activity
+        self.installed = {"900": {"correctiv/site": 200}}
+        _, log = self.request("correctiv/site")
+        entry = activity.github_entry({"__REALTIME_TIMESTAMP": "1793700000000000",
+                                       "SYSLOG_IDENTIFIER": "agentbox-gh-priv", "MESSAGE": log.strip()})
+        self.assertEqual((entry["code"], entry["params"]), ("github.token", {
+            "repository": "correctiv/site", "expires": "2026-11-10T12:00:00Z", "app_id": "900"}))
+        self.assertEqual(entry["description"], "GitHub token for correctiv/site until 2026-11-10T12:00:00Z by App 900")
+        # a line from before there were several Apps
+        entry = activity.github_entry({"__REALTIME_TIMESTAMP": "1793700000000000", "SYSLOG_IDENTIFIER": "agentbox-gh-priv",
+                                       "MESSAGE": "[priv] token for likt0r/askos until 2026-11-10T12:00:00Z"})
+        self.assertEqual(entry["params"], {"repository": "likt0r/askos", "expires": "2026-11-10T12:00:00Z"})
+
+
 if __name__ == "__main__":
     unittest.main()

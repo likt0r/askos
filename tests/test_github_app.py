@@ -1,6 +1,7 @@
-"""The GitHub App (#18): `agentbox set-github-app` (replace App ID and key after GitHub
-accepted them), `github-app` (installations, the VMs relying on them, owners without one)
-and `github-tokens` (what a VM got from the token service, and what it was refused).
+"""The GitHub Apps (#18, several since askos#25): `agentbox set-github-app` (add an App or
+replace its key after GitHub accepted them), `remove-github-app`, `github-app` (each App's
+installations, the VMs relying on them, owners without one) and `github-tokens` (what a VM
+got from the token service, and what it was refused).
 
 The real CLI runs with AGENTBOX_ROOT pointing at a temporary root. A fake curl stands in
 for GitHub (fake_github_curl.py): it checks every JWT with the real openssl against the
@@ -28,6 +29,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 AGENTBOX = os.path.join(REPO, "bin", "agentbox")
 TESTS = os.path.join(REPO, "tests")
 APP_ID = "12345"
+KEY_FILE = "app-12345.pem"
 APP = {"id": 12345, "slug": "agentbox-test", "name": "Agent Box Test", "owner": "likt0r",
        "html_url": "https://github.com/apps/agentbox-test",
        "install_url": "https://github.com/apps/agentbox-test/installations/new"}
@@ -97,14 +99,20 @@ class GitHubTest(unittest.TestCase):
         self.journald = Journald(self.path("run/systemd/journal.agentbox/socket"))
         self.addCleanup(self.journald.close)
         # the working App: the stored ID and key are the ones GitHub knows
-        self.store(APP_ID, KEY)
+        self.store((APP_ID, KEY))
         self.github()
 
     def path(self, rel):
         return os.path.join(self.root, rel)
 
-    def store(self, app_id, key, conf=None):
-        for name, data, mode in (("app.conf", conf or f"APP_ID={app_id}\n".encode(), 0o640), ("app.pem", key, 0o400)):
+    def store(self, *apps, conf=None):
+        """These Apps, (App ID, key) each, and only these; app.conf as given or naming them."""
+        for name in os.listdir(self.github_dir):
+            os.chmod(os.path.join(self.github_dir, name), 0o600)
+            os.remove(os.path.join(self.github_dir, name))
+        conf = conf or "".join(f"APP_ID={app_id}\n" for app_id, _ in apps).encode()
+        for name, data, mode in (("app.conf", conf, 0o640),
+                                 *((f"app-{app_id}.pem", key, 0o400) for app_id, key in apps)):
             f = os.path.join(self.github_dir, name)
             if os.path.exists(f):
                 os.chmod(f, 0o600)
@@ -156,10 +164,10 @@ class SetGitHubAppTest(GitHubTest):
         return self.run_agentbox("set-github-app", *args, stdin=key if key is not None else OTHER)
 
     def assert_unchanged(self):
-        self.assertEqual(self.stored("app.pem"), KEY)
+        self.assertEqual(self.stored(KEY_FILE), KEY)
         self.assertEqual(self.stored("app.conf"), f"APP_ID={APP_ID}\n".encode())
-        self.assertEqual((self.mode("app.pem"), self.mode("app.conf")), (0o400, 0o640))
-        self.assertEqual(sorted(os.listdir(self.github_dir)), ["app.conf", "app.pem"])
+        self.assertEqual((self.mode(KEY_FILE), self.mode("app.conf")), (0o400, 0o640))
+        self.assertEqual(sorted(os.listdir(self.github_dir)), [KEY_FILE, "app.conf"])
 
     def test_rotated_key_replaces_the_old_one(self):
         # a new key generated on GitHub for the same App: GitHub knows only that one now
@@ -169,11 +177,11 @@ class SetGitHubAppTest(GitHubTest):
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(out, "GitHub App 12345 (agentbox-test) checked and saved. "
                               "The token service uses it from the next request on.\n")
-        self.assertEqual(public(self.stored("app.pem")), public(OTHER))
-        self.assertTrue(self.stored("app.pem").startswith(b"-----BEGIN PRIVATE KEY-----\n"))
+        self.assertEqual(public(self.stored(KEY_FILE)), public(OTHER))
+        self.assertTrue(self.stored(KEY_FILE).startswith(b"-----BEGIN PRIVATE KEY-----\n"))
         self.assertEqual(self.stored("app.conf"), b"APP_ID=12345\n")
-        self.assertEqual((self.mode("app.pem"), self.mode("app.conf")), (0o400, 0o640))
-        self.assertEqual(sorted(os.listdir(self.github_dir)), ["app.conf", "app.pem"])
+        self.assertEqual((self.mode(KEY_FILE), self.mode("app.conf")), (0o400, 0o640))
+        self.assertEqual(sorted(os.listdir(self.github_dir)), [KEY_FILE, "app.conf"])
 
     def test_asks_github_for_the_app_with_a_jwt_signed_by_the_new_key(self):
         self.github(key="other")
@@ -189,9 +197,9 @@ class SetGitHubAppTest(GitHubTest):
         self.assertLess(claims["iat"], time.time())
         self.assertIn("X-GitHub-Api-Version: 2022-11-28", call["stdin"])
 
-    def test_another_app(self):
-        """A different App ID with its key; other lines of app.conf stay."""
-        self.store(APP_ID, KEY, conf=b"APP_ID=12345\n# Kommentar\nOTHER=1\n")
+    def test_another_app_is_added_next_to_the_stored_one(self):
+        """A different App ID with its key; app.conf names both, ascending, other lines stay."""
+        self.store((APP_ID, KEY), conf=b"APP_ID=12345\n# Kommentar\nOTHER=1\n")
         self.github(app_id=777, key="other", app={"id": 777, "slug": "other-app", "name": "Other",
                                                    "owner": {"login": "acme-corp"}})
         code, out, err = self.replace("777", "--no-prompt", "--json")
@@ -199,9 +207,26 @@ class SetGitHubAppTest(GitHubTest):
         self.assertEqual(json.loads(out), {"id": 777, "slug": "other-app", "name": "Other", "owner": "acme-corp",
                                            "html_url": "https://github.com/apps/other-app",
                                            "install_url": "https://github.com/apps/other-app/installations/new",
-                                           "stored": True})
-        self.assertEqual(self.stored("app.conf"), b"APP_ID=777\n# Kommentar\nOTHER=1\n")
-        self.assertEqual(public(self.stored("app.pem")), public(OTHER))
+                                           "stored": True, "added": True})
+        self.assertEqual(self.stored("app.conf"), b"APP_ID=777\nAPP_ID=12345\n# Kommentar\nOTHER=1\n")
+        self.assertEqual(public(self.stored("app-777.pem")), public(OTHER))
+        self.assertEqual(self.stored(KEY_FILE), KEY)
+        self.assertEqual((self.mode("app-777.pem"), self.mode("app.conf")), (0o400, 0o640))
+        self.assertEqual(sorted(os.listdir(self.github_dir)), ["app-12345.pem", "app-777.pem", "app.conf"])
+        self.assertEqual(self.replace("777", "--no-prompt")[1],
+                         "GitHub App 777 (other-app) checked and saved. The token service uses it from the next "
+                         "request on.\n")
+
+    def test_replacing_one_apps_key_leaves_the_other(self):
+        self.store(("777", EC), (APP_ID, KEY))
+        self.github(key="other")
+        code, out, err = self.replace(APP_ID, "--no-prompt", "--json")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual({k: json.loads(out)[k] for k in ("id", "stored", "added")},
+                         {"id": 12345, "stored": True, "added": False})
+        self.assertEqual(public(self.stored(KEY_FILE)), public(OTHER))
+        self.assertEqual(self.stored("app-777.pem"), EC)
+        self.assertEqual(self.stored("app.conf"), b"APP_ID=777\nAPP_ID=12345\n")
 
     def test_key_github_does_not_know_is_refused_and_the_old_one_stays(self):
         code, out, err = self.replace(APP_ID, "--no-prompt")
@@ -275,8 +300,8 @@ class SetGitHubAppTest(GitHubTest):
                 self.assertEqual((code, out, err), (2, "", f"agentbox: {message}\n"))
         entries = self.journald.entries()
         self.assertEqual([e["AGENTBOX_DESCRIPTION"] for e in entries],
-                         ["Replace the GitHub App (App ID 12345): " + usage, "Replace the GitHub App: " + bad_id,
-                          "Replace the GitHub App: " + usage])
+                         ["Add or replace the GitHub App (App ID 12345): " + usage,
+                          "Add or replace the GitHub App: " + bad_id, "Add or replace the GitHub App: " + usage])
         # the App ID only when it is one, as a parameter too
         self.assertEqual([e.get("AGENTBOX_PARAM_APP_ID") for e in entries], ["12345", None, None])
         self.assert_secret_free(key=OTHER)
@@ -289,15 +314,14 @@ class SetGitHubAppTest(GitHubTest):
         code, out, err = self.replace(APP_ID)
         self.assertEqual((code, err), (0, ""))
         self.assertTrue(out.startswith(prompt), out)
-        self.store(APP_ID, KEY)
+        self.store((APP_ID, KEY))
         code, out, err = self.replace(APP_ID, "--json")
         self.assertEqual((code, err), (0, prompt))
         self.assertTrue(json.loads(out)["stored"])
 
     def test_needs_the_token_service_installed(self):
-        for name in ("app.conf", "app.pem"):
-            os.chmod(os.path.join(self.github_dir, name), 0o600)
-            os.remove(os.path.join(self.github_dir, name))
+        self.store()
+        os.remove(os.path.join(self.github_dir, "app.conf"))
         os.rmdir(self.github_dir)
         code, out, err = self.replace(APP_ID, "--no-prompt")
         self.assertEqual((code, out), (1, ""))
@@ -312,9 +336,9 @@ class SetGitHubAppTest(GitHubTest):
         self.assertEqual(self.replace(APP_ID, "--no-prompt", key=EC)[0], 1)
         self.assertEqual([(e["AGENTBOX_KIND"], e["AGENTBOX_ACTION"], e["AGENTBOX_OUTCOME"], e["AGENTBOX_DESCRIPTION"])
                           for e in self.journald.entries()], [
-            ("credentials", "set-github-app", "ok", "Replace the GitHub App (App ID 12345)"),
+            ("credentials", "set-github-app", "ok", "Add or replace the GitHub App (App ID 12345)"),
             ("credentials", "set-github-app", "failed",
-             "Replace the GitHub App (App ID 12345): this is not an RSA key; GitHub Apps sign with RSA")])
+             "Add or replace the GitHub App (App ID 12345): this is not an RSA key; GitHub Apps sign with RSA")])
         self.assertNotIn("AGENTBOX_VM", self.journald.entries()[0])
 
     def test_neither_key_nor_jwt_ever_shows(self):
@@ -322,11 +346,69 @@ class SetGitHubAppTest(GitHubTest):
                                 ({"key": "other", "status": 401, "answer": {"message": "bad"}}, ()),
                                 ({"key": "other", "exit": 28}, ())):
             with self.subTest(scenario=scenario, extra=extra):
-                self.store(APP_ID, KEY)
+                self.store((APP_ID, KEY))
                 self.github(**scenario)
                 code, out, err = self.replace(APP_ID, "--no-prompt", *extra)
                 self.assert_secret_free(out, err, key=OTHER)
         self.assertTrue(self.jwts())
+
+
+class RemoveGitHubAppTest(GitHubTest):
+    def setUp(self):
+        super().setUp()
+        self.store(("777", OTHER), (APP_ID, KEY))
+
+    def test_removes_only_that_app(self):
+        code, out, err = self.run_agentbox("remove-github-app", "777")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out, "GitHub App 777 removed; the token service no longer uses it. "
+                              "Delete its key on GitHub as well.\n")
+        self.assertEqual(self.stored("app.conf"), b"APP_ID=12345\n")
+        self.assertEqual(sorted(os.listdir(self.github_dir)), [KEY_FILE, "app.conf"])
+        self.assertEqual((self.mode(KEY_FILE), self.mode("app.conf")), (0o400, 0o640))
+        self.assertEqual(self.run_agentbox("remove-github-app", APP_ID, "--json"),
+                         (0, '{"id": 12345, "removed": true}\n', ""))
+        self.assertEqual(sorted(os.listdir(self.github_dir)), ["app.conf"])
+        self.assertEqual(self.stored("app.conf"), b"")
+        # GitHub is not asked: removing needs no working key
+        self.assertEqual(self.calls(), [])
+
+    def test_other_lines_of_app_conf_stay(self):
+        self.store(("777", OTHER), (APP_ID, KEY), conf=b"APP_ID=777\n# Kommentar\nAPP_ID=12345\n")
+        self.assertEqual(self.run_agentbox("remove-github-app", "777")[0], 0)
+        self.assertEqual(self.stored("app.conf"), b"APP_ID=12345\n# Kommentar\n")
+
+    def test_a_key_app_conf_does_not_name_is_removed_too(self):
+        # left behind when set-github-app ended between writing the key and app.conf
+        self.store((APP_ID, KEY), conf=b"")
+        self.assertEqual(self.run_agentbox("remove-github-app", APP_ID)[0], 0)
+        self.assertEqual(sorted(os.listdir(self.github_dir)), ["app.conf"])
+
+    def test_unknown_app(self):
+        code, out, err = self.run_agentbox("remove-github-app", "4242", "--json")
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(json.loads(err), {"error": "github_app_not_found", "message": "GitHub App 4242 is not set up",
+                                           "params": {"app_id": 4242}})
+        self.assertEqual(sorted(os.listdir(self.github_dir)), ["app-12345.pem", "app-777.pem", "app.conf"])
+
+    def test_invalid_arguments_change_nothing(self):
+        usage = "agentbox: usage: agentbox remove-github-app <app-id> [--json]\n"
+        bad_id = "agentbox: invalid App ID: a number, as GitHub shows it under App ID in the App's settings\n"
+        for args, exit, message in (((), 2, usage), (("777", "12345"), 2, usage), (("abc",), 2, bad_id),
+                                    (("../app",), 2, bad_id), ((KEY.decode(),), 2, bad_id)):
+            with self.subTest(args=args[:1]):
+                self.assertEqual(self.run_agentbox("remove-github-app", *args), (exit, "", message))
+        self.assertEqual(sorted(os.listdir(self.github_dir)), ["app-12345.pem", "app-777.pem", "app.conf"])
+        self.assert_secret_free(key=KEY)
+
+    def test_recorded_in_activity_as_credentials(self):
+        self.assertEqual(self.run_agentbox("--actor=Firefox/Linux (192.0.2.23)", "remove-github-app", "777")[0], 0)
+        self.assertEqual(self.run_agentbox("remove-github-app", "777")[0], 1)
+        self.assertEqual([(e["AGENTBOX_KIND"], e["AGENTBOX_ACTION"], e["AGENTBOX_OUTCOME"], e["AGENTBOX_DESCRIPTION"],
+                           e.get("AGENTBOX_PARAM_APP_ID")) for e in self.journald.entries()], [
+            ("credentials", "remove-github-app", "ok", "Remove the GitHub App (App ID 777)", "777"),
+            ("credentials", "remove-github-app", "failed",
+             "Remove the GitHub App (App ID 777): GitHub App 777 is not set up", "777")])
 
 
 VMS = [vm_records.record("work", 1, github_owners=["Likt0r", "acme-corp", "my-org"]),
@@ -350,8 +432,7 @@ class InstallationsTest(GitHubTest):
 
     def test_installations_with_their_vms_and_missing_owners(self):
         self.assertEqual(self.overview(), {
-            "app": APP,
-            "installations": [
+            "apps": [{**APP, "error": None, "installations": [
                 {"id": 12, "account": "acme-corp", "type": "Organization", "repository_selection": "selected",
                  "suspended": True, "html_url": "https://github.com/organizations/acme-corp/settings/installations/12",
                  "vms": ["work"]},
@@ -360,8 +441,60 @@ class InstallationsTest(GitHubTest):
                  "vms": ["priv", "work"]},
                 {"id": 13, "account": "unused-org", "type": "Organization", "repository_selection": "all",
                  "suspended": False,
-                 "html_url": "https://github.com/organizations/unused-org/settings/installations/13", "vms": []}],
+                 "html_url": "https://github.com/organizations/unused-org/settings/installations/13", "vms": []}]}],
             "missing": [{"owner": "my-org", "vms": ["lab", "work"]}, {"owner": "solo", "vms": ["lab"]}]})
+
+    def two_apps(self, second=None):
+        """The working App and a second one (App ID 777, key OTHER) installed on my-org."""
+        self.store(("777", OTHER), (APP_ID, KEY))
+        self.github(apps=[{"app_id": 12345, "public_key": os.path.join(keys.name, "key.pub"),
+                           "installations": INSTALLATIONS},
+                          {"app_id": 777, "public_key": os.path.join(keys.name, "other.pub"),
+                           "app": {"id": 777, "slug": "org-app", "name": "Org App", "owner": {"login": "my-org"}},
+                           "installations": [installation(21, "my-org"), installation(22, "likt0r", "User")],
+                           **(second or {})}])
+
+    def test_every_app_ascending_and_owners_no_app_is_installed_on(self):
+        self.two_apps()
+        result = self.overview()
+        self.assertEqual([(a["id"], a["slug"], a["install_url"], [(i["account"], i["vms"]) for i in a["installations"]])
+                          for a in result["apps"]], [
+            (777, "org-app", "https://github.com/apps/org-app/installations/new",
+             [("likt0r", ["priv", "work"]), ("my-org", ["lab", "work"])]),
+            (12345, "agentbox-test", "https://github.com/apps/agentbox-test/installations/new",
+             [("acme-corp", ["work"]), ("likt0r", ["priv", "work"]), ("unused-org", [])])])
+        # my-org has the second App: only solo is missing
+        self.assertEqual(result["missing"], [{"owner": "solo", "vms": ["lab"]}])
+        code, out, _ = self.run_agentbox("github-app")
+        self.assertEqual(out.splitlines()[:5], [
+            "GitHub App 777 org-app (Org App), owned by my-org",
+            "Install link: https://github.com/apps/org-app/installations/new",
+            "Installed on:",
+            "  likt0r               User          all repos       VMs: priv, work",
+            "  my-org               Organization  all repos       VMs: lab, work"])
+        self.assertEqual(out.splitlines()[5], "GitHub App 12345 agentbox-test (Agent Box Test), owned by likt0r")
+        self.assert_secret_free(key=OTHER)
+
+    def test_an_app_github_refuses_is_shown_with_its_error_next_to_the_others(self):
+        self.two_apps({"status": 401, "answer": {"message": "Bad credentials"}})
+        result = self.overview()
+        self.assertEqual(result["apps"][0], {
+            "id": 777, "slug": None, "name": None, "owner": None, "html_url": None, "install_url": None,
+            "installations": [],
+            "error": {"error": "github_unavailable", "message": "GitHub answers /app with HTTP 401: Bad credentials",
+                      "params": {"path": "/app", "status": 401}}})
+        self.assertEqual(result["apps"][1]["slug"], "agentbox-test")
+        self.assertEqual(result["missing"], [{"owner": "my-org", "vms": ["lab", "work"]},
+                                             {"owner": "solo", "vms": ["lab"]}])
+        self.assertEqual(self.run_agentbox("github-app")[1].splitlines()[0],
+                         "GitHub App 777: GitHub answers /app with HTTP 401: Bad credentials")
+
+    def test_an_app_without_its_key_is_shown_with_its_error(self):
+        self.two_apps()
+        os.chmod(os.path.join(self.github_dir, "app-777.pem"), 0o600)
+        os.remove(os.path.join(self.github_dir, "app-777.pem"))
+        app = self.overview()["apps"][0]
+        self.assertEqual((app["id"], app["error"]["error"]), (777, "invalid_private_key"))
 
     def test_asks_github_with_the_stored_key(self):
         self.overview()
@@ -373,14 +506,14 @@ class InstallationsTest(GitHubTest):
         many = [installation(100 + i, f"org-{i:03d}") for i in range(150)]
         self.github(installations=many)
         result = self.overview()
-        self.assertEqual(len(result["installations"]), 150)
+        self.assertEqual(len(result["apps"][0]["installations"]), 150)
         self.assertEqual([c["argv"][-1].rsplit("&", 1)[1] for c in self.calls()[1:]], ["page=1", "page=2"])
         self.assertEqual({m["owner"] for m in result["missing"]}, {"likt0r", "acme-corp", "my-org", "solo"})
 
     def test_installed_nowhere(self):
         self.github(installations=[])
         result = self.overview()
-        self.assertEqual(result["installations"], [])
+        self.assertEqual(result["apps"][0]["installations"], [])
         # owners compare without case, as on GitHub; shown as the first VM by name writes it
         self.assertEqual(result["missing"], [{"owner": "acme-corp", "vms": ["work"]},
                                              {"owner": "likt0r", "vms": ["priv", "work"]},
@@ -402,36 +535,40 @@ class InstallationsTest(GitHubTest):
             "  solo                 VMs: lab"])
 
     def test_stored_key_github_does_not_accept(self):
+        # the App's error, in its place in the list: it can still be removed or get a new key
         self.github(key="other")
-        # with --json the failure is one JSON object on stderr
-        code, out, err = self.run_agentbox("github-app", "--json")
-        self.assertEqual((code, out), (1, ""))
-        self.assertEqual(json.loads(err), {
+        [app] = self.overview()["apps"]
+        self.assertEqual((app["id"], app["installations"], app["error"]), (12345, [], {
             "error": "github_unavailable",
             "message": "GitHub answers /app with HTTP 401: A JSON web token could not be decoded",
-            "params": {"path": "/app", "status": 401}})
+            "params": {"path": "/app", "status": 401}}))
         self.assertEqual(self.run_agentbox("github-app"),
-                         (1, "", "agentbox: GitHub answers /app with HTTP 401: A JSON web token could not be "
-                                 "decoded\n"))
+                         (0, "GitHub App 12345: GitHub answers /app with HTTP 401: A JSON web token could not be "
+                             "decoded\nMissing Installations (these VMs get no tokens for these GitHub owners):\n"
+                             "  acme-corp            VMs: work\n  likt0r               VMs: priv, work\n"
+                             "  my-org               VMs: lab, work\n  solo                 VMs: lab\n", ""))
 
     def test_github_unreachable(self):
         self.github(exit=6)
         self.assertEqual(self.run_agentbox("github-app"), (1, "", "agentbox: GitHub is not reachable\n"))
 
     def test_no_app_set_up(self):
-        os.chmod(os.path.join(self.github_dir, "app.conf"), 0o600)
-        os.remove(os.path.join(self.github_dir, "app.conf"))
-        self.assertEqual(self.run_agentbox("github-app"),
-                         (1, "", "agentbox: no GitHub App is set up: agentbox set-github-app\n"))
+        for conf in (b"", None):
+            with self.subTest(conf=conf):
+                self.store(conf=conf or b"# none\n")
+                if conf is None:
+                    os.remove(os.path.join(self.github_dir, "app.conf"))
+                self.assertEqual(self.run_agentbox("github-app"),
+                                 (1, "", "agentbox: no GitHub App is set up: agentbox set-github-app\n"))
         self.assertEqual(self.calls(), [])
 
     def test_untrusted_text_from_github_is_cleaned(self):
         self.github(installations=[installation(1, "evil\x1b[31m\nlogin"), {"id": "x", "account": None}],
                     app={"id": 12345, "slug": "Bad Slug/../x", "name": "a\u202eb", "owner": "nope"})
-        result = self.overview()
-        self.assertEqual(result["app"], {"id": 12345, "slug": None, "name": "ab", "owner": None, "html_url": None,
-                                         "install_url": None})
-        self.assertEqual([(i["id"], i["account"]) for i in result["installations"]], [(None, None), (1, "evil[31mlogin")])
+        [app] = self.overview()["apps"]
+        self.assertEqual({k: app[k] for k in APP}, {"id": 12345, "slug": None, "name": "ab", "owner": None,
+                                                    "html_url": None, "install_url": None})
+        self.assertEqual([(i["id"], i["account"]) for i in app["installations"]], [(None, None), (1, "evil[31mlogin")])
 
     def test_read_only(self):
         self.assertEqual(self.run_agentbox("--actor=timer", "github-app")[0], 0)
