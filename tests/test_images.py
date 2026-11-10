@@ -1304,7 +1304,6 @@ class ContainersTest(ImagesTest):
     with NO_PROXY as local as the services' and host.agentbox resolvable. Only a real VM can
     run them; this checks what the Base image carries."""
 
-    PROXY = "http://host.agentbox:3128"
     SOCKET = "unix:///run/user/1000/podman/podman.sock"
 
     def setUp(self):
@@ -1323,11 +1322,15 @@ class ContainersTest(ImagesTest):
                       self.read("/etc/profile.d/agentbox.sh"))
         self.assertNotIn("CONTAINER_HOST", self.read("/etc/profile.d/agentbox.sh"))    # podman stays local
         self.assertNotIn("CONTAINER_HOST", self.env)
-        self.assertIn("systemctl --global enable podman.socket", self.read_repo("vm/Containerfile"))
+        containerfile = self.read_repo("vm/Containerfile")
+        self.assertIn("systemctl --global enable podman.socket", containerfile)
+        # docker is podman (podman-docker), docker compose the CLI plugin run by podman compose
+        self.assertRegex(containerfile, r"dnf -y install [^&]*\bpodman podman-docker docker-compose\b")
+        self.assertTrue(os.path.isfile(os.path.join(self.root, "etc/containers/nodocker")))   # no notice
 
     def test_every_container_and_podman_itself_get_the_proxy_and_the_vms_hosts(self):
         conf = tomllib.loads(self.read("/etc/containers/containers.conf.d/50-agentbox.conf"))
-        wanted = {name: self.PROXY for name in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")}
+        wanted = {name: self.env[name] for name in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")}
         wanted.update(NO_PROXY=self.env["NO_PROXY"], no_proxy=self.env["no_proxy"])
         self.assertEqual(self.env["NO_PROXY"], "localhost,127.0.0.1,.localhost,host.agentbox")
         for table in ("containers", "engine"):
@@ -1346,7 +1349,7 @@ class ContainersTest(ImagesTest):
         and Compose send the one of their config as build arguments."""
         config = json.loads(self.read("/usr/lib/agentbox/docker-config.json"))
         self.assertEqual(config, {"proxies": {"default": {
-            "httpProxy": self.PROXY, "httpsProxy": self.PROXY, "noProxy": self.env["NO_PROXY"]}}})
+            "httpProxy": self.env["HTTP_PROXY"], "httpsProxy": self.env["HTTPS_PROXY"], "noProxy": self.env["NO_PROXY"]}}})
         # the home is fresh at every start: guest-setup puts it there each time
         self.assertIn('install -m 600 -o agent -g agent /usr/lib/agentbox/docker-config.json '
                       '"$HOME_DIR/.docker/config.json"', self.read(safeguards.GUEST_SETUP))

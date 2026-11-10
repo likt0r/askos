@@ -405,18 +405,29 @@ it again.
 
 ### Containers in a VM
 
-Agents run containers with the agent's rootless Podman. `docker` and `docker compose` work
-as well: `DOCKER_HOST` points them at the agent's Podman socket, for services and shells.
-Containers, and the containers that run a Dockerfile's `RUN` lines, have no DNS and no
-route out, the same as the rest of the VM, so they get the Host's proxy. Podman gives every
-container the proxy variables and the VM's `/etc/hosts`, where `host.agentbox` is
-(`/etc/containers/containers.conf.d/50-agentbox.conf`). Builds through the Docker API
-(`docker build`, `docker compose build`) get the proxy as build arguments from the client's
-`~/.docker/config.json`, which the VM writes at every start. The Allowlist applies as to
-everything else. The proxy lets only HTTPS through, so package sources in a Dockerfile must
-use HTTPS: Debian's `http://deb.debian.org` gets `405 Method Not Allowed`, and switching it
-to `https://` needs `ca-certificates` in the image. A tool that ignores the proxy
-variables gets nowhere.
+Agents run containers with the agent's rootless Podman. `docker` is Podman under that name
+(`podman-docker`), so `docker run` and `docker build` are `podman run` and `podman build`.
+`podman compose` and `docker compose` both run the Docker Compose CLI plugin, which talks to
+the agent's Podman socket through the Docker API (`DOCKER_HOST`, set for services and
+shells). Containers, and the containers that run a Dockerfile's `RUN` lines, have no DNS
+and no route out, the same as the rest of the VM, so they get the Host's proxy. Podman gives
+every container the proxy variables and the VM's `/etc/hosts`, which has `host.agentbox`
+(`/etc/containers/containers.conf.d/50-agentbox.conf`), and gives `podman build` the proxy
+for its `RUN` lines. Compose builds through the Docker API, where Podman passes no proxy of
+its own. They get it as build arguments from the agent's `~/.docker/config.json`, which the
+VM writes at every start. The Allowlist applies as to everything else, and a tool that
+ignores the proxy variables gets nowhere.
+
+The proxy lets only HTTPS through, so a Dockerfile must fetch packages over HTTPS from
+allowlisted mirrors. Plain HTTP gets `405 Method Not Allowed`, which hits Debian's and
+Ubuntu's default `http://` apt sources. Switch them before the first `apt-get`, in a base
+image that already has `ca-certificates` (`node`, `python` and `buildpack-deps` do,
+`debian` does not):
+
+```Dockerfile
+RUN sed -i 's|http://|https://|g' /etc/apt/sources.list.d/* /etc/apt/sources.list 2>/dev/null; \
+    apt-get update
+```
 
 ### Images and Builds
 
