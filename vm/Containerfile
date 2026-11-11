@@ -12,8 +12,8 @@ FROM quay.io/fedora/fedora-bootc:44
 # Intl.Segmenter ab (nuxt, vite, consola, string-width ...).
 # podman-docker: /usr/bin/docker runs podman, so docker compose is podman compose, which runs
 # Docker Compose (docker-compose, the CLI plugin; compose_providers in
-# etc/containers/containers.conf.d) against the agent's Podman socket, with the proxy from
-# ~/.docker/config.json (guest-setup); /etc/containers/nodocker (vm/files) silences its notice.
+# etc/containers/containers.conf.d) against the agent's Podman socket;
+# /etc/containers/nodocker (vm/files) silences its notice.
 RUN dnf -y install --setopt=install_weak_deps=False \
       gtk3 nss alsa-lib cups-libs mesa-libgbm libxkbcommon \
       git gh nodejs nodejs-full-i18n npm python3 uv rustup libxkbcommon-devel \

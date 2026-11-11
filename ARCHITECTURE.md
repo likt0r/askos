@@ -207,16 +207,16 @@ flowchart LR
 - Containers in a VM are behind the same limits. They run on rootless Podman: `docker` is
   Podman under that name, and `podman compose` and `docker compose` run Docker Compose, which
   builds and starts containers through the agent's Podman socket. The VM forwards nothing for
-  containers, so they can get out only through the proxy, which passes only HTTPS. Podman
-  passes the proxy into the `RUN` lines of `podman build`, into containers from the caller's
-  environment and the VM's `/etc/hosts` with `host.agentbox` into every container
-  (`/etc/containers/containers.conf.d/50-agentbox.conf`). Docker Compose gives builds and the
-  containers it starts the proxy from `~/.docker/config.json`, which `agentbox-guest-setup`
-  writes at every start. A build that goes through the Docker API on the Podman socket without
-  that config gets no proxy, since Podman passes none there. `NO_PROXY` lists only local names,
-  so compose services that call each other by name over HTTP list those names in their own
-  `NO_PROXY`. These settings only point containers at the proxy, and none of them is a
-  Safeguard.
+  containers, so they can get out only through the proxy, which passes only HTTPS. Builds get
+  the proxy and running containers do not, by the owner's decision: compose services call each
+  other by name over HTTP, and many programs send those calls to the proxy when proxy
+  variables are set. Podman passes the proxy into the `RUN` lines of `podman build` and the
+  VM's `/etc/hosts` with `host.agentbox` into every container, and running containers get no
+  proxy from the caller's environment (`/etc/containers/containers.conf.d/50-agentbox.conf`).
+  A build that goes through the Docker API on the Podman socket, Compose builds included, gets
+  no proxy, since Podman passes none there; a compose file gives its builds the proxy as build
+  arguments. A service that needs the internet is given the proxy in its compose file. These
+  settings only point builds at the proxy, and none of them is a Safeguard.
 - From the home network a VM is reachable only through its Orca port; no other port of a VM
   is forwarded. Dev servers inside a VM are viewed in Orca's built-in browser: the page is
   shown on the laptop, but Orca carries its connections through the pairing connection

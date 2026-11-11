@@ -94,11 +94,6 @@ done
 # geschrieben von package-safeguards beim Bauen des Images)
 install -m 644 -o agent -g agent /usr/lib/agentbox/bunfig.toml "$HOME_DIR/.bunfig.toml"
 
-# Docker Compose sends the proxy from this config into builds through the Podman socket
-# (Podman passes none of its own into those) and into the containers it starts.
-install -d -o agent -g agent -m 700 "$HOME_DIR/.docker"
-install -m 600 -o agent -g agent /usr/lib/agentbox/docker-config.json "$HOME_DIR/.docker/config.json"
-
 # Git-Hooks in den Repos zaehlen nicht (core.hooksPath), aber Reste entfernen,
 # damit sie auch bei geaenderter Config nicht greifen.
 find "$DATA/home/code" -path '*/.git/hooks/*' -type f ! -name '*.sample' -delete 2>/dev/null || true
