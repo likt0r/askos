@@ -11,12 +11,13 @@ FROM quay.io/fedora/fedora-bootc:44
 # nodejs-full-i18n: Nodes ICU-Daten (sonst nur eine schwache Abhaengigkeit); ohne sie stuerzt
 # Intl.Segmenter ab (nuxt, vite, consola, string-width ...).
 # podman-docker: /usr/bin/docker runs podman, so docker compose is podman compose, which runs
-# podman-compose (compose_providers in etc/containers/containers.conf.d, with the proxy for
-# builds); /etc/containers/nodocker (vm/files) silences its notice.
+# Docker Compose (docker-compose, the CLI plugin; compose_providers in
+# etc/containers/containers.conf.d) against the agent's Podman socket;
+# /etc/containers/nodocker (vm/files) silences its notice.
 RUN dnf -y install --setopt=install_weak_deps=False \
       gtk3 nss alsa-lib cups-libs mesa-libgbm libxkbcommon \
       git gh nodejs nodejs-full-i18n npm python3 uv rustup libxkbcommon-devel \
-      podman podman-docker podman-compose \
+      podman podman-docker docker-compose \
       ripgrep jq less nano procps-ng which findutils diffutils patch \
       tar gzip unzip make gcc gcc-c++ xfsprogs qemu-guest-agent \
     && dnf clean all
