@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/likt0r/askos/compare/v0.5.0...v0.5.1) (2026-11-11)
+
+### Bug Fixes
+
+* docker compose in the VM is Docker Compose again; running containers get no proxy ([#35](https://github.com/likt0r/askos/issues/35)) ([f51a25a](https://github.com/likt0r/askos/commit/f51a25a7ad29a4266b8cc9aa7281bef369012b49)), closes [#34](https://github.com/likt0r/askos/issues/34), references [#28](https://github.com/likt0r/askos/issues/28) [#33](https://github.com/likt0r/askos/issues/33)
+* short image names in the VM resolve to docker.io, not Fedora's registries ([#33](https://github.com/likt0r/askos/issues/33)) ([cecd3e3](https://github.com/likt0r/askos/commit/cecd3e3bdc8f2087d3d2ad87b3e4e0d8f9aab5a0)), closes [#32](https://github.com/likt0r/askos/issues/32), references [#28](https://github.com/likt0r/askos/issues/28)
+
 ## [0.5.0](https://github.com/likt0r/askos/compare/v0.4.0...v0.5.0) (2026-11-11)
 
 ### Features
