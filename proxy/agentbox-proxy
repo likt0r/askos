@@ -94,7 +94,10 @@ def _test_upstream():
 
 suspicious = _load_suspicious()
 PORT = 443
-HELLO_LIMIT = 16 * 1024         # a ClientHello larger than this is not taken as TLS
+RECORD_LIMIT = 2 ** 14          # the longest record TLS allows
+# a ClientHello in more bytes than one record of the longest length (header included) is not
+# taken as TLS: 16,389 bytes
+HELLO_LIMIT = 5 + RECORD_LIMIT
 HELLO_SECONDS = 10              # how long a client has to send its ClientHello
 LINGER_SECONDS = 2              # how long a refused client's further bytes are read after the alert
 # so oft prueft der Proxy, ob Tunnel geschlossen werden muessen
@@ -113,7 +116,7 @@ def log(ctx, msg):
 
 # TLS record types, the handshake type and the extension of the server name (RFC 8446, 6066)
 HANDSHAKE, ALERT_RECORD, FATAL, CLIENT_HELLO, SERVER_NAME, HOST_NAME = 22, 21, 2, 1, 0, 0
-RECORD_LIMIT = 2 ** 14          # the longest record TLS allows
+ENCRYPTED_CLIENT_HELLO = 0xfe0d     # the extension of Encrypted Client Hello (ECH)
 HOST = re.compile(r"[a-z0-9.-]{1,253}")
 NOT_TLS = "not a TLS handshake"
 
@@ -159,7 +162,9 @@ def _host_name(name):
 
 def _server_name(body):
     """The host name of the server_name extension in a ClientHello body (what follows the
-    handshake header): lowercased, without its trailing dot."""
+    handshake header): lowercased, without its trailing dot. A ClientHello with Encrypted
+    Client Hello names no server either: its real one is hidden in the encrypted part, the
+    outer server_name is a front."""
     r = Reader(body)
     r.take(2 + 32)                  # version, random
     r.vector(1)                     # session id
@@ -170,15 +175,16 @@ def _server_name(body):
     extensions = Reader(r.vector(2))
     if not r.done():
         raise Refused(NOT_TLS)
+    found = {}
     while not extensions.done():
         kind, data = extensions.number(2), extensions.vector(2)
-        if kind == SERVER_NAME:
-            names = Reader(Reader(data).vector(2))
-            while not names.done():
-                name_type, name = names.number(1), names.vector(2)
-                if name_type == HOST_NAME:
-                    return _host_name(name)
-            break
+        found.setdefault(kind, data)
+    if SERVER_NAME in found and ENCRYPTED_CLIENT_HELLO not in found:
+        names = Reader(Reader(found[SERVER_NAME]).vector(2))
+        while not names.done():
+            name_type, name = names.number(1), names.vector(2)
+            if name_type == HOST_NAME:
+                return _host_name(name)
     raise Refused("no server name", UNRECOGNIZED_NAME)
 
 

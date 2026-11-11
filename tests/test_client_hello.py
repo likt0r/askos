@@ -21,7 +21,8 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_allowlist as allowlist_tests  # noqa: E402
-from client_hello import ACCESS_DENIED, UNRECOGNIZED_NAME, answer, client_hello, raw_client_hello  # noqa: E402
+from client_hello import (ACCESS_DENIED, INTERNAL_ERROR, UNRECOGNIZED_NAME, answer, client_hello,  # noqa: E402
+                          raw_client_hello)
 from test_allowlist import PROXY, entry  # noqa: E402
 
 
@@ -76,6 +77,15 @@ class ParserTest(unittest.TestCase):
         for name in ("", ".", "bad name.example", "a/b.example", "x" * 254, "é.example", "a:b", "a_b.example"):
             with self.subTest(name=name):
                 self.refused(raw_client_hello(name), "no server name")
+
+    def test_encrypted_client_hello_counts_as_no_server_name(self):
+        # the outer name is only a front for the one hidden in the encrypted part
+        ech = (0xfe0d, b"\x00" + bytes(40))
+        for hello in (raw_client_hello("public.example", after=[ech]), raw_client_hello("public.example", before=[ech])):
+            self.assertEqual(self.refused(hello, "no server name").alert, proxy.UNRECOGNIZED_NAME)
+        # other extensions around the server name change nothing
+        self.assertEqual(self.name(raw_client_hello("example.org", before=[(0x002b, b"\x02\x03\x04")],
+                                                    after=[(0x0015, bytes(10))])), "example.org")
 
     def test_an_address_as_server_name_is_passed_on_for_the_signals(self):
         # RFC 6066 forbids it; the classifier flags it (raw-ip, a strong Signal) and it stays blocked
@@ -205,6 +215,17 @@ class HelloProxyTest(allowlist_tests.ProxyTest):
         self.assertEqual(self.rest(s), b"")
         self.assertIn("[work] BLOCKED unix (not a TLS handshake)\n", self.log())
 
+    def test_a_hello_in_one_record_of_the_longest_length_is_the_limit(self):
+        # padding (extension 21) fills the record to the 16,384 bytes TLS allows: 16,389 with its header
+        base = len(raw_client_hello("example.org", after=[(21, b"")]))
+        largest = raw_client_hello("example.org", after=[(21, bytes(16389 - base))])
+        self.assertEqual(len(largest), 16389)
+        self.assertEqual(answer(self.send(largest), largest), "open")
+        # one byte more no longer fits one record, and two records do not fit the limit
+        over = records(raw_client_hello("example.org", after=[(21, bytes(16389 - base + 1))]), 16384)
+        self.assertEqual(self.rest(self.send(over)), b"")
+        self.assertIn("[work] BLOCKED unix (not a TLS handshake)\n", self.log())
+
     def test_a_client_that_sends_nothing_leaves_no_trace(self):
         s = self.send()
         s.close()
@@ -215,6 +236,38 @@ class HelloProxyTest(allowlist_tests.ProxyTest):
         s = self.send(client_hello("other.example"))
         self.assertEqual(self.rest(s), ACCESS_DENIED)
         self.assertIn("[work] BLOCKED other.example (not on the Allowlist)\n", self.log())
+
+
+class RefusalTest(allowlist_tests.ProxyTest):
+    """What the proxy answers an allowed destination it cannot connect to or that has no
+    public address."""
+
+    def refusal(self, host):
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(30)
+            s.connect(self.sock)
+            s.sendall(client_hello(host))
+            data = b""
+            while chunk := s.recv(4096):
+                data += chunk
+        return data
+
+    def test_an_unreachable_destination_gets_internal_error(self):
+        # a port that is bound but takes no connections: refused at once, and nobody else gets it
+        closed = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.addCleanup(closed.close)
+        closed.bind(("127.0.0.1", 0))
+        self.store(entry("example.org", "all"))
+        self.start(upstream=closed.getsockname()[1])
+        self.assertEqual(self.refusal("example.org"), INTERNAL_ERROR)
+        self.assertIn("[work] ERROR example.org (", self.log())
+
+    def test_a_destination_without_a_public_address_gets_access_denied(self):
+        # localhost comes from the hosts file, no DNS needed; the proxy resolves it itself here
+        self.store(entry("localhost", "all"))
+        self.start(upstream=False)
+        self.assertEqual(self.refusal("localhost"), ACCESS_DENIED)
+        self.assertIn("[work] BLOCKED localhost (does not resolve to a public address)\n", self.log())
 
 
 class SocketActivationTest(allowlist_tests.ProxyTest):

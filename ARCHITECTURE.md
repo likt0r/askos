@@ -74,7 +74,11 @@ flowchart LR
   (through virt-install), the proxy, token-service and Orca-port units, the nftables rules,
   the storage pool of the disks, the Data disk and the Claude-token placeholder. Running it
   again changes nothing; a changed definition applies at the VM's next start, and not while
-  the VM is paused. Network numbers and names are fixed once a VM exists. A broken record
+  the VM is paused. A VM network whose resolver differs from the current definition is
+  defined again and, when active, stopped and started, since libvirt's dnsmasq reads its
+  options only when the network starts; a VM running on it has no network until its next
+  Restart (libvirt does not reconnect a running VM to a restarted network), which
+  `regenerate` says. Network numbers and names are fixed once a VM exists. A broken record
   stops `regenerate`; `status` and the daily Reset check carry on with the other VMs.
 - `agentbox create` adds a record with the lowest free network number (Orca port 6800 + N),
   no Allowlist entries of its own (optionally a one-time copy of another VM's own entries,
@@ -234,12 +238,15 @@ flowchart LR
 - The proxy listens on port 443 of the Host's address in the VM's network, where the
   resolver sends every connection. It reads the TLS ClientHello a connection starts with
   and takes the destination from its server name (SNI; a ClientHello may span several
-  records and TCP segments, up to 16 KiB), checks it against the **Allowlist**, resolves
+  records and TCP segments, in at most 16,389 bytes, one record of the longest length
+  TLS allows), checks it against the **Allowlist**, resolves
   the name itself, refuses destinations that resolve to non-public addresses, and connects
   to port 443 there, passing the ClientHello on first; the client's own destination is
   always the Host and is ignored. What is no TLS handshake, or a ClientHello without a
   server name, is refused and logged with the client's address (`BLOCKED <address> (not a
-  TLS handshake)`, `(no server name)`). A refused connection gets a fatal TLS alert
+  TLS handshake)`, `(no server name)`). A ClientHello with the
+  Encrypted Client Hello extension counts as one without a server name: its real name is
+  hidden, the outer one only a front. A refused connection gets a fatal TLS alert
   (`access_denied` for a blocked destination, `unrecognized_name` without a server name,
   `internal_error` when the destination cannot be reached), so the client reports why;
   bytes that are no TLS get nothing. The proxy speaks no TLS itself: of a connection it
@@ -318,7 +325,7 @@ flowchart LR
 - lookalikes of registry and vendor names (`npm-cache.com`, `pypi-get.com`, `npmjs.help`)
   and typos within edit distance 2 for names of at least five characters (`npnjs.com`;
   shorter names such as `pypa` are too often real words),
-- raw IPs, ports other than 443, cloud metadata addresses,
+- raw IPs, cloud metadata addresses,
 - blockchain RPC endpoints (used as command channels by GlassWorm and keyv), also below
   Legitimate domains,
 - random-looking labels and unusual TLDs (weak signals).
@@ -997,9 +1004,9 @@ otherwise in `lib/agentbox` under their own prefix.
   goes on inside the connection it cannot see. An allowed domain served by a shared CDN
   (e.g. `registry.npmjs.org`) can carry traffic to other sites on that CDN.
 - **Only TLS with a server name, on port 443, leaves a VM.** Plain HTTP, other ports, UDP
-  (so HTTP/3) and TLS that hides its server name (ECH, an IP literal) get nowhere; a tool
-  that needs one of them has no way out, which is the intent, and shows up as a blocked
-  connection of the VM's address.
+  (so HTTP/3) and TLS that hides its server name (Encrypted Client Hello) get nowhere, and an
+  IP literal as the name is a raw IP, a strong Signal. A tool that needs one of them has no
+  way out, which is the intent, and shows up as a blocked connection of the VM's address.
 - **Repositories inside one VM are not isolated from each other.** Put sensitive projects in
   their own VM.
 - **Private repositories without branch protection** (GitHub Free) can be overwritten by an
