@@ -104,9 +104,11 @@ and no `agentbox` command runs.
 - **The token service and the Orca port of each VM** start a process per connection, and the
   Reset check, the Feeds and the rebuild a new run each time: each takes the new Release from
   its next start.
-- **The units `agentbox regenerate` wrote** stay as they are until it runs again
-  (`sudo agentbox regenerate`, or `sudo agentbox setup`, which keeps the Host setup and does
-  the Host steps again).
+- **The units and VM networks `agentbox regenerate` wrote** stay as they are until it runs
+  again (`sudo agentbox regenerate`, or `sudo agentbox setup`, which keeps the Host setup and
+  does the Host steps again). It brings each VM network to the current definition; a VM
+  running on a network it had to restart has no network until its next Restart, and
+  `regenerate` names it.
 
 `rpm/upgrade-test.sh` checks all of this in CI: it updates an older Release on a Host in use
 to the RPM of the pull request, reinstalls it and removes it.

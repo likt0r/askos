@@ -36,6 +36,10 @@ POOL = "agentbox-vms"
 JOURNALD = f"systemd-journald@{activity.NAMESPACE}"     # journald instance of the Activity namespace
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 SAID = {"network": "network created or started", "units": "units written",
+        "network-redefined": "network brought to the current definition",
+        "network-redefined-running": "network brought to the current definition and restarted; the running "
+                                     "VM has no network until its next Restart (libvirt does not reconnect "
+                                     "a running VM to a restarted network)",
         "data-disk": "Data disk created", "claude-token": "placeholder for the Claude token created",
         "observer": "directory for the Observer created",
         "domain": "VM defined again (applies from the next start)",
@@ -148,14 +152,17 @@ def nft_rules(records):
     ])
 
 
+def _dnsmasq_options(rec):
+    return (f"address=/#/{host_ip(rec)}", "local=/#/", "no-hosts", "no-resolv")
+
+
 def network_xml(rec):
     """Isolated: no forwarding, DHCP for the one VM only, and libvirt's dnsmasq as the VM's
     resolver, answering every name with the Host's address on this network (ADR 0014): the
     proxy there takes the real destination from the TLS handshake. Every other record type
     gets an empty answer (`local=/#/`), nothing comes from the Host's hosts file, and nothing
     is forwarded (`no-resolv`, which libvirt sets for an isolated network as well)."""
-    options = "".join(f"    <dnsmasq:option value='{o}'/>\n"
-                      for o in (f"address=/#/{host_ip(rec)}", "local=/#/", "no-hosts", "no-resolv"))
+    options = "".join(f"    <dnsmasq:option value='{o}'/>\n" for o in _dnsmasq_options(rec))
     return f"""<network xmlns:dnsmasq='http://libvirt.org/schemas/network/dnsmasq/1.0'>
   <name>{dom(rec['name'])}</name>
   <bridge name='{bridge(rec)}' stp='on' delay='0'/>
@@ -389,8 +396,8 @@ def _qemu():
 
 
 def _network_matches(rec):
-    """An existing network is left alone, so it must be the one the record
-    describes: network numbers are fixed once a VM exists."""
+    """An existing network must be the one the record describes: network numbers are fixed
+    once a VM exists. Its XML as libvirt dumps it."""
     net = dom(rec["name"])
     r = virsh.run("net-dumpxml", net)
     found = {k: re.search(rf"<{tag}\b[^>]*\b{attr}=['\"]([^'\"]+)", r.stdout)
@@ -402,25 +409,54 @@ def _network_matches(rec):
         die(f"{rec['name']}: network {net} does not match the record "
             f"({', '.join(f'{k} {found[k]} instead of {wanted[k]}' for k in wanted if found[k] != wanted[k])})",
             error="action_failed", vm=rec["name"])
+    return r.stdout
+
+
+def _resolver_current(rec, xml):
+    """Whether a network's dumped XML has the resolver network_xml() gives it: every dnsmasq
+    option, and DNS not switched off."""
+    return (not re.search(r"<dns\b[^>]*\benable=['\"]no['\"]", xml)
+            and all(re.search(rf"<dnsmasq:option\s+value=['\"]{re.escape(o)}['\"]", xml)
+                    for o in _dnsmasq_options(rec)))
+
+
+def _vm_live(rec):
+    """Whether the VM has a QEMU process (running or paused in memory): its network interface
+    stays with it until the process ends."""
+    r = virsh.run("domstate", dom(rec["name"]))
+    return r.returncode == 0 and r.stdout.strip() not in ("shut off", "crashed", "")
 
 
 def _network(rec):
+    """The VM's network created, brought to the current definition, autostarted and started:
+    True or the key of what it said, else False. libvirt's dnsmasq reads its options only when
+    the network starts, so an active network whose resolver is not the current one is
+    stopped and started again."""
     net = dom(rec["name"])
     r = virsh.run("net-info", net)
+    changed = False
     if r.returncode == 0:
-        _network_matches(rec)
+        xml = _network_matches(rec)
         info = dict(line.split(":", 1) for line in r.stdout.splitlines() if ":" in line)
         info = {k.strip(): v.strip() for k, v in info.items()}
+        if not _resolver_current(rec, xml):
+            _virsh_define("net-define", network_xml(rec), f"{rec['name']}: define network")
+            changed = "network-redefined"
+            if info.get("Active") == "yes":
+                live = _vm_live(rec)
+                _virsh(f"{rec['name']}: stop network", "net-destroy", net)
+                _virsh(f"{rec['name']}: start network", "net-start", net)
+                changed = "network-redefined-running" if live else changed
     else:
         _virsh_define("net-define", network_xml(rec), f"{rec['name']}: create network")
         info = {}
-    changed = not info
+        changed = True
     if info.get("Autostart") != "yes":
         _virsh(f"{rec['name']}: autostart network", "net-autostart", net)
-        changed = True
+        changed = changed or True
     if info.get("Active") != "yes":
         _virsh(f"{rec['name']}: start network", "net-start", net)
-        changed = True
+        changed = changed or True
     return changed
 
 
@@ -856,8 +892,9 @@ def apply():
         done = []
         for key, step in (("network", _network), ("units", _units), ("data-disk", _data_disk),
                           ("claude-token", _claude_token), ("observer", _observer)):
-            if step(rec):
-                done.append(key)
+            got = step(rec)
+            if got:
+                done.append(got if isinstance(got, str) else key)
         defined = domain(rec)
         if defined:
             done.append(defined)

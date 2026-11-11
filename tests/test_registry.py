@@ -235,6 +235,21 @@ table inet agentbox_vm {
   }
 }
 """
+# a VM network without a resolver, as libvirt dumps it
+OLD_NETWORK = """<network>
+  <name>agentbox-priv</name>
+  <uuid>0b9f5a52-2b7f-4c55-9d0e-6f5c2b1c9a11</uuid>
+  <bridge name='abox-priv' stp='on' delay='0'/>
+  <mac address='52:54:00:3c:1d:aa'/>
+  <dns enable='no'/>
+  <ip address='10.77.2.1' netmask='255.255.255.0'>
+    <dhcp>
+      <range start='10.77.2.2' end='10.77.2.2'/>
+      <host mac='52:54:00:77:02:02' ip='10.77.2.2'/>
+    </dhcp>
+  </ip>
+</network>
+"""
 WORK_NETWORK = (NETWORK.replace("priv", "work").replace("10.77.2.", "10.77.1.")
                 .replace("52:54:00:77:02:02", "52:54:00:77:01:02"))
 UNITS = ["agentbox-ghvm-{0}.socket", "agentbox-ghvm-{0}@.service", "agentbox-gui-{0}.socket",
@@ -348,6 +363,48 @@ class RegenerateTest(RegistryTest):
         self.assertEqual(code, 1)
         self.assertIn("priv: network agentbox-priv does not match the record", err)
         self.assertEqual([c["net"] for c in self.calls("net-define")], ["agentbox-work"])
+
+    def old_network(self, state="running", active=True):
+        """priv's network as libvirt dumps one without a resolver, its VM in the given state."""
+        self.scenario(vms={"priv": {"uuid": PRIV_UUID, "state": state}},
+                      networks={"agentbox-priv": {"active": active, "autostart": True, "xml": OLD_NETWORK}})
+
+    def network_calls(self):
+        return [(c["cmd"], c["net"]) for c in self.calls() if c["cmd"].startswith("net-") and c["net"] == "agentbox-priv"]
+
+    def test_a_network_without_the_resolver_is_redefined_and_restarted(self):
+        self.old_network()
+        code, out, err = self.run_agentbox("regenerate")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual([(c["net"], c["xml"]) for c in self.calls("net-define") if c["net"] == "agentbox-priv"],
+                         [("agentbox-priv", NETWORK)])
+        # dnsmasq reads its options when the network starts
+        self.assertEqual(self.network_calls(), [("net-define", "agentbox-priv"), ("net-destroy", "agentbox-priv"),
+                                                ("net-start", "agentbox-priv")])
+        self.assertIn("priv: network brought to the current definition and restarted; the running VM has no "
+                      "network until its next Restart (libvirt does not reconnect a running VM to a restarted "
+                      "network)\n", out)
+        # once current, it is left alone
+        self.forget_calls()
+        self.assertNotIn("network", " ".join(self.json("regenerate")["vms"]["priv"]))
+        self.assertEqual(self.network_calls(), [])
+
+    def test_with_its_vm_off_the_network_is_restarted_without_a_word_about_the_vm(self):
+        self.old_network(state="shut off")
+        self.assertEqual(self.json("regenerate")["vms"]["priv"][:1], ["network-redefined"])
+        self.assertEqual(self.network_calls(), [("net-define", "agentbox-priv"), ("net-destroy", "agentbox-priv"),
+                                                ("net-start", "agentbox-priv")])
+
+    def test_an_inactive_network_without_the_resolver_is_redefined_and_started(self):
+        self.old_network(state="shut off", active=False)
+        self.assertEqual(self.json("regenerate")["vms"]["priv"][:1], ["network-redefined"])
+        self.assertEqual(self.network_calls(), [("net-define", "agentbox-priv"), ("net-start", "agentbox-priv")])
+
+    def test_a_current_network_is_left_alone(self):
+        self.scenario(vms={"priv": {"uuid": PRIV_UUID}},
+                      networks={"agentbox-priv": {"active": True, "autostart": True, "xml": NETWORK}})
+        self.assertEqual(self.run_agentbox("regenerate")[0], 0)
+        self.assertEqual(self.network_calls(), [])
 
     def test_firewall_rules_written_but_not_loaded_are_loaded_next_time(self):
         self.scenario(vms={"priv": {"uuid": PRIV_UUID}}, systemctl_fails=["restart"])
