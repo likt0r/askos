@@ -141,6 +141,8 @@ export default {
         'suspicious': 'starke Merkmale: {signals}',
         'watchlist-unreadable': 'die Watchlist ist nicht lesbar (offenes Web und Regex-Einträge gesperrt)',
         'not-public': 'keine öffentliche Adresse',
+        'not-tls': 'kein TLS-Handshake (die VM hat etwas anderes als HTTPS gesendet)',
+        'no-server-name': 'kein Servername im TLS-Handshake',
       },
     },
     entries: {

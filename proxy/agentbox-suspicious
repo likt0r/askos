@@ -1072,15 +1072,36 @@ LOG_ALERT = re.compile(r"\] ALERT (\S+) \[(.*)\]$")
 LOG_BLOCKED = re.compile(r"\] BLOCKED (\S+) \((.*)\)$")
 
 
+def _client_hello(host):
+    """The least a TLS ClientHello naming host needs (RFC 8446, 4.1.2; RFC 6066, 3): one
+    cipher suite, no compression, the server_name extension."""
+    name = host.encode()
+    names = b"\x00" + len(name).to_bytes(2, "big") + name
+    sni = len(names).to_bytes(2, "big") + names
+    extensions = b"\x00\x00" + len(sni).to_bytes(2, "big") + sni
+    body = (b"\x03\x03" + bytes(32) + b"\x00" + b"\x00\x02\x13\x01" + b"\x01\x00"
+            + len(extensions).to_bytes(2, "big") + extensions)
+    handshake = b"\x01" + len(body).to_bytes(3, "big") + body
+    return b"\x16\x03\x01" + len(handshake).to_bytes(2, "big") + handshake
+
+
 def _connect(path, host):
+    """The proxy's answer to a ClientHello for host: "alert <code>" for a TLS alert, else
+    "closed" (nothing came back) or "data"."""
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
         s.settimeout(10)
         s.connect(path)
-        s.sendall(f"CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n".encode())
+        s.sendall(_client_hello(host))
         data = b""
         while chunk := s.recv(4096):
             data += chunk
-    return data.split(b"\r\n", 1)[0].decode("latin-1")
+    if len(data) == 7 and data[:6] == b"\x15\x03\x03\x00\x02\x02":
+        return f"alert {data[6]}"
+    return "data" if data else "closed"
+
+
+# the proxy's answer to a destination it refuses: the TLS alert access_denied
+REFUSED = "alert 49"
 
 
 def _selftest_list(conf, record, legacy, add, parse):
@@ -1131,9 +1152,9 @@ def _selftest_regex_lists(conf):
 
 
 def self_test():
-    """Startet den Proxy neben dieser Datei mit der Verdachtsliste und den legitimen
-    Domains des Hosts (aus CONF_DIR) plus Testeintraegen und Testlisten, schickt
-    CONNECT-Anfragen und prueft dessen Log. Exit 0, wenn alles stimmt."""
+    """Starts the proxy next to this file with the Host's Watchlist and Legitimate domains
+    (from CONF_DIR) plus test entries and test lists, sends it TLS ClientHellos and checks
+    its log. Exit 0 when everything holds."""
     here = os.path.dirname(os.path.realpath(__file__))
     proxy = os.path.join(here, "agentbox-proxy")
     tmp = tempfile.mkdtemp(prefix="agentbox-selftest-")
@@ -1217,17 +1238,17 @@ def self_test():
                     blocks[m.group(1)] = m.group(2)
         for host, want, exact in cases:
             got = alerts.get(host, set())
-            ok = (got == want if exact else want <= got) and answers[host].split()[1:2] == ["403"]
+            ok = (got == want if exact else want <= got) and answers[host] == REFUSED
             results.append((ok, host, f"expected {','.join(sorted(want)) or '-'}, got "
                                       f"{','.join(sorted(got)) or '-'} ({answers[host]})"))
         for host, signal in SELFTEST_OPEN + [SELFTEST_UNREADABLE]:
             why = blocks.get(host, "")
-            ok = signal in why and answers[host].split()[1:2] == ["403"]
+            ok = signal in why and answers[host] == REFUSED
             results.append((ok, host, f"Open web: expected blocked for {signal}, got "
                                       f"{why or '-'} ({answers[host]})"))
         for host, reason in SELFTEST_REGEX_BLOCKED + [SELFTEST_REGEX_UNREADABLE]:
             why = blocks.get(host, "")
-            ok = why == reason and answers[host].split()[1:2] == ["403"]
+            ok = why == reason and answers[host] == REFUSED
             results.append((ok, host, f"Allowlist pattern: expected blocked ({reason}), got "
                                       f"{why or '-'} ({answers[host]})"))
     except (OSError, subprocess.SubprocessError, IndexError) as e:

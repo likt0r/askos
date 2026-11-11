@@ -29,7 +29,9 @@ LOG_WINDOW = 86400
 BLOCK_REASONS = {"not on the Allowlist": "not-allowed", "Watchlist unreadable, Open web closed": "watchlist-unreadable",
                  # a Regex entry matched, but allows nothing while the Watchlist cannot be read
                  "Watchlist unreadable, regex entries closed": "watchlist-unreadable",
-                 "does not resolve to a public address": "not-public"}
+                 "does not resolve to a public address": "not-public",
+                 # a connection the proxy took no destination from: the line names the client
+                 "not a TLS handshake": "not-tls", "no server name": "no-server-name"}
 BLOCK_SUSPICIOUS = re.compile(r"suspicious: ([a-z0-9-]+(?:,[a-z0-9-]+)*)")
 
 

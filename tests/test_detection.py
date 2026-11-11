@@ -2,7 +2,7 @@
 marked as seen, and the self-test.
 
 Seam C: the real proxy (`proxy/agentbox-proxy`, which loads `proxy/agentbox-suspicious`)
-on a Unix socket with a temporary configuration; the tests send CONNECT requests and
+on a Unix socket with a temporary configuration; the tests send TLS ClientHellos and
 read what the proxy answers and logs. Nothing is allowlisted and the web is only opened
 for strongly suspicious destinations, so the proxy never resolves a name.
 
@@ -31,6 +31,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vm_records  # noqa: E402
+from client_hello import ACCESS_DENIED, client_hello  # noqa: E402
 from journal_writers import proxy, write_passwd  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -106,21 +107,21 @@ class ProxyTest(unittest.TestCase):
         with open(self.log_path, encoding="utf-8", errors="replace") as f:
             return f.read()
 
-    def connect(self, host, port=443):
-        """Status line of the proxy's answer to CONNECT host:port."""
+    def connect(self, host):
+        """The proxy's answer to a ClientHello for host (nothing is allowed here: an alert)."""
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
             s.settimeout(10)
             s.connect(self.sock)
-            s.sendall(f"CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n".encode())
+            s.sendall(client_hello(host))
             data = b""
             while chunk := s.recv(4096):
                 data += chunk
-        return data.split(b"\r\n", 1)[0].decode()
+        return data
 
-    def alert(self, host, port=443):
-        """CONNECT, then the Signals of the Alert the proxy logged for it (None: no Alert)."""
+    def alert(self, host):
+        """A ClientHello, then the Signals of the Alert the proxy logged for it (None: no Alert)."""
         before = len(self.log_text().splitlines())
-        self.assertEqual(self.connect(host, port), "HTTP/1.1 403 Forbidden")
+        self.assertEqual(self.connect(host), ACCESS_DENIED)
         tags = None
         for line in self.log_text().splitlines()[before:]:
             if f"] ALERT {host} [" in line:
@@ -167,7 +168,7 @@ class FeedSignalsTest(ProxyTest):
     def test_threat_list_hit_stays_blocked_in_open_web(self):
         self.open_web()
         self.start()
-        self.assertEqual(self.connect("x.bad.example"), "HTTP/1.1 403 Forbidden")
+        self.assertEqual(self.connect("x.bad.example"), ACCESS_DENIED)
         self.assertEqual(self.blocked_reason("x.bad.example"), "suspicious: threat")
 
     def test_replaced_list_is_used_without_restart(self):
@@ -229,7 +230,7 @@ class HarmlessTest(ProxyTest):
         self.harmless("bad.example")
         self.open_web()
         self.start()
-        self.assertEqual(self.connect("bad.example"), "HTTP/1.1 403 Forbidden")
+        self.assertEqual(self.connect("bad.example"), ACCESS_DENIED)
         self.assertEqual(self.blocked_reason("bad.example"), "suspicious: threat")
         self.assertNotIn("ALERT bad.example", self.log_text())
 
@@ -240,13 +241,12 @@ class HarmlessTest(ProxyTest):
         for host, why in (("10.0.0.1", "suspicious: raw-ip"), ("169.254.169.254", "suspicious: metadata,raw-ip"),
                           ("metadata.google.internal", "suspicious: metadata")):
             with self.subTest(host=host):
-                self.assertEqual(self.connect(host), "HTTP/1.1 403 Forbidden")
+                self.assertEqual(self.connect(host), ACCESS_DENIED)
                 self.assertEqual(self.blocked_reason(host), why)
 
     def test_signals_that_do_not_depend_on_the_name_still_raise_alerts(self):
         self.harmless("githbu.com", "metadata.google.internal")
         self.start()
-        self.assertEqual(self.alert("githbu.com", 22), ["port"])
         self.assertEqual(self.alert("metadata.google.internal"), ["metadata"])
         self.assertEqual(self.alert("169.254.169.254"), ["metadata", "raw-ip"])
 

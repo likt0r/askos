@@ -143,6 +143,8 @@ export default {
         'suspicious': 'strong Signals: {signals}',
         'watchlist-unreadable': 'the Watchlist cannot be read (Open web and Regex entries closed)',
         'not-public': 'no public address',
+        'not-tls': 'not a TLS handshake (the VM sent something other than HTTPS)',
+        'no-server-name': 'no server name in the TLS handshake',
       },
     },
     entries: {
