@@ -407,34 +407,31 @@ it again.
 
 Agents run containers with the agent's rootless Podman. `docker` is Podman under that name
 (`podman-docker`), so `docker run` and `docker build` are `podman run` and `podman build`.
-`podman compose` and `docker compose` both run
-[podman-compose](https://github.com/containers/podman-compose), which builds with `podman
-build` and starts containers with `podman run`. It may not support every feature of Docker
-Compose. Tools that use the Docker API reach the agent's Podman socket through `DOCKER_HOST`,
-which is set for services and shells. A build sent straight to the Docker API on that socket
+`podman compose` and `docker compose` both run [Docker Compose](https://docs.docker.com/compose/)
+(the `docker-compose` CLI plugin), which builds and starts containers through the agent's
+Podman socket. Tools that use the Docker API reach that socket through `DOCKER_HOST`, which
+is set for services and shells. A build sent straight to the Docker API on that socket
 (docker-py, Testcontainers' image builds) gets no proxy, because Podman passes none there. If
 such a build needs the internet, pass `HTTPS_PROXY=http://host.agentbox:3128` (and `NO_PROXY`)
 as build arguments. Containers have no DNS and no route out, the same as the rest of the VM.
 Short image names such as `postgres:16-alpine` resolve to docker.io, as with Docker
 (`/etc/containers/registries.conf.d/50-agentbox.conf`), not to Fedora's registries first.
 
-Builds get the Host's proxy: Podman passes it into a Dockerfile's `RUN` lines, and the
-VM's `/etc/hosts`, which has `host.agentbox`, comes along
-(`/etc/containers/containers.conf.d/50-agentbox.conf`). Running containers do not get the
-proxy, by the owner's decision: compose services call each other by name over HTTP
-(`http://api:8080`), and a proxy in every container would send those calls to the Host,
-where they fail. No general `NO_PROXY` can list every service name. A service that needs the
-internet gets the proxy by hand in its compose file, with its fellow services' names in
-`NO_PROXY`:
+Builds and containers get the Host's proxy. `podman build` passes it into a Dockerfile's
+`RUN` lines and `podman run` into the container. Docker Compose takes it from
+`~/.docker/config.json`, which the VM writes at every start, and gives it to builds and to
+every container it starts. The VM's `/etc/hosts`, which has `host.agentbox`, comes along
+(`/etc/containers/containers.conf.d/50-agentbox.conf`). `NO_PROXY` lists only local names, so
+compose services that call each other by name over HTTP (`http://api:8080`) send those calls
+to the Host's proxy, where they fail, if the calling program honours the proxy variables. Give
+such a service its fellow services' names in `NO_PROXY`, in its compose file:
 
 ```yaml
 services:
   worker:
     environment:
-      HTTPS_PROXY: http://host.agentbox:3128
-      https_proxy: http://host.agentbox:3128
-      NO_PROXY: localhost,127.0.0.1,api,db
-      no_proxy: localhost,127.0.0.1,api,db
+      NO_PROXY: localhost,127.0.0.1,.localhost,host.agentbox,api,db
+      no_proxy: localhost,127.0.0.1,.localhost,host.agentbox,api,db
 ```
 
 The Allowlist applies as to everything else, and a tool that ignores the proxy variables

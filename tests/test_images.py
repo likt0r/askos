@@ -1300,10 +1300,10 @@ class DefinitionTest(ImagesTest):
 
 
 class ContainersTest(ImagesTest):
-    """#27: docker (podman-docker) and docker compose reach the agent's rootless Podman, builds
-    reach the outside through the Host's proxy as the VM does, with NO_PROXY as local as the
-    services' and host.agentbox resolvable, and running containers get no proxy (the owner's
-    decision). Only a real VM can run them; this checks what the Base image carries."""
+    """#27, #34: docker (podman-docker) and docker compose (Docker Compose) reach the agent's
+    rootless Podman, builds and containers reach the outside through the Host's proxy as the
+    VM does, with NO_PROXY as local as the services' and host.agentbox resolvable. Only a real
+    VM can run them; this checks what the Base image carries."""
 
     SOCKET = "unix:///run/user/1000/podman/podman.sock"
 
@@ -1333,9 +1333,7 @@ class ContainersTest(ImagesTest):
         self.assertIn("podman-docker", re.search(r"dnf -y install [^&]*", containerfile).group(0).split())
         self.assertTrue(os.path.isfile(os.path.join(self.root, "etc/containers/nodocker")))   # no notice
 
-    def test_builds_get_the_proxy_and_running_containers_do_not(self):
-        """The owner's decision: compose services call each other by name over HTTP, which no
-        NO_PROXY covers, so only builds get the proxy; a service gets it by hand."""
+    def test_podman_builds_and_containers_get_the_proxy(self):
         conf = tomllib.loads(self.read("/etc/containers/containers.conf.d/50-agentbox.conf"))
         # Podman itself, and with it the proxy podman build passes into RUN
         wanted = {name: self.env[name] for name in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")}
@@ -1344,26 +1342,32 @@ class ContainersTest(ImagesTest):
         env = conf["engine"]["env"]
         self.assertEqual(env[-1], {"append": True})         # Podman's own defaults stay
         self.assertEqual(dict(e.split("=", 1) for e in env[:-1]), wanted)
-        # running containers: nothing from the caller's environment, nothing set for them
-        self.assertIs(conf["containers"]["http_proxy"], False)
-        self.assertNotIn("env", conf["containers"])
-        self.assertFalse(conf["containers"].get("env_host", False))
-        # a container given the proxy by hand, and every build, resolves host.agentbox
+        # podman run: the proxy from the caller's environment (Podman's default, not turned off)
+        self.assertIs(conf["containers"].get("http_proxy", True), True)
+        # every container and every build resolves host.agentbox
         self.assertEqual(conf["containers"]["base_hosts_file"], "/etc/hosts")
         self.assertIn('echo "$gw host.agentbox" >> /etc/hosts', self.read(safeguards.GUEST_SETUP))
 
-    def test_compose_is_podman_compose_which_builds_and_runs_with_podman(self):
-        """podman compose and docker compose (podman-docker) run podman-compose, so compose
-        builds are podman builds; Docker Compose, whose builds through the Docker API would get
-        no proxy, is not in the image."""
+    def test_compose_is_docker_compose_with_the_proxy_from_its_config(self):
+        """podman compose and docker compose (podman-docker) run Docker Compose, which reads
+        nested variables podman-compose cannot (#34). Podman passes no proxy into builds through
+        the Docker API, so Compose sends the one from the agent's ~/.docker/config.json, into
+        builds and the containers it starts."""
         conf = tomllib.loads(self.read("/etc/containers/containers.conf.d/50-agentbox.conf"))
-        self.assertEqual(conf["engine"]["compose_providers"], ["/usr/bin/podman-compose"])
+        self.assertEqual(conf["engine"]["compose_providers"], ["/usr/libexec/docker/cli-plugins/docker-compose"])
         self.assertIs(conf["engine"]["compose_warning_logs"], False)
         install = re.search(r"dnf -y install [^&]*", self.read_repo("vm/Containerfile")).group(0).split()
-        self.assertIn("podman-compose", install)
-        self.assertNotIn("docker-compose", install)
-        self.assertFalse(os.path.lexists(os.path.join(self.root, "usr/lib/agentbox/docker-config.json")))
-        self.assertNotIn(".docker", self.read(safeguards.GUEST_SETUP))
+        self.assertIn("docker-compose", install)
+        self.assertNotIn("podman-compose", install)
+        with open(os.path.join(self.root, "usr/lib/agentbox/docker-config.json")) as f:
+            proxies = json.load(f)["proxies"]
+        self.assertEqual(proxies, {"default": {
+            "httpProxy": self.env["http_proxy"], "httpsProxy": self.env["https_proxy"],
+            "noProxy": self.env["NO_PROXY"]}})
+        # into the agent's home at every start, readable only by the agent
+        self.assertIn('install -d -o agent -g agent -m 700 "$HOME_DIR/.docker"', self.read(safeguards.GUEST_SETUP))
+        self.assertIn('install -m 600 -o agent -g agent /usr/lib/agentbox/docker-config.json '
+                      '"$HOME_DIR/.docker/config.json"', self.read(safeguards.GUEST_SETUP))
 
     def test_short_image_names_resolve_to_docker_io(self):
         """#32: Fedora searches registry.fedoraproject.org first, which the proxy blocks, so a
