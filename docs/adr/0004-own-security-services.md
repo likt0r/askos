@@ -12,6 +12,8 @@ We prefer established, packaged software over our own code, and checked every pl
 
 The Control Room UI stays our own (Nuxt UI, built inside a VM, [ADR 0003](0003-no-node-on-the-host.md)).
 
+_Superseded in part by [ADR 0014](0014-the-proxy-is-transparent.md) (2026-11-11):_ the proxy takes its destinations from the TLS handshake instead of `CONNECT` requests, and the VM's libvirt dnsmasq is its resolver, answering every name with the Host. The reasons the proxy stays our own hold; 0014 records the SNI proxies (HAProxy, sniproxy) that were not taken either.
+
 ## Considered Options
 
 - Cockpit as the Control Room backend: rejected. Any script in a Cockpit package can run arbitrary commands as the logged-in user, and Cockpit ships a terminal, so a compromised UI build would get a shell on the Host. Our backend offers a fixed set of actions.
