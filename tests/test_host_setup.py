@@ -49,7 +49,7 @@ class RegenerateHostSetupTest(RegistryTest):
         vm_records.write_host_setup(self.root, {"mode": "local"})
         self.assertEqual(self.run_agentbox("regenerate")[0], 0)
         self.assertIn("ListenStream=127.0.0.1:6802\n", self.gui_socket())
-        self.assertIn("ListenStream=10.77.2.1:3128\n", self.read("etc/systemd/system/agentbox-proxy-priv.socket"))
+        self.assertIn("ListenStream=10.77.2.1:443\n", self.read("etc/systemd/system/agentbox-proxy-priv.socket"))
         self.assertIn("ListenStream=10.77.2.1:9100\n", self.read("etc/systemd/system/agentbox-ghvm-priv.socket"))
 
     def test_network_mode_listens_on_every_address_and_pairs_through_the_bind_address(self):

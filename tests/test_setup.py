@@ -393,7 +393,7 @@ class HostStepsTest(SetupTest):
         self.assertFalse(os.path.lexists(self.path("etc/agentbox/build.conf")))
         # VM networks: proxy and token service open, ssh closed, also in the running firewall
         for side in ("permanent", "runtime"):
-            self.assertEqual(sorted(self.zone("libvirt", side)["ports"]), ["3128/tcp", "9100/tcp"])
+            self.assertEqual(sorted(self.zone("libvirt", side)["ports"]), ["443/tcp", "53/tcp", "53/udp", "9100/tcp"])
             self.assertNotIn("ssh", self.zone("libvirt", side)["services"])
         # units enabled at boot and running now
         self.assertLessEqual(set(ENABLED), set(self.enabled()))
@@ -416,7 +416,7 @@ class HostStepsTest(SetupTest):
         self.assertEqual([c["argv"] for c in self.calls("chattr")], [["+C", self.path("var/lib/agentbox/images")]])
         # each step says what it did
         for step in ("Self-test of the detection: passed", "Groups: alice in the group libvirt",
-                     "Lists: suspicious-domains from", "Firewall zone libvirt: port 3128/tcp open",
+                     "Lists: suspicious-domains from", "Firewall zone libvirt: port 53/udp open",
                      "Network rules of the VMs: agentbox-vmnet.service enabled", "migrate: up to date",
                      "migrate-allowlist: Allowlist:", "regenerate: Host setup written", "migrate-lists: ",
                      "Control Room: agentbox-web.service enabled and restarted"):
@@ -647,7 +647,7 @@ class HostStepsTest(SetupTest):
         def first(match):
             return next(i for i, call in enumerate(calls) if match(*call))
 
-        zone = first(lambda cmd, argv: cmd == "firewall-cmd" and "--add-port=3128/tcp" in argv)
+        zone = first(lambda cmd, argv: cmd == "firewall-cmd" and "--add-port=443/tcp" in argv)
         boot = first(lambda cmd, argv: cmd == "systemctl" and argv == ["enable", "agentbox-vmnet.service"])
         loaded = first(lambda cmd, argv: cmd == "systemctl" and argv == ["restart", "agentbox-vmnet.service"])
         # fake_virsh records its commands by name: a VM network, a domain, a start

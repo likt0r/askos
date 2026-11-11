@@ -123,7 +123,7 @@ def migrate(args):
 # --- regenerate --------------------------------------------------------------
 
 def nft_rules(records):
-    """A VM network reaches only the Host's proxy and token service on it."""
+    """A VM network reaches only the Host's resolver, proxy and token service on it."""
     return "".join(line + "\n" for line in [
         "table inet agentbox_vm",
         "delete table inet agentbox_vm",
@@ -134,10 +134,10 @@ def nft_rules(records):
         "  }",
         "  chain from_vm {",
         "    meta nfproto ipv6 drop",
-        "    udp dport 67 accept",
+        "    udp dport { 53, 67 } accept",
         *(f'    iifname "{bridge(r)}" ip daddr != {host_ip(r)} drop' for r in records),
         "    ct state established,related accept",
-        "    tcp dport { 3128, 9100 } accept",
+        "    tcp dport { 53, 443, 9100 } accept",
         "    drop",
         "  }",
         "}",
@@ -145,17 +145,24 @@ def nft_rules(records):
 
 
 def network_xml(rec):
-    """Isolated: no forwarding, no DNS, DHCP for the one VM only."""
-    return f"""<network>
+    """Isolated: no forwarding, DHCP for the one VM only, and libvirt's dnsmasq as the VM's
+    resolver, answering every name with the Host's address on this network (ADR 0014): the
+    proxy there takes the real destination from the TLS handshake. Every other record type
+    gets an empty answer (`local=/#/`), nothing comes from the Host's hosts file, and nothing
+    is forwarded (`no-resolv`, which libvirt sets for an isolated network as well)."""
+    options = "".join(f"    <dnsmasq:option value='{o}'/>\n"
+                      for o in (f"address=/#/{host_ip(rec)}", "local=/#/", "no-hosts", "no-resolv"))
+    return f"""<network xmlns:dnsmasq='http://libvirt.org/schemas/network/dnsmasq/1.0'>
   <name>{dom(rec['name'])}</name>
   <bridge name='{bridge(rec)}' stp='on' delay='0'/>
-  <dns enable='no'/>
   <ip address='{host_ip(rec)}' netmask='255.255.255.0'>
     <dhcp>
       <range start='{guest_ip(rec)}' end='{guest_ip(rec)}'/>
       <host mac='{mac(rec)}' ip='{guest_ip(rec)}'/>
     </dhcp>
   </ip>
+  <dnsmasq:options>
+{options}  </dnsmasq:options>
 </network>
 """
 
@@ -185,7 +192,7 @@ def units(rec):
 Description=Allowlist proxy for VM {vm}
 
 [Socket]
-ListenStream={host}:3128
+ListenStream={host}:443
 FreeBind=yes
 
 [Install]

@@ -573,7 +573,7 @@ class InstalledSetupTest(unittest.TestCase):
     def test_the_units_and_the_zone_of_the_vm_networks(self):
         self.assertLessEqual(set(self.ENABLED), set(self.fake_state("systemctl.json")["enabled"]))
         libvirt = self.fake_state("firewall.json")["permanent"]["libvirt"]
-        self.assertEqual(sorted(libvirt["ports"]), ["3128/tcp", "9100/tcp"])
+        self.assertEqual(sorted(libvirt["ports"]), ["443/tcp", "53/tcp", "53/udp", "9100/tcp"])
         self.assertNotIn("ssh", libvirt["services"])
         self.assertFalse(any(c["cmd"] == "firewall-cmd" and any("rich-rule" in a for a in c["argv"])
                              for c in self.first_calls))

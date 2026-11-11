@@ -94,7 +94,7 @@ class CreateTest(VmsTest):
         self.assertEqual(rec, {"name": "lab", "network": 3, "orca_port": 6803, "image": "base", "build": None,
                                "memory_mib": 26624, "data_disk_gib": 300, "github_owners": []})
         self.assertIn("ListenStream=6803\n", self.read("etc/systemd/system/agentbox-gui-lab.socket"))
-        self.assertIn("ListenStream=10.77.3.1:3128\n", self.read("etc/systemd/system/agentbox-proxy-lab.socket"))
+        self.assertIn("ListenStream=10.77.3.1:443\n", self.read("etc/systemd/system/agentbox-proxy-lab.socket"))
         self.assertIn('    iifname "abox-lab" ip daddr != 10.77.3.1 drop\n', self.read("etc/agentbox/vm-input.nft"))
 
     def test_new_vm_is_configured_through_regenerate(self):

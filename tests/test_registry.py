@@ -182,7 +182,7 @@ PROXY_SOCKET = """[Unit]
 Description=Allowlist proxy for VM priv
 
 [Socket]
-ListenStream=10.77.2.1:3128
+ListenStream=10.77.2.1:443
 FreeBind=yes
 
 [Install]
@@ -199,16 +199,21 @@ StandardOutput=socket
 StandardError=journal
 TimeoutStartSec=180
 """
-NETWORK = """<network>
+NETWORK = """<network xmlns:dnsmasq='http://libvirt.org/schemas/network/dnsmasq/1.0'>
   <name>agentbox-priv</name>
   <bridge name='abox-priv' stp='on' delay='0'/>
-  <dns enable='no'/>
   <ip address='10.77.2.1' netmask='255.255.255.0'>
     <dhcp>
       <range start='10.77.2.2' end='10.77.2.2'/>
       <host mac='52:54:00:77:02:02' ip='10.77.2.2'/>
     </dhcp>
   </ip>
+  <dnsmasq:options>
+    <dnsmasq:option value='address=/#/10.77.2.1'/>
+    <dnsmasq:option value='local=/#/'/>
+    <dnsmasq:option value='no-hosts'/>
+    <dnsmasq:option value='no-resolv'/>
+  </dnsmasq:options>
 </network>
 """
 NFT = """table inet agentbox_vm
@@ -220,11 +225,11 @@ table inet agentbox_vm {
   }
   chain from_vm {
     meta nfproto ipv6 drop
-    udp dport 67 accept
+    udp dport { 53, 67 } accept
     iifname "abox-work" ip daddr != 10.77.1.1 drop
     iifname "abox-priv" ip daddr != 10.77.2.1 drop
     ct state established,related accept
-    tcp dport { 3128, 9100 } accept
+    tcp dport { 53, 443, 9100 } accept
     drop
   }
 }
