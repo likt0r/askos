@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.0](https://github.com/likt0r/askos/compare/v0.4.0...v0.5.0) (2026-11-11)
+
+### Features
+
+* docker and containers in the VM use the agent's Podman and the Host's proxy ([#28](https://github.com/likt0r/askos/issues/28)) ([add6bbb](https://github.com/likt0r/askos/commit/add6bbba47c00ca45985e013987f3bc07438bab7)), closes [#27](https://github.com/likt0r/askos/issues/27)
+
 ## [0.4.0](https://github.com/likt0r/askos/compare/v0.3.1...v0.4.0) (2026-11-10)
 
 ### Features
