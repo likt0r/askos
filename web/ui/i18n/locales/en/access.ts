@@ -169,7 +169,6 @@ export default {
       'lookalike': 'Lookalike',
       'raw-ip': 'Raw IP address',
       'metadata': 'Cloud metadata',
-      'port': 'Port not 443',
       'tld': 'Unusual TLD',
       'random-label': 'Random-looking name',
       'many-labels': 'Many labels',
@@ -187,14 +186,12 @@ export default {
       'lookalike': 'Imitates a well-known registry or vendor (brand name or typo).',
       'raw-ip': 'An IP address instead of a domain.',
       'metadata': 'The address of a cloud metadata service.',
-      'port': 'A port other than 443.',
       'tld': 'A top-level domain often used for abuse (weak).',
       'random-label': 'A label that looks random or very long, as in DNS exfiltration.',
       'many-labels': 'More than six labels.',
     },
     // why a Signal applies, by the code of its reason and its parameters (utils/access.ts signalReason)
     reasons: {
-      'port': 'Port {port} instead of 443',
       'metadata': 'The address of a cloud metadata service',
       'raw-ip': 'An IP address instead of a domain',
       'watchlist': 'Watchlist: {domain}',

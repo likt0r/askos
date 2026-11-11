@@ -275,7 +275,6 @@ class ReasonTest(unittest.TestCase):
 
     def test_every_reason_has_a_code_parameters_and_english_text(self):
         cases = [
-            (["evil.example", "22"], [("port", "port", {"port": "22"}, "port 22 instead of 443")]),
             (["169.254.169.254"], [("metadata", "metadata", {}, "address of a cloud metadata service"),
                                    ("raw-ip", "raw-ip", {}, "IP address instead of a domain")]),
             (["upload.exfil.example"], [("exfil", "watchlist", {"domain": "exfil.example", "source": "Testvorfall 2026"},
@@ -620,9 +619,9 @@ class SeenTest(CliTest):
         self.assertEqual(self.seen_files(), ["alerts-seen-work.json"])
 
     def test_alerts_of_harmless_destinations_are_left_out(self):
-        # a Signal that does not depend on the name (port) keeps its Alert
+        # a Signal that does not depend on the name (metadata) keeps its Alert
         self.journal((-600, "githbu.com", "lookalike"), (-500, "www.githbu.com", "lookalike"),
-                     (-400, "x.githbu.com", "port"), (-300, "b.example", "young"))
+                     (-400, "x.githbu.com", "metadata"), (-300, "b.example", "young"))
         self.run_agentbox("mark-harmless", "githbu.com")
         self.assertEqual(self.alerts(), {"x.githbu.com": False, "b.example": False})
 

@@ -41,7 +41,6 @@ describe('a Signal\'s reason', () => {
     const typo = signal({ code: 'typo', params: { target: 'github', distance: '1' } })
     expect(signalReason(typo, EN)).toBe('A typo of github (distance 1)')
     expect(signalReason(typo, DE)).toBe('Ein Tippfehler von github (Abstand 1)')
-    expect(signalReason(signal({ signal: 'port', code: 'port', params: { port: '22' } }), DE)).toBe('Port 22 statt 443')
     expect(signalReason(signal({ signal: 'metadata', code: 'metadata', params: {} }), EN)).toBe('The address of a cloud metadata service')
     expect(signalReason(signal({ signal: 'exfil', code: 'watchlist', params: { domain: 'w.example' } }), EN)).toBe('Watchlist: w.example')
     expect(signalReason(signal({ signal: 'exfil', code: 'watchlist', params: { domain: 'w.example', source: 'Incident' } }), EN))

@@ -26,7 +26,7 @@ from .registry import check
 from .sanitize import clean
 
 # Signals that do not depend on the name: they raise Alerts even for harmless domains (as in the classifier)
-STRUCTURAL = {"port", "raw-ip", "metadata"}
+STRUCTURAL = {"raw-ip", "metadata"}
 SEEN_KEEP = 2 * 86400                # Alerts are listed for 24 hours; older marks are dropped
 HARMLESS_HEADER = b"# Domains with a Harmless mark, with their subdomains (agentbox mark-harmless/unmark-harmless)\n"
 

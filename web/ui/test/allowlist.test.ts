@@ -265,7 +265,7 @@ describe('Allowlist view', () => {
       'GET /allowlist': ok([]),
       'POST /allowlist': fail(409, 'domain_suspicious'),
       'GET /watchlist/check?domain=webhook.site': ok({
-        domain: 'webhook.site', port: 443, alert: true, strong: true, harmless: null, legitimate: null, feeds: {},
+        domain: 'webhook.site', alert: true, strong: true, harmless: null, legitimate: null, feeds: {},
         signals: [{ signal: 'exfil', strong: true, suppressed: false, reason: 'Watchlist: webhook.site (Shai-Hulud 1)',
           code: 'watchlist', params: { domain: 'webhook.site', source: 'Shai-Hulud 1' } }],
       }),
@@ -329,7 +329,7 @@ describe('Allowlist view', () => {
     await openApp('/allowlist', {
       'GET /allowlist': ok(entries()),
       'POST /allowlist/work/docs.rs/extend': fail(409, 'domain_suspicious'),
-      'GET /watchlist/check?domain=docs.rs': ok({ domain: 'docs.rs', port: 443, alert: true, strong: true, harmless: null, legitimate: null, feeds: {}, signals: [] }),
+      'GET /watchlist/check?domain=docs.rs': ok({ domain: 'docs.rs', alert: true, strong: true, harmless: null, legitimate: null, feeds: {}, signals: [] }),
     })
     await click(row('docs.rs').querySelector('[data-testid="entry-extend"]')!)
     await click('[data-testid="extend-choices"] [data-duration="7d"]')

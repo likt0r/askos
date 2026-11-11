@@ -168,7 +168,6 @@ export interface FeedState {
 /** `GET /watchlist/check?domain=` */
 export interface DomainCheck {
   domain: string
-  port: number
   signals: SignalReport[]
   alert: boolean
   strong: boolean
@@ -255,7 +254,6 @@ const paramsOf = (p: unknown): Params => (p && typeof p === 'object' ? p as Para
 
 /** The parameters each code of a Signal's reason needs (proxy/agentbox-suspicious explain). */
 export const SIGNAL_REASONS: Record<string, string[]> = {
-  'port': ['port'],
   'metadata': [],
   'raw-ip': [],
   'watchlist': ['domain'],

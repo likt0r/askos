@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_control_room  # noqa: E402
 from test_control_room import ControlRoomTest, failure  # noqa: E402
 
-REPORT = {"domain": "evil.example", "port": 443, "alert": True, "strong": True, "harmless": None,
+REPORT = {"domain": "evil.example", "alert": True, "strong": True, "harmless": None,
           "legitimate": None, "feeds": {},
           "signals": [{"signal": "threat", "strong": True, "suppressed": False, "reason": "HaGeZi: evil.example"}]}
 

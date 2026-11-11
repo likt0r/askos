@@ -30,7 +30,7 @@ const LEGITIMATE = [
 ]
 
 const CHECK = {
-  domain: 'npm-cache.example', port: 443, alert: true, strong: true, harmless: null, legitimate: null, feeds: {},
+  domain: 'npm-cache.example', alert: true, strong: true, harmless: null, legitimate: null, feeds: {},
   signals: [
     { signal: 'lookalike', strong: true, suppressed: false, reason: 'brand name npm in the foreign domain npm-cache.example',
       code: 'brand', params: { brand: 'npm', domain: 'npm-cache.example' } },
@@ -117,7 +117,7 @@ describe('Watchlist view', () => {
           { signal: 'raw-ip', strong: true, suppressed: false, reason: 'IP address instead of a domain', code: 'raw-ip', params: {} },
           // a code without the parameter it needs, a code and a Signal this UI does not know,
           // a reason without a code (a classifier from before), a Signal from before #69
-          { signal: 'port', strong: true, suppressed: false, reason: 'port 22 instead of 443', code: 'port', params: {} },
+          { signal: 'c2', strong: true, suppressed: false, reason: 'Watchlist: no domain given', code: 'watchlist', params: {} },
           { signal: 'tld', strong: false, suppressed: false, reason: 'something new', code: 'made-up', params: {} },
           { signal: 'shiny', strong: false, suppressed: false, reason: 'a new Signal', code: 'tld', params: { tld: 'x' } },
           { signal: 'lookalike', strong: true, suppressed: false, reason: 'typo of github (distance 1)' },
@@ -133,7 +133,7 @@ describe('Watchlist view', () => {
       'HaGeZi-Liste neu registrierter Domains: npm-cache.example',
       'Watchlist: odd.example (Shai-Hulud 1)',
       'Eine IP-Adresse statt einer Domain',
-      'port 22 instead of 443',
+      'Watchlist: no domain given',
       'something new',
       'a new Signal',
       'typo of github (distance 1)',

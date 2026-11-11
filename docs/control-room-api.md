@@ -324,7 +324,7 @@ subdomains of its own accord; the rules it has to follow are in the ADR.
 | Method and path | Body / query | agentbox call, response |
 |---|---|---|
 | `GET /watchlist` | | `watchlist`: `{"entries": [{"domain", "regex", "category", "strong", "source", "note", "added", "added_by", "refused"}], "unreadable", "feeds": {"threat-intelligence"\|"newly-registered": {"present", "entries", "updated", "attempted", "error", "days"}}, "feed_interval_hours", "young_domain_days"}`: the hand-maintained Watchlist (`domain`, or `regex` for a Regex entry, the other `null`; `refused`: why the rules refuse a stored pattern, else `null`: it raises no Signal, so `unreadable` says why Open web stays closed until it is removed, while the entries still show; `source`: the incident or `""`; `strong`: the category keeps it blocked in Open web; `unreadable`: why it cannot be read, `entries` then empty, else `null`) and the Feeds' state (`updated`/`attempted` epoch seconds or `null`, `error` of the last fetch or `null`) |
-| `GET /watchlist/check?domain=<domain>` | | `check-domain`: `{"domain", "port", "signals": [{"signal", "strong", "suppressed", "reason", "code", "params"}], "alert", "strong", "harmless", "harmless_regex", "legitimate", "legitimate_regex", "feeds"}`: the Signals of a destination, each with why it applies (below); `harmless` and `legitimate`: the Harmless mark and the Legitimate domain that cover it, or `null`, each a domain or, with `*_regex` `true`, the pattern of a Regex entry (a Legitimate pattern lifts only weak Signals) |
+| `GET /watchlist/check?domain=<domain>` | | `check-domain`: `{"domain", "signals": [{"signal", "strong", "suppressed", "reason", "code", "params"}], "alert", "strong", "harmless", "harmless_regex", "legitimate", "legitimate_regex", "feeds"}`: the Signals of a destination, each with why it applies (below); `harmless` and `legitimate`: the Harmless mark and the Legitimate domain that cover it, or `null`, each a domain or, with `*_regex` `true`, the pattern of a Regex entry (a Legitimate pattern lifts only weak Signals) |
 | `GET /watchlist/harmless` | | `harmless`: `[{"domain", "regex", "refused"}]`, the Harmless marks: a domain, or the pattern of a Regex entry (the other `null`); `refused`: why the rules refuse a stored pattern, which then silences nothing until it is removed, else `null` |
 | `PUT /watchlist/harmless/<domain>` | | `mark-harmless` |
 | `DELETE /watchlist/harmless/<domain>` | | `unmark-harmless` |
@@ -355,7 +355,6 @@ can come from several kinds of reason (a Watchlist category, the blockchain patt
 
 | `signal` | `code` | `params` | `reason` (English) |
 |---|---|---|---|
-| `port` | `port` | `port` | `port 22 instead of 443` |
 | `metadata` | `metadata` | none | `address of a cloud metadata service` |
 | `raw-ip` | `raw-ip` | none | `IP address instead of a domain` |
 | the entry's category (`exfil`, `c2`, `tunnel`, `paste`, `phishing`, `blockchain`, `payload`) | `watchlist` | `domain` (the Watchlist entry), `source` (when it has one) | `Watchlist: webhook.site (Shai-Hulud 1 (09/2025))` |

@@ -749,7 +749,7 @@ class HarmlessCliTest(detection_tests.CliTest):
         now = time.time()
         with open(os.path.join(self.dir, "journal.txt"), "w") as f:
             for host, tags, age in (("npm-a-mirror.example", "lookalike", 60), ("npm-b.example", "lookalike", 50),
-                                    ("npm-c-mirror.example", "lookalike,port", 40)):
+                                    ("npm-c-mirror.example", "lookalike,metadata", 40)):
                 f.write(json.dumps({"__REALTIME_TIMESTAMP": str(int((now - age) * 10**6)),
                                     "SYSLOG_IDENTIFIER": "agentbox-proxy-work",
                                     "MESSAGE": f"[work] ALERT {host} [{tags}]", **proxy("work")}) + "\n")

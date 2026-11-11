@@ -391,7 +391,7 @@ Hits raise an **Alert**, shown in the Control Room; Alerts can be marked as seen
 (`agentbox mark-seen`) so that only new ones stand out. `agentbox check-domain` shows a
 domain's Signals and the reason for each: an English text, and for the Control Room a stable
 code with its parameters (the Watchlist entry or pattern and its source, the Feed entry, the
-imitated brand or name, the port, ...), which it words in its language
+imitated brand or name, ...), which it words in its language
 (`docs/control-room-api.md`), and the Harmless mark and Legitimate domain that cover it,
 domain or pattern.
 A **Harmless mark** (`agentbox mark-harmless`,
