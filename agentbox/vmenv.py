@@ -42,6 +42,14 @@ MAX_VALUE = 4096                     # bytes of the value in UTF-8
 RESERVED = frozenset({"PATH", "HOME", "XDG_RUNTIME_DIR", "NODE_OPTIONS", "BASH_ENV", "ENV",
                       "CLAUDE_CODE_OAUTH_TOKEN", "ENABLE_CLAUDEAI_MCP_SERVERS", "ORCA_PORT", "PAIRING_ADDRESS"})
 RESERVED_PREFIXES = ("LD_", "AGENTBOX_", "GIT_CONFIG_")
+# What the patterns of the safeguard check miss, in either case (npm reads its variables so):
+# npm going around the proxy (noproxy) or the minimum release age (before), and the JVM
+# options that override the proxy of JAVA_TOOL_OPTIONS (DEFAULT_ENVIRONMENT)
+RESERVED_ANY_CASE = frozenset({"npm_config_noproxy", "npm_config_before", "_java_options", "jdk_java_options"})
+# Set by bash itself: its readonly variables (`readonly -p` of a bare bash; export fails on
+# them in every login shell that sources agent-env) and GROUPS, which ignores assignments.
+# Not a Safeguard: a variable that never arrives.
+SHELL = frozenset({"SHELLOPTS", "BASHOPTS", "UID", "EUID", "PPID", "GROUPS", "BASH_VERSINFO"})
 # Every variable of a DefaultEnvironment in the Image: vm/files/usr/lib/systemd/system.conf.d/agentbox.conf
 # and the agentbox-packages.conf that package-safeguards writes (tests/test_vm_env.py checks both).
 DEFAULT_ENVIRONMENT = frozenset({
@@ -57,10 +65,12 @@ def _shown(name):
 
 def reserved(name):
     """Whether a variable of this name could switch a Safeguard off or change what Agent Box
-    itself sets: the patterns of the safeguard check, the reserved names and prefixes, and the
-    Image's DefaultEnvironment. Proxy variables count in either case (MENTIONS ignores case)."""
+    or bash itself sets: the patterns of the safeguard check, the reserved names and prefixes,
+    the Image's DefaultEnvironment and the variables of bash. The patterns and RESERVED_ANY_CASE
+    ignore case (every name ending in _PROXY counts, https_proxy as HTTPS_PROXY)."""
     return bool(safeguards.OVERRIDES.fullmatch(name) or safeguards.MENTIONS.search(name)
-                or name in RESERVED or name.startswith(RESERVED_PREFIXES) or name in DEFAULT_ENVIRONMENT)
+                or name in RESERVED or name.startswith(RESERVED_PREFIXES) or name.lower() in RESERVED_ANY_CASE
+                or name in DEFAULT_ENVIRONMENT or name in SHELL)
 
 
 def valid_name(name):
@@ -76,8 +86,8 @@ def check_name(name):
     """The name if a VM variable may have it; dies otherwise (invalid_env_name, env_name_reserved)."""
     valid_name(name)
     if reserved(name):
-        die(f"{name} cannot be a VM variable: a Safeguard or Agent Box itself sets or reads it",
-            error="env_name_reserved", name=name)
+        why = "bash sets it itself" if name in SHELL else "a Safeguard or Agent Box itself sets or reads it"
+        die(f"{name} cannot be a VM variable: {why}", error="env_name_reserved", name=name)
     return name
 
 

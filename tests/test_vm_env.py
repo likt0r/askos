@@ -49,9 +49,16 @@ REFUSED = [
     # the rest of the Image's DefaultEnvironment
     "NODE_USE_ENV_PROXY", "DO_NOT_TRACK", "ORCA_TELEMETRY_DISABLED", "DISABLE_AUTOUPDATER", "RUSTUP_HOME",
     "JAVA_HOME", "JAVA_TOOL_OPTIONS",
+    # what the patterns miss: npm going around the proxy or the minimum release age, the JVM
+    # overriding the proxy of JAVA_TOOL_OPTIONS; in either case, as npm reads them
+    "npm_config_noproxy", "NPM_CONFIG_NOPROXY", "npm_config_before", "NPM_CONFIG_BEFORE", "_JAVA_OPTIONS",
+    "_java_options", "JDK_JAVA_OPTIONS", "jdk_java_options",
 ]
+# variables bash sets itself: export fails on its readonly ones in every login shell, and an
+# assignment to GROUPS has no effect
+SHELL = ["SHELLOPTS", "BASHOPTS", "UID", "EUID", "PPID", "GROUPS", "BASH_VERSINFO"]
 # broad prefixes stay allowed: only what a Safeguard or Agent Box itself reads is blocked
-ALLOWED = ["npm_config_foo", "npm_config_registry", "UV_PYTHON", "UV_INDEX_URL", "DATABASE_URL", "NODE_ENV",
+ALLOWED = ["npm_config_foo", "npm_config_registry", "uid", "JAVA_OPTS", "UV_PYTHON", "UV_INDEX_URL", "DATABASE_URL", "NODE_ENV",
            "pnpm_config_store_dir", "GIT_AUTHOR_NAME", "PROXYCHAINS_CONF", "path", "_"]
 # values whose characters every quoting step must keep as they are
 ODD = {"QUOTES": 'say "hi" and \'bye\'', "BACKSLASH": "C:\\path\\n \\\\ end\\", "DOLLAR": "$HOME ${X} $(id) `id`",
@@ -198,6 +205,26 @@ class SafeguardNamesTest(EnvTest):
                 self.failure("set-env", "work", f"{name}=", "--replace")
         self.assertEqual(self.record_env(), {"KEEP": "1"})
         self.assertEqual(self.env_file(), "KEEP=MQ==\n")
+
+    def test_variables_bash_sets_itself_are_refused(self):
+        for name in SHELL:
+            with self.subTest(name=name):
+                said = self.failure("set-env", "work", f"{name}=1")
+                self.assertEqual((said["error"], said["params"]), ("env_name_reserved", {"name": name}))
+                self.assertEqual(said["message"], f"{name} cannot be a VM variable: bash sets it itself")
+        self.assertEqual(vmenv.fw_cfg({"SHELLOPTS": "xtrace", "A": "1"}), b"A=MQ==\n")
+
+    def test_every_readonly_variable_of_bash_is_refused(self):
+        """What bash declares readonly itself (export fails on it in every login shell)."""
+        r = subprocess.run(["env", "-i", "bash", "-c", "readonly -p"], capture_output=True, text=True, timeout=30,
+                           check=True)
+        names = set(re.findall(r"^declare -\w+ (\w+)", r.stdout, re.M))
+        self.assertGreaterEqual(names, {"SHELLOPTS", "UID", "BASH_VERSINFO"})
+        self.assertEqual({n for n in names if not vmenv.reserved(n)}, set())
+        # the reason: a line of agent-env for one of them fails in a shell
+        r = subprocess.run(["bash", "-c", "export UID=1"], capture_output=True, text=True, timeout=30,
+                           env={"PATH": os.environ["PATH"], "LANG": "C"})
+        self.assertIn("readonly variable", r.stderr)
 
     def test_every_rule_of_the_safeguard_check_is_one_source(self):
         # the patterns come from safeguards.py itself: a name it would reject in a Build is refused
@@ -417,6 +444,23 @@ class OlderDomainTest(EnvTest):
         self.scenario()
         self.assertEqual(self.json("regenerate")["vms"]["work"], ["domain"])
         self.assertIn("entry4.name=opt/agentbox/env", self.defined()[-1])
+
+
+class FileFailsTest(EnvTest):
+    def test_saved_variables_whose_file_cannot_be_written_say_how_to_finish(self):
+        os.remove(self.path(ENV_FILE.format("work")))
+        os.makedirs(self.path(ENV_FILE.format("work")))          # no file can take its place
+        code, out, err = self.run_agentbox("set-env", "work", "A=1", "--json")
+        self.assertEqual((code, out), (1, ""))
+        said = json.loads(err)
+        self.assertEqual((said["error"], said["params"]), ("env_not_applied", {"vm": "work"}))
+        self.assertTrue(said["message"].startswith("work: VM variables saved, but the file the VM reads was not "
+                                                   "written: "), said["message"])
+        self.assertTrue(said["message"].endswith("; agentbox regenerate finishes it"), said["message"])
+        self.assertEqual(self.record_env(), {"A": "1"})
+        os.rmdir(self.path(ENV_FILE.format("work")))
+        self.assertEqual(self.json("regenerate")["vms"]["work"], ["vm-env"])
+        self.assertEqual(self.env_file(), "A=MQ==\n")
 
 
 class RegenerateEnvTest(EnvTest):

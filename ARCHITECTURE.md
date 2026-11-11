@@ -155,7 +155,8 @@ flowchart LR
   are `/var/lib/agentbox/vm-env/<vm>.env`, entry `opt/agentbox/env`, one line
   `NAME=<base64 of the value>` per variable, or `none` without any (QEMU refuses empty
   fw_cfg files). `guest-setup` hands them on with `/usr/lib/agentbox/fwcfg-env` at every
-  boot, before `orca serve` starts: it checks each name again, decodes the value with
+  boot, before `orca serve` starts: it checks the form of each name again (the Host already
+  left out every refused name), decodes the value with
   `base64 -d`, evaluates nothing, leaves a bad line out with a message in the journal, and
   writes the variables quoted into `/run/agentbox/env` (the unit's `EnvironmentFile`) and
   `/run/agentbox/agent-env` (sourced by `/etc/profile.d/agentbox.sh` for shells), before
@@ -647,12 +648,17 @@ Host after every Build
 - A VM variable (see VMs) is set at runtime and never passes through this check, and
   `/run/agentbox/env` overrides systemd's `DefaultEnvironment` for `orca serve`. So the Host
   checks every name when it is set: it refuses names the check's own patterns know (the
-  variables that switch a Safeguard off and anything mentioning one: proxy variables in
-  either case, `GIT_CONFIG*`, `UV_NO_CONFIG`, `*IGNORE_SCRIPTS`, `*RELEASE_AGE`,
-  `UV_EXCLUDE_NEWER`, `*HOOKS_PATH`, `*CLAUDEAI*`), what Agent Box sets for the VM or every
+  variables that switch a Safeguard off and anything mentioning one: every name ending in
+  `_PROXY` in either case, `GIT_CONFIG*`, `UV_NO_CONFIG`, `*IGNORE_SCRIPTS`, `*RELEASE_AGE`,
+  `UV_EXCLUDE_NEWER`, `*HOOKS_PATH`, `*CLAUDEAI*`), what those patterns miss, also in either
+  case (`npm_config_noproxy` and `npm_config_before`, which take npm around the proxy and the
+  minimum release age, `_JAVA_OPTIONS` and `JDK_JAVA_OPTIONS`, which override the proxy of
+  `JAVA_TOOL_OPTIONS`), what Agent Box sets for the VM or every
   process reads first (`PATH`, `HOME`, `XDG_RUNTIME_DIR`, `LD_*`, `NODE_OPTIONS`, `BASH_ENV`,
   `ENV`, `CLAUDE_CODE_OAUTH_TOKEN`, `AGENTBOX_*`, `ORCA_PORT`, `PAIRING_ADDRESS`) and every
-  variable of the Image's `DefaultEnvironment`, held to those files by a test. Broad prefixes
+  variable of the Image's `DefaultEnvironment`, held to those files by a test. Neither may a
+  VM variable be one bash sets itself (its readonly variables `SHELLOPTS`, `BASHOPTS`, `UID`,
+  `EUID`, `PPID`, `BASH_VERSINFO`, on which `export` fails in every login shell, and `GROUPS`). Broad prefixes
   such as `npm_config_*` or `UV_*` stay allowed: only what a Safeguard or Agent Box itself
   reads is blocked.
 - Anything failing (the Release's files, podman, the check, the disk) leaves the previous

@@ -468,7 +468,12 @@ def _change_env(name, change):
                 if after != before:
                     rec = {**rec, "env": after}
                     registry.save(rec)
-                written = generate.vm_env(rec)
+                try:
+                    written = generate.vm_env(rec)
+                except (Fail, OSError) as e:
+                    why = e.message.strip() if isinstance(e, Fail) else f"{e.filename}: {e.strerror}"
+                    die(f"{name}: VM variables saved, but the file the VM reads was not written: {why}; "
+                        f"agentbox regenerate finishes it", error="env_not_applied", vm=name)
                 try:
                     defined = generate.domain(rec)
                 except Fail as f:
