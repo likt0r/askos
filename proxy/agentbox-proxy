@@ -96,6 +96,7 @@ suspicious = _load_suspicious()
 PORT = 443
 HELLO_LIMIT = 16 * 1024         # a ClientHello larger than this is not taken as TLS
 HELLO_SECONDS = 10              # how long a client has to send its ClientHello
+LINGER_SECONDS = 2              # how long a refused client's further bytes are read after the alert
 # so oft prueft der Proxy, ob Tunnel geschlossen werden muessen
 CHECK_SECONDS = _seconds(os.environ.get("AGENTBOX_PROXY_CHECK_SECONDS"), 1.0)
 TEST_UPSTREAM = _test_upstream()
@@ -456,13 +457,19 @@ async def pipe(reader, writer):
         writer.close()
 
 
-async def refuse(writer, alert=None):
-    """Closes the connection, after a fatal TLS alert when there is one the client can use."""
+async def refuse(reader, writer, alert=None):
+    """Closes the connection, after a fatal TLS alert when there is one the client can use.
+    After the alert the proxy stops sending and reads what the client still sends for a
+    moment, since closing with bytes unread resets the connection and loses the alert."""
     if alert is not None:
         writer.write(bytes((ALERT_RECORD, 3, 3, 0, 2, FATAL, alert)))
         try:
+            writer.write_eof()
             await writer.drain()
-        except ConnectionError:
+            async with asyncio.timeout(LINGER_SECONDS):
+                while await reader.read(65536):
+                    pass
+        except (ConnectionError, TimeoutError):
             pass
     writer.close()
 
@@ -493,7 +500,7 @@ async def handle(ctx, lists, reader, writer):
         head, host = await asyncio.wait_for(read_hello(reader), HELLO_SECONDS)
     except Refused as e:
         log(ctx, f"BLOCKED {client} ({e.reason})")
-        await refuse(writer, e.alert)
+        await refuse(reader, writer, e.alert)
         return
     except (EOFError, asyncio.TimeoutError, ConnectionError):
         writer.close()
@@ -508,7 +515,7 @@ async def handle(ctx, lists, reader, writer):
     grant, why = decide(ctx, lists, host, tags, now)
     if grant is None:
         log(ctx, f"BLOCKED {host} ({why})")
-        await refuse(writer, ACCESS_DENIED)
+        await refuse(reader, writer, ACCESS_DENIED)
         return
     try:
         addrs = await resolve_public(host)
@@ -516,14 +523,14 @@ async def handle(ctx, lists, reader, writer):
         addrs = None
     if not addrs:
         log(ctx, f"BLOCKED {host} (does not resolve to a public address)")
-        await refuse(writer, ACCESS_DENIED)
+        await refuse(reader, writer, ACCESS_DENIED)
         return
 
     try:
         up_reader, up_writer = await connect_any(addrs)
     except (OSError, asyncio.TimeoutError) as e:
         log(ctx, f"ERROR {host} ({e})")
-        await refuse(writer, INTERNAL_ERROR)
+        await refuse(reader, writer, INTERNAL_ERROR)
         return
     # access may have ended while the name was resolved and the connection made: decide
     # again and register the tunnel without an await in between, so watch sees it from now on
@@ -531,7 +538,7 @@ async def handle(ctx, lists, reader, writer):
     if grant is None:
         up_writer.close()
         log(ctx, f"BLOCKED {host} ({why})")
-        await refuse(writer, ACCESS_DENIED)
+        await refuse(reader, writer, ACCESS_DENIED)
         return
     if grant == OPEN:
         log(ctx, f"ALLOWED {host} (open web)")

@@ -260,6 +260,19 @@ class SocketActivationTest(allowlist_tests.ProxyTest):
         self.assertEqual(s.recv(100), b"")
         self.assertIn("[work] BLOCKED 127.0.0.1 (not a TLS handshake)\n", self.log())
 
+    def test_a_client_that_sent_more_than_its_hello_still_gets_the_alert(self):
+        # closing with bytes unread would reset the connection and lose the alert
+        self.start()
+        for _ in range(5):
+            s = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+            self.addCleanup(s.close)
+            s.sendall(client_hello("other.example") + bytes(65536))     # more than the proxy reads with it
+            time.sleep(0.2)
+            data = b""
+            while chunk := s.recv(4096):
+                data += chunk
+            self.assertEqual(data, ACCESS_DENIED)
+
 
 if __name__ == "__main__":
     unittest.main()
