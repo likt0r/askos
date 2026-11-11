@@ -204,6 +204,18 @@ flowchart LR
 - A VM's network reaches only the Host's proxy and token service on that network. It has no
   route to the internet, no DNS resolver, no IPv6, and cannot reach the home network or
   other VMs (nftables on the Host).
+- Containers in a VM are behind the same limits. They run on rootless Podman: `docker` is
+  Podman under that name, and `podman compose` and `docker compose` run podman-compose, which
+  builds and runs with Podman. The VM forwards nothing for containers, so they can get out
+  only through the proxy, which passes only HTTPS. Builds get the proxy and running containers
+  do not, by the owner's decision: compose services call each other by name over HTTP, which
+  no `NO_PROXY` can cover in general. Podman passes the proxy into the `RUN` lines of
+  `podman build` and the VM's `/etc/hosts` with `host.agentbox` into every container, and
+  running containers get no proxy from the caller's environment
+  (`/etc/containers/containers.conf.d/50-agentbox.conf`). A build that goes through the Docker
+  API on the Podman socket gets no proxy, since Podman passes none there. A service that needs the
+  internet is given the proxy in its compose file. These settings only point builds at the
+  proxy, and none of them is a Safeguard.
 - From the home network a VM is reachable only through its Orca port; no other port of a VM
   is forwarded. Dev servers inside a VM are viewed in Orca's built-in browser: the page is
   shown on the laptop, but Orca carries its connections through the pairing connection

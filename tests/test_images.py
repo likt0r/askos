@@ -16,12 +16,14 @@ Run from the repo root: python3 -m unittest discover -s tests
 import fcntl
 import json
 import os
+import re
 import shutil
 import signal
 import stat
 import subprocess
 import sys
 import time
+import tomllib
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -32,6 +34,8 @@ from test_vms import VmsTest  # noqa: E402
 from vm_records import record  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO)
+from agentbox import safeguards  # noqa: E402
 with open(os.path.join(REPO, "VERSION")) as f:
     RELEASE = f.read().strip()         # the Release of the CLI under test (a checkout's VERSION)
 COMMIT = "abcdef0123456789abcdef0123456789abcdef01"     # of main, named by Builds from before ADR 0010
@@ -1293,6 +1297,92 @@ class DefinitionTest(ImagesTest):
         code, out, err = self.run_agentbox("containerfile", "base", "--json")
         self.assertEqual((code, out), (1, ""))
         self.assertIn("no Containerfile for Image base in the installed Release (vm/Containerfile is missing)", err)
+
+
+class ContainersTest(ImagesTest):
+    """#27: docker (podman-docker) and docker compose reach the agent's rootless Podman, builds
+    reach the outside through the Host's proxy as the VM does, with NO_PROXY as local as the
+    services' and host.agentbox resolvable, and running containers get no proxy (the owner's
+    decision). Only a real VM can run them; this checks what the Base image carries."""
+
+    SOCKET = "unix:///run/user/1000/podman/podman.sock"
+
+    def setUp(self):
+        super().setUp()
+        self.built()
+        self.root = self.rootfs("base")
+        self.env = safeguards.systemd_environment(self.root)
+
+    def read(self, rel):
+        with open(os.path.join(self.root, rel.lstrip("/"))) as f:
+            return f.read()
+
+    def test_docker_reaches_the_agents_podman_from_services_and_shells(self):
+        self.assertEqual(self.env["DOCKER_HOST"], self.SOCKET)
+        # shells: the agent gets its socket, root and other users podman-docker's (unset here)
+        for uid, before, after in (("1000", "", self.SOCKET), ("1000", "unix:///elsewhere", self.SOCKET),
+                                   ("0", self.SOCKET, "unset"), ("0", "", "unset"),
+                                   ("1001", "unix:///mine", "unix:///mine")):
+            with self.subTest(uid=uid, before=before):
+                self.assertEqual(self.shell_docker_host(uid, before), after)
+        self.assertNotIn("CONTAINER_HOST", self.read("/etc/profile.d/agentbox.sh"))    # podman stays local
+        self.assertNotIn("CONTAINER_HOST", self.env)
+        containerfile = self.read_repo("vm/Containerfile")
+        self.assertIn("systemctl --global enable podman.socket", containerfile)
+        # docker is podman (podman-docker)
+        self.assertIn("podman-docker", re.search(r"dnf -y install [^&]*", containerfile).group(0).split())
+        self.assertTrue(os.path.isfile(os.path.join(self.root, "etc/containers/nodocker")))   # no notice
+
+    def test_builds_get_the_proxy_and_running_containers_do_not(self):
+        """The owner's decision: compose services call each other by name over HTTP, which no
+        NO_PROXY covers, so only builds get the proxy; a service gets it by hand."""
+        conf = tomllib.loads(self.read("/etc/containers/containers.conf.d/50-agentbox.conf"))
+        # Podman itself, and with it the proxy podman build passes into RUN
+        wanted = {name: self.env[name] for name in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")}
+        wanted.update(NO_PROXY=self.env["NO_PROXY"], no_proxy=self.env["no_proxy"])
+        self.assertEqual(self.env["NO_PROXY"], "localhost,127.0.0.1,.localhost,host.agentbox")
+        env = conf["engine"]["env"]
+        self.assertEqual(env[-1], {"append": True})         # Podman's own defaults stay
+        self.assertEqual(dict(e.split("=", 1) for e in env[:-1]), wanted)
+        # running containers: nothing from the caller's environment, nothing set for them
+        self.assertIs(conf["containers"]["http_proxy"], False)
+        self.assertNotIn("env", conf["containers"])
+        self.assertFalse(conf["containers"].get("env_host", False))
+        # a container given the proxy by hand, and every build, resolves host.agentbox
+        self.assertEqual(conf["containers"]["base_hosts_file"], "/etc/hosts")
+        self.assertIn('echo "$gw host.agentbox" >> /etc/hosts', self.read(safeguards.GUEST_SETUP))
+
+    def test_compose_is_podman_compose_which_builds_and_runs_with_podman(self):
+        """podman compose and docker compose (podman-docker) run podman-compose, so compose
+        builds are podman builds; Docker Compose, whose builds through the Docker API would get
+        no proxy, is not in the image."""
+        conf = tomllib.loads(self.read("/etc/containers/containers.conf.d/50-agentbox.conf"))
+        self.assertEqual(conf["engine"]["compose_providers"], ["/usr/bin/podman-compose"])
+        self.assertIs(conf["engine"]["compose_warning_logs"], False)
+        install = re.search(r"dnf -y install [^&]*", self.read_repo("vm/Containerfile")).group(0).split()
+        self.assertIn("podman-compose", install)
+        self.assertNotIn("docker-compose", install)
+        self.assertFalse(os.path.lexists(os.path.join(self.root, "usr/lib/agentbox/docker-config.json")))
+        self.assertNotIn(".docker", self.read(safeguards.GUEST_SETUP))
+
+    def shell_docker_host(self, uid, docker_host):
+        """DOCKER_HOST after a shell of user uid read the profile, with docker_host set before."""
+        bin_dir = os.path.join(self.dir, f"id-{uid}")
+        os.makedirs(bin_dir, exist_ok=True)
+        with open(os.path.join(bin_dir, "id"), "w") as f:
+            f.write(f"#!/bin/sh\necho {uid}\n")
+        os.chmod(os.path.join(bin_dir, "id"), 0o755)
+        env = {"PATH": f"{bin_dir}:/usr/bin:/bin"}
+        if docker_host:
+            env["DOCKER_HOST"] = docker_host
+        profile = os.path.join(self.root, "etc/profile.d/agentbox.sh")
+        r = subprocess.run(["sh", "-c", '. "$1"; echo "${DOCKER_HOST-unset}"', "sh", profile],
+                           env=env, capture_output=True, text=True, check=True)
+        return r.stdout.strip()
+
+    def read_repo(self, rel):
+        with open(os.path.join(REPO, rel)) as f:
+            return f.read()
 
 
 if __name__ == "__main__":
