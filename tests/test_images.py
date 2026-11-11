@@ -1365,9 +1365,20 @@ class ContainersTest(ImagesTest):
         install = re.search(r"dnf -y install [^&]*", self.read_repo("vm/Containerfile")).group(0).split()
         self.assertIn("docker-compose", install)
         self.assertNotIn("podman-compose", install)
-        self.assertFalse(os.path.lexists(os.path.join(self.root, "usr/lib/agentbox/docker-config.json")))
         self.assertNotIn(".docker", self.read(safeguards.GUEST_SETUP))
         self.assertNotIn("DOCKER_CONFIG", self.env)
+        # nothing under vm/ (any Image, any file) is or writes a Docker config
+        for top, dirs, files in os.walk(os.path.join(REPO, "vm")):
+            for name in dirs + files:
+                path = os.path.join(top, name)
+                rel = os.path.relpath(path, REPO)
+                self.assertNotEqual(name, "docker-config.json", rel)
+                self.assertFalse(rel.endswith(os.path.join(".docker", "config.json")), rel)
+                if name in files:
+                    with open(path, errors="replace") as f:
+                        text = f.read()
+                    for needle in (".docker/config.json", "docker-config.json", "DOCKER_CONFIG"):
+                        self.assertFalse(needle in text, f"{rel} mentions {needle}")
 
     def test_short_image_names_resolve_to_docker_io(self):
         """#32: Fedora searches registry.fedoraproject.org first, which the proxy blocks, so a
