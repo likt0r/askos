@@ -225,10 +225,11 @@ table inet agentbox_vm {
   }
   chain from_vm {
     meta nfproto ipv6 drop
-    udp dport { 53, 67 } accept
+    udp dport 67 accept
     iifname "abox-work" ip daddr != 10.77.1.1 drop
     iifname "abox-priv" ip daddr != 10.77.2.1 drop
     ct state established,related accept
+    udp dport 53 accept
     tcp dport { 53, 443, 9100 } accept
     drop
   }
@@ -270,6 +271,22 @@ class RegenerateTest(RegistryTest):
                       self.read("etc/systemd/system/agentbox-ghvm-priv@.service"))
         self.assertIn("ListenStream=6802\n", self.read("etc/systemd/system/agentbox-gui-priv.socket"))
         self.assertEqual(self.read("etc/agentbox/vm-input.nft"), NFT)
+
+    def test_only_dhcp_passes_before_the_address_check(self):
+        # a port accepted before it would reach every address of the Host: a resolver on its
+        # LAN address, or the .1 of another VM's network
+        self.assertEqual(self.run_agentbox("regenerate")[0], 0)
+        rules = self.read("etc/agentbox/vm-input.nft").splitlines()
+        start = rules.index("  chain from_vm {") + 1
+        chain = rules[start:rules.index("  }", start) + 1]
+        checks = [i for i, line in enumerate(chain) if " ip daddr != " in line]
+        self.assertTrue(checks)
+        before = [line for line in chain[:min(checks)] if "accept" in line]
+        self.assertEqual(before, ["    udp dport 67 accept"])
+        after = chain[max(checks) + 1:]
+        self.assertIn("    udp dport 53 accept", after)
+        self.assertIn("    tcp dport { 53, 443, 9100 } accept", after)
+        self.assertEqual(after[-2:], ["    drop", "  }"])
 
     def test_defines_networks_that_are_missing(self):
         self.scenario(vms={"priv": {"uuid": PRIV_UUID}},

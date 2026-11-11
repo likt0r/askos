@@ -123,7 +123,10 @@ def migrate(args):
 # --- regenerate --------------------------------------------------------------
 
 def nft_rules(records):
-    """A VM network reaches only the Host's resolver, proxy and token service on it."""
+    """A VM network reaches only the Host's resolver, proxy and token service on it. Only DHCP
+    is accepted before the address check (the VM asks before it has an address); everything
+    else, the resolver's port 53 included, only to the Host's address on the VM's own network,
+    so no other resolver on the Host (one on its LAN address) can be reached."""
     return "".join(line + "\n" for line in [
         "table inet agentbox_vm",
         "delete table inet agentbox_vm",
@@ -134,9 +137,10 @@ def nft_rules(records):
         "  }",
         "  chain from_vm {",
         "    meta nfproto ipv6 drop",
-        "    udp dport { 53, 67 } accept",
+        "    udp dport 67 accept",
         *(f'    iifname "{bridge(r)}" ip daddr != {host_ip(r)} drop' for r in records),
         "    ct state established,related accept",
+        "    udp dport 53 accept",
         "    tcp dport { 53, 443, 9100 } accept",
         "    drop",
         "  }",
