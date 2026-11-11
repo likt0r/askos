@@ -114,12 +114,23 @@ flowchart LR
   reboot inside the VM keeps the QEMU process and is not enough. The command holds the
   registry lock, the record's lock and the VM's lifecycle lock, as `set-memory` does, checks
   everything first and changes nothing on any error; it saves the record, then writes the
-  file the VM reads at boot (a run that dies in between is finished by `regenerate`). A
-  paused VM is not refused: the domain is not defined again, it only names that file. At most
+  file the VM reads at boot, then defines the VM again when its definition changed (a run
+  that dies in between is finished by `regenerate`). That is the case for a domain defined
+  before VM variables, which lacks the file's fw_cfg entry: an upgrade runs no `regenerate`,
+  so `set-env` and `unset-env` define it, and a failed definition keeps the variables saved
+  and says `agentbox regenerate` finishes it (`env_not_applied`). A paused VM is not refused;
+  if its definition changed, it is defined again only once it no longer has a Pause (by
+  `regenerate`, like every changed definition), and the command says so. At most
   64 variables, names `^[A-Za-z_][A-Za-z0-9_]*$` up to 64 characters, values up to 4 KiB of
   UTF-8 without control characters other than tab (so no NUL and no line break). VM
   variables never switch a Safeguard off: the Host refuses every name a Safeguard or Agent
   Box itself reads (see Images and Builds).
+  A record keeps a variable whose name a later release refuses, so the record stays valid (a
+  broken one would stop `regenerate` and `create` for every VM), but the VM never gets it: the
+  file the VM reads leaves it out, `agentbox env` and `describe` mark it as not passed on, and
+  `set-env` still refuses the name, while `unset-env` removes it.
+  In Activity, a list of VM variables too long for an entry says how many it leaves out, and
+  the description names the variables before it shows any value.
   `systemctl set-environment` is not used, so services started apart from `orca serve` (the
   user manager `user@1000`, rootless Podman) do not see them; containers never inherit them
   anyway.

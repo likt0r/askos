@@ -110,6 +110,7 @@ export default {
     vm_paused: 'The VM is paused. Wake it first, then try again.',
     invalid_memory: 'The memory limit must be at least 1024 MiB and at most the Host\'s memory.',
     memory_not_applied: 'The memory limit is saved, but the VM could not be defined again. agentbox regenerate on the Host finishes it.',
+    env_not_applied: 'The VM variables are saved, but the VM could not be defined again. agentbox regenerate on the Host finishes it.',
     invalid_env_name: 'The name of a VM variable: A-Z, a-z, 0-9 and _, not starting with a digit, at most 64 characters.',
     env_name_reserved: 'A Safeguard or Agent Box itself sets or reads this variable, so it cannot be a VM variable.',
     invalid_env_value: 'The value of a VM variable may not have line breaks or other control characters.',

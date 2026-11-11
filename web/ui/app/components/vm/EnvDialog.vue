@@ -4,7 +4,8 @@
 // terminals it starts and login shells at the VM's next start, so a running (or paused)
 // VM keeps its variables until its next Restart, which can follow right here. Names a
 // Safeguard or Agent Box itself reads are refused by agentbox (env_name_reserved); the
-// dialog says which.
+// dialog says which. A list over the Control Room's 8 KiB body limit only agentbox set-env
+// on the Host can save; the dialog says so before sending.
 import type { Vm } from '~/utils/live'
 import type { EnvRow } from '~/utils/vmRules'
 
@@ -38,7 +39,8 @@ watch(open, (v) => {
 
 const checked = computed(() => envFromRows(rows.value))
 const changed = computed(() => JSON.stringify(Object.entries(checked.value.env)) !== JSON.stringify(Object.entries(current())))
-const ready = computed(() => !Object.keys(checked.value.problems).length && !checked.value.tooMany && changed.value)
+const ready = computed(() => !Object.keys(checked.value.problems).length && !checked.value.tooMany && !checked.value.tooBig
+  && changed.value)
 // off, or libvirt has no domain yet: the next start brings them (agentbox's next_start)
 const off = computed(() => props.vm.state === 'stopped' || props.vm.libvirt_state === null)
 const working = computed(() => props.vm.agents?.working ?? 0)
@@ -185,6 +187,9 @@ async function restart() {
         />
         <p v-if="checked.tooMany" class="text-sm text-error" data-testid="env-too-many">
           {{ t('vm.env.tooMany', { max: maxVariables }) }}
+        </p>
+        <p v-else-if="checked.tooBig" class="text-sm text-error" data-testid="env-too-big">
+          {{ t('vm.env.tooBig', { name: props.vm.name }) }}
         </p>
         <p class="text-xs text-muted">
           {{ t('vm.env.safeguards') }}

@@ -458,6 +458,23 @@ describe('VM variables', () => {
     expect(api.calls.some(c => c.method === 'PUT')).toBe(false)
   })
 
+  it('says when the list is too much for the Control Room and points to agentbox set-env', async () => {
+    const api = fakeApi({ 'GET /session': SIGNED_IN })
+    await openApp('/vms/work/web', [WITH])
+    await click('env-change')
+    await type('env-value-0', 'x'.repeat(4000))
+    await type('env-value-1', 'x'.repeat(4000))
+    expect(exists('env-too-big')).toBe(false)
+    await click('env-add')
+    await type('env-name-2', 'MORE')
+    await type('env-value-2', 'x'.repeat(4000))
+    expect(text('env-too-big')).toBe('Too much for the Control Room, which takes at most 8 KiB at once. Set long or many '
+      + 'variables on the Host with agentbox set-env work NAME=VALUE ...')
+    expect(byTestId('env-save').attributes('disabled')).toBeDefined()
+    await submit('env-dialog')
+    expect(api.calls.some(c => c.method === 'PUT')).toBe(false)
+  })
+
   it('names the variable agentbox refuses and stays open', async () => {
     fakeApi({
       'GET /session': SIGNED_IN,

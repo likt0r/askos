@@ -452,22 +452,30 @@ def _applies(name, changed):
 
 def _change_env(name, change):
     """Apply change(env) -> new env to the VM's VM variables: everything is checked first,
-    then the record is saved, then the file QEMU passes in is written. Holds the registry lock
-    (no regenerate writes the file meanwhile), the record's lock and the lifecycle lock (no
-    start between the change and the answer saying when it applies), as set-memory does.
-    Returns (before, after, state, applies)."""
+    then the record is saved, then the file QEMU passes in is written and the VM defined again
+    if its definition changed (a domain from before VM variables lacks the fw_cfg entry, and
+    an upgrade runs no regenerate). A variable the record has already may have a name refused
+    since (vmenv.refused): it stays, never passed on. Holds the registry lock (no regenerate
+    writes the file or defines the VM meanwhile), the record's lock and the lifecycle lock (no
+    start or Pause between the change and the answer saying when it applies), as set-memory
+    does. Returns (before, after, state, applies, defined), defined as generate.domain."""
     with state_files.locked(paths.REGISTRY):
         with state_files.locked(registry.record_file(name)):
             with state_files.vm_lock(name):
                 rec = registry.load(name)
                 before = dict(rec.get("env", {}))
-                after = vmenv.check(change(dict(before)))
+                after = vmenv.check(change(dict(before)), kept=before)
                 if after != before:
                     rec = {**rec, "env": after}
                     registry.save(rec)
                 written = generate.vm_env(rec)
-                state, applies = _applies(name, after != before or written)
-    return before, after, state, applies
+                try:
+                    defined = generate.domain(rec)
+                except Fail as f:
+                    die(f"{name}: VM variables saved, but the VM was not defined again: "
+                        f"{f.message.strip()}; agentbox regenerate finishes it", error="env_not_applied", vm=name)
+                state, applies = _applies(name, after != before or written or defined == "domain")
+    return before, after, state, applies, defined
 
 
 def _what(before, after):
@@ -478,14 +486,22 @@ def _what(before, after):
     return "VM variables " + "; ".join(parts) if parts else "VM variables written again"
 
 
-def _env_answer(name, opts, before, after, state, applies, what):
+def _env_answer(name, opts, before, after, state, applies, defined, what):
+    said = f"{name}: VM variables unchanged" if applies is None else f"{name}: {what}"
     if applies is None:
         activity.unchanged()
-        message = f"{name}: VM variables unchanged"
+    if defined == "domain-postponed":
+        # its saved memory belongs to the old definition (generate.domain); regenerate defines it
+        # once the VM runs again, as for every other change of its definition
+        message = (f"{said}; the VM is paused, so it is defined again only once it no longer has a Pause "
+                   f"(agentbox start {name}, then agentbox regenerate), and the VM variables apply from the "
+                   f"next Restart or Reset after that")
+    elif applies is None:
+        message = said
     elif applies == "next_start":
-        message = f"{name}: {what}, applies from the next start"
+        message = f"{said}, applies from the next start"
     else:
-        message = (f"{name}: {what}, applies from the next Restart (agentbox restart {name}) or Reset; "
+        message = (f"{said}, applies from the next Restart (agentbox restart {name}) or Reset; "
                    f"until then the VM keeps the VM variables it started with")
     if "json" in opts:
         print(json.dumps({"vm": name, "env": after, "changed": applies is not None, "state": state,
@@ -526,14 +542,18 @@ def env(args):
         die("env <vm> [--json]", error="invalid_argument")
     name = registry.check(positional[0])
     variables = registry.load(name).get("env", {})
+    refused = vmenv.refused(variables)
     if "json" in opts:
-        print(json.dumps({"vm": name, "env": variables}, ensure_ascii=False))
+        print(json.dumps({"vm": name, "env": variables, "refused": refused}, ensure_ascii=False))
     elif not variables:
         print(f"{name}: no VM variables")
     else:
         # one line each; the values are text without line breaks (vmenv.check_value)
         for n, v in variables.items():
             print(f"{n}={clean(v, False)}")
+        for n in refused:
+            print(f"{name}: {n} is not passed on to the VM: a Safeguard or Agent Box itself sets or reads it "
+                  f"(agentbox unset-env {name} {n} removes it)")
 
 
 COMMANDS = {"create": create, "delete": delete, "set-memory": set_memory, "set-env": set_env,

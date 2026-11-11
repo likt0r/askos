@@ -573,6 +573,9 @@ class EndpointTest(V1Test):
             ("PUT", "/api/v1/vms/work/env", {"env": {"": "x"}}, "invalid_env_name"),
             ("PUT", "/api/v1/vms/work/env", {"env": {"A" * 65: "x"}}, "invalid_env_name"),
             ("PUT", "/api/v1/vms/work/env", {"env": {"A": "a\u0000b"}}, "invalid_env_value"),
+            # a lone UTF-16 surrogate (JSON "\\ud800") is no UTF-8 an argument could carry
+            ("PUT", "/api/v1/vms/work/env", {"env": {"A": "a\ud800b"}}, "invalid_env_value"),
+            ("PUT", "/api/v1/vms/work/env", {"env": {"A": "\udfff"}}, "invalid_env_value"),
             ("PUT", "/api/v1/vms/work/image", {"image": "../x"}, "invalid_field"),
             ("PUT", "/api/v1/vms/work/image", {"image": "base", "build": "latest"}, "invalid_field"),
             ("PUT", "/api/v1/vms/work/claude-token", {"token": " "}, "invalid_field"),

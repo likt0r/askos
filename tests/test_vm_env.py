@@ -97,9 +97,8 @@ class SetEnvTest(EnvTest):
         self.assertEqual(self.env_file(), "DATABASE_URL=cG9zdGdyZXM6Ly9kYi94\nNODE_ENV=ZGV2ZWxvcG1lbnQ=\n")
         self.assertEqual(self.mode(ENV_FILE.format("work")), 0o640)
         self.assertEqual(self.mode("var/lib/agentbox/vm-env"), 0o750)
-        # the domain names the file: nothing is defined again, nothing stops or starts
+        # the domain names the file already: nothing is defined again, nothing stops or starts
         self.assertEqual(self.virsh("define", "shutdown", "destroy", "start", "managedsave"), [])
-        self.assertEqual(self.calls("virt-install"), [])
         self.assertIsNone(self.record_env("priv"))
         self.assertEqual(self.env_file("priv"), "none\n")
         # regenerate finds everything as it should be
@@ -252,18 +251,48 @@ class SafeguardNamesTest(EnvTest):
                 self.assertEqual((said["error"], said["params"]), ("invalid_env_value", {"name": "A"}))
         self.assertEqual(self.record_env(), {"BIG": "x" * 4096})
 
-    def test_a_record_with_a_refused_variable_is_broken(self):
-        vm_records.write(self.root, vm_records.record("work", 1, env={"HTTPS_PROXY": ""}))
-        code, out, err = self.run_agentbox("env", "work")
-        self.assertEqual((code, out), (1, ""))
-        self.assertIn("work.json: broken record (env: HTTPS_PROXY cannot be a VM variable", err)
-        for env in ({"A": 1}, ["A"], {"A": "x\n"}):
-            with self.subTest(env=env):
+    def test_a_stored_variable_whose_name_is_refused_now_is_kept_but_never_passed_on(self):
+        """A later release may reserve a name a VM has already: its record stays valid (a broken
+        record would stop regenerate and create for every VM), the VM never gets that variable,
+        and agentbox env and describe say so. Setting it stays refused, removing it works."""
+        vm_records.write(self.root, vm_records.record("work", 1, env={"HTTPS_PROXY": "x", "A": "1"}))
+        self.assertEqual(self.json("env", "work"),
+                         {"vm": "work", "env": {"HTTPS_PROXY": "x", "A": "1"}, "refused": ["HTTPS_PROXY"]})
+        self.assertEqual(self.ok("env", "work"),
+                         "HTTPS_PROXY=x\nA=1\nwork: HTTPS_PROXY is not passed on to the VM: a Safeguard or Agent "
+                         "Box itself sets or reads it (agentbox unset-env work HTTPS_PROXY removes it)\n")
+        described = {v["name"]: v for v in self.json("describe")["vms"]}
+        self.assertEqual((described["work"]["env_refused"], described["priv"]["env_refused"]), (["HTTPS_PROXY"], []))
+        self.assertIn("  VM variables: HTTPS_PROXY, A (agentbox env work); HTTPS_PROXY not passed on\n",
+                      self.ok("describe", "work"))
+        # regenerate and create go on; the file QEMU passes in never carries the name
+        self.assertEqual(self.json("regenerate")["vms"]["work"], ["vm-env"])
+        self.assertEqual(self.env_file(), "A=MQ==\n")
+        self.ok("create", "lab")
+        # other variables can still be set, the refused one stays in the record only
+        self.ok("set-env", "work", "B=2")
+        self.assertEqual(self.record_env(), {"HTTPS_PROXY": "x", "A": "1", "B": "2"})
+        self.assertEqual(self.env_file(), "A=MQ==\nB=Mg==\n")
+        said = self.failure("set-env", "work", "HTTPS_PROXY=y")
+        self.assertEqual((said["error"], said["params"]), ("env_name_reserved", {"name": "HTTPS_PROXY"}))
+        self.ok("unset-env", "work", "HTTPS_PROXY")
+        self.assertEqual(self.json("env", "work"), {"vm": "work", "env": {"A": "1", "B": "2"}, "refused": []})
+
+    def test_a_record_with_malformed_variables_is_broken(self):
+        for env in ({"A": 1}, ["A"], {"A": "x\n"}, {"1A": "x"}, {"A": "x" * 4097},
+                    {f"V{i}": "x" for i in range(65)}):
+            with self.subTest(env=str(env)[:40]):
                 vm_records.write(self.root, vm_records.record("work", 1, env=env))
-                self.assertIn("broken record", self.run_agentbox("env", "work")[2])
+                code, out, err = self.run_agentbox("env", "work")
+                self.assertEqual((code, out), (1, ""))
+                self.assertIn("work.json: broken record (", err)
         # without the field: no VM variables
         vm_records.write(self.root, vm_records.record("work", 1))
-        self.assertEqual(self.json("env", "work"), {"vm": "work", "env": {}})
+        self.assertEqual(self.json("env", "work"), {"vm": "work", "env": {}, "refused": []})
+
+    def test_the_file_never_carries_a_refused_name(self):
+        self.assertEqual(vmenv.fw_cfg({"HTTPS_PROXY": "x", "A": "1", "PATH": "/tmp"}), b"A=MQ==\n")
+        self.assertEqual(vmenv.fw_cfg({"LD_PRELOAD": "/x.so"}), b"none\n")
 
 
 class UnsetAndShowTest(EnvTest):
@@ -285,7 +314,7 @@ class UnsetAndShowTest(EnvTest):
         self.assertEqual(self.ok("env", "work"), "work: no VM variables\n")
         self.ok("set-env", "work", "A=x y", "B=")
         self.assertEqual(self.ok("env", "work"), "A=x y\nB=\n")
-        self.assertEqual(self.json("env", "work"), {"vm": "work", "env": {"A": "x y", "B": ""}})
+        self.assertEqual(self.json("env", "work"), {"vm": "work", "env": {"A": "x y", "B": ""}, "refused": []})
         self.assertEqual(self.refused("env"), "agentbox: env <vm> [--json]\n")
 
     def test_each_waits_for_the_registry_the_record_and_the_lifecycle_lock(self):
@@ -310,6 +339,84 @@ class UnsetAndShowTest(EnvTest):
                 _, err = p.communicate(timeout=60)
                 self.assertEqual(p.returncode, 0, err)
         self.assertEqual(self.record_env(), {"B": "1"})
+
+
+class OlderDomainTest(EnvTest):
+    """A domain defined before VM variables has no fw_cfg entry opt/agentbox/env, and an RPM
+    upgrade runs no regenerate: set-env and unset-env define the VM again, as set-memory does,
+    so it has its variables from the next start."""
+
+    def older_domain(self, vm="work"):
+        """The saved definition becomes one from before VM variables, without the entry."""
+        saved = self.path(f"var/lib/agentbox/domains/{vm}.xml")
+        with open(saved) as f:
+            xml = f.read()
+        older = re.sub(r",entry4\.name=opt/agentbox/env,entry4\.file=[^\"]*", "", xml)
+        self.assertNotEqual(older, xml)
+        with open(saved, "w") as f:
+            f.write(older)
+        self.forget_calls()
+
+    def defined(self, vm="work"):
+        return [c["xml"] for c in self.virsh("define") if c["dom"] == f"agentbox-{vm}"]
+
+    def test_set_env_defines_the_vm_again(self):
+        self.older_domain()
+        result = self.json("set-env", "work", "A=1")
+        self.assertEqual((result["changed"], result["state"], result["applies"]), (True, "running", "next_restart"))
+        self.assertEqual(len(self.defined()), 1)
+        self.assertIn("entry4.name=opt/agentbox/env", self.defined()[0])
+        self.assertEqual(self.defined("priv"), [])
+        # nothing stops, starts or pauses it now
+        self.assertEqual(self.virsh("shutdown", "destroy", "start", "managedsave", "managedsave-remove"), [])
+        self.assertEqual(self.json("regenerate")["vms"], {"work": [], "priv": []})
+
+    def test_unchanged_variables_still_define_it(self):
+        self.ok("set-env", "work", "A=1")
+        self.older_domain()
+        result = self.json("unset-env", "work", "NOT_SET")
+        self.assertEqual((result["changed"], result["applies"]), (True, "next_restart"))
+        self.assertTrue(result["message"].startswith("work: VM variables written again, applies from the next "
+                                                     "Restart"), result["message"])
+        self.assertEqual(len(self.defined()), 1)
+        # defined now: the same again changes nothing
+        self.assertEqual(self.ok("set-env", "work", "A=1"), "work: VM variables unchanged\n")
+
+    def test_vm_that_is_off_gets_them_at_its_next_start(self):
+        self.turned_off("priv")
+        self.older_domain("priv")
+        result = self.json("set-env", "priv", "A=1")
+        self.assertEqual((result["state"], result["applies"]), ("shut off", "next_start"))
+        self.assertEqual(len(self.defined("priv")), 1)
+
+    def test_paused_vm_is_defined_once_it_has_no_pause(self):
+        self.ok("pause", "work")
+        self.older_domain()
+        result = self.json("set-env", "work", "A=1")
+        self.assertEqual((result["changed"], result["state"]), (True, "paused"))
+        self.assertEqual(result["message"],
+                         "work: VM variables A set; the VM is paused, so it is defined again only once it no longer "
+                         "has a Pause (agentbox start work, then agentbox regenerate), and the VM variables apply "
+                         "from the next Restart or Reset after that")
+        self.assertEqual(self.virsh("define", "start", "managedsave-remove"), [])
+        self.assertEqual(self.record_env(), {"A": "1"})
+        self.ok("start", "work")
+        self.assertEqual(self.json("regenerate")["vms"]["work"], ["domain"])
+
+    def test_failing_definition_keeps_the_variables_and_says_how_to_finish(self):
+        self.older_domain()
+        self.scenario(virt_install_fails=["agentbox-work"])
+        code, out, err = self.run_agentbox("set-env", "work", "A=1", "--json")
+        self.assertEqual((code, out), (1, ""))
+        said = json.loads(err)
+        self.assertEqual((said["error"], said["params"]), ("env_not_applied", {"vm": "work"}))
+        self.assertTrue(said["message"].startswith("work: VM variables saved, but the VM was not defined again: "
+                                                   "work: virt-install fails"), said["message"])
+        self.assertTrue(said["message"].endswith("; agentbox regenerate finishes it"), said["message"])
+        self.assertEqual((self.record_env(), self.env_file()), ({"A": "1"}, "A=MQ==\n"))
+        self.scenario()
+        self.assertEqual(self.json("regenerate")["vms"]["work"], ["domain"])
+        self.assertIn("entry4.name=opt/agentbox/env", self.defined()[-1])
 
 
 class RegenerateEnvTest(EnvTest):

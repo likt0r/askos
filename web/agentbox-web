@@ -1466,6 +1466,8 @@ AGENTBOX_ERRORS = {
     "invalid_memory": (400, "Memory limit out of range (at least 1024 MiB, at most the Host's memory)"),
     "memory_not_applied": (500, "The memory limit is saved, but the VM was not defined again; "
                                 "agentbox regenerate finishes it"),
+    "env_not_applied": (500, "The VM variables are saved, but the VM was not defined again; "
+                             "agentbox regenerate finishes it"),
     "invalid_env_name": (400, "Invalid name of a VM variable (A-Z, a-z, 0-9 and _, not starting with a digit, "
                               "at most 64 characters)"),
     "env_name_reserved": (400, "A Safeguard or Agent Box itself sets or reads this variable; it cannot be a "
@@ -1921,18 +1923,28 @@ def put_memory(h, m, url, body):
     return 200, run_json("set-memory", m["vm"], str(mib), "--json")
 
 
+def utf8(text):
+    """Whether text has a UTF-8 form (no lone surrogate)."""
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 @route("PUT", VM + "/env")
 def put_env(h, m, url, body):
     """The VM's whole list of VM variables (set-env --replace): names agentbox can take as
     NAME=VALUE (a name with "=" or a leading "--" would read differently), values without NUL
-    (no argument can carry one); agentbox checks everything else."""
+    and in UTF-8 (no argument can carry a NUL, and JSON can carry a lone UTF-16 surrogate,
+    "\\ud800", that no argument can be encoded with); agentbox checks everything else."""
     env = body.get("env")
     if not isinstance(env, dict) or not all(isinstance(v, str) for v in env.values()):
         raise invalid("env", "env must be an object of names and text values")
     for name, value in env.items():
         if not ENV_NAME.fullmatch(name):
             raise ApiError(400, "invalid_env_name", AGENTBOX_ERRORS["invalid_env_name"][1], field="env")
-        if "\0" in value:
+        if "\0" in value or not utf8(value):
             raise ApiError(400, "invalid_env_value", AGENTBOX_ERRORS["invalid_env_value"][1], field="env",
                            params={"name": name})
     return 200, run_json("set-env", m["vm"], "--replace", *(f"{k}={v}" for k, v in env.items()), "--json")

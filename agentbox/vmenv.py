@@ -16,7 +16,10 @@ the Host refuses every name a Safeguard or Agent Box itself reads: the patterns 
 safeguard check (safeguards.OVERRIDES, safeguards.MENTIONS), the names Agent Box sets
 for the VM (RESERVED, RESERVED_PREFIXES) and every variable the Image's systemd
 DefaultEnvironment sets (DEFAULT_ENVIRONMENT; a test holds it to the files of the Image).
-Broad prefixes such as npm_config_* or UV_* stay allowed.
+Broad prefixes such as npm_config_* or UV_* stay allowed. A record keeps a variable whose
+name a later release refuses (a broken record would stop regenerate and create for every VM):
+it is never passed on (fw_cfg leaves it out, refused() names it), and only unset-env can
+still name it.
 
 Everything here works on a plain {name: value} dict, so another list of variables (secrets
 per VM) can use the same name check, limits and file format.
@@ -97,23 +100,30 @@ def check_value(name, value):
     return value
 
 
-def check(env):
+def check(env, kept=()):
     """The variables if every name and value may be one and there are at most MAX_VARIABLES;
-    dies at the first that may not, so a caller changes nothing."""
+    dies at the first that may not, so a caller changes nothing. Names in kept (a record has
+    them already) may be refused ones: they stay, but are never passed on."""
     if not isinstance(env, dict):
         die("the VM variables are no list of names and values", error="invalid_argument")
     for name, value in env.items():
-        check_value(check_name(name), value)
+        check_value(valid_name(name) if name in kept else check_name(name), value)
     if len(env) > MAX_VARIABLES:
         die(f"{len(env)} VM variables, at most {MAX_VARIABLES} are allowed", error="env_too_large",
             max_variables=MAX_VARIABLES)
     return env
 
 
+def refused(env):
+    """The names of these variables that a VM variable may not have (any more): never passed on."""
+    return [name for name in env if reserved(name)]
+
+
 def problem(env):
-    """What is wrong with the variables of a record, or None (registry.problem)."""
+    """What is wrong with the variables of a record, or None (registry.problem): their form
+    and the limits. A refused name is no problem of the record (refused())."""
     try:
-        check(env)
+        check(env, kept=env if isinstance(env, dict) else ())
     except Fail as f:
         return f.message
     return None
@@ -135,8 +145,10 @@ def pairs(args):
 
 def fw_cfg(env):
     """The content of the fw_cfg file of these variables: one line NAME=<base64(value)> each,
-    in their order, or "none" without any (QEMU refuses empty fw_cfg files)."""
-    if not env:
+    in their order, or "none" without any (QEMU refuses empty fw_cfg files). A refused name
+    never goes in."""
+    passed = {name: value for name, value in env.items() if not reserved(name)}
+    if not passed:
         return b"none\n"
     return b"".join(name.encode() + b"=" + base64.b64encode(value.encode("utf-8")) + b"\n"
-                    for name, value in env.items())
+                    for name, value in passed.items())

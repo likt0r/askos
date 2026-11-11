@@ -110,6 +110,7 @@ export default {
     vm_paused: 'Die VM ist pausiert. Erst aufwecken, dann erneut versuchen.',
     invalid_memory: 'Die Speichergrenze muss mindestens 1024 MiB und höchstens der Speicher des Hosts sein.',
     memory_not_applied: 'Die Speichergrenze ist gespeichert, aber die VM konnte nicht neu definiert werden. agentbox regenerate auf dem Host holt das nach.',
+    env_not_applied: 'Die VM-Variablen sind gespeichert, aber die VM konnte nicht neu definiert werden. agentbox regenerate auf dem Host holt das nach.',
     invalid_env_name: 'Der Name einer VM-Variable: A-Z, a-z, 0-9 und _, vorne keine Ziffer, höchstens 64 Zeichen.',
     env_name_reserved: 'Diese Variable setzt oder liest eine Schutzmaßnahme oder Agent Box selbst, sie kann keine VM-Variable sein.',
     invalid_env_value: 'Der Wert einer VM-Variable darf keine Zeilenumbrüche oder anderen Steuerzeichen enthalten.',

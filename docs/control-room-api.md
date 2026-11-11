@@ -89,9 +89,10 @@ else `500 action_failed`, with the message in `detail`:
 | 409 | `vm_paused` | the VM is paused: start it first (changing the memory limit) |
 | 400 | `invalid_memory` | memory limit not a whole number from 1024 MiB to the Host's memory (`field`: `memory_mib`), when changing the limit or creating a VM (`POST /vms` formerly answered `invalid_argument` for this) |
 | 500 | `memory_not_applied` | the new memory limit is saved, but the VM could not be defined again; `agentbox regenerate` finishes it |
+| 500 | `env_not_applied` | the VM variables are saved, but the VM could not be defined again (a domain from before VM variables lacks their fw_cfg entry); `agentbox regenerate` finishes it |
 | 400 | `invalid_env_name` | the name of a VM variable is not `^[A-Za-z_][A-Za-z0-9_]*$` of at most 64 characters (`field`: `env`); the backend refuses such a name itself, before agentbox |
 | 400 | `env_name_reserved` | a Safeguard or Agent Box itself sets or reads this variable, so it cannot be a VM variable (parameter `name`, `field`: `env`): the patterns of the safeguard check, the names Agent Box sets for the VM and every variable of the Image's `DefaultEnvironment` |
-| 400 | `invalid_env_value` | the value of a VM variable has a control character other than tab (a line break, NUL, ...) or is not UTF-8 (parameter `name`, `field`: `env`) |
+| 400 | `invalid_env_value` | the value of a VM variable has a control character other than tab (a line break, NUL, ...) or is not UTF-8, such as a lone UTF-16 surrogate (`"\ud800"`), which the backend refuses itself, before agentbox (parameter `name`, `field`: `env`) |
 | 400 | `env_too_large` | more than 64 VM variables, or a value over 4 KiB in UTF-8 (parameter `name` for a value, `field`: `env`) |
 | 503 | `guest_agent_unavailable` | the VM's guest agent does not answer |
 | 504 | `vm_query_timeout` | a query inside the VM took too long |
@@ -201,7 +202,7 @@ Sign-ins, failures, refusals by the brake and sign-outs are Activity entries (co
   "network": 1, "orca_port": 6801, "address": "10.77.1.2",
   "memory_mib": 26624, "data_disk_gib": 300,
   "github_owners": ["likt0r"], "created": "2026-11-03T12:00:00Z",
-  "env": {"DATABASE_URL": "postgres://db.example/app"},
+  "env": {"DATABASE_URL": "postgres://db.example/app"}, "env_refused": [],
   "image": "base", "build_pin": null,
   "image_build": "20261101-120000", "next_build": "20261101-120000",
   "system_disk": {"since": "2026-10-31T09:12:00Z", "age_days": 3, "file": "base-20261020.qcow2",
@@ -271,6 +272,9 @@ Sign-ins, failures, refusals by the brake and sign-outs are Activity entries (co
 - `env`: the VM variables in the registry record, names and values (they are not secret);
   `{}` without any. A running or paused VM has the ones it started with until its next
   Restart or Reset (`PUT /vms/<vm>/env`).
+- `env_refused`: the names in `env` that a later release refuses (a Safeguard or Agent Box
+  reads them now): the record keeps them, the VM never gets them; `[]` usually. Saving the
+  list with such a name fails (`400 env_name_reserved`); leave it out to remove it.
 - Memory in use is not part of it: `vms.<name>.memory_bytes` of the `host` event and of
   `GET /host`.
 
@@ -289,7 +293,7 @@ Sign-ins, failures, refusals by the brake and sign-outs are Activity entries (co
 | `POST /vms/<vm>/focus` | | `focus <vm>`: `{"focus", "others": [{"vm", "state"}], "message"}` |
 | `DELETE /focus` | | `focus off` |
 | `PUT /vms/<vm>/memory` | `{"memory_mib": 16384}` | `set-memory`: `{"vm", "memory_mib", "previous_mib", "changed", "state", "applies": "next_start"\|"next_restart"\|null, "message"}`; `next_start`: the VM is off and starts with it, `next_restart`: it keeps running with its memory until its next Restart or Reset; `null`: nothing changed. A paused VM is refused (`409 vm_paused`) |
-| `PUT /vms/<vm>/env` | `{"env": {"NAME": "value", ...}}` | `set-env --replace NAME=value ...`: the whole list in one step, `{}` removes every variable. `{"vm", "env", "changed", "state", "applies": "next_start"\|"next_restart"\|null, "message"}`; `next_start`: the VM is off and starts with them, `next_restart`: it runs or is paused and keeps the variables it started with until its next Restart or Reset; `null`: nothing changed. Names a Safeguard or Agent Box reads are refused (`400 env_name_reserved`, nothing changes). The body limit of 8 KiB applies; `agentbox set-env` on the Host takes the whole 64 variables of up to 4 KiB |
+| `PUT /vms/<vm>/env` | `{"env": {"NAME": "value", ...}}` | `set-env --replace NAME=value ...`: the whole list in one step, `{}` removes every variable. `{"vm", "env", "changed", "state", "applies": "next_start"\|"next_restart"\|null, "message"}`; `next_start`: the VM is off and starts with them, `next_restart`: it runs or is paused and keeps the variables it started with until its next Restart or Reset; `null`: nothing changed. A domain defined before VM variables is defined again (a paused VM's once it has no Pause: the message says so); if that fails, the variables stay saved (`500 env_not_applied`). Names a Safeguard or Agent Box reads are refused (`400 env_name_reserved`, nothing changes). The body limit of 8 KiB applies (the UI says so before it sends a longer list); `agentbox set-env` on the Host takes the whole 64 variables of up to 4 KiB |
 | `PUT /vms/<vm>/image` | `{"image", "build": null\|"<build>"}` | `set-image`: `{"vm", "image", "build", "message"}`; applies at the next Reset |
 | `PUT /vms/<vm>/github-owners` | `{"owners": ["likt0r", ...]}` | `set-owners`: `{"vm", "owners"}` |
 | `PUT /vms/<vm>/claude-token` | `{"token": "sk-ant-oat..."}` | `set-claude-token` (token on stdin, checked with Anthropic before it replaces the old one): `{"vm", "stored": true, "length"}` |
@@ -431,8 +435,8 @@ first:
 | `create` | `image` (when given) |
 | `delete` | `delete_data_disk` |
 | `set-memory` | `mib` |
-| `set-env` | `env` (the variables as `NAME=value`, joined with `", "`; only those whose name has the form of one), `replace` |
-| `unset-env` | `names` |
+| `set-env` | `env` (the variables as `NAME=value`, joined with `", "`; only those whose name has the form of one), `replace`. Like every parameter at most 500 characters: a longer list keeps the whole variables that fit and ends in `, … +<n>`, the number left out |
+| `unset-env` | `names`, cut like `env` |
 | `allow` | `domain` or, for a Regex entry, `regex` (the pattern; so for every command below that names `domain`), `scope` (a VM or `all`), `duration` (`15min`, `1h`, `8h`, `7d`) or `temporary`, `force` |
 | `extend` | `domain`, `scope`, `duration`, `force` |
 | `make-permanent` | `domain`, `scope`, `force` |

@@ -55,6 +55,16 @@ describe('VM variables', () => {
     expect(envFromRows(rows.slice(0, 64)).tooMany).toBe(false)
     expect(envFromRows(rows).tooMany).toBe(true)
   })
+
+  it('says when the list is more than the Control Room takes at once (8 KiB), which agentbox set-env can save', () => {
+    // two values of 4 KiB are allowed each, but not in one request of the Control Room
+    const big = (n: number) => Array.from({ length: n }, (_, i) => ({ name: `V${i}`, value: 'x'.repeat(4000) }))
+    expect(envFromRows(big(2))).toMatchObject({ problems: {}, tooMany: false, tooBig: false })
+    expect(envFromRows(big(3))).toMatchObject({ problems: {}, tooMany: false, tooBig: true })
+    // bytes in UTF-8, as the body is sent: the same number of characters
+    expect(envFromRows([{ name: 'A', value: 'ü'.repeat(2048) }, { name: 'B', value: 'ü'.repeat(2048) }]).tooBig).toBe(true)
+    expect(envFromRows([{ name: 'A', value: 'x'.repeat(2048) }, { name: 'B', value: 'x'.repeat(2048) }]).tooBig).toBe(false)
+  })
 })
 
 describe('create fields', () => {

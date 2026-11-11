@@ -150,6 +150,7 @@ export default {
     remove: 'Variable entfernen',
     safeguards: 'Namen, die eine Schutzmaßnahme oder Agent Box selbst liest (Proxy-Variablen, PATH, npm_config_ignore_scripts und ähnliche), werden abgelehnt.',
     tooMany: 'Höchstens {max} VM-Variablen.',
+    tooBig: 'Zu viel für den Control Room, der höchstens 8 KiB auf einmal annimmt. Lange oder viele Variablen auf dem Host mit agentbox set-env {name} NAME=WERT ... setzen.',
     problem: {
       name: 'A-Z, a-z, 0-9 und _, vorne keine Ziffer, höchstens 64 Zeichen.',
       twice: 'Dieser Name kommt zweimal vor.',

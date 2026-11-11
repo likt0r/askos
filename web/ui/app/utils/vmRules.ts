@@ -151,6 +151,9 @@ export function mibAsGib(mib: number): string {
 export const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/
 export const MAX_ENV_VARIABLES = 64
 export const MAX_ENV_VALUE_BYTES = 4096
+/** The Control Room takes request bodies of at most 8 KiB (MAX_BODY of web/agentbox-web);
+ * `agentbox set-env` on the Host takes the whole 64 variables of 4 KiB. */
+export const MAX_BODY_BYTES = 8192
 
 export interface EnvRow { name: string, value: string }
 export type EnvRowProblem = 'name' | 'twice' | 'value' | 'long'
@@ -158,8 +161,8 @@ export type EnvRowProblem = 'name' | 'twice' | 'value' | 'long'
 /** The rows of the VM variables dialog as the list PUT /vms/<vm>/env takes, with what is
  * wrong per row (by index). A row without name and value is left out. The names a Safeguard
  * or Agent Box reads are agentbox's to refuse (env_name_reserved), so the UI never drifts
- * from safeguards.py. */
-export function envFromRows(rows: readonly EnvRow[]): { env: Record<string, string>, problems: Record<number, EnvRowProblem>, tooMany: boolean } {
+ * from safeguards.py. tooBig: the request body would be over the Control Room's limit. */
+export function envFromRows(rows: readonly EnvRow[]): { env: Record<string, string>, problems: Record<number, EnvRowProblem>, tooMany: boolean, tooBig: boolean } {
   // no prototype: names such as constructor or __proto__ are names like any other
   const env: Record<string, string> = Object.create(null)
   const problems: Record<number, EnvRowProblem> = {}
@@ -172,7 +175,8 @@ export function envFromRows(rows: readonly EnvRow[]): { env: Record<string, stri
     else if (new TextEncoder().encode(row.value).length > MAX_ENV_VALUE_BYTES) problems[i] = 'long'
     else env[name] = row.value
   })
-  return { env, problems, tooMany: Object.keys(env).length > MAX_ENV_VARIABLES }
+  const body = new TextEncoder().encode(JSON.stringify({ env })).length
+  return { env, problems, tooMany: Object.keys(env).length > MAX_ENV_VARIABLES, tooBig: body > MAX_BODY_BYTES }
 }
 
 /** What the VM's buttons may do in its state. */
