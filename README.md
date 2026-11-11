@@ -415,6 +415,8 @@ which is set for services and shells. A build sent straight to the Docker API on
 (docker-py, Testcontainers' image builds) gets no proxy, because Podman passes none there. If
 such a build needs the internet, pass `HTTPS_PROXY=http://host.agentbox:3128` (and `NO_PROXY`)
 as build arguments. Containers have no DNS and no route out, the same as the rest of the VM.
+Short image names such as `postgres:16-alpine` resolve to docker.io, as with Docker
+(`/etc/containers/registries.conf.d/50-agentbox.conf`), not to Fedora's registries first.
 
 Builds get the Host's proxy: Podman passes it into a Dockerfile's `RUN` lines, and the
 VM's `/etc/hosts`, which has `host.agentbox`, comes along
