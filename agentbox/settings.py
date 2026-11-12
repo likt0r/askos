@@ -115,6 +115,8 @@ SPEC = {
     "default_memory_mib": Setting(26624, _int(1024, MAX_MEMORY_MIB), NEW_VMS),
     "default_data_disk_gib": Setting(300, _int(1, MAX_DATA_DISK_GIB), NEW_VMS),
     "default_image": Setting("base", _pattern(IMAGE, "name of an Image"), NEW_VMS),
+    "default_container_image_cleanup": Setting(True, _bool(), NEW_VMS),
+    "default_container_image_cleanup_days": Setting(7, _int(1, 365), NEW_VMS),
     "open_web_max_minutes": Setting(240, _int(1, 1440)),
     "temporary_entry_default": Setting("1h", _choice(*ENTRY_DURATIONS), "for new Temporary allowlist entries"),
     "young_domain_days": Setting(14, _young_days(), "at the next fetch of the Feeds"),

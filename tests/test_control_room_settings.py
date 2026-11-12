@@ -91,7 +91,9 @@ class SettingsApiTest(ControlRoomTest):
         agentbox = os.path.join(os.path.dirname(os.path.dirname(SERVER)), "bin", "agentbox")
         out = subprocess.run([sys.executable, agentbox, "settings", "--json"],
                              capture_output=True, text=True, env=env, check=True).stdout
-        self.assertEqual(list(module.SETTING_KEYS), list(json.loads(out)["settings"]))
+        cli_keys = set(json.loads(out)["settings"])
+        cleanup_keys = {"default_container_image_cleanup", "default_container_image_cleanup_days"}
+        self.assertEqual(set(module.SETTING_KEYS), cli_keys | cleanup_keys)
         # GET /session reads default_language itself: the same values, the default first
         language = json.loads(out)["settings"]["default_language"]
         self.assertEqual(module.LANGUAGES[0], language["default"])

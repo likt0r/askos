@@ -92,7 +92,8 @@ class CreateTest(VmsTest):
         rec = vm_records.read(self.root, "lab")
         self.assertRegex(rec.pop("created"), r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
         self.assertEqual(rec, {"name": "lab", "network": 3, "orca_port": 6803, "image": "base", "build": None,
-                               "memory_mib": 26624, "data_disk_gib": 300, "github_owners": []})
+                               "memory_mib": 26624, "data_disk_gib": 300, "container_image_cleanup": True,
+                               "container_image_cleanup_days": 7, "github_owners": []})
         self.assertIn("ListenStream=6803\n", self.read("etc/systemd/system/agentbox-gui-lab.socket"))
         self.assertIn("ListenStream=10.77.3.1:443\n", self.read("etc/systemd/system/agentbox-proxy-lab.socket"))
         self.assertIn('    iifname "abox-lab" ip daddr != 10.77.3.1 drop\n', self.read("etc/agentbox/vm-input.nft"))
@@ -142,7 +143,9 @@ class CreateTest(VmsTest):
         result = self.json("create", "lab", "--owner", "likt0r")
         message = result.pop("message")
         self.assertEqual(result, {"vm": "lab", "network": 3, "orca_port": 6803, "image": "base", "memory_mib": 26624,
-                                  "data_disk_gib": 300, "github_owners": ["likt0r"], "allowlist_from": None})
+                                  "data_disk_gib": 300, "container_image_cleanup": True,
+                                  "container_image_cleanup_days": 7, "github_owners": ["likt0r"],
+                                  "allowlist_from": None})
         self.assertTrue(message.startswith("lab: entered into the registry"))
 
     def test_options(self):
@@ -336,6 +339,126 @@ class CreateTest(VmsTest):
         self.assertNotIn("agentbox: ", said["message"])
         self.scenario()
         self.assertEqual(self.json("regenerate")["vms"]["lab"], ["domain"])
+
+
+class CreateCleanupTest(VmsTest):
+    """create takes the Container image cleanup as options, else from the Settings."""
+
+    def cleanup(self, vm):
+        rec = vm_records.read(self.root, vm)
+        return rec["container_image_cleanup"], rec["container_image_cleanup_days"]
+
+    def test_options(self):
+        result = self.json("create", "lab", "--container-image-cleanup", "off", "--container-image-cleanup-days=30")
+        self.assertEqual((result["container_image_cleanup"], result["container_image_cleanup_days"]), (False, 30))
+        self.assertEqual(self.cleanup("lab"), (False, 30))
+        self.ok("create", "lab2", "--container-image-cleanup=on")
+        self.assertEqual(self.cleanup("lab2"), (True, 7))
+
+    def test_the_settings_are_the_defaults(self):
+        self.ok("set-settings", "default_container_image_cleanup=false", "default_container_image_cleanup_days=3")
+        self.ok("create", "lab")
+        self.assertEqual(self.cleanup("lab"), (False, 3))
+        self.ok("create", "lab2", "--container-image-cleanup", "on", "--container-image-cleanup-days", "9")
+        self.assertEqual(self.cleanup("lab2"), (True, 9))
+
+    def test_bad_values_create_nothing(self):
+        for value in ("0", "366", "x", "1.5", "-1", ""):
+            with self.subTest(days=value):
+                self.assertEqual(self.refused("create", "lab", "--container-image-cleanup-days", value),
+                                 "agentbox: Days for the Container image cleanup out of range (1 to 365)\n")
+        for value in ("yes", "ON", "true", ""):
+            with self.subTest(on=value):
+                self.assertEqual(self.refused("create", "lab", "--container-image-cleanup", value),
+                                 "agentbox: --container-image-cleanup must be on or off\n")
+        code, out, err = self.run_agentbox("create", "lab", "--container-image-cleanup-days", "0", "--json")
+        self.assertEqual(json.loads(err)["error"], "invalid_cleanup_days")
+        code, out, err = self.run_agentbox("create", "lab", "--container-image-cleanup", "x", "--json")
+        self.assertEqual(json.loads(err)["error"], "invalid_argument")
+
+
+class SetContainerImageCleanupTest(VmsTest):
+    """set-container-image-cleanup writes only the field a call changes, in any state of
+    the VM, and leaves existing records without the fields alone."""
+
+    def fields(self, vm):
+        rec = vm_records.read(self.root, vm)
+        return {k: v for k, v in rec.items() if k.startswith("container_image_cleanup")}
+
+    def test_records_without_the_fields_mean_on_and_7_days(self):
+        self.assertEqual(self.fields("work"), {})
+        result = self.json("set-container-image-cleanup", "work", "--days", "7")
+        self.assertEqual(result["changed"], False)
+        self.assertEqual(self.fields("work"), {})            # nothing rewritten
+
+    def test_days_json(self):
+        result = self.json("set-container-image-cleanup", "work", "--days", "14")
+        self.assertEqual(result, {"vm": "work", "container_image_cleanup": True, "container_image_cleanup_days": 14,
+                                  "previous": {"container_image_cleanup": True, "container_image_cleanup_days": 7},
+                                  "changed": True,
+                                  "message": "work: Container image cleanup on, after 14 days (was after 7 days)"})
+        self.assertEqual(self.fields("work"), {"container_image_cleanup_days": 14})   # only what changed
+        self.assertEqual(self.fields("priv"), {})
+
+    def test_off_and_on_keep_the_days(self):
+        self.ok("set-container-image-cleanup", "work", "--days=30")
+        self.assertEqual(self.ok("set-container-image-cleanup", "work", "off"),
+                         "work: Container image cleanup off (30 days) (was after 30 days)\n")
+        self.assertEqual(self.fields("work"), {"container_image_cleanup": False, "container_image_cleanup_days": 30})
+        result = self.json("set-container-image-cleanup", "work", "on")
+        self.assertEqual((result["container_image_cleanup"], result["container_image_cleanup_days"],
+                          result["previous"]), (True, 30, {"container_image_cleanup": False,
+                                                            "container_image_cleanup_days": 30}))
+        self.assertEqual(result["message"], "work: Container image cleanup on, after 30 days (was off, 30 days)")
+        both = self.json("set-container-image-cleanup", "work", "off", "--days", "2")
+        self.assertEqual((both["container_image_cleanup"], both["container_image_cleanup_days"]), (False, 2))
+
+    def test_no_change(self):
+        self.ok("set-container-image-cleanup", "work", "off", "--days", "5")
+        out = self.ok("set-container-image-cleanup", "work", "off", "--days", "5")
+        self.assertEqual(out, "work: Container image cleanup stays off (5 days)\n")
+        self.assertFalse(self.json("set-container-image-cleanup", "work", "off")["changed"])
+
+    def test_whatever_state_the_vm_is_in(self):
+        for state in ("shut off", "paused"):
+            with self.subTest(state=state):
+                self.scenario(vms={"work": {"state": state}})
+                self.assertTrue(self.json("set-container-image-cleanup", "work", "off")["changed"] or state == "paused")
+                self.ok("set-container-image-cleanup", "work", "on")
+        self.assertEqual(self.virsh("define", "shutdown", "destroy", "start", "managedsave"), [])
+
+    def test_refusals(self):
+        usage = "agentbox: set-container-image-cleanup <vm> [on|off] [--days N] [--json]\n"
+        cases = {(): usage, ("work",): usage, ("work", "maybe"): usage, ("work", "on", "off"): usage,
+                 ("work", "8192", "--days", "3"): usage,
+                 ("work", "on", "--force"): "agentbox: unknown option: --force\n",
+                 ("nope", "on"): "agentbox: No such VM: nope\n"}
+        for args, message in cases.items():
+            with self.subTest(args=args):
+                self.assertEqual(self.refused("set-container-image-cleanup", *args), message)
+        bad = "agentbox: Days for the Container image cleanup out of range (1 to 365)\n"
+        for value in ("0", "366", "x", "1.5", "-1", "", "true"):
+            with self.subTest(days=value):
+                self.assertEqual(self.refused("set-container-image-cleanup", "work", "--days", value), bad)
+        code, out, err = self.run_agentbox("set-container-image-cleanup", "work", "--days", "0", "--json")
+        self.assertEqual(json.loads(err)["error"], "invalid_cleanup_days")
+        code, out, err = self.run_agentbox("set-container-image-cleanup", "work", "maybe", "--json")
+        self.assertEqual(json.loads(err)["error"], "invalid_argument")
+        code, out, err = self.run_agentbox("set-container-image-cleanup", "nope", "on", "--json")
+        self.assertEqual(json.loads(err)["error"], "vm_not_found")
+
+    def test_a_broken_field_in_the_record_stops_every_command(self):
+        for field, value in (("container_image_cleanup", "yes"), ("container_image_cleanup", 1),
+                             ("container_image_cleanup_days", True), ("container_image_cleanup_days", "7"),
+                             ("container_image_cleanup_days", 0), ("container_image_cleanup_days", 366)):
+            with self.subTest(field=field, value=value):
+                vm_records.write(self.root, record("work", 1, **{field: value}), record("priv", 2))
+                code, out, err = self.run_agentbox("describe", "work", "--json")
+                self.assertEqual(code, 1, out)
+                self.assertIn(field, err)
+        for field, value in (("container_image_cleanup", False), ("container_image_cleanup_days", 365)):
+            vm_records.write(self.root, record("work", 1, **{field: value}), record("priv", 2))
+            self.assertEqual(self.run_agentbox("regenerate")[0], 0)
 
 
 class DeleteTest(VmsTest):

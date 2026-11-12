@@ -87,6 +87,7 @@ else `500 action_failed`, with the message in `detail`:
 | 409 | `no_free_network` | all 254 networks in use |
 | 409 | `vm_not_running` | the VM is not running (logs) |
 | 409 | `vm_paused` | the VM is paused: start it first (changing the memory limit) |
+| 400 | `invalid_cleanup_days` | the days of the Container image cleanup are not a whole number from 1 to 365 (`field`: `days`) |
 | 400 | `invalid_memory` | memory limit not a whole number from 1024 MiB to the Host's memory (`field`: `memory_mib`), when changing the limit or creating a VM (`POST /vms` formerly answered `invalid_argument` for this) |
 | 500 | `memory_not_applied` | the new memory limit is saved, but the VM could not be defined again; `agentbox regenerate` finishes it |
 | 500 | `env_not_applied` | the VM variables are saved, but the VM could not be defined again (a domain from before VM variables lacks their fw_cfg entry); `agentbox regenerate` finishes it |
@@ -144,6 +145,8 @@ else `500 action_failed`, with the message in `detail`:
 | 409 | `target_exists` | `agentbox import`: the target under `~/code` exists in the VM; nothing was changed |
 | 409 | `inbox_missing` | `agentbox import`: the VM's Build lacks the wrapper that unpacks it; a new Build and a Reset bring it |
 | 500 | `import_failed` | `agentbox import`: packing, attaching or unpacking failed; the disk is detached and the tar file deleted |
+| 409 | `container_image_cleanup_missing` | the Container image cleanup (hourly, `agentbox cleanup-container-images`, in Activity only): the VM's Build lacks its wrapper; a new Build and a Reset bring it |
+| 502 | `container_image_cleanup_failed` | the Container image cleanup in the VM failed or answered something other than its two numbers (in Activity only) |
 | 400 | `invalid_argument` | any other value or option agentbox refused |
 | 500 | `sudo_failed` | the backend may not run agentbox (sudo rule missing, or agentbox did not run as root) |
 | 500 | `action_failed` | anything else agentbox reported (e.g. libvirt failing, a broken file on the Host); also the code of every failure only the Host can cause (setup, regenerate, timers) |
@@ -201,6 +204,7 @@ Sign-ins, failures, refusals by the brake and sign-outs are Activity entries (co
   "libvirt_state": "running",
   "network": 1, "orca_port": 6801, "address": "10.77.1.2",
   "memory_mib": 26624, "data_disk_gib": 300,
+  "container_image_cleanup": true, "container_image_cleanup_days": 7,
   "github_owners": ["likt0r"], "created": "2026-11-03T12:00:00Z",
   "env": {"DATABASE_URL": "postgres://db.example/app"}, "env_refused": [],
   "image": "base", "build_pin": null,
@@ -269,6 +273,10 @@ Sign-ins, failures, refusals by the brake and sign-outs are Activity entries (co
 - `devices`: open connections to the VM's Orca port by remote address; `null` when unknown.
 - `memory_mib`: the memory limit in the registry record; after a change a running VM uses
   it from its next Restart or Reset (`PUT /vms/<vm>/memory`).
+- `container_image_cleanup`, `container_image_cleanup_days`: the VM's Container image
+  cleanup, on or off and its number of days (1 to 365), as `describe --json` gives them, two
+  separate values (turning it off keeps the days); the Control Room takes a missing key as
+  `true` and `7` (`PUT /vms/<vm>/container-image-cleanup`).
 - `env`: the VM variables in the registry record, names and values (they are not secret);
   `{}` without any. A running or paused VM has the ones it started with until its next
   Restart or Reset (`PUT /vms/<vm>/env`).
@@ -292,6 +300,7 @@ Sign-ins, failures, refusals by the brake and sign-outs are Activity entries (co
 | `POST /vms/<vm>/reset` | `{"start"?: true}` | `reset` (`--no-start` with `start: false`): same shape. The UI asks for confirmation first |
 | `POST /vms/<vm>/focus` | | `focus <vm>`: `{"focus", "others": [{"vm", "state"}], "message"}` |
 | `DELETE /focus` | | `focus off` |
+| `PUT /vms/<vm>/container-image-cleanup` | `{"enabled": true, "days": 14}` | `set-container-image-cleanup <vm> [on\|off] [--days N] --json`: `{"vm", "container_image_cleanup", "container_image_cleanup_days", "previous": {"container_image_cleanup", "container_image_cleanup_days"}, "changed", "message"}`; both keys optional, at least one (`enabled` a boolean, `days` a whole number, else `400 invalid_field` with `field` `enabled` or `days`); `400 invalid_cleanup_days` (`field` `days`), `404 vm_not_found`; works in every state of the VM and takes effect at the next hourly run |
 | `PUT /vms/<vm>/memory` | `{"memory_mib": 16384}` | `set-memory`: `{"vm", "memory_mib", "previous_mib", "changed", "state", "applies": "next_start"\|"next_restart"\|null, "message"}`; `next_start`: the VM is off and starts with it, `next_restart`: it keeps running with its memory until its next Restart or Reset; `null`: nothing changed. A paused VM is refused (`409 vm_paused`) |
 | `PUT /vms/<vm>/env` | `{"env": {"NAME": "value", ...}}` | `set-env --replace NAME=value ...`: the whole list in one step, `{}` removes every variable. `{"vm", "env", "changed", "state", "applies": "next_start"\|"next_restart"\|null, "message"}`; `next_start`: the VM is off and starts with them, `next_restart`: it runs or is paused and keeps the variables it started with until its next Restart or Reset; `null`: nothing changed. A domain defined before VM variables is defined again (a paused VM's once it has no Pause: the message says so); if that fails, the variables stay saved (`500 env_not_applied`). Names a Safeguard or Agent Box reads are refused (`400 env_name_reserved`, nothing changes). The body limit of 8 KiB applies (the UI says so before it sends a longer list); `agentbox set-env` on the Host takes the whole 64 variables of up to 4 KiB |
 | `PUT /vms/<vm>/image` | `{"image", "build": null\|"<build>"}` | `set-image`: `{"vm", "image", "build", "message"}`; applies at the next Reset |
@@ -435,6 +444,9 @@ first:
 | `create` | `image` (when given) |
 | `delete` | `delete_data_disk` |
 | `set-memory` | `mib` |
+| `set-container-image-cleanup` | `enabled` (`true`/`false`), `days` (the values after the call) |
+| `container-image-cleanup.removed` | `removed` (Container images), `freed_bytes`, `days`; recorded by the hourly run only when it removed something (actor `timer`) |
+| `container-image-cleanup.failed` | `days`; outcome `failed` with an error code (`guest_agent_unavailable`, `vm_query_timeout`, `container_image_cleanup_missing`, `container_image_cleanup_failed`); actor `timer` |
 | `set-env` | `env` (the variables as `NAME=value`, joined with `", "`; only those whose name has the form of one), `replace`. Like every parameter at most 500 characters: a longer list keeps the whole variables that fit and ends in `, … +<n>`, the number left out |
 | `unset-env` | `names`, cut like `env` |
 | `allow` | `domain` or, for a Regex entry, `regex` (the pattern; so for every command below that names `domain`), `scope` (a VM or `all`), `duration` (`15min`, `1h`, `8h`, `7d`) or `temporary`, `force` |
@@ -564,7 +576,8 @@ Progress arrives live as `build` and `build-log` events; the log endpoint fills 
 
 Settings keys the Control Room may change: `reset_age_days`, `maintenance_time`, `rebuild_day`,
 `builds_kept`, `default_memory_mib`, `default_data_disk_gib`,
-`default_image`, `open_web_max_minutes`, `temporary_entry_default`, `young_domain_days`,
+`default_image`, `default_container_image_cleanup`, `default_container_image_cleanup_days`,
+`open_web_max_minutes`, `temporary_entry_default`, `young_domain_days`,
 `feed_interval_hours`, `package_min_age_days`, `orca_version`, `activity_retention_days`,
 `session_hours`, `default_language`, `auto_update`. The password, home network and ports are
 not among them.

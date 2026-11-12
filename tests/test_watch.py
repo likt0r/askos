@@ -622,6 +622,22 @@ class DescribeTest(WatchTest):
                       "  System disk:  base-20261020.qcow2, 3 days old, the next Reset brings 20261101-120000\n",
                       out)
 
+    def test_the_container_image_cleanup(self):
+        with open(self.path("etc/agentbox/vms/priv.json")) as f:
+            rec = json.load(f)
+        rec.update(container_image_cleanup=False, container_image_cleanup_days=30)
+        with open(self.path("etc/agentbox/vms/priv.json"), "w") as f:
+            json.dump(rec, f)
+        code, out, err = self.run_agentbox("describe", "--json")
+        self.assertEqual(code, 0, err)
+        vms = {v["name"]: v for v in json.loads(out)["vms"]}
+        self.assertEqual([(vms[n]["container_image_cleanup"], vms[n]["container_image_cleanup_days"])
+                          for n in ("work", "priv")], [(True, 7), (False, 30)])
+        code, out, err = self.run_agentbox("describe")
+        self.assertIn("work: running", out)
+        self.assertIn("  Container image cleanup: after 7 days\n", out)
+        self.assertIn("  Container image cleanup: off (30 days)\n", out)
+
     def test_unknown_vm(self):
         self.assertEqual(self.run_agentbox("describe", "nope"), (1, "", "agentbox: No such VM: nope\n"))
         code, out, err = self.run_agentbox("describe", "nope", "--json")

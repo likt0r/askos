@@ -41,6 +41,7 @@ VMS = ("work", "priv")
 # what agentbox setup enables (agentbox/hoststeps.py, setup.py) and agentbox regenerate for
 # the Activity journal, the timers and the VMs
 ENABLED = ["agentbox-web.service", "agentbox-vmnet.service", "agentbox-allowlist-expire.timer",
+           "agentbox-container-image-cleanup.timer",
            "libvirt-guests.service", "systemd-journald@agentbox.socket", "agentbox-maintenance.timer",
            "agentbox-feeds.timer"]
 ENABLED += [f"agentbox-{kind}-{vm}.socket" for vm in VMS for kind in ("proxy", "ghvm", "gui")]

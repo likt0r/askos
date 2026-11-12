@@ -92,5 +92,5 @@ RUN useradd -u 1000 -U -M -d /var/home/agent -s /bin/bash agent \
     && chmod 755 /usr/bin/agentbox-gh-token /usr/bin/git-credential-agentbox /usr/lib/agentbox/bin/gh \
     && systemctl enable agentbox-guest-setup.service agentbox-orca.service qemu-guest-agent.service \
        'var-lib-agentbox\x2ddata.mount' \
-    && systemctl --global enable podman.socket \
+    && systemctl --global enable podman.socket agentbox-container-image-usage.service \
     && bootc container lint

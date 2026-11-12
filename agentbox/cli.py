@@ -10,9 +10,9 @@ import os
 import re
 import sys
 
-from . import activity, allowlist, credentials, describe, detection, generate, github, guest, images, lifecycle
-from . import lists, maintenance, network, pairings, paths, settings, setup, transfer, version, versions, vms
-from . import watch
+from . import activity, allowlist, container_images, credentials, describe, detection, generate, github, guest
+from . import images, lifecycle, lists, maintenance, network, pairings, paths, settings, setup, transfer
+from . import version, versions, vms, watch
 from .errors import Fail
 
 USAGE = """\
@@ -31,11 +31,16 @@ Controls the agent VMs on this Host.
                                                      Host that is set up, only the Host steps
   agentbox watch                                     (Control Room) events as JSON lines until stdin ends
   agentbox create <vm> [--image I] [--memory-mib N] [--data-disk-gib N] [--owner O]...
+                [--container-image-cleanup on|off] [--container-image-cleanup-days N]
                 [--copy-allowlist-from VM] [--json]    new VM; network and Orca port are picked automatically
   agentbox delete <vm> --confirm <vm> [--delete-data-disk] [--json]
                 delete a VM; its Data disk is archived, or deleted with --delete-data-disk
   agentbox set-memory <vm> <mib> [--json]            memory limit (1024 MiB up to the Host's memory); applies
                                                      from the next start, for a running VM after a Restart
+  agentbox set-container-image-cleanup <vm> [on|off] [--days N] [--json]
+                                                     the VM's Container image cleanup: on or off, and after
+                                                     how many days an unused Container image goes (1 to 365);
+                                                     whatever state the VM is in
   agentbox env <vm> [--json]                         the VM's VM variables (environment variables for orca
                                                      serve, agents, terminals and shells)
   agentbox set-env <vm> NAME=VALUE [NAME=VALUE ...] [--replace] [--json]
@@ -120,6 +125,9 @@ Controls the agent VMs on this Host.
                                                      old VMs when idle; with auto_update also VMs whose Image
                                                      has a newer Build. Run by the old Reset timer while the
                                                      window's timer is missing: the whole window
+  agentbox cleanup-container-images [--json]         (timer, hourly) in each running VM with the Container
+                                                     image cleanup on, remove the Container images no
+                                                     container uses that were not used for its days
   agentbox images [--json]                           Images and their Builds, which VM uses which, the versions
                                                      of Orca, Claude Code, codex, opencode and Fedora in them
                                                      and what a new Build would bring
@@ -157,7 +165,7 @@ COMMANDS = {**guest.COMMANDS, **lifecycle.COMMANDS, **network.COMMANDS, **creden
             **pairings.COMMANDS, **settings.COMMANDS, **github.COMMANDS, **allowlist.COMMANDS,
             **images.COMMANDS, **describe.COMMANDS, **watch.COMMANDS, **lists.COMMANDS,
             **setup.COMMANDS, **version.COMMANDS, **versions.COMMANDS, **transfer.COMMANDS,
-            **maintenance.COMMANDS}
+            **maintenance.COMMANDS, **container_images.COMMANDS}
 
 # The options that take a value, as USAGE shows them ("--note TEXT", "--for 15min|1h|...").
 # Given as --note VALUE, the value is the next argument, whatever it looks like.

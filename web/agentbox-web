@@ -375,13 +375,14 @@ def activity(query):
 # Einstellungen, die der Leitstand aendern darf (agentbox prueft die Werte; ein Test haelt
 # die Liste mit `agentbox settings` gleich). Passwort, Heimnetz und Ports gehoeren nicht dazu.
 SETTING_KEYS = ("reset_age_days", "maintenance_time", "rebuild_day", "builds_kept",
-                "default_memory_mib", "default_data_disk_gib", "default_image", "open_web_max_minutes",
-                "temporary_entry_default", "young_domain_days", "feed_interval_hours", "package_min_age_days",
-                "auto_update", "orca_version", "activity_retention_days", "session_hours", "default_language")
+                "default_memory_mib", "default_data_disk_gib", "default_image", "default_container_image_cleanup",
+                "default_container_image_cleanup_days", "open_web_max_minutes", "temporary_entry_default",
+                "young_domain_days", "feed_interval_hours", "package_min_age_days", "auto_update", "orca_version",
+                "activity_retention_days", "session_hours", "default_language")
 
 
 # Einstellungen mit true/false als Wert; JSON true/false wird fuer agentbox zu Text
-BOOL_SETTINGS = ("auto_update",)
+BOOL_SETTINGS = ("auto_update", "default_container_image_cleanup")
 
 
 def setting_text(key, value):
@@ -1468,6 +1469,7 @@ AGENTBOX_ERRORS = {
     "vm_not_running": (409, "The VM is not running"),
     "vm_paused": (409, "The VM is paused; start it first, then try again"),
     "invalid_memory": (400, "Memory limit out of range (at least 1024 MiB, at most the Host's memory)"),
+    "invalid_cleanup_days": (400, "Days for the Container image cleanup out of range (1 to 365)"),
     "memory_not_applied": (500, "The memory limit is saved, but the VM was not defined again; "
                                 "agentbox regenerate finishes it"),
     "env_not_applied": (500, "The VM variables are saved, but the VM was not defined again; "
@@ -1545,6 +1547,9 @@ AGENTBOX_ERRORS = {
     "target_exists": (409, "The target exists in the VM already; nothing was changed"),
     "inbox_missing": (409, "The VM's Build cannot receive folders yet; build its Image and reset the VM first"),
     "import_failed": (500, "Copying the folder into the VM failed"),
+    "container_image_cleanup_missing": (409, "The VM's Build has no Container image cleanup yet; build its Image "
+                                             "and reset the VM first"),
+    "container_image_cleanup_failed": (502, "The Container image cleanup in the VM failed"),
     "invalid_argument": (400, "Invalid value"),
     "action_failed": (500, "The action failed"),
 }
@@ -1609,12 +1614,15 @@ def error_params(error, params):
 
 def error_field(error, params):
     """The request field a refusal is about: the setting an invalid_setting names (only a
-    known key), memory_mib for invalid_memory, env for a refused VM variable."""
+    known key), memory_mib for invalid_memory, days for invalid_cleanup_days, env for a refused
+    VM variable."""
     if error == "invalid_setting":
         key = params.get("setting")
         return key if isinstance(key, str) and key in SETTING_KEYS else None
     if error == "invalid_memory":
         return "memory_mib"
+    if error == "invalid_cleanup_days":
+        return "days"
     if error in ("invalid_env_name", "env_name_reserved", "invalid_env_value", "env_too_large"):
         return "env"
     return None
@@ -1926,6 +1934,24 @@ def put_memory(h, m, url, body):
     if isinstance(mib, bool) or not isinstance(mib, int) or mib < 0:
         raise invalid("memory_mib", "memory_mib must be a whole number of MiB")
     return 200, run_json("set-memory", m["vm"], str(mib), "--json")
+
+
+@route("PUT", VM + "/container-image-cleanup")
+def put_container_image_cleanup(h, m, url, body):
+    args = []
+    if "enabled" in body:
+        enabled = body["enabled"]
+        if not isinstance(enabled, bool):
+            raise invalid("enabled", "enabled must be true or false")
+        args.append("on" if enabled else "off")
+    if "days" in body:
+        days = body["days"]
+        if isinstance(days, bool) or not isinstance(days, int):
+            raise invalid("days", "days must be a whole number")
+        args += ["--days", str(days)]
+    if not args:
+        raise ApiError(400, "invalid_field", "Give enabled or days")
+    return 200, run_json("set-container-image-cleanup", m["vm"], *args, "--json")
 
 
 def utf8(text):

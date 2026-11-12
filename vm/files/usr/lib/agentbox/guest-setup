@@ -68,9 +68,12 @@ echo "nameserver $gw" > /etc/resolv.conf
 # Ohne Datenplatte lieber nicht starten als still auf die Systemplatte schreiben
 mountpoint -q "$DATA" || { echo "guest-setup: the Data disk is not mounted" >&2; exit 1; }
 
-# Home ist fluechtig (Systemplatte); dauerhaft ist nur, was hier steht.
+# Home ist fluechtig (Systemplatte); dauerhaft ist nur, was hier steht. Auch der
+# Podman-Speicher des Agenten (Container images, Container, Volumes, Build-Cache)
+# liegt auf der Datenplatte (ADR 0017); Podmans Benutzerkonfiguration
+# (~/.config/containers) bleibt Systemplatte und geht mit jedem Reset verloren.
 PERSIST=(code orca .config/orca .claude/projects .codex/sessions .cargo/registry .cargo/git
-         .gradle .android .local/share/android-sdk)
+         .gradle .android .local/share/android-sdk .local/share/containers)
 install -d -o agent -g agent -m 700 "$HOME_DIR"
 for p in "${PERSIST[@]}"; do
   install -d -o agent -g agent -m 700 "$DATA/home/$p" "$HOME_DIR/$p"

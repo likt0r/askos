@@ -1,0 +1,14 @@
+# The usage recorder of the Container image cleanup (ADR 0017): keeps when each of the
+# agent's Container images was last used, whether the cleanup is on or off. A user service
+# of the agent (linger, guest-setup has bound its Podman storage before user@1000 starts).
+[Unit]
+Description=Agent Box: record when each Container image was last used
+After=podman.socket
+
+[Service]
+ExecStart=/usr/bin/python3 -I /usr/libexec/qemu-ga/fsfreeze-hook.d/agentbox-container-images record
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

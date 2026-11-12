@@ -293,6 +293,34 @@ class ReleaseSourceTest(ImagesTest):
                 self.assertIn(problem, new["problems"])
                 self.assertEqual(self.current(), f"base-{OLD}.qcow2")
 
+    def test_a_release_without_the_container_image_cleanup_wrapper_or_with_a_weaker_one_is_discarded(self):
+        """#62: agentbox-container-images removes Container images as the agent, with podman rmi only
+        and never by force, and never touches containers or volumes."""
+        path = os.path.join(self.source, "vm/files", safeguards.CONTAINER_IMAGES_WRAPPER.lstrip("/"))
+        with open(path) as f:
+            wrapper = f.read()
+        problem = (f"Guest agent: {safeguards.CONTAINER_IMAGES_WRAPPER} is missing or does not remove only "
+                   "Container images as the agent, never by force")
+        for what, changed in (("missing", None),
+                              ("stays root", wrapper.replace("        become(USER)\n", "")),
+                              ("by force", wrapper.replace('self.run("rmi", *refs)', 'self.run("rmi", "--force", *refs)')),
+                              ("containers too", wrapper.replace('self.run("rmi", *refs)', 'self.run("rm", *refs)')),
+                              ("volumes too", wrapper + '\nsubprocess.run([PODMAN, "volume", "prune"])\n')):
+            with self.subTest(what):
+                if os.path.exists(path):
+                    os.remove(path)
+                if changed is not None:
+                    self.assertNotEqual(changed, wrapper)
+                    with open(path, "w") as f:
+                        f.write(changed)
+                    os.chmod(path, 0o755)
+                code, out = self.build()
+                self.assertEqual(code, 1, out)
+                new = self.newest()
+                self.assertEqual(new["status"], "rejected")
+                self.assertIn(problem, new["problems"])
+                self.assertEqual(self.current(), f"base-{OLD}.qcow2")
+
     def test_a_release_letting_claude_code_fetch_claudeai_connectors_is_discarded(self):
         """#8: a Base image without ENABLE_CLAUDEAI_MCP_SERVERS=false for services and shells."""
         for rel, line in (("usr/lib/systemd/system.conf.d/agentbox.conf", '  "ENABLE_CLAUDEAI_MCP_SERVERS=false" \\\n'),
@@ -516,6 +544,21 @@ class SafeguardTest(ImagesTest):
         with open(os.path.join(rootfs, "etc/profile.d/agentbox.sh")) as f:
             self.assertNotRegex(f.read(), r"(?i)proxy")
 
+    def test_the_agents_podman_storage_lives_on_the_data_disk(self):
+        """ADR 0017: guest-setup binds the agent's whole Podman storage from the Data disk
+        at every start, created with the agent as owner on the first; nothing else of
+        Podman's user configuration is kept."""
+        rootfs = self.rootfs("base", self.base)
+        with open(os.path.join(rootfs, safeguards.GUEST_SETUP.lstrip("/"))) as f:
+            setup = f.read()
+        persist = setup.split("PERSIST=(", 1)[1].split(")", 1)[0].split()
+        self.assertIn(".local/share/containers", persist)
+        self.assertNotIn(".config/containers", persist)
+        # every lasting part is created with the agent as owner and bound from the Data disk
+        self.assertIn('install -d -o agent -g agent -m 700 "$DATA/home/$p" "$HOME_DIR/$p"', setup)
+        self.assertIn('mountpoint -q "$HOME_DIR/$p" || mount --bind "$DATA/home/$p" "$HOME_DIR/$p"',
+                      setup)
+
     def test_a_proxy_variable_or_option_is_rejected(self):
         self.image("weak", DERIVED + "COPY zz.conf /etc/systemd/system.conf.d/zz.conf\n"
                    "COPY proxy.sh /etc/profile.d/proxy.sh\nCOPY node.sh /etc/profile.d/node.sh\n"
@@ -566,6 +609,12 @@ class SafeguardTest(ImagesTest):
             changed = f.read().replace('CODE = "/var/home/agent/code"', 'CODE = "/var/home/agent"')
         self.image("weak", DERIVED + f"COPY inbox {safeguards.INBOX_WRAPPER}\n", inbox=changed)
         self.rejected("weak", "agentbox-inbox differs (compared with the Base image)")
+
+    def test_a_changed_container_image_cleanup_wrapper_is_rejected(self):
+        with open(os.path.join(REPO, "vm/files", safeguards.CONTAINER_IMAGES_WRAPPER.lstrip("/"))) as f:
+            changed = f.read().replace("MAX_DAYS = 365", "MAX_DAYS = 0")
+        self.image("weak", DERIVED + f"COPY cleanup {safeguards.CONTAINER_IMAGES_WRAPPER}\n", cleanup=changed)
+        self.rejected("weak", "agentbox-container-images differs (compared with the Base image)")
 
     def test_an_image_not_built_on_the_base_build_is_rejected(self):
         self.image("weak", "FROM quay.io/fedora/fedora-bootc:44\nRUN dnf -y install clang\n")

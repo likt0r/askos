@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// A VM at a glance: state, memory (its limit can be changed), agents, connected devices, its
-// VM variables (changed in VmEnvDialog),
+// A VM at a glance: state, memory (its limit can be changed), Container image cleanup,
+// agents, connected devices, its VM variables (changed in VmEnvDialog),
 // System disk (age, Build, Reset due and why an automatic Reset was postponed), Image and
 // Build (pin, what the next Reset brings) with the versions of the tools in the VM (VmVersions,
 // from GET /images). Everything else comes live from the `vm` and `host` events.
@@ -12,12 +12,14 @@ const live = useLive()
 
 const imageOpen = ref(false)
 const memoryOpen = ref(false)
+const cleanupOpen = ref(false)
 const envOpen = ref(false)
 const env = computed(() => Object.entries(props.vm.env ?? {}).filter(([, v]) => typeof v === 'string'))
 const refused = computed(() => new Set(Array.isArray(props.vm.env_refused) ? props.vm.env_refused : []))
 
 const used = computed(() => memoryInUse(live.state.host, props.vm.name))
 const limit = computed(() => (typeof props.vm.memory_mib === 'number' ? mibAsGib(props.vm.memory_mib) : null))
+const cleanup = computed(() => containerImageCleanup(props.vm))
 
 const agents = computed(() => {
   const counts = agentCounts(props.vm)
@@ -85,6 +87,22 @@ const postponedText = computed(() => {
           :aria-label="t('vm.memory.title', { name: props.vm.name })"
           data-testid="memory-change"
           @click="memoryOpen = true"
+        />
+      </div>
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <p class="text-sm" data-testid="overview-container-image-cleanup">
+          <span class="text-muted">{{ t('vm.overview.containerImageCleanup') }}:</span>
+          {{ cleanup.enabled ? t('vm.overview.containerImageCleanupAfter', { days: cleanup.days }) : t('vm.overview.containerImageCleanupOff') }}
+        </p>
+        <UButton
+          size="xs"
+          color="neutral"
+          variant="outline"
+          icon="i-lucide-images"
+          :label="t('vm.containerImageCleanup.change')"
+          :aria-label="t('vm.containerImageCleanup.title', { name: props.vm.name })"
+          data-testid="container-image-cleanup-change"
+          @click="cleanupOpen = true"
         />
       </div>
     </section>
@@ -251,6 +269,7 @@ const postponedText = computed(() => {
 
     <VmImageDialog v-model:open="imageOpen" :vm="props.vm" />
     <VmMemoryDialog v-model:open="memoryOpen" :vm="props.vm" />
+    <VmContainerImageCleanupDialog v-model:open="cleanupOpen" :vm="props.vm" />
     <VmEnvDialog v-model:open="envOpen" :vm="props.vm" />
   </div>
 </template>

@@ -29,7 +29,8 @@ LOCAL_RECORD = {"mode": "local", "bind": "127.0.0.1", "web_port": 8800, "owner_u
 NETWORK_ARGS = ["--mode", "network", "--bind", "192.0.2.8", "--home-network", "192.0.2.0/24"]
 LIBVIRT_GID = 975
 # the units setup enables itself; all of them run once it is done
-ENABLED = ["agentbox-allowlist-expire.timer", "agentbox-vmnet.service", "agentbox-web.service",
+ENABLED = ["agentbox-allowlist-expire.timer", "agentbox-container-image-cleanup.timer", "agentbox-vmnet.service",
+           "agentbox-web.service",
            "libvirt-guests.service"]
 SEEDS = ("allowlist", "suspicious-domains", "legitimate-domains")
 
@@ -519,7 +520,8 @@ class HostStepsTest(SetupTest):
         # units enabled at boot and running now
         self.assertLessEqual(set(ENABLED), set(self.enabled()))
         systemctl = [c["argv"] for c in self.calls("systemctl")]
-        for unit in ("libvirt-guests.service", "agentbox-allowlist-expire.timer"):
+        for unit in ("libvirt-guests.service", "agentbox-allowlist-expire.timer",
+                     "agentbox-container-image-cleanup.timer"):
             self.assertIn(["start", unit], systemctl)
         self.assertIn(["restart", "agentbox-vmnet.service"], systemctl)     # by regenerate, with the new rules
         self.assertNotIn(["restart", "libvirt-guests.service"], systemctl)  # that would shut every VM down
@@ -550,8 +552,8 @@ class HostStepsTest(SetupTest):
         out = self.ok("--password-file", self.password_file, "--json")
         self.assertEqual([s["step"] for s in json.loads(out)["steps"]],
                          ["Self-test of the detection", "Directories", "Groups", "Lists", "Firewall zone libvirt",
-                          "Network rules of the VMs", "libvirt-guests", "Expiry of Temporary allowlist entries", "migrate",
-                          "migrate-allowlist", "Certificate and password", "Firewall for the home network", "regenerate",
+                          "Network rules of the VMs", "libvirt-guests", "Expiry of Temporary allowlist entries",
+                          "Container image cleanup", "migrate", "migrate-allowlist", "Certificate and password", "Firewall for the home network", "regenerate",
                           "Proxies", "migrate-lists", "Activity journal", "Feeds", "Control Room"])
 
     def test_libvirt_guests_shuts_the_vms_down_and_is_never_restarted(self):

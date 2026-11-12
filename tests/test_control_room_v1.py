@@ -383,6 +383,12 @@ ENDPOINTS = [
     ("PUT", "/api/v1/vms/work/github-owners", {"owners": ["likt0r", "acme-corp"]},
      ["set-owners", "work", "likt0r", "acme-corp", "--json"], 200),
     ("PUT", "/api/v1/vms/work/memory", {"memory_mib": 16384}, ["set-memory", "work", "16384", "--json"], 200),
+    ("PUT", "/api/v1/vms/work/container-image-cleanup", {"enabled": True, "days": 14},
+     ["set-container-image-cleanup", "work", "on", "--days", "14", "--json"], 200),
+    ("PUT", "/api/v1/vms/work/container-image-cleanup", {"enabled": False},
+     ["set-container-image-cleanup", "work", "off", "--json"], 200),
+    ("PUT", "/api/v1/vms/work/container-image-cleanup", {"days": 7},
+     ["set-container-image-cleanup", "work", "--days", "7", "--json"], 200),
     # the whole list in one step; a value stays the value of its name, whatever it looks like
     ("PUT", "/api/v1/vms/work/env", {"env": {"DATABASE_URL": "postgres://db/x", "FLAG": "--json", "E": ""}},
      ["set-env", "work", "--replace", "DATABASE_URL=postgres://db/x", "FLAG=--json", "E=", "--json"], 200),
@@ -496,6 +502,8 @@ ENDPOINTS = [
      ["set-settings", "reset_age_days=10", "default_language=en", "--json"], 200),
     ("PATCH", "/api/v1/settings", {"auto_update": False}, ["set-settings", "auto_update=false", "--json"], 200),
     ("PATCH", "/api/v1/settings", {"auto_update": "true"}, ["set-settings", "auto_update=true", "--json"], 200),
+    ("PATCH", "/api/v1/settings", {"default_container_image_cleanup": False, "default_container_image_cleanup_days": 14},
+     ["set-settings", "default_container_image_cleanup=false", "default_container_image_cleanup_days=14", "--json"], 200),
 ]
 
 
@@ -513,6 +521,13 @@ class EndpointTest(V1Test):
                 self.assertEqual(answer[:2], (status, ANSWER))
                 calls = self.raw_calls()[before:]
                 self.assertEqual(calls, [[ACTOR, *argv]])
+
+    def test_vm_objects_pass_on_the_container_image_cleanup_fields(self):
+        shown = vm("work", container_image_cleanup=False, container_image_cleanup_days=14)
+        self.respond({"vms": [shown], "problems": []})
+        self.assertEqual(self.request("GET", "/api/v1/vms")[:2], (200, {"vms": [shown], "problems": []}))
+        self.respond(shown)
+        self.assertEqual(self.request("GET", "/api/v1/vms/work")[:2], (200, shown))
 
     def test_activity_entries_keep_their_code_and_parameters(self):
         # #69: the UI words an entry from its code and parameters, a failure also from its error
@@ -563,6 +578,12 @@ class EndpointTest(V1Test):
             ("PUT", "/api/v1/vms/work/memory", {"memory_mib": True}, "invalid_field"),
             ("PUT", "/api/v1/vms/work/memory", {"memory_mib": 8192.5}, "invalid_field"),
             ("PUT", "/api/v1/vms/work/memory", {"memory_mib": -8192}, "invalid_field"),
+            ("PUT", "/api/v1/vms/work/container-image-cleanup", {}, "invalid_field"),
+            ("PUT", "/api/v1/vms/work/container-image-cleanup", {"enabled": "on"}, "invalid_field"),
+            ("PUT", "/api/v1/vms/work/container-image-cleanup", {"enabled": 1}, "invalid_field"),
+            ("PUT", "/api/v1/vms/work/container-image-cleanup", {"days": True}, "invalid_field"),
+            ("PUT", "/api/v1/vms/work/container-image-cleanup", {"days": 7.5}, "invalid_field"),
+            ("PUT", "/api/v1/vms/work/container-image-cleanup", {"days": "7"}, "invalid_field"),
             ("PUT", "/api/v1/vms/work/env", {}, "invalid_field"),
             ("PUT", "/api/v1/vms/work/env", {"env": ["A=1"]}, "invalid_field"),
             ("PUT", "/api/v1/vms/work/env", {"env": {"A": 1}}, "invalid_field"),
@@ -655,11 +676,22 @@ class EndpointTest(V1Test):
             ("PATCH", "/api/v1/settings", {"reset_age_days": [1]}, "invalid_field"),
             ("PATCH", "/api/v1/settings", {"reset_age_days": True}, "invalid_field"),
             ("PATCH", "/api/v1/settings", {"auto_update": None}, "invalid_field"),
+            ("PATCH", "/api/v1/settings", {"default_container_image_cleanup": None}, "invalid_field"),
+            ("PATCH", "/api/v1/settings", {"default_container_image_cleanup_days": 7.5}, "invalid_field"),
         ]
         for method, path, body, code in cases:
             with self.subTest(path=path, body=body):
                 answer = self.request(method, path, body)
                 self.assertError(answer, 404 if code == "vm_not_found" else 400, code)
+        self.assertEqual(self.calls(), [])
+
+    def test_container_image_cleanup_validation_names_the_field(self):
+        path = "/api/v1/vms/work/container-image-cleanup"
+        for body, field in (({"enabled": "on"}, "enabled"), ({"days": "14"}, "days"), ({}, None)):
+            with self.subTest(body=body):
+                answer = self.request("PUT", path, body)
+                self.assertError(answer, 400, "invalid_field")
+                self.assertEqual(answer[1]["error"].get("field"), field)
         self.assertEqual(self.calls(), [])
 
     def test_vm_names_in_paths(self):
@@ -850,6 +882,25 @@ class ErrorTest(V1Test):
         answer = self.fails(failure("memory_not_applied", "work: memory limit saved, but not applied", vm="work"),
                             1, method="PUT", path="/api/v1/vms/work/memory", body={"memory_mib": 16384})
         self.assertError(answer, 500, "memory_not_applied")
+
+    def test_container_image_cleanup_refusals(self):
+        cases = [
+            ("invalid_cleanup_days", "Days for the Container image cleanup out of range (1 to 365)", 400, "days"),
+            ("container_image_cleanup_missing", "The VM's Build has no Container image cleanup yet; build its Image "
+                                                "and reset the VM first", 409, None),
+            ("container_image_cleanup_failed", "The Container image cleanup in the VM failed", 502, None),
+            ("vm_not_found", "No such VM", 404, None),
+            ("invalid_argument", "Invalid value", 400, None),
+        ]
+        for error, message, status, field in cases:
+            with self.subTest(error=error):
+                detail = "agentbox said no"
+                answer = self.fails(failure(error, detail), 1, method="PUT",
+                                    path="/api/v1/vms/work/container-image-cleanup", body={"enabled": True})
+                self.assertError(answer, status, error)
+                self.assertEqual(answer[1]["error"]["message"], message)
+                self.assertEqual(answer[1]["error"]["detail"], detail)
+                self.assertEqual(answer[1]["error"].get("field"), field)
 
     def test_vm_variable_refusals_name_the_variable(self):
         # the UI says which variable a Safeguard or Agent Box needs, or which is too long

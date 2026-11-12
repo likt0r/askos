@@ -35,6 +35,8 @@ export const SETTING_SPECS: Record<string, Spec> = {
   default_memory_mib: { type: 'int', min: 1024, max: 1048576, unit: 'MiB' },
   default_data_disk_gib: { type: 'int', min: 1, max: 16384, unit: 'GiB' },
   default_image: { type: 'name' },
+  default_container_image_cleanup: { type: 'choice', options: ['true', 'false'], boolean: true },
+  default_container_image_cleanup_days: { type: 'int', min: 1, max: 365 },
   open_web_max_minutes: { type: 'int', min: 1, max: 1440, unit: 'min' },
   temporary_entry_default: { type: 'choice', options: ['15min', '1h', '8h', '7d'] },
   young_domain_days: { type: 'choice', options: ['7', '14', '21', '28', '35'], numeric: true },
@@ -48,7 +50,7 @@ export const SETTING_SPECS: Record<string, Spec> = {
 
 export const SETTING_GROUPS: { id: string, keys: string[] }[] = [
   { id: 'schedule', keys: ['maintenance_time', 'reset_age_days', 'auto_update', 'rebuild_day', 'builds_kept', 'package_min_age_days', 'orca_version'] },
-  { id: 'newVms', keys: ['default_memory_mib', 'default_data_disk_gib', 'default_image'] },
+  { id: 'newVms', keys: ['default_memory_mib', 'default_data_disk_gib', 'default_image', 'default_container_image_cleanup', 'default_container_image_cleanup_days'] },
   { id: 'access', keys: ['open_web_max_minutes', 'temporary_entry_default', 'young_domain_days', 'feed_interval_hours'] },
   { id: 'controlRoom', keys: ['activity_retention_days', 'session_hours', 'default_language'] },
 ]

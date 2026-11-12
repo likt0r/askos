@@ -538,6 +538,7 @@ DESCRIBE = {
     "update-now": lambda a: _then_reset(a, "Update now: check the versions, build every Image with an update"),
     "set-image": _set_image,
     "import": _import,
+    "set-container-image-cleanup": lambda a: _said("Set the Container image cleanup"),
 }
 
 

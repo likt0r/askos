@@ -207,6 +207,7 @@ agentbox status                     # VMs, memory, agents; warns when the Mainte
 agentbox create lab --owner likt0r --copy-allowlist-from priv   # a new VM
 agentbox delete lab --confirm lab   # delete a VM, its Data disk is archived
 agentbox set-memory lab 32768       # memory limit in MiB, from the VM's next start or Restart
+agentbox set-container-image-cleanup lab off   # or on, and --days 14 (1 to 365)
 agentbox set-env lab DATABASE_URL=postgres://db.example/app   # a VM variable, from the next start or Restart
 agentbox env lab                    # the VM's VM variables
 agentbox blocked priv               # what a VM tried to reach and was refused
@@ -339,6 +340,7 @@ creates none without the text file.
 
 `agentbox create <name>` takes `--image` (an Image with a Build, `base` by default), `--memory-mib` (default
 26624, at most the Host's memory), `--data-disk-gib` (default 300), `--owner` (repeatable)
+`--container-image-cleanup on|off` and `--container-image-cleanup-days` (defaults from the Settings: on, 7),
 and `--copy-allowlist-from <vm>` (a one-time copy of that VM's own Allowlist entries;
 deleting a VM removes its own entries). Names are 2 to 16 characters of `a-z`, `0-9` and `-`,
 start with a letter and cannot be changed later; words the CLI or the Control Room use
@@ -364,6 +366,10 @@ and deletes it afterwards. The source stays on the Host: delete it yourself once
 it. VMs whose Build predates the command need a new Build and a Reset first (`agentbox build
 base --reset <vm>`). There is no free-space check in the VM and no scan for secrets: what the
 folder holds, the VM gets.
+
+`agentbox set-container-image-cleanup <name> [on|off] [--days N]` turns the VM's Container image
+cleanup on or off and sets its days (1 to 365), in any state of the VM; `describe` shows both. A
+record without them means on and 7 days.
 
 `agentbox set-memory <name> <mib>` changes the memory limit later, within the same bounds
 as `create` (1024 MiB up to the Host's memory). It writes the record and the VM's libvirt
@@ -467,6 +473,10 @@ is set for services and shells. Short image names such as `postgres:16-alpine` r
 docker.io, as with Docker (`/etc/containers/registries.conf.d/50-agentbox.conf`), not to
 Fedora's registries first.
 
+The agent's Podman storage lives on the VM's Data disk, so Container images, containers and
+volumes survive a Reset; containers that ran before it come back stopped, and `docker compose
+up` reuses what is there instead of downloading every Container image again.
+
 Containers and builds need no settings. They resolve names through the VM's resolver, the
 Host, so every connection they open goes to the Host's proxy like the rest of the VM's, and
 the Allowlist applies as to everything else. There are no proxy variables in the VM, so
@@ -486,6 +496,13 @@ sources. Switch them before the first `apt-get`, in a base image that already ha
 RUN sed -i 's|http://|https://|g' /etc/apt/sources.list.d/* /etc/apt/sources.list 2>/dev/null; \
     apt-get update
 ```
+
+Every hour the Host runs the **Container image cleanup** in each running VM that has it on (7
+days by default): it removes the Container images no container uses, running or stopped, that
+were not pulled, built or used to create or start a container for more than that many
+calendar days. A Container image the cleanup has not seen used counts as used when it first
+sees it. It never removes containers or volumes. Runs that removed something or failed are in
+Activity.
 
 ### Images and Builds
 
@@ -639,7 +656,8 @@ is not caught up. While the old weekly rebuild timer is still there (an update c
 it), it does the weekly rebuild and the window leaves it to it.
 Agent Box never wakes a sleeping Host for it: that is the Host's business (an autosuspend that
 reads the timer, for instance). The Feeds also keep their own timer, ten minutes after boot
-and then every `feed_interval_hours`, for a Host that is awake for long.
+and then every `feed_interval_hours`, for a Host that is awake for long. The [Container image
+cleanup](#containers-in-a-vm) is no step of the window: its own timer runs it every hour.
 
 **After updating from a Release before the Maintenance window, run `sudo agentbox regenerate`
 once.** The update cannot write the window's timer (the package runs no `agentbox` command), so
@@ -683,6 +701,7 @@ no longer counts; the next change writes the file without both.
 | `rebuild_day` | sun | mon…sun, the day the Maintenance window builds every Image; when that day's window did not, the next window does, once |
 | `builds_kept` | 3 | 1–20, Builds kept per Image (from the next Build) |
 | `default_memory_mib`, `default_data_disk_gib`, `default_image` | 26624, 300, base | defaults of `create` |
+| `default_container_image_cleanup`, `default_container_image_cleanup_days` | true, 7 | true, false and 1–365: the Container image cleanup a new VM starts with (for new VMs) |
 | `open_web_max_minutes` | 240 | 1–1440, longest Open web |
 | `temporary_entry_default` | 1h | 15min, 1h, 8h, 7d (`allow --temporary`, and `duration: default` in the API) |
 | `young_domain_days` | 14 | 7, 14, 21, 28, 35 (days of the newly-registered list) |

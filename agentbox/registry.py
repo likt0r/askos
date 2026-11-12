@@ -24,10 +24,16 @@ RESERVED = {"off", "all", "new", "status", "login", "logout", "activity", "allow
 API_VERSION = re.compile(r"v[0-9]+")
 IMAGE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 ORCA_BASE = 6800                     # Orca port = ORCA_BASE + network number
+# The Container image cleanup of a record: on or off, and its days. Both fields are
+# optional: a record without them means the cleanup on and 7 days, and no code rewrites
+# an existing record to add them (every reader uses these defaults).
+CLEANUP_DAYS = (1, 365)
+CLEANUP_DEFAULT = (True, 7)
 FIELDS = {"name": str, "network": int, "orca_port": int, "image": str, "build": (str, type(None)),
           "memory_mib": int, "data_disk_gib": int, "github_owners": list, "created": str}
-# Fields a record may lack: the VM variables (vmenv.py), none when missing
-OPTIONAL = {"env": dict}
+# Fields a record may lack: the VM variables (vmenv.py), none when missing, and the
+# Container image cleanup (CLEANUP_DEFAULT when missing)
+OPTIONAL = {"env": dict, "container_image_cleanup": bool, "container_image_cleanup_days": int}
 
 
 def record_file(name):
@@ -45,8 +51,8 @@ def problem(rec, name):
     for key, kind in FIELDS.items():
         if key not in rec or isinstance(rec[key], bool) or not isinstance(rec[key], kind):
             return f"field {key} is missing or has the wrong type"
-    for key, kind in OPTIONAL.items():
-        if key in rec and not isinstance(rec[key], kind):
+    for key, kind in OPTIONAL.items():           # True is an int too, so only a bool field takes one
+        if key in rec and (isinstance(rec[key], bool) and kind is not bool or not isinstance(rec[key], kind)):
             return f"field {key} has the wrong type"
     if rec["name"] != name:
         return "the name does not match the file name"
@@ -62,6 +68,9 @@ def problem(rec, name):
         return "memory_mib or data_disk_gib too small"
     if not all(isinstance(o, str) for o in rec["github_owners"]):
         return "github_owners must be a list of names"
+    days = rec.get("container_image_cleanup_days", CLEANUP_DEFAULT[1])
+    if not CLEANUP_DAYS[0] <= days <= CLEANUP_DAYS[1]:
+        return f"container_image_cleanup_days must be {CLEANUP_DAYS[0]} to {CLEANUP_DAYS[1]}"
     why = vmenv.problem(rec["env"]) if "env" in rec else None
     return f"env: {why}" if why else None
 
@@ -145,6 +154,13 @@ def save(rec):
 def check(name):
     load(name)
     return name
+
+
+def cleanup(rec):
+    """(on, days) of the VM's Container image cleanup: the record's two fields, else the
+    defaults of a record without them (on, 7 days)."""
+    return (rec.get("container_image_cleanup", CLEANUP_DEFAULT[0]),
+            rec.get("container_image_cleanup_days", CLEANUP_DEFAULT[1]))
 
 
 def dom(name):
