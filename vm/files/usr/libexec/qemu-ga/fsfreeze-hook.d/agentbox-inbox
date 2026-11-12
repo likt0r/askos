@@ -14,8 +14,9 @@ Runs as root only until the device is open; from there on it reads the tar file 
 as the user agent, so whatever links it meets in ~/code, it can do nothing the agent cannot.
 tarfile's filter "data" refuses links leading out of the target, device files and
 names leading out of it, and drops setuid bits and the owner. Afterwards everything in
-.git/hooks (also of nested repositories and of .git/modules) except the *.sample files is removed. Prints {"files": N, "bytes": N}: the
-regular files unpacked and their size.
+.git/hooks (also of nested repositories and of .git/modules) except the *.sample files is
+removed. Prints {"files": N, "bytes": N}: the regular files and hard links unpacked, and the
+size of the regular files.
 
 Exit codes: 2 invalid arguments, a target leading out of ~/code; 3 the target exists;
 4 ~/code is not on the Data disk (yet); 5 the archive is refused or unreadable; 124 time
@@ -139,6 +140,8 @@ def unpack(disk, dest):
                 tar.extract(member, dest, filter="data")
                 if member.isreg():
                     files, size = files + 1, size + member.size
+                elif member.islnk():                  # a further hard link to a file of the archive
+                    files += 1
     except tarfile.TarError as e:
         raise Refused(f"archive refused: {e}", 5)
     return files, size

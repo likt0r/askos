@@ -143,25 +143,29 @@ flowchart LR
   the Host then re-pairs as Observer with the new Pairing code, which it never prints or logs.
   Revoking needs `--confirm <vm>`; the Control Room's pair action needs `confirm: true`.
 - `agentbox import <vm> <folder> [<target>]` copies a folder of the Host into a VM, unpacked
-  under `~/code` on its Data disk ([ADR 0015](docs/adr/0015-folders-go-into-a-vm-as-a-read-only-tar-disk.md)).
-  The Host packs it with `tarfile` into `/var/lib/agentbox/transfers/<vm>-<id>.tar`, with the
-  rights of the folder's owner: of a Git repository the whole `.git` and every file `git ls-files
-  --cached --others --exclude-standard` lists, so ignored files stay out; of a folder without Git
-  everything; a linked worktree is refused. Symbolic links stay links, links leading out of the
-  folder and special files are skipped and named, and the archive carries no owner and no setuid
-  bits. The tar file is attached to the running VM as a raw read-only disk with the serial
-  `agentbox-inbox`, without a filesystem, and the guest agent runs a third fixed wrapper in the
-  Image (`agentbox-inbox receive <device> <target>`). It opens the disk as root, drops to the
-  user `agent` before it reads it and unpacks with `tarfile`'s `data` filter, so nothing lands
-  outside the target and no device file or setuid bit arrives; the target must be a new
-  directory under `~/code` (missing parents are created and removed again after a failure, an existing one is
-  refused, nothing is overwritten), and hooks in `.git/hooks` (also of nested repositories and
-  submodules) other than the samples are removed. Only a JSON result with two whole numbers (files, bytes) comes back and is checked as untrusted. The disk is
-  detached and the tar file deleted after success and after every failure; a disk an
-  interrupted import left behind is detached before the next one attaches. A VM that is off is
-  started as `pair` starts it, a paused one is refused, and a VM whose Build lacks the wrapper
-  fails with `inbox_missing`. Every import is recorded in Activity with folder, target, files
-  and bytes.
+  under `~/code` on its Data disk ([ADR
+  0015](docs/adr/0015-folders-go-into-a-vm-as-a-read-only-tar-disk.md)). The Host packs it
+  with `tarfile` into `/var/lib/agentbox/transfers/<vm>-<id>.tar`, with the rights of the user
+  who ran `sudo` (in a root shell: of the folder's owner), so a user can send only what they
+  could read themselves: of a Git repository the whole `.git` and every file `git ls-files
+  --cached --others --exclude-standard` lists, so ignored files stay out; of a folder without
+  Git everything; a linked worktree is refused. Symbolic links stay links, links leading out
+  of the folder and special files are skipped and named, and the archive carries no owner and
+  no setuid bits. The tar file is attached to the running VM as a raw read-only disk with the
+  serial `agentbox-inbox`, without a filesystem, and the guest agent runs a third fixed
+  wrapper in the Image (`agentbox-inbox receive <device> <target>`). It opens the disk as
+  root, drops to the user `agent` before it reads it and unpacks with `tarfile`'s `data`
+  filter, so nothing lands outside the target and no device file or setuid bit arrives; the
+  target must be a new directory under `~/code` (missing parents are created and removed again
+  after a failure, an existing one is refused, nothing is overwritten), and hooks in
+  `.git/hooks` (also of nested repositories and submodules) other than the samples are
+  removed. Only a JSON result with two whole numbers (files, bytes) comes back and is checked
+  as untrusted. The disk is detached and the tar file deleted after success and after every
+  failure; a disk an interrupted import left behind is detached before the next one attaches,
+  and each import holds a lock on its tar file, so the next one deletes the files of imports
+  that were killed hard. A VM that is off is started as `pair` starts it, a paused one is
+  refused, and a VM whose Build lacks the wrapper fails with `inbox_missing`. Every import is
+  recorded in Activity with folder, target, files and bytes.
 - VMs are reset automatically once their System disk is seven days old, and with automatic
   updates (`auto_update`) once their Image has a newer current Build than the one their
   System disk came from (not when pinned to a Build), but only when no Orca client is

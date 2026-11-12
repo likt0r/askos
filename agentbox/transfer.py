@@ -14,8 +14,12 @@ a file (a linked worktree) stops the import: its repository lies elsewhere. Repo
 inside the folder (untracked ones, submodules with a checkout) are packed by the same rule.
 Symbolic links stay links; links the VM would refuse (absolute, or leading out of the
 folder) and special files (sockets, FIFOs, devices) are skipped and named. Packing runs in
-a child process with the rights of the folder's owner, so root reads nothing for it that
-the owner could not read.
+a child process with the rights of the user who ran `sudo agentbox import` (a root shell:
+of the folder's owner), so root reads nothing for it that this user could not read.
+
+Every import holds an exclusive lock on its tar file for its whole life and, before it makes
+its file, deletes the tar files of the directory nobody holds a lock on any more (an import
+that was killed hard leaves its file behind).
 
 The VM: one that is off is started as `pair` starts it, a paused one is refused. The VM's
 lifecycle lock is held from the attach to the deletion of the tar file, so no Reset, Restart,
@@ -23,6 +27,7 @@ Pause or delete comes in between. The wrapper's answer is untrusted: only two wh
 are taken from it, and its error output is cleaned.
 """
 import base64
+import fcntl
 import json
 import os
 import pwd
@@ -153,9 +158,9 @@ def _main_repository(source, git):
 # --- packing (in a child process with the owner's rights) --------------------------
 
 def pack(source, fd):
-    """Write the archive of `source` to fd as the owner of the folder:
+    """Write the archive of `source` to fd with the rights of `_identity`:
     {"files", "bytes", "skipped": [{"path", "reason"}], "skipped_count"}."""
-    owner = os.stat(source)
+    who = _identity(source)
     r, w = os.pipe()
     sys.stdout.flush()
     sys.stderr.flush()
@@ -164,8 +169,8 @@ def pack(source, fd):
         status = 1
         try:
             os.close(r)
-            if os.geteuid() == 0 and owner.st_uid != 0:
-                _become(owner)
+            if os.geteuid() == 0 and who[0] != 0:
+                _become(*who)
             result, status = {"packed": _archive(source, fd)}, 0
         except Fail as f:
             result = {"error": f.error, "message": f.message}
@@ -194,16 +199,30 @@ def pack(source, fd):
     return result["packed"]
 
 
-def _become(owner):
-    """The rights of the folder's owner: their user, groups and home (git reads its configuration there)."""
+def _identity(source):
+    """(uid, gid) packing runs as: the user who ran `sudo` (SUDO_UID, SUDO_GID), so they can
+    send only what they could read themselves; in a root shell the owner of the folder."""
     try:
-        pw = pwd.getpwuid(owner.st_uid)
-        groups, gid, home = os.getgrouplist(pw.pw_name, pw.pw_gid), pw.pw_gid, pw.pw_dir
+        uid, gid = int(os.environ["SUDO_UID"]), int(os.environ["SUDO_GID"])
+        if uid > 0 and gid >= 0:
+            pwd.getpwuid(uid)
+            return uid, gid
+    except (KeyError, ValueError, OverflowError):
+        pass
+    owner = os.stat(source)
+    return owner.st_uid, owner.st_gid
+
+
+def _become(uid, gid):
+    """The rights of this user: their groups and home (git reads its configuration there)."""
+    try:
+        pw = pwd.getpwuid(uid)
+        groups, home = os.getgrouplist(pw.pw_name, gid), pw.pw_dir
     except KeyError:
-        groups, gid, home = [owner.st_gid], owner.st_gid, "/"
+        groups, home = [gid], "/"
     os.setgroups(groups)
     os.setgid(gid)
-    os.setuid(owner.st_uid)
+    os.setuid(uid)
     os.environ["HOME"] = home
 
 
@@ -312,6 +331,9 @@ def _add(tar, source, rel, skipped, counts):
                 tar.addfile(info, f)
             counts["files"] += 1
             counts["bytes"] += info.size
+        elif info.islnk():                       # a further hard link to a file already added
+            tar.addfile(info)
+            counts["files"] += 1
         else:
             tar.addfile(info)
     except OSError as e:
@@ -441,9 +463,51 @@ def _transfer(ctx, tar, target):
             print(f"agentbox: {ctx}: the disk {TARGET_DEV} could not be detached: {problem}", file=sys.stderr)
         raise
     if problem:
+        activity.result(**result)       # the folder arrived: the entry says what
         die(f"{ctx}: the folder is in ~/code/{target}, but the disk {TARGET_DEV} could not be detached: {problem}",
             error="import_failed", vm=ctx)
     return result
+
+
+def _sweep(own=None):
+    """Delete the tar files nobody holds a lock on any more (their import was killed hard)."""
+    try:
+        names = os.listdir(paths.TRANSFERS)
+    except OSError:
+        return
+    for name in names:
+        full = os.path.join(paths.TRANSFERS, name)
+        if not name.endswith(".tar") or full == own:
+            continue
+        try:
+            fd = os.open(full, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except OSError:
+            continue
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            os.unlink(full)
+        except OSError:
+            pass                                 # locked by a running import, or gone
+        finally:
+            os.close(fd)
+
+
+def _create_locked(ctx):
+    """A new tar file, held under an exclusive lock: (path, fd). A sweep that locked the file
+    between its creation and our lock removed it: then another file."""
+    while True:
+        tar = os.path.join(paths.TRANSFERS, f"{ctx}-{secrets.token_hex(6)}.tar")
+        fd = os.open(tar, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            if os.path.samestat(os.fstat(fd), os.stat(tar)):
+                return tar, fd
+        except FileNotFoundError:
+            pass
+        except BaseException:
+            os.close(fd)
+            raise
+        os.close(fd)
 
 
 def _delete(tar):
@@ -475,17 +539,14 @@ def import_cmd(args):
     try:
         os.makedirs(paths.TRANSFERS, 0o711, exist_ok=True)
         os.chmod(paths.TRANSFERS, 0o711)          # QEMU must reach the file (it runs as qemu)
-        tar = os.path.join(paths.TRANSFERS, f"{ctx}-{secrets.token_hex(6)}.tar")
-        fd = os.open(tar, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
+        _sweep()
+        tar, fd = _create_locked(ctx)
     except OSError as e:
         die(f"{paths.TRANSFERS}: {e.strerror}", error="import_failed", vm=ctx)
     # a stopped command still detaches the disk and deletes the file
     handlers = {s: signal.signal(s, _interrupted) for s in (signal.SIGTERM, signal.SIGHUP)}
     try:
-        try:
-            packed = pack(source, fd)
-        finally:
-            os.close(fd)
+        packed = pack(source, fd)
         # from the attach to the deletion: no Reset, Restart, Pause or delete in between
         with state_files.vm_lock(ctx):
             try:
@@ -497,6 +558,7 @@ def import_cmd(args):
         for s, h in handlers.items():
             signal.signal(s, h)
         _delete(tar)
+        os.close(fd)                              # the lock ends with the file gone
     activity.result(**result)
     shown = clean(source, False)
     skipped = [{"path": clean(s["path"], False), "reason": s["reason"]} for s in packed["skipped"]]

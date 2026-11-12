@@ -9,6 +9,7 @@ VM would get. The wrapper is also run directly (WrapperTest), with tar files mad
 
 Run from the repo root: python3 -m unittest discover -s tests
 """
+import fcntl
 import io
 import json
 import os
@@ -20,6 +21,7 @@ import tarfile
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_activity import AGENTBOX, ActivityTest  # noqa: E402
@@ -202,6 +204,14 @@ class RepositoryTest(ImportTest):
 
 
 class FolderTest(ImportTest):
+    def test_a_hard_link_counts_as_a_file_on_both_sides(self):
+        src = os.path.join(self.projects, "hl")
+        write(os.path.join(src, "a.txt"), "abc\n")
+        os.link(os.path.join(src, "a.txt"), os.path.join(src, "b.txt"))
+        answer = self.imported("work", src)
+        self.assertEqual((answer["files"], answer["bytes"]), (2, 4))
+        self.assertEqual(os.stat(self.code("hl", "b.txt")).st_size, 4)
+
     def test_a_folder_without_git_goes_completely(self):
         src = os.path.join(self.projects, "notes")
         write(os.path.join(src, "a.txt"), "a\n")
@@ -322,6 +332,25 @@ class TransportTest(ImportTest):
         self.assertEqual((self.calls("guest-exec"), self.transfers()), ([], []))
         self.assertEqual(self.attached(), [])
 
+    def test_a_leftover_tar_file_nobody_holds_is_removed_by_the_next_import(self):
+        d = self.path("var/lib/agentbox/transfers")
+        os.makedirs(d)
+        orphan, held = os.path.join(d, "work-orphan.tar"), os.path.join(d, "work-held.tar")
+        write(orphan, "a copy of a folder")
+        write(held, "of a running import")
+        with open(held, "rb") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            self.imported("work", self.src)
+            self.assertEqual(self.transfers(), ["work-held.tar"])
+        self.assertFalse(os.path.exists(orphan))
+
+    def test_detaching_failing_still_records_files_and_bytes_in_activity(self):
+        self.scenario(detach_fails=True)
+        self.failure("work", self.src)
+        [entry] = [e for e in self.entries() if e.get("AGENTBOX_ACTION") == "import"]
+        self.assertEqual((entry["AGENTBOX_OUTCOME"], entry["AGENTBOX_PARAM_FILES"], entry["AGENTBOX_PARAM_BYTES"]),
+                         ("failed", "1", "2"))
+
     def test_detaching_failing_is_an_error_even_when_the_folder_arrived(self):
         self.scenario(detach_fails=True)
         said = self.failure("work", self.src)
@@ -388,6 +417,54 @@ class PackTest(unittest.TestCase):
             os.waitpid(pid, os.WNOHANG)               # reaped already
         with self.assertRaises(ProcessLookupError):
             os.kill(pid, 0)
+
+
+class IdentityTest(unittest.TestCase):
+    def setUp(self):
+        sys.path.insert(0, REPO)
+        from agentbox import transfer
+        self.transfer = transfer
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        env = {k: v for k, v in os.environ.items() if not k.startswith("SUDO_")}
+        patcher = mock.patch.dict(os.environ, env, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_under_sudo_packing_runs_as_the_invoking_user(self):
+        if os.getuid() == 0:
+            self.skipTest("needs a user that is not root")
+        os.environ.update(SUDO_UID=str(os.getuid()), SUDO_GID=str(os.getgid()))
+        folder = os.path.join(self.tmp.name, "f")
+        os.mkdir(folder)
+        self.assertEqual(self.transfer._identity(folder), (os.getuid(), os.getgid()))
+
+    def test_without_sudo_or_with_a_useless_sudo_environment_it_is_the_owner_of_the_folder(self):
+        folder = os.path.join(self.tmp.name, "f")
+        os.mkdir(folder)
+        owner = (os.stat(folder).st_uid, os.stat(folder).st_gid)
+        for env in ({}, {"SUDO_UID": "0", "SUDO_GID": "0"}, {"SUDO_UID": "x", "SUDO_GID": "1"},
+                    {"SUDO_UID": "1000"}, {"SUDO_UID": "4000000000", "SUDO_GID": "1"},
+                    {"SUDO_UID": "-5", "SUDO_GID": "1"}):
+            with self.subTest(env=env), mock.patch.dict(os.environ, env):
+                self.assertEqual(self.transfer._identity(folder), owner)
+
+    def test_the_child_switches_to_the_invoking_user_when_root(self):
+        if os.getuid() == 0:
+            self.skipTest("needs a user that is not root")
+        os.environ.update(SUDO_UID=str(os.getuid()), SUDO_GID=str(os.getgid()))
+        seen = os.path.join(self.tmp.name, "seen")
+
+        def become(uid, gid):
+            with open(seen, "w") as f:
+                json.dump([uid, gid], f)
+        folder = os.path.join(self.tmp.name, "f")
+        os.mkdir(folder)
+        with open(os.path.join(self.tmp.name, "out"), "wb") as out, \
+                mock.patch.object(self.transfer, "_become", become), mock.patch("os.geteuid", return_value=0):
+            self.transfer.pack(folder, out.fileno())
+        with open(seen) as f:
+            self.assertEqual(json.load(f), [os.getuid(), os.getgid()])
 
 
 class LifecycleTest(ImportTest):
