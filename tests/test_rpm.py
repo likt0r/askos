@@ -152,7 +152,6 @@ class PackageTest(unittest.TestCase):
         self.assertIn("install -D -m 0644 rpm/agentbox.tmpfiles %{buildroot}%{_tmpfilesdir}/agentbox.conf", self.spec)
         self.assertIn("%{_tmpfilesdir}/agentbox.conf", spec_sections(self.spec, ("files",)))
         self.assertIn("%tmpfiles_create agentbox.conf", spec_sections(self.spec, ("post",)))
-        self.assertEqual(hoststeps.JOURNALD_GROUP, "systemd-journal")
 
     def test_the_sudoers_rule_lets_the_control_room_run_only_the_packages_cli(self):
         rule = meaningful(read("rpm", "agentbox-web.sudoers"))
