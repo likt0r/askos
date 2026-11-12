@@ -476,11 +476,11 @@ class InstalledSetupTest(unittest.TestCase):
             with open(path, "w") as f:
                 f.write(f'#!/bin/sh\nexec python3 -B "{os.path.join(REPO, "tests", program)}" "$@"\n')
             os.chmod(path, 0o755)
-        # running sockets of the Activity journal from before the package's drop-in applied (not
-        # socket: agentbox would write there, and nothing reads it here)
-        # in the state journald's first start leaves when the directory was root:root: all of it
-        # root:systemd-journal
+        # the state journald's first start leaves when the directory was root:root: all of it
+        # root:systemd-journal (not socket: agentbox would write there, and nothing reads it here).
+        # %post made the directory already, so it is set back explicitly.
         os.makedirs(cls.JOURNAL, exist_ok=True)
+        os.chown(cls.JOURNAL, 0, 0)
         for name in ("stdout", "dev-log"):
             with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
                 s.bind(os.path.join(cls.JOURNAL, name))

@@ -15,6 +15,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -56,6 +57,60 @@ def rich_rules(net="192.0.2.0/24", web=8800):
     reject = [f'rule priority="-100" family="{fam}" port port="{p}" protocol="tcp" reject'
               for p in (str(web), "6768-7054", "16768") for fam in ("ipv4", "ipv6")]
     return accept, reject
+
+
+class JournalSocketsTest(unittest.TestCase):
+    """hoststeps.journal_sockets() as root, with ownership faked: the state journald's first
+    start leaves (directory and sockets root:systemd-journal) is repaired, once."""
+    JOURNALD_GID, JOURNAL_GID = 190, 974
+
+    def test_the_state_journald_leaves_is_repaired_and_the_proxies_restart_once(self):
+        sys.path.insert(0, REPO)
+        try:
+            from agentbox import activity, hoststeps
+        finally:
+            sys.path.remove(REPO)
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder)
+        owner = {folder: (0, 0)}
+        for name in hoststeps.JOURNAL_SOCKETS:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
+                s.bind(os.path.join(folder, name))
+            os.chmod(os.path.join(folder, name), 0o660)
+            owner[os.path.join(folder, name)] = (0, self.JOURNALD_GID)
+        real_lstat = os.lstat
+
+        def lstat(path):
+            st = list(real_lstat(path))
+            st[4], st[5] = owner[path]
+            return os.stat_result(st)
+
+        def chown(path, uid, gid):
+            old = owner[path]
+            owner[path] = (old[0] if uid == -1 else uid, old[1] if gid == -1 else gid)
+
+        calls = []
+        patches = (mock.patch.object(activity, "JOURNAL_RUN", folder), mock.patch.object(os, "geteuid", lambda: 0),
+                   mock.patch.object(os, "lstat", lstat), mock.patch.object(os, "chown", chown),
+                   mock.patch.object(hoststeps, "_group", lambda *a: (self.JOURNAL_GID, set())),
+                   mock.patch.object(hoststeps, "_getent",
+                                     lambda *a: [["systemd-journal", "x", str(self.JOURNALD_GID), ""]]),
+                   mock.patch.object(hoststeps, "_systemctl", lambda *a: calls.append(list(a))))
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        owner[folder] = (0, 0)
+
+        said = hoststeps.journal_sockets()
+        self.assertEqual(owner[folder], (0, self.JOURNALD_GID))
+        for name in hoststeps.JOURNAL_SOCKETS:
+            self.assertEqual(owner[os.path.join(folder, name)], (0, self.JOURNAL_GID))
+        self.assertEqual(calls, [["try-restart", "agentbox-proxy-*.service"]])
+        self.assertEqual(len(said), 5)
+
+        calls.clear()
+        self.assertEqual(hoststeps.journal_sockets(), [])
+        self.assertEqual(calls, [])
 
 
 class SetupTest(RegistryTest):
