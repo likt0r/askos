@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // A VM at a glance: state, memory (its limit can be changed), Container image cleanup,
-// agents, connected devices, System disk (age, Build, Reset due and why an automatic Reset was postponed), Image and
+// agents, connected devices, its VM variables (changed in VmEnvDialog),
+// System disk (age, Build, Reset due and why an automatic Reset was postponed), Image and
 // Build (pin, what the next Reset brings) with the versions of the tools in the VM (VmVersions,
 // from GET /images). Everything else comes live from the `vm` and `host` events.
 import type { Vm } from '~/utils/live'
@@ -12,6 +13,9 @@ const live = useLive()
 const imageOpen = ref(false)
 const memoryOpen = ref(false)
 const cleanupOpen = ref(false)
+const envOpen = ref(false)
+const env = computed(() => Object.entries(props.vm.env ?? {}).filter(([, v]) => typeof v === 'string'))
+const refused = computed(() => new Set(Array.isArray(props.vm.env_refused) ? props.vm.env_refused : []))
 
 const used = computed(() => memoryInUse(live.state.host, props.vm.name))
 const limit = computed(() => (typeof props.vm.memory_mib === 'number' ? mibAsGib(props.vm.memory_mib) : null))
@@ -202,6 +206,41 @@ const postponedText = computed(() => {
       <VmVersions :vm="props.vm" />
     </section>
 
+    <!-- VM variables -->
+    <section class="rounded-lg border border-default bg-default p-4 space-y-2 sm:col-span-2 xl:col-span-3" data-testid="overview-env">
+      <div class="flex items-center justify-between gap-2">
+        <h3 class="text-xs font-medium uppercase tracking-wide text-dimmed">
+          {{ t('vm.env.heading') }}
+        </h3>
+        <UButton
+          size="xs"
+          color="neutral"
+          variant="outline"
+          icon="i-lucide-variable"
+          :label="t('vm.env.change')"
+          :aria-label="t('vm.env.title', { name: props.vm.name })"
+          data-testid="env-change"
+          @click="envOpen = true"
+        />
+      </div>
+      <p v-if="!env.length" class="text-sm text-muted" data-testid="overview-env-none">
+        {{ t('vm.env.none') }}
+      </p>
+      <dl v-else class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm" data-testid="overview-env-list">
+        <template v-for="[name, value] in env" :key="name">
+          <dt class="font-mono text-xs leading-5">
+            {{ name }}
+          </dt>
+          <dd class="font-mono text-xs leading-5 break-all">
+            {{ value }}
+            <span v-if="refused.has(name)" class="font-sans text-warning" :data-testid="`overview-env-refused-${name}`">
+              {{ t('vm.env.refused') }}
+            </span>
+          </dd>
+        </template>
+      </dl>
+    </section>
+
     <!-- the rest of the record -->
     <section class="rounded-lg border border-default bg-default p-4 sm:col-span-2 xl:col-span-3">
       <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm sm:grid-cols-[auto_1fr_auto_1fr]">
@@ -231,5 +270,6 @@ const postponedText = computed(() => {
     <VmImageDialog v-model:open="imageOpen" :vm="props.vm" />
     <VmMemoryDialog v-model:open="memoryOpen" :vm="props.vm" />
     <VmContainerImageCleanupDialog v-model:open="cleanupOpen" :vm="props.vm" />
+    <VmEnvDialog v-model:open="envOpen" :vm="props.vm" />
   </div>
 </template>

@@ -1,4 +1,4 @@
-"""The Container image cleanup of the VMs (ADR 0016): `agentbox cleanup-container-images`,
+"""The Container image cleanup of the VMs (ADR 0017): `agentbox cleanup-container-images`,
 run every hour by agentbox-container-image-cleanup.timer (rpm/units).
 
 Each VM's record says whether its cleanup is on (container_image_cleanup) and after how many

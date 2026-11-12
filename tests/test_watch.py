@@ -572,6 +572,15 @@ class DescribeTest(WatchTest):
         # running without an Observer: agents unknown
         self.assertIsNone(work["agents"])
 
+    def test_the_vm_variables_of_the_record(self):
+        vm_records.write(self.root, vm_records.record("work", 1, env={"DATABASE_URL": "postgres://db/x", "A": ""}),
+                         vm_records.record("priv", 2))
+        code, out, err = self.run_agentbox("describe", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual({v["name"]: v["env"] for v in json.loads(out)["vms"]},
+                         {"work": {"DATABASE_URL": "postgres://db/x", "A": ""}, "priv": {}})
+        self.assertIn("  VM variables: DATABASE_URL, A (agentbox env work)\n", self.run_agentbox("describe")[1])
+
     def test_a_newer_build_makes_a_reset_due_with_auto_update(self):
         """work's System disk is 3 days old, from an earlier Build of its Image: with auto_update
         (#114) the daily Reset check would move it, so a Reset is due; without, only its age counts."""

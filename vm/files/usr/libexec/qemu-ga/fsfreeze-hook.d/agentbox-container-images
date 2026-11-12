@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -I
-"""The Container image cleanup in the VM (ADR 0016), and the usage recorder it reads.
+"""The Container image cleanup in the VM (ADR 0017), and the usage recorder it reads.
 
 Lies in this directory for the same reason as agentbox-journal (SELinux, see there). No
 fsfreeze hook: freeze and thaw are ignored.

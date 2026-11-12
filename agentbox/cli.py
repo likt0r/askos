@@ -36,11 +36,17 @@ Controls the agent VMs on this Host.
   agentbox delete <vm> --confirm <vm> [--delete-data-disk] [--json]
                 delete a VM; its Data disk is archived, or deleted with --delete-data-disk
   agentbox set-memory <vm> <mib> [--json]            memory limit (1024 MiB up to the Host's memory); applies
-                                                      from the next start, for a running VM after a Restart
+                                                     from the next start, for a running VM after a Restart
   agentbox set-container-image-cleanup <vm> [on|off] [--days N] [--json]
-                                                      the VM's Container image cleanup: on or off, and after
-                                                      how many days an unused Container image goes (1 to 365);
-                                                      whatever state the VM is in
+                                                     the VM's Container image cleanup: on or off, and after
+                                                     how many days an unused Container image goes (1 to 365);
+                                                     whatever state the VM is in
+  agentbox env <vm> [--json]                         the VM's VM variables (environment variables for orca
+                                                     serve, agents, terminals and shells)
+  agentbox set-env <vm> NAME=VALUE [NAME=VALUE ...] [--replace] [--json]
+                add or change VM variables (--replace: these are all of them); names a Safeguard or
+                Agent Box reads are refused; applies from the next start, for a running VM after a Restart
+  agentbox unset-env <vm> NAME [NAME ...] [--json]   remove VM variables; applies like set-env
   agentbox start|wake|pause|restart <vm> [--json]
   agentbox reset <vm> [--no-start] [--json]          fresh System disk from the VM's Image
   agentbox focus <vm|off> [--json]                   pause every other VM
@@ -88,7 +94,8 @@ Controls the agent VMs on this Host.
   agentbox legitimate [--json]                       Legitimate domains (added and built-in)
   agentbox legitimate-add <domain> [--note TEXT] [--force] [--json]
                 no more pattern Signals (except blockchain) and HaGeZi hits for it and its
-                subdomains; lifting strong Signals only with --force
+                subdomains (HaGeZi hits below github.io and githubusercontent.com still
+                count); lifting strong Signals only with --force
   agentbox legitimate-remove <domain> [--json]       remove an added one (built-in ones stay)
   agentbox legitimate-set-note <domain> --note TEXT [--json]
   agentbox migrate-lists [--json]                    take over the Watchlist and Legitimate domains from

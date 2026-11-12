@@ -28,15 +28,19 @@ ORCA_PORT=$(fwcfg orca_port)
 PAIRING_ADDRESS=$(fwcfg pairing_address)
 install -d -m 755 /run/agentbox
 install -m 600 /dev/null /run/agentbox/env
-printf 'AGENTBOX_CONTEXT=%s\nORCA_PORT=%s\nPAIRING_ADDRESS=%s\n' "$CONTEXT" "$ORCA_PORT" "$PAIRING_ADDRESS" > /run/agentbox/env
+# Fuer Shells (Orca-Terminals) zusaetzlich als Datei, die nur agent lesen darf
+install -m 640 -g agent /dev/null /run/agentbox/agent-env
+# VM variables (agentbox set-env, checked on the Host so that none switches a Safeguard
+# off) come first, so the fixed values of Agent Box below win. A missing entry means none.
+/usr/lib/agentbox/fwcfg-env /sys/firmware/qemu_fw_cfg/by_name/opt/agentbox/env/raw \
+  /run/agentbox/env /run/agentbox/agent-env
+printf 'AGENTBOX_CONTEXT=%s\nORCA_PORT=%s\nPAIRING_ADDRESS=%s\n' "$CONTEXT" "$ORCA_PORT" "$PAIRING_ADDRESS" >> /run/agentbox/env
 # Claude-Token von titan (leer, solange keins hinterlegt ist). Orca gibt es
 # an alle Terminals und Agenten weiter.
 token=$(fwcfg claude_token 2>/dev/null | tr -d '[:space:]' || true)
-# Fuer Shells (Orca-Terminals) zusaetzlich als Datei, die nur agent lesen darf
-install -m 640 -g agent /dev/null /run/agentbox/agent-env
 if [[ "$token" == sk-ant-* ]]; then
   printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$token" >> /run/agentbox/env
-  printf 'export CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$token" > /run/agentbox/agent-env
+  printf 'export CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$token" >> /run/agentbox/agent-env
 fi
 hostnamectl set-hostname "agentbox-$CONTEXT"
 
@@ -66,7 +70,7 @@ mountpoint -q "$DATA" || { echo "guest-setup: the Data disk is not mounted" >&2;
 
 # Home ist fluechtig (Systemplatte); dauerhaft ist nur, was hier steht. Auch der
 # Podman-Speicher des Agenten (Container images, Container, Volumes, Build-Cache)
-# liegt auf der Datenplatte (ADR 0016); Podmans Benutzerkonfiguration
+# liegt auf der Datenplatte (ADR 0017); Podmans Benutzerkonfiguration
 # (~/.config/containers) bleibt Systemplatte und geht mit jedem Reset verloren.
 PERSIST=(code orca .config/orca .claude/projects .codex/sessions .cargo/registry .cargo/git
          .gradle .android .local/share/android-sdk .local/share/containers)

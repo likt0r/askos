@@ -389,6 +389,10 @@ ENDPOINTS = [
      ["set-container-image-cleanup", "work", "off", "--json"], 200),
     ("PUT", "/api/v1/vms/work/container-image-cleanup", {"days": 7},
      ["set-container-image-cleanup", "work", "--days", "7", "--json"], 200),
+    # the whole list in one step; a value stays the value of its name, whatever it looks like
+    ("PUT", "/api/v1/vms/work/env", {"env": {"DATABASE_URL": "postgres://db/x", "FLAG": "--json", "E": ""}},
+     ["set-env", "work", "--replace", "DATABASE_URL=postgres://db/x", "FLAG=--json", "E=", "--json"], 200),
+    ("PUT", "/api/v1/vms/work/env", {"env": {}}, ["set-env", "work", "--replace", "--json"], 200),
     ("PUT", "/api/v1/vms/work/image", {"image": "rust", "build": None}, ["set-image", "work", "rust", "--json"], 200),
     ("PUT", "/api/v1/vms/work/image", {"image": "base", "build": "20261101-120000"},
      ["set-image", "work", "base", "--build=20261101-120000", "--json"], 200),
@@ -580,6 +584,19 @@ class EndpointTest(V1Test):
             ("PUT", "/api/v1/vms/work/container-image-cleanup", {"days": True}, "invalid_field"),
             ("PUT", "/api/v1/vms/work/container-image-cleanup", {"days": 7.5}, "invalid_field"),
             ("PUT", "/api/v1/vms/work/container-image-cleanup", {"days": "7"}, "invalid_field"),
+            ("PUT", "/api/v1/vms/work/env", {}, "invalid_field"),
+            ("PUT", "/api/v1/vms/work/env", {"env": ["A=1"]}, "invalid_field"),
+            ("PUT", "/api/v1/vms/work/env", {"env": {"A": 1}}, "invalid_field"),
+            ("PUT", "/api/v1/vms/work/env", {"env": {"A": None}}, "invalid_field"),
+            # a name agentbox would read differently (NAME=VALUE, an option), a NUL no argument carries
+            ("PUT", "/api/v1/vms/work/env", {"env": {"A=B": "c"}}, "invalid_env_name"),
+            ("PUT", "/api/v1/vms/work/env", {"env": {"--replace": ""}}, "invalid_env_name"),
+            ("PUT", "/api/v1/vms/work/env", {"env": {"": "x"}}, "invalid_env_name"),
+            ("PUT", "/api/v1/vms/work/env", {"env": {"A" * 65: "x"}}, "invalid_env_name"),
+            ("PUT", "/api/v1/vms/work/env", {"env": {"A": "a\u0000b"}}, "invalid_env_value"),
+            # a lone UTF-16 surrogate (JSON "\\ud800") is no UTF-8 an argument could carry
+            ("PUT", "/api/v1/vms/work/env", {"env": {"A": "a\ud800b"}}, "invalid_env_value"),
+            ("PUT", "/api/v1/vms/work/env", {"env": {"A": "\udfff"}}, "invalid_env_value"),
             ("PUT", "/api/v1/vms/work/image", {"image": "../x"}, "invalid_field"),
             ("PUT", "/api/v1/vms/work/image", {"image": "base", "build": "latest"}, "invalid_field"),
             ("PUT", "/api/v1/vms/work/claude-token", {"token": " "}, "invalid_field"),
@@ -884,6 +901,25 @@ class ErrorTest(V1Test):
                 self.assertEqual(answer[1]["error"]["detail"], detail)
                 self.assertEqual(answer[1]["error"].get("field"), field)
 
+    def test_vm_variable_refusals_name_the_variable(self):
+        # the UI says which variable a Safeguard or Agent Box needs, or which is too long
+        env = dict(method="PUT", path="/api/v1/vms/work/env", body={"env": {"NODE_OPTIONS": ""}})
+        answer = self.fails(failure("env_name_reserved", "NODE_OPTIONS cannot be a VM variable", name="NODE_OPTIONS"),
+                            **env)
+        self.assertError(answer, 400, "env_name_reserved")
+        self.assertEqual((answer[1]["error"]["field"], answer[1]["error"]["params"]), ("env", {"name": "NODE_OPTIONS"}))
+        answer = self.fails(failure("env_too_large", "the value of BIG is 5000 bytes long", name="BIG",
+                                    max_bytes=4096), **env)
+        self.assertEqual((answer[0], answer[1]["error"]["params"]), (400, {"name": "BIG"}))
+        answer = self.fails(failure("env_too_large", "65 VM variables", max_variables=64), **env)
+        self.assertNotIn("params", answer[1]["error"])
+        for error in ("invalid_env_name", "invalid_env_value"):
+            with self.subTest(error=error):
+                self.assertError(self.fails(failure(error, "x"), **env), 400, error)
+        # a name only in the form of one
+        answer = self.fails(failure("env_name_reserved", "x", name="<b>x</b>"), **env)
+        self.assertNotIn("params", answer[1]["error"])
+
     def test_long_details_are_cut(self):
         answer = self.fails(failure("action_failed", "x" * 2000))
         self.assertEqual(answer[1]["error"]["detail"], "x" * 500)
@@ -926,6 +962,14 @@ class ErrorTableTest(unittest.TestCase):
                     self.assertEqual(len(error), 1, "no error= code")
                     codes |= literal(error[0])
         return codes
+
+    def test_the_name_of_a_vm_variable_is_the_same_everywhere(self):
+        sys.path.insert(0, ROOT)
+        from agentbox import vmenv
+        for name in ("A", "_", "a_B9", "A" * 64, "A" * 65, "9A", "A-B", "A=B", "--x", "", "\u00c4"):
+            with self.subTest(name=name):
+                self.assertEqual(bool(self.web.ENV_NAME.fullmatch(name)),
+                                 bool(vmenv.NAME.fullmatch(name)) and len(name) <= vmenv.MAX_NAME)
 
     def test_every_code_agentbox_raises_has_a_status(self):
         raised = self.raised_codes()

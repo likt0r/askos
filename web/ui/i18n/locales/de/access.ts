@@ -311,7 +311,7 @@ export default {
     },
     legitimate: {
       title: 'Legitime Domains',
-      intro: 'Registries, Anbieter und Distributionen: keine Muster-Merkmale außer dem Blockchain-Muster, Feed-Treffer für sie und ihre Subdomains zählen nicht. Sie geben selbst nichts frei; Einträge der Watchlist gelten weiter.',
+      intro: 'Registries, Anbieter und Distributionen: keine Muster-Merkmale außer dem Blockchain-Muster, Feed-Treffer für sie und ihre Subdomains zählen nicht, außer auf Subdomains von github.io und githubusercontent.com, wo jeder veröffentlichen kann. Sie geben selbst nichts frei; Einträge der Watchlist gelten weiter.',
       count: 'keine Domains | eine Domain | {n} Domains',
       filter: 'Filtern',
       domain: 'Domain',

@@ -1,4 +1,4 @@
-# The usage recorder of the Container image cleanup (ADR 0016): keeps when each of the
+# The usage recorder of the Container image cleanup (ADR 0017): keeps when each of the
 # agent's Container images was last used, whether the cleanup is on or off. A user service
 # of the agent (linger, guest-setup has bound its Podman storage before user@1000 starts).
 [Unit]

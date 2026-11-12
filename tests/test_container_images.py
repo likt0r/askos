@@ -1,4 +1,4 @@
-"""#62: the hourly Container image cleanup in the running VMs (ADR 0016).
+"""#62: the hourly Container image cleanup in the running VMs (ADR 0017).
 
 The real CLI runs with AGENTBOX_ROOT and fake virsh (fake_virsh.py) as in test_import.py. For
 guest-exec of agentbox-container-images the fake runs the real wrapper of vm/files in the VM's

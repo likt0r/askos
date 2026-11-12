@@ -356,6 +356,54 @@ class RecordTest(ActivityTest):
             ("set-container-image-cleanup", "work", FIREFOX, "failed", None, None),
         ])
 
+    def test_vm_variables(self):
+        """set-env with names and values (not secret), --replace as a flag, unset-env with the
+        names; the same values again change nothing; a refused name is a failed entry."""
+        for args, code in ((["set-env", "work", "A=1", "B=x y"], 0), (["set-env", "work", "A=1"], 0),
+                           (["set-env", "work", "NODE_OPTIONS="], 1), (["set-env", "work", "C=3", "--replace"], 0),
+                           (["unset-env", "work", "C", "--json"], 0), (["env", "work"], 0)):
+            self.assertEqual(self.run_agentbox("--actor", FIREFOX, *args)[0], code, args)
+        entries = self.entries()
+        self.assertEqual([(e["AGENTBOX_ACTION"], e["AGENTBOX_VM"], e["AGENTBOX_OUTCOME"], e["AGENTBOX_DESCRIPTION"])
+                          for e in entries], [
+            ("set-env", "work", "ok", "Set VM variables: A=1, B=x y"),
+            ("set-env", "work", "failed", "Set VM variables: NODE_OPTIONS=: NODE_OPTIONS cannot be a VM variable: "
+                                          "a Safeguard or Agent Box itself sets or reads it"),
+            ("set-env", "work", "ok", "Replace the VM variables: C=3"),
+            ("unset-env", "work", "ok", "Remove VM variables: C"),
+        ])
+        self.assertEqual(entries[0]["AGENTBOX_PARAM_ENV"], "A=1, B=x y")
+        self.assertEqual((entries[1]["AGENTBOX_ERROR"], entries[1]["AGENTBOX_ERROR_PARAM_NAME"]),
+                         ("env_name_reserved", "NODE_OPTIONS"))
+        self.assertEqual((entries[2]["AGENTBOX_PARAM_ENV"], entries[2]["AGENTBOX_PARAM_REPLACE"]), ("C=3", "true"))
+        self.assertEqual(entries[3]["AGENTBOX_PARAM_NAMES"], "C")
+
+    def test_many_vm_variables_show_that_the_entry_is_cut(self):
+        """Every parameter and the description keep 500 characters: with 64 variables the names
+        come first, and a cut list says how many it leaves out."""
+        values = [f"V{i}=" + "x" * 40 for i in range(64)]
+        names = [f"NAME_{i}_" + "N" * 50 for i in range(64)]
+        for args in (["set-env", "work", *(f"{n}=1" for n in names)], ["unset-env", "work", *names],
+                     ["set-env", "work", *values]):
+            self.assertEqual(self.run_agentbox("--actor", FIREFOX, *args)[0], 0, args)
+        _, unset_env, set_env = self.entries()
+        # all names of set-env fit, the values do not
+        self.assertEqual(set_env["AGENTBOX_DESCRIPTION"],
+                         "Set VM variables: " + ", ".join(f"V{i}" for i in range(64)) + " (values left out, too long)")
+        shown = set_env["AGENTBOX_PARAM_ENV"]
+        self.assertLessEqual(len(shown), 500)
+        pairs, more = shown.rsplit(", … +", 1)
+        self.assertEqual(pairs.split(", "), values[:len(pairs.split(", "))])
+        self.assertEqual(int(more), 64 - len(pairs.split(", ")))
+        # names that do not fit either
+        text = unset_env["AGENTBOX_DESCRIPTION"]
+        listed, more = re.fullmatch(r"Remove VM variables: (.*) and (\d+) more", text).groups()
+        self.assertEqual(listed.split(", "), names[:len(listed.split(", "))])
+        self.assertEqual(int(more), 64 - len(listed.split(", ")))
+        listed, more = unset_env["AGENTBOX_PARAM_NAMES"].rsplit(", … +", 1)
+        self.assertEqual(listed.split(", "), names[:len(listed.split(", "))])
+        self.assertEqual(int(more), 64 - len(listed.split(", ")))
+
     def write_conf(self, name, text):
         with open(self.path(f"etc/agentbox/{name}"), "w") as f:
             f.write(text)

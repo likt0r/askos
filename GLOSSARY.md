@@ -29,8 +29,12 @@ An isolated virtual machine in which agents work; the unit of separation, with i
 _Avoid_: context, environment, sandbox, container
 
 **VM registry**:
-The root-owned records on the Host that define which VMs exist, one per VM: name, network number, Orca port, Image, optional Build pin, memory limit, Data disk size, Container image cleanup, GitHub owners and creation date. Everything else about a VM is generated from its record.
+The root-owned records on the Host that define which VMs exist, one per VM: name, network number, Orca port, Image, optional Build pin, memory limit, Data disk size, Container image cleanup, GitHub owners, VM variables and creation date. Everything else about a VM is generated from its record.
 _Avoid_: inventory, VM config
+
+**VM variables**:
+Environment variables of one VM, kept in its record and passed in at its next start, for `orca serve`, the agents and terminals it starts, and login shells (German UI: VM-Variablen). They are not secret; the Host refuses every name a Safeguard or Agent Box itself reads, so none switches a Safeguard off.
+_Avoid_: env vars, environment, env
 
 **Image**:
 A clean operating-system template, defined by a Containerfile shipped in the installed Release and built on the Host, from which a VM's System disk is created; each VM uses exactly one Image. Not a Container image.
@@ -149,7 +153,7 @@ An external list fetched by a timer on the Host and looked up locally: HaGeZi's 
 _Avoid_: blocklist, IOC source
 
 **Legitimate domain**:
-A well-known domain of a registry, vendor or distribution, kept on the Host or built into the classifier; it gets no pattern Signals except the blockchain pattern, and Feed hits for it and its subdomains do not count. It allows nothing by itself.
+A well-known domain of a registry, vendor or distribution, kept on the Host or built into the classifier; it gets no pattern Signals except the blockchain pattern, and Feed hits for it and its subdomains do not count — except the built-in user-content hosts (`github.io`, `githubusercontent.com`), whose subdomains serve what anyone publishes: Feed hits on those count. It allows nothing by itself.
 _Avoid_: trusted domain, safelist, whitelist
 
 **Harmless mark**:

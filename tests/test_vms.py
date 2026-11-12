@@ -560,7 +560,7 @@ class DeleteTest(VmsTest):
                                    "lab: VM stopped and removed", "lab: network agentbox-lab removed",
                                    "lab: System disk deleted"])
         self.assertRegex(out[5], r"^lab: Data disk archived: .*/var/lib/agentbox/archive/lab-data-")
-        self.assertEqual(out[6:], ["lab: Claude token, Allowlist entries and Observer removed", "network rules reloaded",
+        self.assertEqual(out[6:], ["lab: Claude token, VM variables, Allowlist entries and Observer removed", "network rules reloaded",
                                    "lab deleted"])
 
     def test_json(self):

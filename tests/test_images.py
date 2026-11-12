@@ -545,7 +545,7 @@ class SafeguardTest(ImagesTest):
             self.assertNotRegex(f.read(), r"(?i)proxy")
 
     def test_the_agents_podman_storage_lives_on_the_data_disk(self):
-        """ADR 0016: guest-setup binds the agent's whole Podman storage from the Data disk
+        """ADR 0017: guest-setup binds the agent's whole Podman storage from the Data disk
         at every start, created with the agent as owner on the first; nothing else of
         Podman's user configuration is kept."""
         rootfs = self.rootfs("base", self.base)

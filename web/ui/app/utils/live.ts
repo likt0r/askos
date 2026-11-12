@@ -24,6 +24,10 @@ export interface Vm {
   container_image_cleanup?: boolean
   container_image_cleanup_days?: number
   github_owners?: string[]
+  /** the VM variables of the record (names and values, not secret); the VM has them from its next start */
+  env?: Record<string, string>
+  /** names in `env` that agentbox no longer passes on to the VM (reserved since they were saved) */
+  env_refused?: string[]
   image?: string
   build_pin?: string | null
   image_build?: string | null

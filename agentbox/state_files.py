@@ -133,6 +133,11 @@ def claude_token_file(ctx):
     return os.path.join(paths.CONF, "secrets", f"claude-{ctx}")
 
 
+def vm_env_file(ctx):
+    """The VM variables as QEMU passes them in (fw_cfg opt/agentbox/env, vmenv.py)."""
+    return os.path.join(paths.STATE, "vm-env", f"{ctx}.env")
+
+
 def claude_token_since(ctx):
     """When the VM's Claude token was stored (epoch seconds), or 0 when there is none."""
     f = claude_token_file(ctx)
