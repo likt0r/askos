@@ -168,9 +168,16 @@ class PackageTest(unittest.TestCase):
         self.assertIn("visudo -cqf %{_sysconfdir}/sudoers.d/agentbox-web", spec_sections(self.spec, ("post",)))
 
     def test_visudo_takes_the_sudoers_rule(self):
-        """As the spec's %check runs it; where there is no visudo, the build checks it."""
+        """As the spec's %check runs it; where there is no visudo, or one without the regular
+        expressions the rule needs (sudo before 1.9.10, as on CI's Ubuntu), the build checks it."""
         if not shutil.which("visudo"):
             self.skipTest("no visudo")
+        with tempfile.TemporaryDirectory() as tmp:
+            probe = os.path.join(tmp, "probe")
+            with open(probe, "w") as f:
+                f.write("nobody ALL=(root) NOPASSWD: /usr/bin/true ^(a|b)$\n")
+            if subprocess.run(["visudo", "-cqf", probe], capture_output=True).returncode != 0:
+                self.skipTest("visudo without regular expressions in arguments")
         r = subprocess.run(["visudo", "-cqf", os.path.join(RPM, "agentbox-web.sudoers")], capture_output=True,
                            text=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
