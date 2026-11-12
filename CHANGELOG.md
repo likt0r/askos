@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/likt0r/askos/compare/v0.6.0...v0.6.1) (2026-11-12)
+
+### Bug Fixes
+
+* redefining an existing VM network keeps its UUID ([#44](https://github.com/likt0r/askos/issues/44)) ([d382558](https://github.com/likt0r/askos/commit/d3825583038740cc97d5569f9591dba231aac2cf)), closes [#43](https://github.com/likt0r/askos/issues/43)
+* the Activity journal's sockets keep group agentbox-journal across boots ([#45](https://github.com/likt0r/askos/issues/45)) ([8c6cc3b](https://github.com/likt0r/askos/commit/8c6cc3b01cc27bd884075b5e3c2be79891b4e0d9)), closes [#42](https://github.com/likt0r/askos/issues/42)
+
 ## [0.6.0](https://github.com/likt0r/askos/compare/v0.5.1...v0.6.0) (2026-11-12)
 
 ### Features
