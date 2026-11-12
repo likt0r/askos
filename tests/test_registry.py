@@ -287,6 +287,20 @@ class RegenerateTest(RegistryTest):
         self.assertIn("ListenStream=6802\n", self.read("etc/systemd/system/agentbox-gui-priv.socket"))
         self.assertEqual(self.read("etc/agentbox/vm-input.nft"), NFT)
 
+    def test_no_explicit_proxy_port_and_dns_switched_on(self):
+        self.assertEqual(self.run_agentbox("regenerate")[0], 0)
+        self.assertNotIn("3128", self.read("etc/agentbox/vm-input.nft"))
+        for name in os.listdir(self.path("etc/systemd/system")):
+            with self.subTest(unit=name):
+                self.assertNotIn("3128", self.read(f"etc/systemd/system/{name}"))
+        for c in self.calls("net-define"):
+            with self.subTest(net=c["net"]):
+                self.assertNotIn("3128", c["xml"])
+                self.assertNotRegex(c["xml"], r"<dns\b[^>]*enable=")
+        sys.path.insert(0, REPO)
+        from agentbox import hoststeps
+        self.assertFalse([p for p in hoststeps.VM_PORTS if p.startswith("3128/")])
+
     def test_only_dhcp_passes_before_the_address_check(self):
         # a port accepted before it would reach every address of the Host: a resolver on its
         # LAN address, or the .1 of another VM's network
@@ -452,7 +466,7 @@ class RegenerateTest(RegistryTest):
 
     def test_a_changed_proxy_socket_is_restarted_after_its_proxy_stopped(self):
         # systemd keeps an active socket where it was, and the proxy keeps the socket it was handed
-        self.write("etc/systemd/system/agentbox-proxy-priv.socket", PROXY_SOCKET.replace(":443", ":3128"))
+        self.write("etc/systemd/system/agentbox-proxy-priv.socket", PROXY_SOCKET.replace(":443", ":8443"))
         code, out, err = self.run_agentbox("regenerate")
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(self.read("etc/systemd/system/agentbox-proxy-priv.socket"), PROXY_SOCKET)
@@ -483,7 +497,7 @@ class RegenerateTest(RegistryTest):
 
     def test_a_socket_left_to_rebind_by_a_failed_run_is_rebound_by_the_next(self):
         self.run_agentbox("regenerate")
-        self.write("etc/systemd/system/agentbox-proxy-priv.socket", PROXY_SOCKET.replace(":443", ":3128"))
+        self.write("etc/systemd/system/agentbox-proxy-priv.socket", PROXY_SOCKET.replace(":443", ":8443"))
         self.scenario(vms={"priv": {"uuid": PRIV_UUID}}, systemctl_fails=["stop"])
         self.assertEqual(self.run_agentbox("regenerate")[0], 1)
         self.scenario(vms={"priv": {"uuid": PRIV_UUID}})

@@ -9,6 +9,7 @@ Host, that its log names the client's address.
 
 Run from the repo root: python3 -m unittest discover -s tests
 """
+import asyncio
 import importlib.machinery
 import importlib.util
 import os
@@ -18,6 +19,7 @@ import subprocess
 import sys
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_allowlist as allowlist_tests  # noqa: E402
@@ -92,6 +94,10 @@ class ParserTest(unittest.TestCase):
         # the proxy would decide on one server_name, the destination might read the other
         self.refused(raw_client_hello("allowed.example", after=[(0, server_name("other.example"))]))
         self.refused(raw_client_hello("example.org", after=[(21, b""), (21, bytes(3))]))
+
+    def test_bytes_after_the_list_of_server_names_are_refused(self):
+        self.refused(raw_client_hello("example.org", sni=server_name("example.org") + b"\x00"))
+        self.assertEqual(self.name(raw_client_hello("example.org", sni=server_name("example.org"))), "example.org")
 
     def test_several_host_names_count_as_none(self):
         e = self.refused(raw_client_hello(("allowed.example", "other.example")), "no server name")
@@ -268,6 +274,30 @@ class HelloProxyTest(allowlist_tests.ProxyTest):
         s = self.send(client_hello("other.example"))
         self.assertEqual(self.rest(s), ACCESS_DENIED)
         self.assertIn("[work] BLOCKED other.example (not on the Allowlist)\n", self.log())
+
+
+class ResolveTest(unittest.TestCase):
+    """Which addresses the proxy connects to, from what getaddrinfo answers."""
+
+    def resolve(self, *addrs):
+        async def resolved():
+            loop = asyncio.get_running_loop()
+
+            async def getaddrinfo(host, port, **kw):
+                return [(socket.AF_INET6 if ":" in a else socket.AF_INET, socket.SOCK_STREAM, 6, "", (a, port))
+                        for a in addrs]
+            loop.getaddrinfo = getaddrinfo
+            return await proxy.resolve_public("example.org")
+        with mock.patch.object(proxy, "TEST_UPSTREAM", None):
+            return asyncio.run(resolved())
+
+    def test_public_addresses_ipv4_first(self):
+        self.assertEqual(self.resolve("2606:4700::1", "93.184.215.14"), ["93.184.215.14", "2606:4700::1"])
+
+    def test_an_address_that_is_not_public_or_cannot_be_read_refuses_them_all(self):
+        for odd in ("fe80::1%eth0", "fe80::1%", "not an address", "10.0.0.1"):
+            with self.subTest(address=odd):
+                self.assertIsNone(self.resolve("93.184.215.14", odd))
 
 
 class RefusalTest(allowlist_tests.ProxyTest):

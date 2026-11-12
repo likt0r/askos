@@ -34,8 +34,6 @@ JOURNAL_SOCKETS = ("stdout", "socket", "dev-log")
 # what the VMs reach on the Host, each on its own network: the resolver, the proxy and the
 # token service
 VM_PORTS = ("53/udp", "53/tcp", "443/tcp", "9100/tcp")
-# ports kept closed in the zone: an HTTP proxy's port, which no service of the Host offers the VMs
-VM_PORTS_CLOSED = ("3128/tcp",)
 EXPIRY_TIMER = "agentbox-allowlist-expire.timer"
 # the VMs' proxies (agentbox regenerate writes one unit per VM)
 PROXIES = "agentbox-proxy-*.service"
@@ -344,10 +342,8 @@ def seed_lists(warn):
 def libvirt_zone():
     """firewalld puts the bridges of the VM networks into the zone libvirt: the resolver, the
     proxy and the token service are reachable there, ssh to the Host is not."""
-    changed = firewall.ensure("libvirt", add=[("port", p) for p in VM_PORTS],
-                              remove=[("service", "ssh"), *(("port", p) for p in VM_PORTS_CLOSED)])
-    words = {("add", "port"): "port {} open", ("remove", "service"): "service {} removed",
-             ("remove", "port"): "port {} closed"}
+    changed = firewall.ensure("libvirt", add=[("port", p) for p in VM_PORTS], remove=[("service", "ssh")])
+    words = {("add", "port"): "port {} open", ("remove", "service"): "service {} removed"}
     return [words.get((verb, kind), f"{verb} {kind} {{}}").format(value) for verb, kind, value in changed]
 
 

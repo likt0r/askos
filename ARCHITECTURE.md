@@ -1013,10 +1013,12 @@ otherwise in `lib/agentbox` under their own prefix.
   addresses is reachable from every VM through the Host's address on the VM's network,
   where nftables lets those ports through. No service of Agent Box does; the resolver and
   the proxy listen only on that address.
-- **Only TLS with a server name, on port 443, leaves a VM.** Plain HTTP, other ports, UDP
-  (so HTTP/3) and TLS without a server name get nowhere, and an IP literal as the name is a
-  raw IP, a strong Signal. A tool that needs one of them has no way out, which is the
-  intent, and shows up as a blocked connection of the VM's address.
+- **Only TLS with a server name, on port 443, leaves a VM.** Plain HTTP, other ports and TLS
+  without a server name get nowhere, and an IP literal as the name is a raw IP, a strong
+  Signal. A VM's UDP reaches only DHCP and the resolver on the Host's address on its
+  network, so there is no HTTP/3 (QUIC); clients fall back to TCP. A tool that needs any of
+  this has no way out, which is the intent; what reaches the proxy shows up as a blocked
+  connection of the VM's address.
 - **Repositories inside one VM are not isolated from each other.** Put sensitive projects in
   their own VM.
 - **Private repositories without branch protection** (GitHub Free) can be overwritten by an

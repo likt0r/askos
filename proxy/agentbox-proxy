@@ -181,7 +181,10 @@ def _server_name(body):
             raise Refused(NOT_TLS)
         found[kind] = data
     if SERVER_NAME in found:
-        names = Reader(Reader(found[SERVER_NAME]).vector(2))
+        extension = Reader(found[SERVER_NAME])
+        names = Reader(extension.vector(2))
+        if not extension.done():        # bytes after the list of names
+            raise Refused(NOT_TLS)
         hosts = []
         while not names.done():
             name_type, name = names.number(1), names.vector(2)
@@ -454,15 +457,25 @@ async def watch(ctx, lists):
 
 # --- Verbindungen ---------------------------------------------------------------
 
+def _address(a):
+    """The address getaddrinfo gave, or None for one ipaddress cannot read (which counts as
+    not public)."""
+    try:
+        return ipaddress.ip_address(a)
+    except ValueError:
+        return None
+
+
 async def resolve_public(host):
+    """The addresses of host, IPv4 first, or None unless every one of them is public."""
     if TEST_UPSTREAM:
         return [TEST_UPSTREAM[0]]
     infos = await asyncio.get_running_loop().getaddrinfo(host, PORT, type=socket.SOCK_STREAM)
-    addrs = list(dict.fromkeys(info[4][0] for info in infos))
-    if not addrs or not all(ipaddress.ip_address(a).is_global for a in addrs):
+    addrs = {a: _address(a) for a in dict.fromkeys(info[4][0] for info in infos)}
+    if not addrs or not all(ip is not None and ip.is_global for ip in addrs.values()):
         return None
-    # IPv4 zuerst: titan hat nicht immer eine funktionierende IPv6-Route
-    return sorted(addrs, key=lambda a: ipaddress.ip_address(a).version)
+    # IPv4 first: a Host does not always have a working IPv6 route
+    return sorted(addrs, key=lambda a: addrs[a].version)
 
 
 async def connect_any(addrs):

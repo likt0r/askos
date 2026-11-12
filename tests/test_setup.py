@@ -422,13 +422,6 @@ class HostStepsTest(SetupTest):
                      "Control Room: agentbox-web.service enabled and restarted"):
             self.assertIn(step, out)
 
-    def test_the_zone_of_the_vm_networks_keeps_3128_closed(self):
-        self.scenario(firewall_zones={"libvirt": {"ports": ["3128/tcp", "9100/tcp"], "services": ["ssh"]}})
-        out = self.ok("--password-file", self.password_file)
-        for side in ("permanent", "runtime"):
-            self.assertEqual(sorted(self.zone("libvirt", side)["ports"]), ["443/tcp", "53/tcp", "53/udp", "9100/tcp"])
-        self.assertIn("port 3128/tcp closed", out)
-
     def test_the_steps_run_in_their_order(self):
         """ARCHITECTURE.md, "Setting a Host up": the self-test before anything changes, the
         migrations around regenerate, the sockets of the Activity journal only after regenerate
