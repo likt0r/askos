@@ -13,7 +13,9 @@ module expects, not the ones the repository happens to contain:
   (systemd's DefaultEnvironment, all drop-ins merged as systemd does) and uv.toml.
 - Bun: bunfig.toml with the same minimum age, put into the agent's home by guest-setup.
 - Git: hooks only from /usr/lib/agentbox/hooks, whose pre-push hook refuses main and master.
-- Proxy: every service reaches the outside through the Host's proxy; no DNS of its own.
+- Network: guest-setup makes the Host's address on the VM's network the only resolver
+  (NetworkManager keeps out of /etc/resolv.conf, dns=none), and no service carries a proxy
+  variable: every connection goes to the Host, where the proxy reads its destination.
 - Guest agent: the two wrappers the Host runs through it (agentbox-journal, agentbox-devices).
 - Claude Code: fetches none of the owner's claude.ai connectors (#8). ENABLE_CLAUDEAI_MCP_SERVERS
   is false in the environment of every service, and /etc/profile.d/agentbox.sh exports it
@@ -37,7 +39,6 @@ import re
 import shlex
 import stat
 
-PROXY = "http://host.agentbox:3128"
 HOOKS = "/usr/lib/agentbox/hooks"
 BUNFIG = "/usr/lib/agentbox/bunfig.toml"
 GUEST_SETUP = "/usr/lib/agentbox/guest-setup"
@@ -47,6 +48,7 @@ QGA = "/usr/libexec/qemu-ga/fsfreeze-hook.d"
 JOURNAL_WRAPPER = f"{QGA}/agentbox-journal"
 DEVICES_WRAPPER = f"{QGA}/agentbox-devices"
 NM_CONF = "/etc/NetworkManager/conf.d/agentbox.conf"
+RESOLVER = 'echo "nameserver $gw" > /etc/resolv.conf'   # guest-setup: the Host on the VM's network
 PROFILE = "/etc/profile.d/agentbox.sh"
 CLAUDEAI = "ENABLE_CLAUDEAI_MCP_SERVERS"
 CLAUDE_CODE = "/etc/claude-code/"     # Claude Code's managed settings (JSON) on Linux
@@ -70,11 +72,14 @@ WATCHED_DIRS = ("/etc/profile.d", "/etc/environment.d", "/usr/lib/environment.d"
                 "/etc/systemd/user.conf.d", "/usr/lib/systemd/user.conf.d",
                 "/etc/NetworkManager/conf.d", "/usr/lib/NetworkManager/conf.d", f"{CLAUDE_CODE}managed-settings.d")
 MENTIONS = re.compile(r"ignore[-_]?scripts|release[-_]?age|exclude[-_]?newer|hooks[-_]?path|_proxy\b|proxy=|"
-                      r"git_config|uv_no_config|\bdns\s*=|claudeai", re.IGNORECASE)
+                      r"proxy(host|port)|git_config|uv_no_config|\bdns\s*=|claudeai", re.IGNORECASE)
 # Variables that would switch a safeguard off again for every service of the VM
 OVERRIDES = re.compile(r"(npm_config_(ignore_scripts|min_release_age)|pnpm_config_minimum_release_age_exclude|"
                        r"git_config_(global|system|nosystem|count|parameters)|uv_no_config|uv_config_file)",
                        re.IGNORECASE)
+# Proxy variables (HTTPS_PROXY, no_proxy, NODE_USE_ENV_PROXY, ...) and Java's proxy properties
+PROXY_NAME = re.compile(r"\w*_proxy", re.IGNORECASE)
+PROXY_VALUE = re.compile(r"proxy(host|port)", re.IGNORECASE)
 # systemd's main configuration (the first one found) and its drop-in directories, lowest first
 SYSTEM_CONF = ("/etc/systemd/system.conf", "/run/systemd/system.conf", "/usr/local/lib/systemd/system.conf",
                "/usr/lib/systemd/system.conf")
@@ -342,12 +347,17 @@ def _git(root):
 
 
 def _network(root, env):
+    """The Host is the VM's only resolver, and nothing sends connections to a proxy."""
     problems = []
-    for name in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"):
-        problems += _env_value(env, name, PROXY, "Proxy")
-    problems += _env_value(env, "NODE_USE_ENV_PROXY", "1", "Proxy")
+    lines = [line.strip() for line in (text(root, GUEST_SETUP) or "").splitlines()]
+    named = [line for line in lines if "nameserver" in line and not line.startswith("#")]
+    if named != [RESOLVER]:
+        problems.append(f"DNS: guest-setup does not make the Host the only resolver ({RESOLVER})")
     if ini(text(root, NM_CONF)).get(("main", "dns")) != "none":
         problems.append(f"DNS: dns=none is missing in {NM_CONF}")
+    for name in sorted(env):
+        if PROXY_NAME.fullmatch(name) or PROXY_VALUE.search(env[name]):
+            problems.append(f"Proxy: {name} is set; the VM reaches the outside without proxy variables")
     return problems
 
 
