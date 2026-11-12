@@ -20,6 +20,12 @@ start, so the running VM keeps its memory until a Restart or Reset (a reboot ins
 the VM is not enough, QEMU keeps running). Nothing is changed live: QEMU cannot raise
 the maximum of a running VM, and lowering its balloon would take memory away from
 working agents. A paused VM is refused, its saved memory belongs to the old definition.
+
+`agentbox set-container-image-cleanup` turns a VM's Container image cleanup on or off
+and sets its days (1 to 365), two separate values in the record, so turning it off and
+on again keeps the days. Whatever state the VM is in: nothing of the VM is touched, so
+it takes effect the next time the cleanup runs. A record without the two fields means
+on and 7 days, and only the field a call changes is written.
 """
 import datetime
 import json
@@ -39,6 +45,7 @@ MAX_MEMORY_MIB = 1048576             # when the Host's memory is unknown
 MAX_DATA_DISK_GIB = 16384
 # option -> takes a value; --owner may repeat
 CREATE_OPTIONS = {"image": True, "memory-mib": True, "data-disk-gib": True, "owner": True,
+                  "container-image-cleanup": True, "container-image-cleanup-days": True,
                   "copy-allowlist-from": True, "json": False}
 DELETE_OPTIONS = {"confirm": True, "delete-data-disk": False, "json": False}
 
@@ -132,6 +139,32 @@ def _number(opts, name, default, low, high, error="invalid_argument"):
     return _whole(opts.get(name, default), f"--{name}", low, high, error)
 
 
+def _cleanup_days(value):
+    """The days of the Container image cleanup: a whole number from 1 to 365 (the text an
+    option was given, or an int default)."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        value = int(value) if isinstance(value, str) and re.fullmatch(r"[0-9]{1,9}", value) else None
+    if value is None or not registry.CLEANUP_DAYS[0] <= value <= registry.CLEANUP_DAYS[1]:
+        die(f"Days for the Container image cleanup out of range "
+            f"({registry.CLEANUP_DAYS[0]} to {registry.CLEANUP_DAYS[1]})", error="invalid_cleanup_days")
+    return value
+
+
+def _cleanup_on(value, default):
+    """--container-image-cleanup on|off, or the Setting's default without the option."""
+    if value is None:
+        return default
+    if value not in ("on", "off"):
+        die("--container-image-cleanup must be on or off", error="invalid_argument",
+            option="--container-image-cleanup")
+    return value == "on"
+
+
+def _cleanup_text(on, days):
+    """The cleanup as people read it: "on, after 14 days" or "off (14 days)"."""
+    return f"on, after {days} days" if on else f"off ({days} days)"
+
+
 def _owners(names):
     for o in names:
         if not OWNER.fullmatch(o):
@@ -165,11 +198,13 @@ def _leftovers(rec):
 
 
 def create(args):
-    """agentbox create <vm> [--image I] [--memory-mib N] [--data-disk-gib N] [--owner O]...
+    """agentbox create <vm> [--image I] [--memory-mib N] [--data-disk-gib N]
+    [--container-image-cleanup on|off] [--container-image-cleanup-days N] [--owner O]...
     [--copy-allowlist-from VM] [--json]"""
     positional, opts = _options(args, CREATE_OPTIONS)
     if len(positional) != 1:
         die("create <vm> [--image I] [--memory-mib N] [--data-disk-gib N] [--owner O]... "
+            "[--container-image-cleanup on|off] [--container-image-cleanup-days N] "
             "[--copy-allowlist-from VM]", error="invalid_argument")
     name = _new_name(positional[0])
     defaults = settings.load()     # the defaults for new VMs (Settings)
@@ -177,6 +212,9 @@ def create(args):
     memory = _number(opts, "memory-mib", defaults["default_memory_mib"], MIN_MEMORY_MIB, _host_memory_mib(),
                      "invalid_memory")
     disk = _number(opts, "data-disk-gib", defaults["default_data_disk_gib"], 1, MAX_DATA_DISK_GIB)
+    cleanup = _cleanup_on(opts.get("container-image-cleanup"), defaults["default_container_image_cleanup"])
+    cleanup_days = _cleanup_days(opts.get("container-image-cleanup-days",
+                                          defaults["default_container_image_cleanup_days"]))
     owners = _owners(opts.get("owner", []))
     source = opts.get("copy-allowlist-from")
     say, lines = lifecycle._reporter("json" in opts)
@@ -192,7 +230,8 @@ def create(args):
                 error="vm_being_deleted", vm=name)
         n = _free_network(records)
         rec = {"name": name, "network": n, "orca_port": registry.ORCA_BASE + n, "image": image, "build": None,
-               "memory_mib": memory, "data_disk_gib": disk, "github_owners": owners,
+               "memory_mib": memory, "data_disk_gib": disk, "container_image_cleanup": cleanup,
+               "container_image_cleanup_days": cleanup_days, "github_owners": owners,
                "created": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
         left = _leftovers(rec)
         if left:
@@ -219,7 +258,8 @@ def create(args):
     say(f"{name} created. Pair with: agentbox pair {name} (starts the VM)")
     if "json" in opts:
         print(json.dumps({"vm": name, **{k: rec[k] for k in ("network", "orca_port", "image", "memory_mib",
-                                                              "data_disk_gib", "github_owners")},
+                                                              "data_disk_gib", "container_image_cleanup",
+                                                              "container_image_cleanup_days", "github_owners")},
                           "allowlist_from": source, "message": lifecycle._message(lines)}, ensure_ascii=False))
 
 
@@ -434,4 +474,50 @@ def set_memory(args):
         print(message)
 
 
-COMMANDS = {"create": create, "delete": delete, "set-memory": set_memory}
+# --- set-container-image-cleanup ----------------------------------------------
+
+def set_container_cleanup(args):
+    """agentbox set-container-image-cleanup <vm> [on|off] [--days N] [--json]: the VM's
+    Container image cleanup, on or off and after how many days an unused Container image
+    goes (1 to 365). Whatever state the VM is in; takes effect the next time the cleanup
+    runs. A call that changes nothing records nothing."""
+    positional, opts = _options(args, {"days": True, "json": False})
+    usage = "set-container-image-cleanup <vm> [on|off] [--days N] [--json]"
+    if (not 1 <= len(positional) <= 2                       # the VM and on or off, nothing else
+            or len(positional) == 2 and positional[1] not in ("on", "off")
+            or len(positional) == 1 and "days" not in opts):    # at least one of the two
+        die(usage, error="invalid_argument")
+    name = registry.check(positional[0])
+    on = positional[1] == "on" if len(positional) == 2 else None
+    days = _cleanup_days(opts["days"]) if "days" in opts else None
+    with state_files.locked(paths.REGISTRY):             # no regenerate reads a half-changed registry
+        with state_files.locked(registry.record_file(name)):    # no other call writes the record meanwhile
+            rec = registry.load(name)
+            before_on, before_days = registry.cleanup(rec)
+            now = (before_on if on is None else on, before_days if days is None else days)
+            changes = {}
+            if on is not None and on != before_on:
+                changes["container_image_cleanup"] = on
+            if days is not None and days != before_days:
+                changes["container_image_cleanup_days"] = days
+            if changes:
+                registry.save({**rec, **changes})
+            else:
+                activity.unchanged()
+    activity.result(enabled="true" if now[0] else "false", days=now[1])
+    changed = bool(changes)
+    was = f"after {before_days} days" if before_on else f"off, {before_days} days"
+    message = (f"{name}: Container image cleanup stays {_cleanup_text(*now)}" if not changed else
+               f"{name}: Container image cleanup {_cleanup_text(*now)} (was {was})")
+    if "json" in opts:
+        print(json.dumps({"vm": name, "container_image_cleanup": now[0],
+                          "container_image_cleanup_days": now[1],
+                          "previous": {"container_image_cleanup": before_on,
+                                       "container_image_cleanup_days": before_days},
+                          "changed": changed, "message": message}, ensure_ascii=False))
+    else:
+        print(message)
+
+
+COMMANDS = {"create": create, "delete": delete, "set-memory": set_memory,
+            "set-container-image-cleanup": set_container_cleanup}

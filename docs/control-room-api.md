@@ -86,6 +86,7 @@ else `500 action_failed`, with the message in `detail`:
 | 409 | `no_free_network` | all 254 networks in use |
 | 409 | `vm_not_running` | the VM is not running (logs) |
 | 409 | `vm_paused` | the VM is paused: start it first (changing the memory limit) |
+| 400 | `invalid_cleanup_days` | the days of the Container image cleanup are not a whole number from 1 to 365 (`field`: `days`) |
 | 400 | `invalid_memory` | memory limit not a whole number from 1024 MiB to the Host's memory (`field`: `memory_mib`), when changing the limit or creating a VM (`POST /vms` formerly answered `invalid_argument` for this) |
 | 500 | `memory_not_applied` | the new memory limit is saved, but the VM could not be defined again; `agentbox regenerate` finishes it |
 | 503 | `guest_agent_unavailable` | the VM's guest agent does not answer |
@@ -197,6 +198,7 @@ Sign-ins, failures, refusals by the brake and sign-outs are Activity entries (co
   "libvirt_state": "running",
   "network": 1, "orca_port": 6801, "address": "10.77.1.2",
   "memory_mib": 26624, "data_disk_gib": 300,
+  "container_image_cleanup": true, "container_image_cleanup_days": 7,
   "github_owners": ["likt0r"], "created": "2026-11-03T12:00:00Z",
   "image": "base", "build_pin": null,
   "image_build": "20261101-120000", "next_build": "20261101-120000",
@@ -264,6 +266,8 @@ Sign-ins, failures, refusals by the brake and sign-outs are Activity entries (co
 - `devices`: open connections to the VM's Orca port by remote address; `null` when unknown.
 - `memory_mib`: the memory limit in the registry record; after a change a running VM uses
   it from its next Restart or Reset (`PUT /vms/<vm>/memory`).
+- `container_image_cleanup`, `container_image_cleanup_days`: the Container image cleanup of the
+  VM, on or off and its days (1 to 365); a record without them means `true` and `7`.
 - Memory in use is not part of it: `vms.<name>.memory_bytes` of the `host` event and of
   `GET /host`.
 
@@ -423,6 +427,7 @@ first:
 | `create` | `image` (when given) |
 | `delete` | `delete_data_disk` |
 | `set-memory` | `mib` |
+| `set-container-image-cleanup` | `enabled` (`true`/`false`), `days` (the values after the call) |
 | `allow` | `domain` or, for a Regex entry, `regex` (the pattern; so for every command below that names `domain`), `scope` (a VM or `all`), `duration` (`15min`, `1h`, `8h`, `7d`) or `temporary`, `force` |
 | `extend` | `domain`, `scope`, `duration`, `force` |
 | `make-permanent` | `domain`, `scope`, `force` |
@@ -550,7 +555,8 @@ Progress arrives live as `build` and `build-log` events; the log endpoint fills 
 
 Settings keys the Control Room may change: `reset_age_days`, `reset_time`, `rebuild_day`,
 `rebuild_time`, `builds_kept`, `default_memory_mib`, `default_data_disk_gib`,
-`default_image`, `open_web_max_minutes`, `temporary_entry_default`, `young_domain_days`,
+`default_image`, `default_container_image_cleanup`,
+`default_container_image_cleanup_days`, `open_web_max_minutes`, `temporary_entry_default`, `young_domain_days`,
 `feed_interval_hours`, `package_min_age_days`, `orca_version`, `activity_retention_days`,
 `session_hours`, `default_language`, `auto_update`. The password, home network and ports are
 not among them.

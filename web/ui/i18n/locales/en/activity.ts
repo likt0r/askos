@@ -43,6 +43,7 @@ export default {
       deleteWithDisk: 'Delete the VM and its Data disk',
       setMemory: 'Memory limit {mib} MiB',
       setMemoryAny: 'Change the memory limit',
+      setContainerImageCleanup: 'Change the Container image cleanup',
       allow: 'Allow {entry}',
       disallow: 'Remove the Allowlist entry {entry}',
       extend: 'Extend the Allowlist entry {entry}',

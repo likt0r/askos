@@ -108,6 +108,7 @@ export default {
     no_free_network: 'All networks are in use.',
     vm_not_running: 'The VM is not running.',
     vm_paused: 'The VM is paused. Wake it first, then try again.',
+    invalid_cleanup_days: 'The days for the Container image cleanup must be a whole number from 1 to 365.',
     invalid_memory: 'The memory limit must be at least 1024 MiB and at most the Host\'s memory.',
     memory_not_applied: 'The memory limit is saved, but the VM could not be defined again. agentbox regenerate on the Host finishes it.',
     guest_agent_unavailable: 'The VM\'s guest agent does not answer.',

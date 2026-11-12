@@ -160,6 +160,7 @@ export const SENTENCES: Record<string, Sentence> = {
   'create': either('image', 'createImage', 'create'),
   'delete': flagged('delete_data_disk', 'deleteWithDisk', 'delete'),
   'set-memory': either('mib', 'setMemory', 'setMemoryAny'),
+  'set-container-image-cleanup': plain('setContainerImageCleanup'),
   'allow': listed('allow', 'for'),
   'disallow': listed('disallow'),
   'extend': listed('extend', 'by'),

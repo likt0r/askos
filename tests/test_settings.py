@@ -18,6 +18,7 @@ from test_vms import VmsTest  # noqa: E402
 
 DEFAULTS = {"reset_age_days": 7, "reset_time": "04:00", "rebuild_day": "sun", "rebuild_time": "03:00",
             "builds_kept": 3, "default_memory_mib": 26624, "default_data_disk_gib": 300, "default_image": "base",
+            "default_container_image_cleanup": True, "default_container_image_cleanup_days": 7,
             "open_web_max_minutes": 240, "temporary_entry_default": "1h", "young_domain_days": 14,
             "feed_interval_hours": 12, "package_min_age_days": 2, "auto_update": True, "orca_version": "",
             "activity_retention_days": 90, "session_hours": 12, "default_language": "browser"}
@@ -25,7 +26,8 @@ INVALID = {
     "reset_age_days": ["0", "366", "abc", "1.5", "-1", ""], "reset_time": ["24:00", "4:00", "04:60", "x"],
     "rebuild_day": ["monday", "", "7"], "rebuild_time": ["25:00"], "builds_kept": ["0", "21"],
     "default_memory_mib": ["1023", "1048577"], "default_data_disk_gib": ["0", "16385"],
-    "default_image": ["Base", "-x", "a b", "a" * 33], "open_web_max_minutes": ["0", "1441"],
+    "default_image": ["Base", "-x", "a b", "a" * 33],
+    "default_container_image_cleanup": ["", "on", "True", "1"], "default_container_image_cleanup_days": ["0", "366", "x", "1.5", ""], "open_web_max_minutes": ["0", "1441"],
     "temporary_entry_default": ["30m", "2h", "1d", "15"], "young_domain_days": ["0", "10", "42", "14.0"],
     "feed_interval_hours": ["0", "169"], "package_min_age_days": ["0", "31"],
     "auto_update": ["", "on", "True", "1", "yes", "false "],
@@ -173,7 +175,8 @@ class SetTest(SettingsTest):
     def test_every_setting_accepts_a_valid_value(self):
         valid = {"reset_age_days": "1", "reset_time": "23:59", "rebuild_day": "mon", "rebuild_time": "00:00",
                  "builds_kept": "20", "default_memory_mib": "1024", "default_data_disk_gib": "16384",
-                 "default_image": "rust-2", "open_web_max_minutes": "1440", "temporary_entry_default": "7d",
+                 "default_image": "rust-2", "default_container_image_cleanup": "false",
+                 "default_container_image_cleanup_days": "365", "open_web_max_minutes": "1440", "temporary_entry_default": "7d",
                  "young_domain_days": "35", "feed_interval_hours": "168", "package_min_age_days": "30",
                  "auto_update": "false", "orca_version": "1.4.250", "activity_retention_days": "3650",
                  "session_hours": "168", "default_language": "de"}
