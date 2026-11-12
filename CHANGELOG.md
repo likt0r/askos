@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.0](https://github.com/likt0r/askos/compare/v0.5.1...v0.6.0) (2026-11-12)
+
+### Features
+
+* the proxy is transparent, names come from the TLS handshake and the resolver answers every name with the Host ([#37](https://github.com/likt0r/askos/issues/37)) ([e3f5e2b](https://github.com/likt0r/askos/commit/e3f5e2b437c261d8996c2c91bd9ebe6634424c3d)), references [#36](https://github.com/likt0r/askos/issues/36)
+* VM connections to closed ports of the Host are refused at once, not dropped ([#41](https://github.com/likt0r/askos/issues/41)) ([3e68cfc](https://github.com/likt0r/askos/commit/3e68cfc0fac3687dd302105cd100e70a4dc9f8bc)), closes [#40](https://github.com/likt0r/askos/issues/40)
+* **vm:** the VM resolves through the Host and carries no proxy variables ([#38](https://github.com/likt0r/askos/issues/38)) ([5839279](https://github.com/likt0r/askos/commit/58392791db20e13ca0d96ffcea7b1bf7605922a5)), closes [#36](https://github.com/likt0r/askos/issues/36), references [#37](https://github.com/likt0r/askos/issues/37)
+
 ## [0.5.1](https://github.com/likt0r/askos/compare/v0.5.0...v0.5.1) (2026-11-11)
 
 ### Bug Fixes
