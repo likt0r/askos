@@ -14,6 +14,7 @@ const imageOpen = ref(false)
 const memoryOpen = ref(false)
 const envOpen = ref(false)
 const env = computed(() => Object.entries(props.vm.env ?? {}).filter(([, v]) => typeof v === 'string'))
+const refused = computed(() => new Set(Array.isArray(props.vm.env_refused) ? props.vm.env_refused : []))
 
 const used = computed(() => memoryInUse(live.state.host, props.vm.name))
 const limit = computed(() => (typeof props.vm.memory_mib === 'number' ? mibAsGib(props.vm.memory_mib) : null))
@@ -214,6 +215,9 @@ const postponedText = computed(() => {
           </dt>
           <dd class="font-mono text-xs leading-5 break-all">
             {{ value }}
+            <span v-if="refused.has(name)" class="font-sans text-warning" :data-testid="`overview-env-refused-${name}`">
+              {{ t('vm.env.refused') }}
+            </span>
           </dd>
         </template>
       </dl>

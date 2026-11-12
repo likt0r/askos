@@ -9,7 +9,7 @@
 import type { Vm } from '~/utils/live'
 import type { EnvRow } from '~/utils/vmRules'
 
-const props = defineProps<{ vm: Pick<Vm, 'name' | 'state' | 'libvirt_state' | 'agents' | 'env'> }>()
+const props = defineProps<{ vm: Pick<Vm, 'name' | 'state' | 'libvirt_state' | 'agents' | 'env' | 'env_refused'> }>()
 const open = defineModel<boolean>('open', { default: false })
 const { t } = useI18n()
 const errorText = useErrorText()
@@ -37,6 +37,7 @@ watch(open, (v) => {
   saved.value = false
 })
 
+const refused = computed(() => new Set(Array.isArray(props.vm.env_refused) ? props.vm.env_refused : []))
 const checked = computed(() => envFromRows(rows.value))
 const changed = computed(() => JSON.stringify(Object.entries(checked.value.env)) !== JSON.stringify(Object.entries(current())))
 const ready = computed(() => !Object.keys(checked.value.problems).length && !checked.value.tooMany && !checked.value.tooBig
@@ -150,6 +151,9 @@ async function restart() {
                 />
                 <p v-if="problemText(i)" class="mt-1 text-xs text-error" :data-testid="`env-problem-${i}`">
                   {{ problemText(i) }}
+                </p>
+                <p v-if="refused.has(row.name)" class="mt-1 text-xs text-warning" :data-testid="`env-refused-${i}`">
+                  {{ t('vm.env.refusedRow') }}
                 </p>
               </td>
               <td class="py-1 pr-2">

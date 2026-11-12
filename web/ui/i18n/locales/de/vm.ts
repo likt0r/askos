@@ -148,6 +148,8 @@ export default {
     value: 'Wert',
     add: 'Variable hinzufügen',
     remove: 'Variable entfernen',
+    refused: 'wird nicht weitergegeben: der Name ist reserviert',
+    refusedRow: 'Wird nicht weitergegeben: der Name ist reserviert. Diese Variable vor dem Speichern löschen.',
     safeguards: 'Namen, die eine Schutzmaßnahme oder Agent Box selbst liest (PATH, NODE_OPTIONS, npm_config_ignore_scripts und ähnliche), werden abgelehnt.',
     tooMany: 'Höchstens {max} VM-Variablen.',
     tooBig: 'Zu viel für den Control Room, der höchstens 8 KiB auf einmal annimmt. Lange oder viele Variablen auf dem Host mit agentbox set-env {name} NAME=WERT ... setzen.',

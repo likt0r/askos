@@ -56,8 +56,9 @@ PROXY = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "
          "NODE_USE_ENV_PROXY", "npm_config_proxy", "npm_config_https_proxy", "npm_config_noproxy", "NPM_CONFIG_NOPROXY",
          "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS"]
 # variables bash sets itself: export fails on its readonly ones in every login shell, and an
-# assignment to GROUPS has no effect
-SHELL = ["SHELLOPTS", "BASHOPTS", "UID", "EUID", "PPID", "GROUPS", "BASH_VERSINFO"]
+# assignment to GROUPS has no effect; IFS would change the word splitting of every profile.d
+# script after agent-env
+SHELL = ["SHELLOPTS", "BASHOPTS", "UID", "EUID", "PPID", "GROUPS", "BASH_VERSINFO", "IFS"]
 # broad prefixes stay allowed: only what a Safeguard or Agent Box itself reads is blocked
 ALLOWED = ["npm_config_foo", "npm_config_registry", "uid", "JAVA_OPTS", "UV_PYTHON", "UV_INDEX_URL", "DATABASE_URL", "NODE_ENV",
            "pnpm_config_store_dir", "GIT_AUTHOR_NAME", "PROXYCHAINS_CONF", "path", "_"]

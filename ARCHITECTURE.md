@@ -657,7 +657,8 @@ Host after every Build
   `ENV`, `CLAUDE_CODE_OAUTH_TOKEN`, `AGENTBOX_*`, `ORCA_PORT`, `PAIRING_ADDRESS`) and every
   variable of the Image's `DefaultEnvironment`, held to those files by a test. Neither may a
   VM variable be one bash sets itself (its readonly variables `SHELLOPTS`, `BASHOPTS`, `UID`,
-  `EUID`, `PPID`, `BASH_VERSINFO`, on which `export` fails in every login shell, and `GROUPS`). Broad prefixes
+  `EUID`, `PPID`, `BASH_VERSINFO`, on which `export` fails in every login shell, `GROUPS`, and `IFS`, which
+  would change the word splitting of every login-shell script after it). Broad prefixes
   such as `npm_config_*` or `UV_*` stay allowed: only what a Safeguard or Agent Box itself
   reads is blocked. Proxy variables and options (`HTTPS_PROXY`, `NO_PROXY`,
   `npm_config_proxy`, Java's proxy properties in `JAVA_TOOL_OPTIONS`, ...) stay allowed too,
@@ -1145,7 +1146,7 @@ otherwise in `lib/agentbox` under their own prefix.
   rewrites a file at boot); a Release is reviewed, the check catches convenient edits. A
   repository's own `.npmrc`, `pyproject.toml` or `.git/config` inside a VM can still loosen
   npm, uv or Git for that repository, and so can a VM variable that points a tool at another
-  configuration file (`npm_config_userconfig`, `npm_config_globalconfig`): those names are
+  configuration file (`npm_config_userconfig`, `npm_config_globalconfig`, `XDG_CONFIG_HOME`, which moves where Git and uv look for the user's configuration): those names are
   not refused.
 - **Builds run as root on the Host** (podman, bootc-image-builder) from the installed
   Release's Containerfiles: what a Release is cut from (`main`). Branch protection on `main`

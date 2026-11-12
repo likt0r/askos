@@ -52,9 +52,10 @@ RESERVED_ANY_CASE = frozenset({"npm_config_before"})
 # Safeguard off. reserved() blanks them out of a name and checks the rest with MENTIONS.
 PROXY_MENTIONS = re.compile(r"_proxy\b|proxy=|" + safeguards.PROXY_VALUE.pattern, re.IGNORECASE)
 # Set by bash itself: its readonly variables (`readonly -p` of a bare bash; export fails on
-# them in every login shell that sources agent-env) and GROUPS, which ignores assignments.
+# them in every login shell that sources agent-env), GROUPS, which ignores assignments, and
+# IFS, which would change the word splitting of every profile.d script after agent-env.
 # Not a Safeguard: a variable that never arrives.
-SHELL = frozenset({"SHELLOPTS", "BASHOPTS", "UID", "EUID", "PPID", "GROUPS", "BASH_VERSINFO"})
+SHELL = frozenset({"SHELLOPTS", "BASHOPTS", "UID", "EUID", "PPID", "GROUPS", "BASH_VERSINFO", "IFS"})
 # Every variable of a DefaultEnvironment in the Image: vm/files/usr/lib/systemd/system.conf.d/agentbox.conf
 # and the agentbox-packages.conf that package-safeguards writes (tests/test_vm_env.py checks both).
 DEFAULT_ENVIRONMENT = frozenset({

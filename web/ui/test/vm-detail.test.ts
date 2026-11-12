@@ -407,6 +407,19 @@ describe('VM variables', () => {
     expect(text('overview-env-none')).toContain('None.')
   })
 
+  it('marks a variable the record keeps but agentbox no longer passes on, in the overview and the dialog', async () => {
+    fakeApi({ 'GET /session': SIGNED_IN })
+    const { es } = await openApp('/vms/work/web', [WITH])
+    expect(exists('overview-env-refused-NODE_ENV')).toBe(false)
+    es.emit('vm', { ...WITH, env_refused: ['NODE_ENV'] })
+    await flushPromises()
+    expect(text('overview-env-refused-NODE_ENV')).toBe('not passed on: the name is reserved')
+    expect(exists('overview-env-refused-DATABASE_URL')).toBe(false)
+    await click('env-change')
+    expect(exists('env-refused-0')).toBe(false)
+    expect(text('env-refused-1')).toBe('Not passed on: the name is reserved. Delete this variable before saving.')
+  })
+
   it('saves the whole table for the next Restart, which can follow right away', async () => {
     const api = fakeApi({ 'GET /session': SIGNED_IN, 'PUT /vms/work/env': SET({ NODE_ENV: 'test', FLAG: 'a "b" $c' }, 'next_restart'),
       'POST /vms/work/restart': OK({ vm: 'work', state: 'running' }) })

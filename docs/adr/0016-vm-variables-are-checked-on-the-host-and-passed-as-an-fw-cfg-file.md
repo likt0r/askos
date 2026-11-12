@@ -6,7 +6,7 @@ The core of it is that a VM variable must never switch a Safeguard off. The safe
 
 - the names the safeguard check refuses or flags itself (`safeguards.OVERRIDES`, `safeguards.MENTIONS`), apart from its proxy names: the patterns have one source, so a variable that check learns to look for is refused here too;
 - what those patterns miss, in either case as npm reads its variables: `npm_config_before` (npm around the minimum release age);
-- what bash sets itself: its readonly variables (`SHELLOPTS`, `BASHOPTS`, `UID`, `EUID`, `PPID`, `BASH_VERSINFO`), on which `export` in `agent-env` fails in every login shell, and `GROUPS`, which ignores assignments. A test holds the list to what a bare bash declares readonly;
+- what bash sets itself: its readonly variables (`SHELLOPTS`, `BASHOPTS`, `UID`, `EUID`, `PPID`, `BASH_VERSINFO`), on which `export` in `agent-env` fails in every login shell, `GROUPS`, which ignores assignments, and `IFS`, which would change the word splitting of every login-shell script after `agent-env`. A test holds the list to what a bare bash declares readonly;
 - what Agent Box sets for the VM or what every process or shell reads first (`PATH`, `HOME`, `XDG_RUNTIME_DIR`, `LD_*`, `NODE_OPTIONS`, `BASH_ENV`, `ENV`, `CLAUDE_CODE_OAUTH_TOKEN`, `AGENTBOX_*`, `ORCA_PORT`, `PAIRING_ADDRESS`);
 - every variable of the Image's `DefaultEnvironment` (`agentbox.conf` and the `agentbox-packages.conf` that `package-safeguards` writes). A test parses both and fails when one of their variables is not reserved, so a new one cannot be forgotten.
 
@@ -20,7 +20,7 @@ The values reach the VM like its Claude token: as a file QEMU passes in as the f
 - The first `regenerate` after the update defines every VM again, once, for the new entry (a paused one when it runs again); so does the first `set-env` or `unset-env` of a VM. A domain that lacks the entry gives the VM no variables, not an error.
 - A name refused by a later release (the safeguard check learns a pattern, Agent Box sets a new variable) does not break a record that has it: a broken record would stop `regenerate` and `create` for every VM. The record keeps the variable, the file never carries it, `agentbox env` and `describe` mark it as not passed on, and `unset-env` removes it.
 - The name check, the limits and the file format work on any list of names and values, and `fwcfg-env` on any entry: secrets per VM (#30) can come as a second entry without changing them.
-- The patterns know the Safeguards they were written for. A variable can still point a tool at another configuration file (`npm_config_userconfig`), as a repository's own `.npmrc` can.
+- The patterns know the Safeguards they were written for. A variable can still point a tool at another configuration file (`npm_config_userconfig`, `XDG_CONFIG_HOME` for Git and uv), as a repository's own `.npmrc` can.
 - `fwcfg-env` is a Safeguard file: a derived Image must keep it as the Base image has it, like `guest-setup`.
 
 ## Considered Options
