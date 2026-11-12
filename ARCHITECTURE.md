@@ -116,8 +116,11 @@ flowchart LR
   with Docker Compose and every **Safeguard**, or an Image built on it.
 - **System disk** is a copy-on-write layer over a **Build** of the VM's Image and is replaced
   on every **Reset**.
-  **Data disk** keeps repositories, Orca's identity and pairings, agent transcripts and
-  build caches. Agent settings and hooks are not kept, so nothing planted there survives a Reset.
+  **Data disk** keeps repositories, Orca's identity and pairings, agent transcripts, build
+  caches and the agent's Podman storage ([ADR 0016](docs/adr/0016-containers-live-on-the-data-disk.md)):
+  the VM's containers with their Container images and volumes survive a Reset and come back
+  stopped, and nothing else of Podman's user configuration is kept. Agent settings and hooks
+  are not kept, so nothing planted there survives a Reset.
 - A VM learns its name, Orca port and Claude token from the Host at boot (QEMU fw_cfg);
   the token never touches the Data disk.
 - The Host never mounts a VM's disks. It reads a VM's journal (`agentbox logs`, and the
