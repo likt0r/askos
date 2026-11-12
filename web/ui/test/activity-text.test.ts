@@ -242,6 +242,12 @@ describe('Activity text (unit)', () => {
     expect(activityText(refused, tr)).toBe(`${say('setEnv', { env: 'NODE_OPTIONS=' })}: errors.env_name_reserved {"field":"","name":"NODE_OPTIONS"}`)
   })
 
+  it('words one removed Container image in the singular', () => {
+    const one = coded(0, 'container-image-cleanup.removed', { removed: '1', freed_bytes: '1048576', days: '7' }, 'stored')
+    expect(activityText(one, tr)).toContain('activity.actions.cleanupRemovedOne')
+    expect(activityText({ ...one, params: { ...one.params, removed: '2' } }, tr)).toContain('activity.actions.cleanupRemoved ')
+  })
+
   it('keeps it when a parameter the sentence needs is missing or not text', () => {
     expect(activityText(coded(0, 'open-web', {}, 'Open web for x minutes'), tr)).toBe('Open web for x minutes')
     expect(activityText(coded(0, 'migrate-lists', { list: 'nope', legacy: 'f' }, 'stored'), tr)).toBe('stored')

@@ -49,6 +49,7 @@ export default {
       cleanupOffDays: 'Container-Images aufräumen aus, {days} Tage',
       cleanupDays: 'Container-Images aufräumen nach {days} Tagen',
       cleanupAny: 'Container-Images aufräumen ändern',
+      cleanupRemovedOne: 'Container-Images aufräumen hat 1 Container-Image entfernt und {freed} frei gemacht',
       cleanupRemoved: 'Container-Images aufräumen hat {removed} Container-Images entfernt und {freed} frei gemacht',
       cleanupFailed: 'Container-Images aufräumen fehlgeschlagen',
       setEnv: 'VM-Variablen setzen: {env}',

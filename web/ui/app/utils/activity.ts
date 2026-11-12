@@ -236,7 +236,8 @@ export const SENTENCES: Record<string, Sentence> = {
   'github.error': (p, tr) => (has(p, 'request') ? say(tr, 'githubError', { request: p.request }) : null),
   'allowlist.expired': listed('expired'),
   'container-image-cleanup.removed': (p, tr) => (has(p, 'removed', 'freed_bytes')
-    ? say(tr, 'cleanupRemoved', { removed: p.removed, freed: formatHostBytes(Number(p.freed_bytes)) }) : null),
+    ? say(tr, Number(p.removed) === 1 ? 'cleanupRemovedOne' : 'cleanupRemoved',
+      { removed: p.removed, freed: formatHostBytes(Number(p.freed_bytes)) }) : null),
   'container-image-cleanup.failed': plain('cleanupFailed'),
   'wake.not-responding': (p, tr) => (NOT_RESPONDING[p.reason ?? ''] ? say(tr, NOT_RESPONDING[p.reason!]!) : null),
   'reset.automatic': (p, tr) => {

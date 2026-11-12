@@ -49,6 +49,7 @@ export default {
       cleanupOffDays: 'Container image cleanup off, {days} days',
       cleanupDays: 'Container image cleanup after {days} days',
       cleanupAny: 'Change the Container image cleanup',
+      cleanupRemovedOne: 'Container image cleanup removed 1 Container image and freed {freed}',
       cleanupRemoved: 'Container image cleanup removed {removed} Container images and freed {freed}',
       cleanupFailed: 'Container image cleanup failed',
       setEnv: 'Set VM variables: {env}',
