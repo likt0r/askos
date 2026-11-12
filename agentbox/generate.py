@@ -163,16 +163,18 @@ def _dnsmasq_options(rec):
     return (f"address=/#/{host_ip(rec)}", "local=/#/", "no-hosts", "no-resolv")
 
 
-def network_xml(rec):
+def network_xml(rec, uuid=None):
     """Isolated: no forwarding, DHCP for the one VM only, and libvirt's dnsmasq as the VM's
     resolver, answering every name with the Host's address on this network (ADR 0014): the
     proxy there takes the real destination from the TLS handshake. Every other record type
     gets an empty answer (`local=/#/`), nothing comes from the Host's hosts file, and nothing
-    is forwarded (`no-resolv`, which libvirt sets for an isolated network as well)."""
+    is forwarded (`no-resolv`, which libvirt sets for an isolated network as well). `uuid` is the
+    one of an existing network being redefined: libvirt refuses the same name with another."""
+    uuid_line = f"  <uuid>{uuid}</uuid>\n" if uuid else ""
     options = "".join(f"    <dnsmasq:option value='{o}'/>\n" for o in _dnsmasq_options(rec))
     return f"""<network xmlns:dnsmasq='http://libvirt.org/schemas/network/dnsmasq/1.0'>
   <name>{dom(rec['name'])}</name>
-  <bridge name='{bridge(rec)}' stp='on' delay='0'/>
+{uuid_line}  <bridge name='{bridge(rec)}' stp='on' delay='0'/>
   <ip address='{host_ip(rec)}' netmask='255.255.255.0'>
     <dhcp>
       <range start='{guest_ip(rec)}' end='{guest_ip(rec)}'/>
@@ -453,7 +455,9 @@ def _network(rec):
         info = dict(line.split(":", 1) for line in r.stdout.splitlines() if ":" in line)
         info = {k.strip(): v.strip() for k, v in info.items()}
         if not _resolver_current(rec, xml):
-            _virsh_define("net-define", network_xml(rec), f"{rec['name']}: define network")
+            current = re.search(r"<uuid>([^<]+)</uuid>", xml)
+            _virsh_define("net-define", network_xml(rec, current.group(1) if current else None),
+                          f"{rec['name']}: define network")
             changed = "network-redefined"
             if info.get("Active") == "yes":
                 live = _vm_live(rec)
