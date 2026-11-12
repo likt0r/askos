@@ -22,10 +22,14 @@ moves no VM.
 
 A step that fails is recorded in Activity (maintenance.<step>, outcome failed, the actor of the
 call: `timer`) and the window goes on with the next one; a step that succeeded is recorded too,
-so the timeline shows the window's order. A rebuild that is not due records nothing. A step
-whose Builds failed counts as failed. Two windows never run at once, and the timer starts at most
-one a day: a window started by it (actor `timer`) on a day a window already began on does
-nothing (the date of the last one is in RECORD). By hand (`agentbox maintenance`) it always runs.
+so the timeline shows the window's order: an entry is written when its step ends, so the
+Builds' own entries (build.*) and the Resets' (reset.*) come before maintenance.versions,
+maintenance.rebuild and maintenance.reset-check. A rebuild that is not due records nothing. A step
+whose Builds failed counts as failed. Two windows never run at once, and the timer starts none
+within 12 hours of the last: a window started by it (actor `timer`) less than 12 hours after a
+window began does nothing (the time of the last one is in RECORD). So a catch-up after midnight
+of a window missed at 23:00 does not make the next regular 23:00 window skip. By hand
+(`agentbox maintenance`) it always runs.
 
 A Host updated from before the Maintenance window keeps the timer of the old Reset check
 (agentbox-weekly.timer, which runs `agentbox --actor=timer weekly-check` at the old reset_time)
@@ -46,7 +50,8 @@ from .errors import Fail, die
 from .sanitize import clean
 
 LOCK = os.path.join(paths.STATE, "maintenance")
-# the date of the last window that began ("window") and of the last weekly rebuild one started ("rebuild")
+# when the last window began ("window", local time with offset) and the date of the last weekly
+# rebuild one started ("rebuild")
 RECORD = os.path.join(paths.STATE, "maintenance.json")
 TIMER = f"{generate.MAINTENANCE}.timer"
 OLD_TIMER = "agentbox-weekly.timer"         # the old Reset check's, which runs weekly-check until regenerate
@@ -55,6 +60,8 @@ VERSIONS_UNIT = "agentbox-versions.service"
 START_SECONDS = 3 * 3600        # systemctl start of a step's unit; the units have time limits of their own
 POLL = paths.tunable("AGENTBOX_MAINTENANCE_POLL_SECONDS", 15)     # between two looks at the Builds
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+STAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}")
+GUARD_SECONDS = 12 * 3600       # the timer starts no window when the last one began less than this ago
 # the steps in their order, with what the Activity entries and the journal call them
 STEPS = (("feeds", "fetching the Feeds", "Feeds fetched"),
          ("versions", "version check", "version check done"),
@@ -96,35 +103,58 @@ def _builds_done(started, target):
         die(f"the Build of {', '.join(failed)} failed", error="action_failed")
 
 
-def rebuild_due(now, day, at, last):
-    """Whether a window at `now` (epoch seconds, local time) starts the weekly rebuild: day (of
-    DAYS) and at (HH:MM) are rebuild_day and maintenance_time, last the date of the last weekly
-    rebuild a window started (None: never). Due when no rebuild began on or after the date of the
-    last window due on rebuild_day (so a missed one is caught up by the next window, once);
-    without a record only on rebuild_day itself."""
-    local = datetime.datetime.fromtimestamp(now)
-    hours, minutes = map(int, at.split(":"))
-    when = (local - datetime.timedelta(days=(local.weekday() - settings.DAYS.index(day)) % 7)).replace(
-        hour=hours, minute=minutes, second=0, microsecond=0)
-    if when > local:
-        when -= datetime.timedelta(days=7)
-    return when.date() == local.date() if last is None else last < when.date()
+def rebuild_due(now, day, last):
+    """Whether a window that began at `now` (epoch seconds, local time) starts the weekly rebuild:
+    day (of DAYS) is rebuild_day, last the date of the last weekly rebuild a window started (None:
+    never). Judged by dates alone, not by the clock time of the window (that is maintenance_time,
+    or until `regenerate` the old reset_time, which may be earlier in the day): due when no
+    rebuild began on or after the last rebuild_day (so a missed one is caught up by the next
+    window, once); without a record only on rebuild_day itself."""
+    local = datetime.datetime.fromtimestamp(now).date()
+    latest = local - datetime.timedelta(days=(local.weekday() - settings.DAYS.index(day)) % 7)
+    return latest == local if last is None else last < latest
+
+
+def _read():
+    try:
+        with open(RECORD, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def _recorded(key):
-    """A date of RECORD ("window" or "rebuild"), None when there is none or it cannot be read."""
+    """The rebuild date of RECORD ("rebuild"), None when there is none or it cannot be read."""
+    value = _read().get(key)
     try:
-        with open(RECORD, encoding="utf-8") as f:
-            value = json.load(f).get(key)
         return datetime.date.fromisoformat(value) if isinstance(value, str) and DATE.fullmatch(value) else None
-    except (OSError, ValueError, AttributeError):
+    except ValueError:
         return None
 
 
-def _record_date(key, when):
-    """RECORD with `key` set to the local date of `when` (epoch seconds), the other date kept."""
-    values = {k: d.isoformat() for k in ("window", "rebuild") if (d := _recorded(k)) is not None}
-    values[key] = datetime.date.fromtimestamp(when).isoformat()
+def _window_began():
+    """When the last window began (epoch seconds), None when unknown."""
+    value = _read().get("window")
+    try:
+        return (datetime.datetime.fromisoformat(value).timestamp()
+                if isinstance(value, str) and STAMP.fullmatch(value) else None)
+    except ValueError:
+        return None
+
+
+def _record_window(when, rebuild=None):
+    """RECORD with the window's start (epoch seconds) and, when given, the date of a rebuild;
+    what is not given is kept."""
+    values = {}
+    if (began := _read().get("window")) is not None and isinstance(began, str):
+        values["window"] = began
+    if (d := _recorded("rebuild")) is not None:
+        values["rebuild"] = d.isoformat()
+    if rebuild is not None:
+        values["rebuild"] = datetime.date.fromtimestamp(rebuild).isoformat()
+    else:
+        values["window"] = datetime.datetime.fromtimestamp(when).astimezone().isoformat(timespec="seconds")
     os.makedirs(paths.STATE, exist_ok=True)
     state_files.write_atomic(RECORD, (json.dumps(values, sort_keys=True) + "\n").encode(), 0o644)
 
@@ -147,13 +177,13 @@ def _rebuild(say, begun, as_json):
     """Due or not by the time the window began, however long the Builds before took. The wait
     comes also when the start failed: its unit may run all the same."""
     values = settings.load()
-    if not rebuild_due(begun, values["rebuild_day"], values["maintenance_time"], _recorded("rebuild")):
+    if not rebuild_due(begun, values["rebuild_day"], _recorded("rebuild")):
         say(f"No weekly rebuild today (rebuild_day: {values['rebuild_day']})")
         return "skipped"
     started = int(time.time())
     try:
         name = images.start("all")
-        _record_date("rebuild", begun)
+        _record_window(begun, rebuild=begun)
         say(f"Weekly rebuild started ({name})")
     finally:
         wait_for_builds(say)
@@ -184,7 +214,7 @@ def maintenance(args, command="maintenance"):
     """agentbox maintenance [--json] (agentbox-maintenance.service, daily at maintenance_time): the
     Maintenance window, its steps one after another; a failing one does not stop the next. With
     --json only the JSON result goes to stdout: {"steps": [{"step", "outcome", "message"}],
-    "ran_today"} (ran_today: started by the timer on a day a window had begun already, so
+    "ran_today"} (ran_today: started by the timer less than 12 hours after a window began, so
     nothing ran)."""
     if any(a != "--json" for a in args):
         die(f"{command} [--json]", error="invalid_argument")
@@ -195,13 +225,14 @@ def maintenance(args, command="maintenance"):
         if not mine:
             die("a Maintenance window is running already (journalctl -fu agentbox-maintenance)",
                 error="action_failed")
-        if activity.actor() == "timer" and _recorded("window") == datetime.date.fromtimestamp(begun):
-            say("A Maintenance window ran today already; the next one is tomorrow")
+        last = _window_began()
+        if activity.actor() == "timer" and last is not None and 0 <= begun - last < GUARD_SECONDS:
+            say("A Maintenance window began less than 12 hours ago; the next one is at its time")
             if as_json:
                 print(json.dumps({"steps": [], "ran_today": True}))
             return
         try:
-            _record_date("window", begun)
+            _record_window(begun)
         except OSError as e:        # the window runs all the same
             say(f"agentbox: {RECORD}: {e.strerror}")
         for step, what, done in STEPS:
@@ -254,7 +285,7 @@ def weekly_check(args):
     """agentbox weekly-check [--json]: the Reset check of the Maintenance window on its own
     (lifecycle.weekly_check). Called by the timer (actor `timer`, agentbox-weekly.service of a
     Host from before the Maintenance window) while the window's timer is missing, it runs the
-    whole window instead, at most once a day like the window's own timer, so an update leaves no
+    whole window instead, at most once in 12 hours like the window's own timer, so an update leaves no
     gap until `agentbox regenerate` writes that timer and takes agentbox-weekly away."""
     if activity.actor() == "timer" and timer_missing():
         if "--json" not in args:

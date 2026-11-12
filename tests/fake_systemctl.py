@@ -17,6 +17,9 @@ scenario.json:
                     ExecStart: to its end, exiting with its exit code (a oneshot service), or
                     with --no-block in the background, while `systemctl is-active` reports the
                     unit active (running/<unit>.pid in FAKE_DIR)
+  systemctl_queue   {unit: N}: a unit started with --no-block is queued first, as a start job that
+                    waits: the first N `systemctl is-active` calls for it say inactive and the Nth
+                    makes it run (and report active from then on); until then it has run nothing
 """
 import fcntl
 import fnmatch
@@ -69,7 +72,11 @@ def running(unit):
 if sys.argv[1] == "start":
     runs = scenario.get("systemctl_run", {})
     for unit in (a for a in sys.argv[2:] if not a.startswith("-") and a in runs):
-        if "--no-block" in sys.argv:
+        if "--no-block" in sys.argv and scenario.get("systemctl_queue", {}).get(unit):
+            os.makedirs(os.path.join(DIR, "running"), exist_ok=True)
+            with open(os.path.join(DIR, "running", unit + ".queued"), "w") as f:
+                f.write(str(scenario["systemctl_queue"][unit]))
+        elif "--no-block" in sys.argv:
             os.makedirs(os.path.join(DIR, "running"), exist_ok=True)
             p = subprocess.Popen(runs[unit], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                  stderr=subprocess.DEVNULL, start_new_session=True)
@@ -79,7 +86,27 @@ if sys.argv[1] == "start":
             code = subprocess.run(runs[unit], stdin=subprocess.DEVNULL).returncode
             if code:
                 sys.exit(f"Job for {unit} failed because the control process exited with error code.")
+def dequeue(unit):
+    """One is-active call for a queued unit: the Nth of them starts what it runs."""
+    queued = os.path.join(DIR, "running", unit + ".queued")
+    try:
+        with open(queued) as f:
+            left = int(f.read()) - 1
+    except (OSError, ValueError):
+        return
+    if left > 0:
+        with open(queued, "w") as f:
+            f.write(str(left))
+        return
+    os.remove(queued)
+    p = subprocess.Popen(scenario["systemctl_run"][unit], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    with open(os.path.join(DIR, "running", unit + ".pid"), "w") as f:
+        f.write(str(p.pid))
+
+
 if sys.argv[1] == "is-active":
+    dequeue(sys.argv[-1])
     active = sys.argv[-1] in scenario.get("systemctl_active", []) or running(sys.argv[-1])
     print("active" if active else "inactive")
     sys.exit(0 if active else 3)

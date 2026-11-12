@@ -618,9 +618,10 @@ it has finished:
 
 So the Reset check never moves a VM onto a Build that is still being made, and a failed Build,
 which never becomes the current one, moves no VM. A step that fails is in Activity (actor
-`timer`) and the window goes on with the next one; each step that ran leaves an entry, so
-Activity shows the window's order. A window missed while the Host was off runs once after it
-starts (`Persistent=true`), and the timer starts at most one window a day (`sudo agentbox
+`timer`) and the window goes on with the next one; each step that ran leaves an entry when it ends, so
+Activity shows the window's order: the Builds' entries (`build.*`) come before `maintenance.versions`
+and `maintenance.rebuild`, the Resets' before `maintenance.reset-check`. A window missed while the Host was off runs once after it
+starts (`Persistent=true`), and the timer starts no window within 12 hours of the last (`sudo agentbox
 maintenance` by hand always runs one). The weekly rebuild is caught up: when the window of
 `rebuild_day` did not start it (the Host was off, or the Build could not start), the next window
 starts it, once, whatever day that is; the one after that waits for the next `rebuild_day`.

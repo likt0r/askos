@@ -112,7 +112,7 @@ runs.
   away. These are the only units an update takes away. The old Reset check's timer
   (`agentbox-weekly`) stays: as long as the Maintenance window's timer is missing, the
   `agentbox weekly-check` it starts runs the whole window (Feeds, version check and its Builds,
-  the weekly rebuild when due, Reset check) at the old Reset time, at most once a day, so
+  the weekly rebuild when due, Reset check) at the old Reset time, at most once in 12 hours, so
   maintenance goes on without a gap. The update prints that.
 - **Once, after the first update to a Release with the Maintenance window: `sudo agentbox
   regenerate`.** It writes `agentbox-maintenance.timer`, which runs the window at

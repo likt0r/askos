@@ -892,7 +892,10 @@ to: the run lock is free, no unit of a Build is active and no request file waits
 has finished, and a failed Build, which never becomes the current one, moves no VM. A step that
 fails is recorded in Activity (`maintenance.<step>`, actor `timer`, outcome `failed`) and the
 window goes on with the next step; a step whose Builds failed counts as failed, and every step
-that ran is recorded, so the timeline shows the window's order. The wait after the version
+that ran is recorded, so the timeline shows the window's order: an entry is written when its
+step ends, so the Builds' own entries (`build.*`) come before `maintenance.versions` and
+`maintenance.rebuild` (the weekly rebuild has no start entry), and the Resets' (`reset.*`)
+before `maintenance.reset-check`; `maintenance.feeds` comes first. The wait after the version
 check and after the rebuild comes also when that step failed, since it may have started a Build
 before it failed. The timer is `Persistent`: a window missed while the Host was off runs once
 after boot, not once per missed day. The weekly rebuild is caught up: when the window of a
@@ -900,9 +903,12 @@ after boot, not once per missed day. The weekly rebuild is caught up: when the w
 window starts it, once, whatever day that is, and the one after that waits for the next
 `rebuild_day` (the dates of the last window and of the last weekly rebuild a window started are
 in `/var/lib/agentbox/maintenance.json`). It has no `WakeSystem=`: waking a sleeping Host is the
-Host's business. Two windows never run at once (a lock), and the timer starts at most one a
-day: a window it starts on a day a window already began on does nothing (`agentbox maintenance`
-by hand always runs). The Feeds keep their own timer (boot plus 10 minutes, then every
+Host's business. Two windows never run at once (a lock), and the timer starts none within 12
+hours of the last: a window it starts less than 12 hours after a window began does nothing, so
+a catch-up after midnight does not make the next regular window skip (`agentbox maintenance`
+by hand always runs). The weekly rebuild is judged by date alone, not by the clock time the
+window begins at (until `regenerate` that is the old `reset_time`, which may be before
+`maintenance_time`). The Feeds keep their own timer (boot plus 10 minutes, then every
 `feed_interval_hours`) for a Host that is awake for long. `maintenance_time` replaced
 `reset_time` and `rebuild_time` and the three timers of before (`agentbox-weekly`,
 `agentbox-rebuild`, `agentbox-versions.timer`). An RPM update disables and deletes
