@@ -849,6 +849,27 @@ def _reason(signal, code, text, **params):
     return {"signal": signal, "code": code, "params": {k: str(v) for k, v in params.items()}, "reason": text}
 
 
+# a last label no top-level domain has, which resolvers take for part of an address
+NUMERIC_LABEL = re.compile(r"[0-9]+|0x[0-9a-f]*")
+
+
+def is_address(host):
+    """Whether a resolver takes host for an IP address: one ipaddress reads, an IPv4 address
+    in any form inet_aton takes (16909060, 0x01020304, 1.2.3), or a name whose last label is
+    all digits or 0x and hex digits."""
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        pass
+    try:
+        socket.inet_aton(host)
+        return True
+    except (OSError, ValueError):
+        pass
+    return bool(NUMERIC_LABEL.fullmatch(host.rsplit(".", 1)[-1]))
+
+
 def explain(host):
     """Every Signal with why it applies, as a list of _reason(), regardless of the
     Harmless marks."""
@@ -856,12 +877,9 @@ def explain(host):
     found = []
     if host in METADATA:
         found.append(_reason("metadata", "metadata", "address of a cloud metadata service"))
-    try:
-        ipaddress.ip_address(host)
+    if is_address(host):
         found.append(_reason("raw-ip", "raw-ip", "IP address instead of a domain"))
         return found
-    except ValueError:
-        pass
 
     for entry, (category, source), regex in hand_watchlist().hits(host):
         more = {"source": source} if source else {}

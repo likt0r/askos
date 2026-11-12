@@ -663,17 +663,20 @@ class ListsProxyTest(detection_tests.ProxyTest):
     def test_a_legitimate_pattern_lifts_weak_signals_only(self):
         write(os.path.join(self.conf, "watchlist.json"), lists_tests.record())
         write(os.path.join(self.conf, "legitimate.json"),
-              lists_tests.record(legit_rx(r"^(fresh|bad)\.example$"), legit_rx(r"^npm-[a-z]+\.example$")))
+              lists_tests.record(legit_rx(r"^(fresh|bad)\.example$"), legit_rx(r"^npm-[a-z]+\.example$"),
+                                 legit_rx(r"^metadata\.google\.internal$")))
         self.start()
         self.assertIsNone(self.alert("fresh.example"))                     # young, lifted
         self.assertEqual(self.alert("bad.example"), ["threat"])            # strong: stays
         self.assertEqual(self.alert("npm-cache.example"), ["lookalike"])
+        self.assertEqual(self.alert("metadata.google.internal"), ["metadata"])     # not by its name
 
     def test_a_harmless_pattern_stops_alerts_but_not_the_block_in_open_web(self):
-        self.harmless("npm-other.example", r"regex ^npm-[a-z]+-mirror\.example$")
+        self.harmless("npm-other.example", r"regex ^npm-[a-z]+-mirror\.example$", r"regex ^metadata\.google\.internal$")
         self.start()
         self.assertIsNone(self.alert("npm-cache-mirror.example"))
         self.assertEqual(self.alert("npm-cache.example"), ["lookalike"])
+        self.assertEqual(self.alert("metadata.google.internal"), ["metadata"])     # not by its name
         self.open_web()
         self.assertEqual(self.connect("npm-x-mirror.example"), ACCESS_DENIED)
         self.assertEqual(self.blocked_reason("npm-x-mirror.example"), "suspicious: lookalike")

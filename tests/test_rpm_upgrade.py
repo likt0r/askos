@@ -65,7 +65,8 @@ class GeneratedUnitsTest(unittest.TestCase):
                 os.makedirs(os.path.join(root, sub))
             os.makedirs(os.path.join(tmp, "bin"))
             for name, program in (("virsh", "fake_virsh.py"), ("virt-install", "fake_virt_install.py"),
-                                  ("qemu-img", "fake_qemu_img.py"), ("systemctl", "fake_systemctl.py")):
+                                  ("qemu-img", "fake_qemu_img.py"), ("systemctl", "fake_systemctl.py"),
+                                  ("firewall-cmd", "fake_firewall_cmd.py")):
                 with open(os.path.join(tmp, "bin", name), "w") as f:
                     f.write(f'#!/bin/sh\nexec python3 "{os.path.join(TESTS, program)}" "$@"\n')
                 os.chmod(os.path.join(tmp, "bin", name), 0o755)

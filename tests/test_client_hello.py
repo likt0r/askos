@@ -12,11 +12,13 @@ Run from the repo root: python3 -m unittest discover -s tests
 import asyncio
 import importlib.machinery
 import importlib.util
+import json
 import os
 import random
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 from unittest import mock
@@ -76,7 +78,8 @@ class ParserTest(unittest.TestCase):
         self.assertEqual(self.name(client_hello("Registry.NPMJS.org.")), "registry.npmjs.org")
 
     def test_a_name_that_is_no_host_name_counts_as_none(self):
-        for name in ("", ".", "bad name.example", "a/b.example", "x" * 254, "é.example", "a:b", "a_b.example"):
+        for name in ("", ".", "bad name.example", "a/b.example", "x" * 254, "é.example", "a:b", "a_b.example",
+                     "x..github.com", ".github.com", "a" * 64 + ".example", "-a.example", "a-.example"):
             with self.subTest(name=name):
                 self.refused(raw_client_hello(name), "no server name")
 
@@ -298,6 +301,34 @@ class ResolveTest(unittest.TestCase):
         for odd in ("fe80::1%eth0", "fe80::1%", "not an address", "10.0.0.1"):
             with self.subTest(address=odd):
                 self.assertIsNone(self.resolve("93.184.215.14", odd))
+
+
+class UnresolvableTest(unittest.TestCase):
+    """A name the resolver cannot even encode is refused like one without a public address."""
+
+    def test_a_name_the_idna_codec_refuses_is_refused_and_logged(self):
+        with tempfile.TemporaryDirectory() as conf:
+            with open(os.path.join(conf, "allowlist.json"), "w") as f:
+                json.dump({"entries": [entry("example.org", "all")]}, f)
+            said = []
+
+            async def unencodable(host):
+                raise UnicodeError("label too long")
+
+            async def run():
+                ours, theirs = socket.socketpair()
+                with ours, theirs:
+                    reader, writer = await asyncio.open_connection(sock=ours)
+                    theirs.sendall(client_hello("example.org"))
+                    theirs.shutdown(socket.SHUT_WR)
+                    await proxy.handle("work", proxy.Allowlist("work"), reader, writer)
+                    theirs.settimeout(5)
+                    return theirs.recv(100)
+            with mock.patch.object(proxy, "CONF_DIR", conf), mock.patch.object(proxy, "suspicious", None), \
+                    mock.patch.object(proxy, "resolve_public", unencodable), \
+                    mock.patch.object(proxy, "log", lambda ctx, msg: said.append(msg)):
+                self.assertEqual(asyncio.run(run()), ACCESS_DENIED)
+        self.assertEqual(said, ["BLOCKED example.org (does not resolve to a public address)"])
 
 
 class RefusalTest(allowlist_tests.ProxyTest):

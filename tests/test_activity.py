@@ -80,7 +80,7 @@ class ActivityTest(unittest.TestCase):
         write_passwd(self.root)
         for name, program in (("virsh", "fake_virsh.py"), ("qemu-img", "fake_qemu_img.py"), ("ss", "fake_ss.py"),
                               ("systemctl", "fake_systemctl.py"), ("virt-install", "fake_virt_install.py"),
-                              ("journalctl", "fake_journalctl.py")):
+                              ("journalctl", "fake_journalctl.py"), ("firewall-cmd", "fake_firewall_cmd.py")):
             fake(os.path.join(self.dir, "bin", name), program)
         fake(self.path("opt/Orca/resources/bin/orca-ide"), "fake_orca.py")
         script(self.path("usr/libexec/agentbox-suspicious"), CLASSIFIER)

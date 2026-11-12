@@ -43,6 +43,7 @@ class RegistryTest(unittest.TestCase):
         fake(os.path.join(self.dir, "bin", "qemu-img"), "fake_qemu_img.py")
         fake(os.path.join(self.dir, "bin", "systemctl"), "fake_systemctl.py")
         fake(os.path.join(self.dir, "bin", "virt-install"), "fake_virt_install.py")
+        fake(os.path.join(self.dir, "bin", "firewall-cmd"), "fake_firewall_cmd.py")
         self.scenario()
 
     def tearDown(self):
@@ -420,6 +421,25 @@ class RegenerateTest(RegistryTest):
         self.assertEqual(self.run_agentbox("regenerate")[0], 0)
         self.assertEqual(self.network_calls(), [])
 
+    def test_the_zone_of_the_vm_networks_gets_the_ports_the_vms_reach(self):
+        # firewalld's zone libvirt rejects what it does not list: regenerate opens them as setup does
+        self.scenario(vms={"priv": {"uuid": PRIV_UUID}}, firewall_zones={"libvirt": {"ports": ["9100/tcp"]}})
+        code, out, err = self.run_agentbox("regenerate")
+        self.assertEqual((code, err), (0, ""))
+        self.assertTrue(out.startswith("firewall zone libvirt: port 53/udp open; port 53/tcp open; "
+                                       "port 443/tcp open\n"), out)
+        with open(os.path.join(self.dir, "firewall.json")) as f:
+            zones = json.load(f)
+        for side in ("permanent", "runtime"):
+            self.assertEqual(sorted(zones[side]["libvirt"]["ports"]), ["443/tcp", "53/tcp", "53/udp", "9100/tcp"])
+        # the zone opened before any VM network comes up
+        cmds = [(c["cmd"], c.get("argv", [])) for c in self.calls()]
+        opened = max(i for i, (cmd, argv) in enumerate(cmds) if cmd == "firewall-cmd" and "--reload" in argv)
+        started = min(i for i, (cmd, _) in enumerate(cmds) if cmd in ("net-define", "net-start"))
+        self.assertLess(opened, started)
+        self.forget_calls()
+        self.assertEqual(self.json("regenerate")["zone"], [])
+
     def test_firewall_rules_written_but_not_loaded_are_loaded_next_time(self):
         self.scenario(vms={"priv": {"uuid": PRIV_UUID}}, systemctl_fails=["restart"])
         self.assertEqual(self.run_agentbox("regenerate")[0], 1)
@@ -531,7 +551,7 @@ class RegenerateTest(RegistryTest):
         self.forget_calls()
         result = self.json("regenerate")
         self.assertEqual(result, {"vms": {"work": [], "priv": []}, "firewall": False, "storage": False,
-                                  "retention": None, "timers": False})
+                                  "retention": None, "timers": False, "zone": []})
         self.assertEqual(self.snapshot(), before)
         changing = [c for c in self.calls() if c["cmd"] in ("define", "net-define", "net-autostart", "net-start")
                     or c["cmd"] == "qemu-img" and c["argv"][0] == "create"
@@ -543,7 +563,9 @@ class RegenerateTest(RegistryTest):
         result = self.json("regenerate")
         self.assertEqual(result, {"vms": {vm: ["network", "units", "data-disk", "claude-token", "observer", "domain"]
                                           for vm in ("work", "priv")}, "firewall": True, "storage": True,
-                                  "retention": 90, "timers": True})
+                                  "retention": 90, "timers": True,
+                                  "zone": ["port 53/udp open", "port 53/tcp open", "port 443/tcp open", "port 9100/tcp open",
+                                           "service ssh removed"]})
 
     def test_new_vm_keeps_the_uuid_from_its_first_definition(self):
         vm_records.write(self.root, record("lab", 3))
@@ -563,7 +585,7 @@ class RegenerateTest(RegistryTest):
         vm_records.write(self.root, record("priv", 2, memory_mib=16384))
         self.assertEqual(self.json("regenerate"), {"vms": {"work": [], "priv": ["domain"]}, "firewall": False,
                                                    "storage": False, "retention": None,
-                                                   "timers": False})
+                                                   "timers": False, "zone": []})
         self.assertEqual([c["dom"] for c in self.calls("define")], ["agentbox-priv"])
         self.assertIn("16384", self.virt_install("priv"))
 

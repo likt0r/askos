@@ -118,6 +118,8 @@ def log(ctx, msg):
 # TLS record types, the handshake type and the extension of the server name (RFC 8446, 6066)
 HANDSHAKE, ALERT_RECORD, FATAL, CLIENT_HELLO, SERVER_NAME, HOST_NAME = 22, 21, 2, 1, 0, 0
 HOST = re.compile(r"[a-z0-9.-]{1,253}")
+# a label as domain entries have them: letters, digits and inner hyphens, at most 63
+LABEL = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")
 NOT_TLS = "not a TLS handshake"
 
 
@@ -155,7 +157,7 @@ class Reader:
 
 def _host_name(name):
     name = name.decode("ascii", "replace").lower().rstrip(".")
-    if not HOST.fullmatch(name):
+    if not HOST.fullmatch(name) or not all(LABEL.fullmatch(label) for label in name.split(".")):
         raise Refused("no server name", UNRECOGNIZED_NAME)
     return name
 
@@ -567,7 +569,7 @@ async def handle(ctx, lists, reader, writer):
         return
     try:
         addrs = await resolve_public(host)
-    except OSError:
+    except (OSError, UnicodeError):     # UnicodeError: a name the IDNA codec refuses
         addrs = None
     if not addrs:
         log(ctx, f"BLOCKED {host} (does not resolve to a public address)")

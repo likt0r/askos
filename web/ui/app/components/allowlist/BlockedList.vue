@@ -75,7 +75,7 @@ useLiveEvent('alert', (a) => {
     <ul v-else-if="rows.length" class="divide-y divide-default rounded-lg border border-default bg-default">
       <li
         v-for="r in rows"
-        :key="r.domain"
+        :key="(allowable(r) ? 'to ' : 'from ') + r.domain"
         class="flex flex-col gap-1.5 px-4 py-2.5 sm:flex-row sm:items-center sm:gap-4"
         data-testid="blocked-row"
         :data-domain="r.domain"

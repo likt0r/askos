@@ -78,7 +78,8 @@ flowchart LR
   defined again and, when active, stopped and started, since libvirt's dnsmasq reads its
   options only when the network starts; a VM running on it has no network until its next
   Restart (libvirt does not reconnect a running VM to a restarted network), which
-  `regenerate` says. A socket whose unit text changed is restarted after systemd read it, so
+  `regenerate` says. It also opens the ports the VMs reach in the firewalld zone `libvirt`
+  (as setup does, step 5), before any VM network comes up. A socket whose unit text changed is restarted after systemd read it, so
   it listens on its new address (systemd keeps an active socket where it was); the proxy,
   which holds its listening socket, is stopped first and starts again with the next
   connection. Network numbers and names are fixed once a VM exists. A broken record
@@ -328,7 +329,8 @@ flowchart LR
 - lookalikes of registry and vendor names (`npm-cache.com`, `pypi-get.com`, `npmjs.help`)
   and typos within edit distance 2 for names of at least five characters (`npnjs.com`;
   shorter names such as `pypa` are too often real words),
-- raw IPs, cloud metadata addresses,
+- raw IPs, in every form a resolver reads as an address (`16909060`, `0x01020304`, `1.2.3`,
+  a name whose last label is all digits or `0x` and hex digits), cloud metadata addresses,
 - blockchain RPC endpoints (used as command channels by GlassWorm and keyv), also below
   Legitimate domains,
 - random-looking labels and unusual TLDs (weak signals).

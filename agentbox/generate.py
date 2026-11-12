@@ -960,14 +960,22 @@ def report(result):
 
 
 def regenerate(args):
-    """agentbox regenerate [--json]: the Host configuration of every VM from the registry."""
+    """agentbox regenerate [--json]: the Host configuration of every VM from the registry, and
+    the ports of the firewalld zone libvirt the VMs reach (as setup opens them), so this
+    command alone brings a Host's VMs up to date with an installed Release."""
+    from .hoststeps import libvirt_zone
     hostsetup.load()    # a Host setup that makes no sense stops us before anything is written
     with state_files.locked(paths.REGISTRY):
+        registry.all_records()      # a broken registry stops everything before any change
+        settings.load()             # so do broken settings
+        zone = libvirt_zone()       # before any VM network comes up: the zone rejects what it does not list
         result = apply()
+    result["zone"] = zone
     if "--json" in args:
         print(json.dumps(result))
         return
-    print("\n".join(report(result)) or "everything up to date")
+    lines = ([f"firewall zone libvirt: {'; '.join(zone)}"] if zone else []) + report(result)
+    print("\n".join(lines) or "everything up to date")
 
 
 COMMANDS = {"migrate": migrate, "regenerate": regenerate}

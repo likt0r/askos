@@ -218,6 +218,18 @@ class BlockedTest(NetworkTest):
                          '"suspicious": ["exfil", "young"]}, {"domain": "10.77.1.2", "count": 2, "last": 1793700500, '
                          '"reason": "not a TLS handshake", "code": "not-tls", "params": {}, "suspicious": []}]\n')
 
+    def test_a_client_address_and_a_destination_of_the_same_text_are_two_rows(self):
+        # a VM may also name an address as the server: that is a destination, not the client
+        self.journal("1793701300.000001 titan agentbox-proxy-work[812]: [work] ALERT 10.77.1.2 [raw-ip]\n"
+                     "1793701300.000002 titan agentbox-proxy-work[812]: [work] BLOCKED 10.77.1.2 "
+                     "(not on the Allowlist)\n"
+                     "1793701300.000003 titan agentbox-proxy-work[812]: [work] BLOCKED 10.77.1.2 (no server name)\n"
+                     "1793701300.000004 titan agentbox-proxy-work[812]: [work] BLOCKED 10.77.1.2 "
+                     "(not a TLS handshake)\n")
+        rows = json.loads(self.run_agentbox("blocked", "work", "--json")[1])
+        self.assertEqual(sorted((r["domain"], r["code"], r["count"], r["suspicious"]) for r in rows),
+                         [("10.77.1.2", "no-server-name", 2, []), ("10.77.1.2", "not-allowed", 1, ["raw-ip"])])
+
     def test_the_reason_of_a_block_has_a_code(self):
         # the proxy's reasons are part of its log format; one this does not know has no code
         self.journal("1793701300.000001 titan agentbox-proxy-work[812]: [work] BLOCKED a.example "

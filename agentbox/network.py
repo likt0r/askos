@@ -95,13 +95,15 @@ def blocked_rows(log):
         if not m:
             continue
         host, why = m.group(1), m.group(2)
-        # the reason stays the one of the first block
-        e = seen.setdefault(host, {"domain": host, "count": 0, "last": 0, "reason": why, **block_reason(why)})
+        # the reason stays the one of the first block; a line naming the client's address is a
+        # row apart from a destination of the same text
+        e = seen.setdefault((host, why in CLIENT_REASONS),
+                            {"domain": host, "count": 0, "last": 0, "reason": why, **block_reason(why)})
         e["count"] += 1
         e["last"] = max(e["last"], t)
     rows = sorted(seen.values(), key=lambda e: -e["last"])
     for e in rows:
-        e["suspicious"] = signals.get(e["domain"], [])
+        e["suspicious"] = [] if e["reason"] in CLIENT_REASONS else signals.get(e["domain"], [])
     return rows
 
 

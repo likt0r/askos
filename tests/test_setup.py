@@ -315,12 +315,12 @@ class ExistingHostTest(SetupTest):
 
     def test_force_replaces_it_and_rebinds_the_orca_ports_of_existing_vms(self):
         vm_records.write(self.root)
-        self.scenario(vms={"priv": {"uuid": PRIV_UUID}})
+        accept, reject = rich_rules()
+        # the firewall as Network mode left it (regenerate changes only the zone of the VM networks)
+        self.scenario(vms={"priv": {"uuid": PRIV_UUID}}, firewall_rules=accept + reject)
         vm_records.write_host_setup(self.root)
         self.assertEqual(self.run_agentbox("regenerate")[0], 0)
         self.assertIn("ListenStream=6802\n", self.read("etc/systemd/system/agentbox-gui-priv.socket"))
-        accept, reject = rich_rules()
-        self.scenario(vms={"priv": {"uuid": PRIV_UUID}}, firewall_rules=accept + reject)
         self.ok("--password-file", self.password_file, "--force")
         self.assertEqual(self.host_setup(), LOCAL_RECORD)
         self.assertIn("ListenStream=127.0.0.1:6802\n", self.read("etc/systemd/system/agentbox-gui-priv.socket"))

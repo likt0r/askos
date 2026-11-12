@@ -238,8 +238,11 @@ class HarmlessTest(ProxyTest):
         # strong Signals: Open web lets them nowhere, without resolving anything
         self.open_web()
         self.start()
+        # an address in any form a resolver reads as one: 1.2.3.4 as one number, in hex, in three parts
         for host, why in (("10.0.0.1", "suspicious: raw-ip"), ("169.254.169.254", "suspicious: metadata,raw-ip"),
-                          ("metadata.google.internal", "suspicious: metadata")):
+                          ("metadata.google.internal", "suspicious: metadata"), ("16909060", "suspicious: raw-ip"),
+                          ("0x01020304", "suspicious: raw-ip"), ("1.2.3", "suspicious: raw-ip"),
+                          ("cdn.example.0x1f", "suspicious: raw-ip"), ("cdn.example.123", "suspicious: raw-ip")):
             with self.subTest(host=host):
                 self.assertEqual(self.connect(host), ACCESS_DENIED)
                 self.assertEqual(self.blocked_reason(host), why)
@@ -275,6 +278,7 @@ class ReasonTest(unittest.TestCase):
 
     def test_every_reason_has_a_code_parameters_and_english_text(self):
         cases = [
+            (["16909060"], [("raw-ip", "raw-ip", {}, "IP address instead of a domain")]),
             (["169.254.169.254"], [("metadata", "metadata", {}, "address of a cloud metadata service"),
                                    ("raw-ip", "raw-ip", {}, "IP address instead of a domain")]),
             (["upload.exfil.example"], [("exfil", "watchlist", {"domain": "exfil.example", "source": "Testvorfall 2026"},
