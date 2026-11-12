@@ -299,14 +299,21 @@ class ReleaseSourceTest(ImagesTest):
             f.write(content.replace(safeguards.RESOLVER, 'echo "nameserver 127.0.0.1" > /etc/resolv.conf'))
         conf = os.path.join(self.source, "vm/files/usr/lib/systemd/system.conf.d/agentbox.conf")
         with open(conf, "a") as f:
-            f.write('DefaultEnvironment="https_proxy=http://10.0.0.1:8080" "NODE_USE_ENV_PROXY=1"\n')
+            f.write('DefaultEnvironment="https_proxy=http://10.0.0.1:8080" "NODE_USE_ENV_PROXY=1" '
+                    '"NODE_OPTIONS=--use-env-proxy"\n')
+        resolved = os.path.join(self.source, "vm/files/usr/lib/systemd/resolved.conf.d")
+        os.makedirs(resolved)
+        with open(os.path.join(resolved, "50-dns.conf"), "w") as f:
+            f.write("[Resolve]\nFallbackDNS=9.9.9.9\n")
         code, out = self.build()
         self.assertEqual(code, 1, out)
         new = self.newest()
         self.assertEqual(new["status"], "rejected")
         self.assertIn(f"DNS: guest-setup does not make the Host the only resolver ({safeguards.RESOLVER})",
                       new["problems"])
-        for name in ("NODE_USE_ENV_PROXY", "https_proxy"):
+        self.assertIn("DNS: /usr/lib/systemd/resolved.conf.d/50-dns.conf sets FallbackDNS= (the Host is the only "
+                      "resolver)", new["problems"])
+        for name in ("NODE_OPTIONS", "NODE_USE_ENV_PROXY", "https_proxy"):
             self.assertIn(f"Proxy: {name} is set; the VM reaches the outside without proxy variables", new["problems"])
         self.assertEqual(self.current(), f"base-{OLD}.qcow2")
         self.assertEqual(self.podman("run"), [])          # no disk made
@@ -484,16 +491,22 @@ class SafeguardTest(ImagesTest):
         with open(os.path.join(rootfs, "etc/profile.d/agentbox.sh")) as f:
             self.assertNotRegex(f.read(), r"(?i)proxy")
 
-    def test_a_proxy_variable_is_rejected(self):
+    def test_a_proxy_variable_or_option_is_rejected(self):
         self.image("weak", DERIVED + "COPY zz.conf /etc/systemd/system.conf.d/zz.conf\n"
-                   "COPY proxy.sh /etc/profile.d/proxy.sh\n",
+                   "COPY proxy.sh /etc/profile.d/proxy.sh\nCOPY node.sh /etc/profile.d/node.sh\n"
+                   "COPY java.sh /etc/profile.d/java.sh\n",
                    **{"zz.conf": '[Manager]\nDefaultEnvironment="HTTPS_PROXY=http://10.0.0.1:8080" '
-                                 '"JAVA_TOOL_OPTIONS=-Dhttps.proxyHost=10.0.0.1"\n',
-                      "proxy.sh": "export all_proxy=socks5://10.0.0.1:1080\n"})
+                                 '"_JAVA_OPTIONS=-Dhttps.proxyHost=10.0.0.1" "NODE_OPTIONS=--use-env-proxy" '
+                                 '"JAVA_TOOL_OPTIONS=-Djava.net.useSystemProxies=true"\n',
+                      "proxy.sh": "export all_proxy=socks5://10.0.0.1:1080\n",
+                      "node.sh": "export NODE_OPTIONS=--use-env-proxy\n",
+                      "java.sh": "export JDK_JAVA_OPTIONS=-Djava.net.useSystemProxies=true\n"})
         self.rejected("weak", "Proxy: HTTPS_PROXY is set; the VM reaches the outside without proxy variables",
-                      "Proxy: JAVA_TOOL_OPTIONS is set",
+                      "Proxy: _JAVA_OPTIONS is set", "Proxy: NODE_OPTIONS is set", "Proxy: JAVA_TOOL_OPTIONS is set",
                       "/etc/systemd/system.conf.d/zz.conf is new or changed and concerns a Safeguard",
-                      "/etc/profile.d/proxy.sh is new or changed and concerns a Safeguard")
+                      "/etc/profile.d/proxy.sh is new or changed and concerns a Safeguard",
+                      "/etc/profile.d/node.sh is new or changed and concerns a Safeguard",
+                      "/etc/profile.d/java.sh is new or changed and concerns a Safeguard")
 
     def test_another_resolver_is_rejected(self):
         with open(os.path.join(REPO, "vm/files/usr/lib/agentbox/guest-setup")) as f:
@@ -501,6 +514,16 @@ class SafeguardTest(ImagesTest):
         self.image("weak", DERIVED + "COPY guest-setup /usr/lib/agentbox/guest-setup\n", **{"guest-setup": changed})
         self.rejected("weak", "DNS: guest-setup does not make the Host the only resolver",
                       "/usr/lib/agentbox/guest-setup differs from the Base image")
+
+    def test_dns_servers_for_systemd_resolved_are_rejected(self):
+        self.image("weak", DERIVED + "COPY resolved.conf /etc/systemd/resolved.conf\n"
+                   "COPY dns.conf /etc/systemd/resolved.conf.d/dns.conf\n",
+                   **{"resolved.conf": "[Resolve]\nFallbackDNS=1.1.1.1\n",
+                      "dns.conf": "[Resolve]\nDNS=9.9.9.9\n"})
+        self.rejected("weak", "DNS: /etc/systemd/resolved.conf sets FallbackDNS=",
+                      "DNS: /etc/systemd/resolved.conf.d/dns.conf sets DNS=",
+                      "/etc/systemd/resolved.conf is new or changed and concerns a Safeguard",
+                      "/etc/systemd/resolved.conf.d/dns.conf is new or changed and concerns a Safeguard")
 
     def test_dns_switched_on_is_rejected(self):
         self.image("weak", DERIVED + "COPY nm.conf /etc/NetworkManager/conf.d/agentbox.conf\n",

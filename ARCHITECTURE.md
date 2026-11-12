@@ -562,18 +562,19 @@ Host after every Build
   and reads files; nothing from the Image runs, and links are resolved inside the Image. It
   verifies npm's global configuration (`ignore-scripts=true`, `min-release-age`, npm 12 or
   later), the minimum age for uv (`uv.toml` and `UV_EXCLUDE_NEWER`), pnpm and Bun, the Git
-  hooks path and `pre-push` hook, the resolver (`guest-setup`'s nameserver line and
-  `dns=none`), no proxy variable in systemd's `DefaultEnvironment`, both guest-agent wrappers,
-  that Claude Code fetches no claude.ai connectors (`ENABLE_CLAUDEAI_MCP_SERVERS=false` in
-  systemd's `DefaultEnvironment`, which reaches `orca serve`, the agents and terminals it
+  hooks path and `pre-push` hook, the resolver (`guest-setup`'s nameserver line, `dns=none`,
+  no `DNS=` or `FallbackDNS=` for systemd-resolved), no proxy variable or option in systemd's
+  `DefaultEnvironment`, both guest-agent
+  wrappers, that Claude Code fetches no claude.ai connectors (`ENABLE_CLAUDEAI_MCP_SERVERS=false`
+  in systemd's `DefaultEnvironment`, which reaches `orca serve`, the agents and terminals it
   starts, and exported last by `/etc/profile.d/agentbox.sh` for shells; see Credentials for
   why), and that the merged `DefaultEnvironment` sets no variable that switches a Safeguard
   off. A derived Image must also be built on the Base Build's layers, keep every Safeguard
   file, the Git hooks and the guest-agent wrappers identical to the Base Build's manifest, and
   add or change files where environment or configuration is read (Claude Code's managed
-  settings in `/etc/claude-code` among them, read as decoded JSON like Claude Code reads them;
-  one that does not parse fails) only without mentioning a Safeguard. A failed check discards
-  the Build.
+  settings in `/etc/claude-code` among them, read as decoded JSON like Claude Code reads
+  them; one that does not parse fails) only without mentioning a Safeguard. A failed check
+  discards the Build.
 - Anything failing (the Release's files, podman, the check, the disk) leaves the previous
   Build current, deletes what the Build made and records `build.failed` or `build.rejected` in
   Activity with the reason; `build.ok` records a new current Build. The Build's log stays in
