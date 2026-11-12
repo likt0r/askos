@@ -13,6 +13,8 @@ scenario.json:
                     prints (plain, without legend) when they match one of its patterns
   systemctl_triggered_by  {unit: [timers and sockets]}: the TriggeredBy that `systemctl show`
                     prints for a unit (all others: none)
+                    (`systemctl show --property=Result,InactiveExitTimestamp <unit>` prints the
+                    latest run of what fake_unit.py ran for the unit, units/<unit>.json in FAKE_DIR)
   systemctl_run     {unit: argv}: what `systemctl start <unit>` runs, as systemd runs a unit's
                     ExecStart: to its end, exiting with its exit code (a oneshot service), or
                     with --no-block in the background, while `systemctl is-active` reports the
@@ -115,6 +117,16 @@ if sys.argv[1] == "list-units":
     for row in scenario.get("systemctl_units", []):
         if not patterns or any(fnmatch.fnmatchcase(row[0], p) for p in patterns):
             print("  ".join(row))
+if sys.argv[1] == "show" and "--property=Result,InactiveExitTimestamp" in sys.argv:
+    # the latest run of a unit fake_unit.py ran (units/<unit>.json); a unit that never ran has
+    # no InactiveExitTimestamp
+    try:
+        with open(os.path.join(DIR, "units", sys.argv[-1] + ".json")) as f:
+            run = json.load(f)
+    except FileNotFoundError:
+        run = {"Result": "success", "InactiveExitTimestamp": ""}
+    print(f"Result={run['Result']}\nInactiveExitTimestamp={run['InactiveExitTimestamp']}")
+    sys.exit(0)
 if sys.argv[1] == "show":
     names = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else \
         [a for a in sys.argv[2:] if not a.startswith("-")]

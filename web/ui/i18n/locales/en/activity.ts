@@ -131,8 +131,10 @@ export default {
       maintenanceVersionsFailed: 'Maintenance window: version check failed',
       maintenanceRebuild: 'Maintenance window: weekly rebuild of every Image done',
       maintenanceRebuildFailed: 'Maintenance window: weekly rebuild failed',
+      maintenanceRebuildOldTimer: 'Maintenance window: weekly rebuild left to agentbox-rebuild.timer, which is still there (sudo agentbox regenerate takes it away)',
       maintenanceResetCheck: 'Maintenance window: Reset check done',
       maintenanceResetCheckFailed: 'Maintenance window: Reset check failed',
+      maintenanceSkipped: 'Maintenance window not started: the window of {time} ran already',
     },
     // parts of the sentences above
     parts: {

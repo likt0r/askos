@@ -925,13 +925,41 @@ def building():
     return False
 
 
-def failed_since(started, target):
-    """The Builds that agentbox-build@<target> began at or after `started` (epoch seconds) and
-    that did not become usable, as "<image>-<build>" (the Maintenance window: Builds it waited
-    for that failed)."""
-    return [f"{r['image']}-{r['build']}" for r in _records()
-            if r.get("unit") == unit(target) and isinstance(r.get("started"), int)
-            and r["started"] >= started and r.get("status") not in USABLE]
+def _since(started, target):
+    return [r for r in _records() if r.get("unit") == unit(target) and isinstance(r.get("started"), int)
+            and r["started"] >= started]
+
+
+def failed_since(started, target, actor):
+    """The Builds that agentbox-build@<target> began at or after `started` (epoch seconds) on the
+    request of `actor` (the actor of the request file, which the Build record keeps) and that did
+    not become usable, as "<image>-<build>" (the Maintenance window: Builds it waited for that
+    failed; a Build of another actor's request, Update now while the window waited, is not the
+    window's)."""
+    return [f"{r['image']}-{r['build']}" for r in _since(started, target)
+            if r.get("actor") == actor and r.get("status") not in USABLE]
+
+
+def begun_since(started, target):
+    """Whether agentbox-build@<target> began a Build at or after `started`, on anyone's request."""
+    return bool(_since(started, target))
+
+
+def unit_failed_since(started, target):
+    """Whether agentbox-build@<target> began a run at or after `started` (epoch seconds) that
+    failed (systemd's Result of its latest run, which left the inactive state then): a run that
+    fails before it begins a Build leaves no Build record. False when systemd cannot say."""
+    try:
+        r = subprocess.run(["systemctl", "show", "--timestamp=unix", "--property=Result,InactiveExitTimestamp",
+                            "--", unit(target)], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if r.returncode != 0:
+        return False
+    props = dict(line.partition("=")[::2] for line in r.stdout.splitlines())
+    began = re.fullmatch(r"@(\d+)", props.get("InactiveExitTimestamp", "").strip())
+    result = props.get("Result", "").strip()
+    return began is not None and int(began.group(1)) >= started and result not in ("", "success")
 
 
 # --- commands ------------------------------------------------------------------------------

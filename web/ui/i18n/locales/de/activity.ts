@@ -131,8 +131,10 @@ export default {
       maintenanceVersionsFailed: 'Wartungsfenster: Versionsprüfung gescheitert',
       maintenanceRebuild: 'Wartungsfenster: wöchentlicher Neubau aller Images fertig',
       maintenanceRebuildFailed: 'Wartungsfenster: wöchentlicher Neubau gescheitert',
+      maintenanceRebuildOldTimer: 'Wartungsfenster: wöchentlicher Neubau agentbox-rebuild.timer überlassen, der noch da ist (sudo agentbox regenerate entfernt ihn)',
       maintenanceResetCheck: 'Wartungsfenster: Reset-Prüfung fertig',
       maintenanceResetCheckFailed: 'Wartungsfenster: Reset-Prüfung gescheitert',
+      maintenanceSkipped: 'Wartungsfenster nicht gestartet: das Fenster von {time} lief schon',
     },
     // Teile der Sätze oben
     parts: {

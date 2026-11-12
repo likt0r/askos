@@ -36,6 +36,20 @@ def today(offset=0):
     return settings.DAYS[(time.gmtime().tm_wday + offset) % 7]
 
 
+def hhmm(hours_ago):
+    """The time of day (HH:MM, as maintenance_time names it) `hours_ago` hours ago; TZ=UTC in the CLI."""
+    return time.strftime("%H:%M", time.gmtime(time.time() - hours_ago * 3600))
+
+
+def stamp(hours_ago):
+    """A time `hours_ago` hours ago as RECORD keeps when a window began."""
+    return datetime.datetime.fromtimestamp(time.time() - hours_ago * 3600).astimezone().isoformat(timespec="seconds")
+
+
+def days_ago(days):
+    return (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)).date().isoformat()
+
+
 class MaintenanceTest(LifecycleTest):
     def setUp(self):
         super().setUp()
@@ -129,7 +143,7 @@ class StepTest(MaintenanceTest):
         self.assertEqual(self.backing("work"), f"base-{NEW}.qcow2")
         self.assertEqual(out.count("\n"), 1, out)
         result = json.loads(out)
-        self.assertFalse(result["ran_today"])
+        self.assertFalse(result["already_ran"])
         steps = result["steps"]
         self.assertEqual([(r["step"], r["outcome"]) for r in steps],
                          [("feeds", "failed"), ("versions", "ok"), ("rebuild", "skipped"), ("reset-check", "ok")])
@@ -218,6 +232,37 @@ class WaitTest(MaintenanceTest):
         self.assertEqual(self.entries(), [("maintenance.feeds", "ok"), ("maintenance.versions", "failed"),
                                           ("reset.automatic", "ok"), ("maintenance.reset-check", "ok")])
 
+    def test_a_failed_build_of_another_actor_s_request_is_not_the_window_s(self):
+        # the update that ran while the window waited was the owner's Update now (its Build
+        # record names the actor of its request): its failure is not the version check's
+        self.units(**{VERSIONS: ["--start", UPDATE],
+                      UPDATE: ["--hold", "0.3", "--fail-build", "base", NEW, "--actor", "owner", "--exit", "1"]})
+        self.window()
+        self.assertIn(("agentbox-build@update", "end"), self.order())
+        self.assertEqual(self.entries(), [("maintenance.feeds", "ok"), ("maintenance.versions", "ok"),
+                                          ("maintenance.reset-check", "ok")])
+
+    def test_an_update_that_fails_before_it_begins_a_build_fails_the_step(self):
+        # the update's unit fails without a Build record (before it began one): systemd's
+        # result of the unit's run since the step began says so
+        self.units(**{VERSIONS: ["--start", UPDATE], UPDATE: ["--delay", "0.3", "--exit", "1"]})
+        self.window(1)
+        self.assertEqual(self.entries(), [("maintenance.feeds", "ok"), ("maintenance.versions", "failed"),
+                                          ("maintenance.reset-check", "ok")])
+        failed = self.journald.entries()[1]
+        self.assertEqual(failed["AGENTBOX_DESCRIPTION"], f"Maintenance window: version check failed: {UPDATE} failed "
+                                                         f"before it began a Build (journalctl -u {UPDATE})")
+        self.assertEqual(failed["AGENTBOX_ERROR_PARAM_UNIT"], UPDATE)
+
+    def test_a_failed_run_of_the_update_before_the_step_does_not_count(self):
+        os.makedirs(os.path.join(self.dir, "units"))
+        with open(os.path.join(self.dir, "units", UPDATE + ".json"), "w") as f:
+            json.dump({"InactiveExitTimestamp": f"@{int(time.time()) - 3600}", "Result": "exit-code"}, f)
+        self.units()
+        self.window()
+        self.assertEqual(self.entries(), [("maintenance.feeds", "ok"), ("maintenance.versions", "ok"),
+                                          ("maintenance.reset-check", "ok")])
+
 
 class FailingStepTest(MaintenanceTest):
     def test_a_failing_step_is_recorded_and_the_next_one_runs(self):
@@ -264,15 +309,14 @@ class RebuildDayTest(MaintenanceTest):
     def test_a_missed_rebuild_day_is_caught_up_once(self):
         # the last window on yesterday's rebuild day did not run (the Host was off)
         self.settings(maintenance_time="00:00", rebuild_day=today(-1))
-        last = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=8)).date().isoformat()
-        self.write("var/lib/agentbox/maintenance.json", json.dumps({"rebuild": last}))
+        self.write("var/lib/agentbox/maintenance.json", json.dumps({"rebuild": days_ago(8)}))
         self.units(**{ALL: ["--take-request", "all", "--hold", "0.1", "--target", "all"]})
         self.window()
         self.assertIn(("start", ALL), self.order())
         date = time.strftime("%Y-%m-%d", time.gmtime())
         self.assertEqual(self.record()["rebuild"], date)
-        self.assertEqual(self.record()["window"][:10], date)
-        # another window the same day (by hand: the timer starts one a day) does not rebuild again
+        self.assertEqual(self.record()["timer_window"][:10], date)
+        # another window the same day (by hand) does not rebuild again
         self.forget()
         self.window(by_hand=True)
         self.assertIn(("start", VERSIONS), self.order())
@@ -288,53 +332,130 @@ class RebuildDayTest(MaintenanceTest):
         # not started: the next window tries again
         self.assertNotIn("rebuild", self.record())
 
+    def test_a_day_that_only_became_the_rebuild_day_is_no_missed_one(self):
+        # rebuilt three days ago; rebuild_day changed today to yesterday's day: yesterday was no
+        # rebuild day when its window ran, so this window does not rebuild
+        self.settings(maintenance_time="00:00", rebuild_day=today(-1))
+        self.write("var/lib/agentbox/maintenance.json",
+                   json.dumps({"rebuild": days_ago(3), "rebuild_day_changed": days_ago(0)}))
+        self.units()
+        self.window()
+        self.assertNotIn(("start", ALL), self.order())
+        self.assertEqual(self.record()["rebuild"], days_ago(3))
+        self.assertEqual(self.record()["rebuild_day_changed"], days_ago(0))
+        # changed before that day, it was a rebuild day that was missed
+        self.write("var/lib/agentbox/maintenance.json",
+                   json.dumps({"rebuild": days_ago(3), "rebuild_day_changed": days_ago(2)}))
+        self.units(**{ALL: ["--take-request", "all", "--hold", "0.1", "--target", "all"]})
+        self.window(by_hand=True)
+        self.assertIn(("start", ALL), self.order())
+
+    def test_the_old_rebuild_timer_still_there_rebuilds_instead(self):
+        # the RPM could not disable agentbox-rebuild.timer: it stays until regenerate and runs
+        # its own Build of every Image on the rebuild day; the window starts none to collide with it
+        self.settings(maintenance_time="00:00", rebuild_day=today())
+        open(self.path("etc/systemd/system/agentbox-rebuild.timer"), "w").close()
+        self.units(**{ALL: ["--take-request", "all", "--hold", "0.1", "--target", "all"]})
+        code, out, _ = self.run_agentbox("--actor=timer", "maintenance", "--json")
+        self.assertEqual(code, 0)
+        self.assertNotIn(("start", ALL), self.order())
+        message = ("weekly rebuild left to agentbox-rebuild.timer, which is still there (sudo agentbox regenerate "
+                   "takes it away)")
+        self.assertEqual(json.loads(out)["steps"][2], {"step": "rebuild", "outcome": "skipped", "message": message})
+        self.assertEqual(self.entries(), [("maintenance.feeds", "ok"), ("maintenance.versions", "ok"),
+                                          ("maintenance.rebuild", "ok"), ("maintenance.reset-check", "ok")])
+        entry = self.journald.entries()[2]
+        self.assertEqual((entry["AGENTBOX_DESCRIPTION"], entry["AGENTBOX_PARAM_REASON"]),
+                         (f"Maintenance window: {message}", "old-timer"))
+        # the day counts as rebuilt: no catch-up once regenerate took the old timer away
+        self.assertEqual(self.record()["rebuild"], days_ago(0))
+
     def forget(self):
         os.remove(os.path.join(self.dir, "calls.jsonl"))
 
 
-class OnceADayTest(MaintenanceTest):
-    def test_the_timer_starts_one_window_a_day(self):
+class OneWindowPerTurnTest(MaintenanceTest):
+    """The timer runs one window per turn of maintenance_time: a window it starts does nothing
+    when its window of the latest turn began already; a late catch-up counts for the turn it
+    catches up, and a window by hand never counts."""
+
+    def forget(self):
+        os.remove(os.path.join(self.dir, "calls.jsonl"))
+
+    def test_the_timer_runs_one_window_per_turn(self):
+        at = hhmm(1)
+        self.settings(maintenance_time=at, rebuild_day=today(3))
         self.units()
         self.window()
-        self.assertEqual(list(self.record()), ["window"])
-        os.remove(os.path.join(self.dir, "calls.jsonl"))
+        self.assertEqual(list(self.record()), ["timer_window"])
+        began = self.record()["timer_window"]
+        self.forget()
         out, _ = self.window()
-        self.assertIn("less than 12 hours ago", out)
+        self.assertIn(f"Maintenance window not started: the window of {at} ran already", out)
         self.assertEqual(self.order(), [])
+        skipped = self.journald.entries()[-1]
+        self.assertEqual((skipped["AGENTBOX_ACTION"], skipped["AGENTBOX_OUTCOME"], skipped["AGENTBOX_ACTOR"],
+                          skipped["AGENTBOX_PARAM_REASON"], skipped["AGENTBOX_PARAM_TIME"]),
+                         ("maintenance.skipped", "ok", "timer", "already-ran", at))
         code, out, _ = self.run_agentbox("--actor=timer", "maintenance", "--json")
-        self.assertEqual((code, json.loads(out)), (0, {"steps": [], "ran_today": True}))
-        self.assertEqual(len(self.entries()), 3)
-        # by hand it runs all the same
+        self.assertEqual((code, json.loads(out)), (0, {"steps": [], "already_ran": True}))
+        self.assertEqual([a for a, _ in self.entries()].count("maintenance.skipped"), 2)
+        # by hand it runs all the same, and does not count for the timer
         self.window(by_hand=True)
         self.assertIn(("start", FEEDS), self.order())
+        self.assertEqual(self.record()["timer_window"], began)
 
-    def stamp(self, hours_ago):
-        return datetime.datetime.fromtimestamp(time.time() - hours_ago * 3600).astimezone().isoformat(
-            timespec="seconds")
-
-    def test_a_window_of_yesterday_does_not_count(self):
+    def test_a_window_by_hand_does_not_make_the_timer_s_skip(self):
+        self.settings(maintenance_time=hhmm(1), rebuild_day=today(3))
         self.units()
-        yesterday = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)).date().isoformat()
-        self.write("var/lib/agentbox/maintenance.json", json.dumps({"window": self.stamp(24), "rebuild": yesterday}))
-        self.window()
-        self.assertIn(("start", FEEDS), self.order())
-        self.assertEqual(self.record()["rebuild"], yesterday)
-        self.assertGreater(datetime.datetime.fromisoformat(self.record()["window"]).timestamp(), time.time() - 3600)
-
-    def test_a_catch_up_after_midnight_does_not_make_the_next_regular_window_skip(self):
-        # maintenance_time 23:00, the Host off from 22:00 to 00:30: the window runs at 00:30; the
-        # regular one 22.5 hours later (23:00) must run, though it is the next calendar day
-        self.units()
-        self.write("var/lib/agentbox/maintenance.json", json.dumps({"window": self.stamp(22.5)}))
+        self.window(by_hand=True)
+        self.assertEqual(self.record(), {})
+        self.forget()
         self.window()
         self.assertIn(("start", FEEDS), self.order())
 
-    def test_a_window_that_began_less_than_12_hours_ago_is_skipped(self):
+    def test_a_window_of_the_turn_before_does_not_count(self):
+        self.settings(maintenance_time=hhmm(1), rebuild_day=today(3))
         self.units()
-        self.write("var/lib/agentbox/maintenance.json", json.dumps({"window": self.stamp(11)}))
+        self.write("var/lib/agentbox/maintenance.json", json.dumps({"timer_window": stamp(24), "rebuild": days_ago(1)}))
+        self.window()
+        self.assertIn(("start", FEEDS), self.order())
+        self.assertEqual(self.record()["rebuild"], days_ago(1))
+        self.assertGreater(datetime.datetime.fromisoformat(self.record()["timer_window"]).timestamp(),
+                           time.time() - 3600)
+
+    def test_a_late_catch_up_does_not_make_the_next_turn_skip(self):
+        # maintenance_time 02:00, the Host asleep until 15:00: the window of 02:00 ran at 15:00;
+        # the next turn, 11 hours later at 02:00, runs
+        self.settings(maintenance_time=hhmm(0), rebuild_day=today(3))
+        self.units()
+        self.write("var/lib/agentbox/maintenance.json", json.dumps({"timer_window": stamp(11)}))
+        self.window()
+        self.assertIn(("start", FEEDS), self.order())
+
+    def test_a_catch_up_after_midnight_runs_and_so_does_the_next_turn(self):
+        # maintenance_time 23:00, the Host off from 22:00 to 00:30: Monday's window runs at 00:30
+        # on Tuesday, though Monday's 23:00 window of the turn before began 25.5 hours ago ...
+        self.settings(maintenance_time=hhmm(1.5), rebuild_day=today(3))
+        self.units()
+        self.write("var/lib/agentbox/maintenance.json", json.dumps({"timer_window": stamp(25.5)}))
+        self.window()
+        self.assertIn(("start", FEEDS), self.order())
+        # ... and Tuesday's regular window at 23:00, 22.5 hours after the catch-up, runs too
+        self.forget()
+        self.settings(maintenance_time=hhmm(0), rebuild_day=today(3))
+        self.write("var/lib/agentbox/maintenance.json", json.dumps({"timer_window": stamp(22.5)}))
+        self.window()
+        self.assertIn(("start", FEEDS), self.order())
+
+    def test_a_second_start_in_the_same_turn_is_skipped(self):
+        self.settings(maintenance_time=hhmm(3), rebuild_day=today(3))
+        self.units()
+        self.write("var/lib/agentbox/maintenance.json", json.dumps({"timer_window": stamp(2)}))
         out, _ = self.window()
-        self.assertIn("less than 12 hours ago", out)
+        self.assertIn("ran already", out)
         self.assertEqual(self.order(), [])
+        self.assertEqual(self.entries(), [("maintenance.skipped", "ok")])
 
 
 class TransitionTest(MaintenanceTest):
@@ -374,8 +495,7 @@ class TransitionTest(MaintenanceTest):
 
     def test_a_missed_rebuild_day_is_caught_up_once_the_day_after(self):
         self.write("etc/agentbox/settings.json", json.dumps({"reset_time": "01:00", "rebuild_day": today(-1)}))
-        last = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=8)).date().isoformat()
-        self.write("var/lib/agentbox/maintenance.json", json.dumps({"rebuild": last}))
+        self.write("var/lib/agentbox/maintenance.json", json.dumps({"rebuild": days_ago(8)}))
         self.units(**{ALL: ["--take-request", "all", "--hold", "0.1", "--target", "all"]})
         self.weekly_check()
         self.assertIn(("start", ALL), self.order())
@@ -390,17 +510,32 @@ class TransitionTest(MaintenanceTest):
         self.assertEqual([r["step"] for r in json.loads(self.weekly_check("--json"))["steps"]],
                          ["feeds", "versions", "rebuild", "reset-check"])
 
-    def test_never_twice_a_day(self):
+    def test_never_twice_in_a_turn(self):
         self.units()
         self.weekly_check()
         os.remove(os.path.join(self.dir, "calls.jsonl"))
-        self.assertIn("less than 12 hours ago", self.weekly_check())
+        self.assertIn("ran already", self.weekly_check())
         self.assertEqual(self.order(), [])
-        # nor once regenerate wrote the window's timer, the same day
+        # nor once regenerate wrote the window's timer, in the same turn
         open(self.path("etc/systemd/system/agentbox-maintenance.timer"), "w").close()
         self.window()
         self.assertEqual(self.order(), [])
-        self.assertEqual(len(self.entries()), 3)
+        self.assertEqual([a for a, _ in self.entries()][3:], ["maintenance.skipped", "maintenance.skipped"])
+
+    def test_the_window_at_the_old_reset_time_counts_for_the_turn_two_hours_before(self):
+        # reset_time now: maintenance_time two hours ago. The old timer's window of yesterday
+        # does not make today's skip, today's does make a second start skip
+        reset = hhmm(0)
+        self.write("etc/agentbox/settings.json", json.dumps({"reset_time": reset, "rebuild_day": today(3)}))
+        self.write("var/lib/agentbox/maintenance.json", json.dumps({"timer_window": stamp(24)}))
+        self.units()
+        self.weekly_check()
+        self.assertIn(("start", FEEDS), self.order())
+        os.remove(os.path.join(self.dir, "calls.jsonl"))
+        hours, minutes = map(int, reset.split(":"))
+        at = f"{(hours - 2) % 24:02d}:{minutes:02d}"
+        self.assertIn(f"the window of {at} ran already", self.weekly_check())
+        self.assertEqual(self.order(), [])
 
     def test_after_regenerate_it_is_the_reset_check_alone(self):
         open(self.path("etc/systemd/system/agentbox-maintenance.timer"), "w").close()
@@ -487,6 +622,55 @@ class RebuildDueTest(unittest.TestCase):
                 ((2026, 12, 6, 2, 0), datetime.date(2026, 12, 2), True)):
             with self.subTest(now=now, last=last):
                 self.assertEqual(maintenance.rebuild_due(self.at(*now), "sun", last), due)
+
+    def test_a_changed_rebuild_day(self):
+        wed, mon = datetime.date(2026, 11, 11), datetime.date(2026, 11, 16)
+        for now, changed, due in (
+                # rebuilt on Wednesday, rebuild_day changed from wed to sun on Monday: the Sunday
+                # before was no rebuild day, Tuesday does not rebuild; the next Sunday does
+                ((2026, 11, 17, 2, 0), mon, False),
+                ((2026, 11, 22, 2, 0), mon, True),
+                # changed on Friday: that Sunday's window was missed, Monday catches it up
+                ((2026, 11, 16, 2, 0), datetime.date(2026, 11, 13), True),
+                # changed on the rebuild day itself: its window rebuilds
+                ((2026, 11, 15, 2, 0), datetime.date(2026, 11, 15), True),
+                ((2026, 11, 16, 2, 0), datetime.date(2026, 11, 15), False)):
+            with self.subTest(now=now, changed=changed):
+                self.assertEqual(maintenance.rebuild_due(self.at(*now), "sun", wed, changed), due)
+
+
+class TurnTest(unittest.TestCase):
+    """maintenance.turn_ran, in local time: whether the timer's window of the latest turn of
+    maintenance_time began already."""
+
+    def at(self, *args):
+        return datetime.datetime(*args).timestamp()
+
+    def test_turns(self):
+        for at, now, last, ran in (
+                ("02:00", (2026, 11, 16, 2, 0), None, False),                   # never a window
+                ("02:00", (2026, 11, 16, 2, 0), (2026, 11, 15, 2, 0), False),   # yesterday's
+                ("02:00", (2026, 11, 16, 2, 5), (2026, 11, 16, 2, 0), True),    # a second start
+                ("02:00", (2026, 11, 16, 1, 59), (2026, 11, 15, 2, 0), True),   # before today's turn
+                # a late catch-up: the Host asleep until 15:00, the next 02:00 runs
+                ("02:00", (2026, 11, 16, 15, 0), (2026, 11, 15, 2, 0), False),
+                ("02:00", (2026, 11, 17, 2, 0), (2026, 11, 16, 15, 0), False),
+                ("02:00", (2026, 11, 16, 15, 5), (2026, 11, 16, 15, 0), True),
+                # across midnight: Monday's 23:00 caught up at 00:30, Tuesday's 23:00 runs
+                ("23:00", (2026, 11, 17, 0, 30), (2026, 11, 15, 23, 0), False),
+                ("23:00", (2026, 11, 17, 0, 30), (2026, 11, 16, 23, 0), True),
+                ("23:00", (2026, 11, 17, 23, 0), (2026, 11, 17, 0, 30), False),
+                # until regenerate the old timer at reset_time = maintenance_time + 2 h
+                ("02:00", (2026, 11, 17, 4, 0), (2026, 11, 16, 4, 0), False),
+                ("02:00", (2026, 11, 17, 4, 1), (2026, 11, 17, 4, 0), True),
+                ("02:00", (2026, 11, 17, 10, 0), (2026, 11, 17, 4, 0), True),   # regenerate's timer, same turn
+                ("02:00", (2026, 11, 18, 2, 0), (2026, 11, 17, 4, 0), False),
+                ("23:00", (2026, 11, 17, 1, 0), (2026, 11, 16, 1, 0), False),   # reset_time 01:00
+                ("23:00", (2026, 11, 17, 23, 0), (2026, 11, 17, 1, 0), False),
+                # a window "after now" only a clock set back shows: no reason to skip
+                ("02:00", (2026, 11, 16, 3, 0), (2026, 11, 16, 9, 0), False)):
+            with self.subTest(at=at, now=now, last=last):
+                self.assertEqual(maintenance.turn_ran(self.at(*now), at, last and self.at(*last)), ran)
 
 
 class TimerTest(VmsTest):

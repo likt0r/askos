@@ -337,6 +337,18 @@ class TimerTest(SettingsTest):
         self.ok("set-settings", "rebuild_day=fri")
         self.assertEqual([c for c in self.systemctl() if c[0] != "enable"], [])
 
+    def test_a_changed_rebuild_day_is_recorded_for_the_maintenance_window(self):
+        # the window takes a rebuild_day for a missed one only after the change (maintenance.rebuild_due)
+        record = "var/lib/agentbox/maintenance.json"
+        self.write(record, json.dumps({"rebuild": "2026-11-11"}))
+        self.ok("set-settings", "builds_kept=5")
+        self.assertEqual(json.loads(self.read(record)), {"rebuild": "2026-11-11"})
+        self.ok("set-settings", "rebuild_day=sun")      # the default: unchanged
+        self.assertNotIn("rebuild_day_changed", json.loads(self.read(record)))
+        self.ok("set-settings", "rebuild_day=wed")
+        today = time.strftime("%Y-%m-%d", time.gmtime())
+        self.assertEqual(json.loads(self.read(record)), {"rebuild": "2026-11-11", "rebuild_day_changed": today})
+
     def test_an_unchanged_regenerate_does_not_restart_them(self):
         self.ok("regenerate")
         self.forget_calls()

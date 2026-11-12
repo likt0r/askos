@@ -170,9 +170,11 @@ describe('Activity in the UI language', () => {
       minutes: '30', category: 'paste', list: 'watchlist', legacy: 'old-file', migrated: '2', skipped: '0', owners: 'a',
       app_id: '1', settings: 'maintenance_time', reason: 'idle', signals: 'young', images: 'base', release: '0.3.0',
       repository: 'a/b', request: 'a/b', folder: '/home/a/foo', files: '3', bytes: '120', env: 'A=1', names: 'A',
+      time: '02:00',
     }
     // a reason the sentence knows, where it is a code of its own
-    const reasons: Record<string, string> = { 'wake.not-responding': 'system-not-booted', 'github.refused': 'not-installed' }
+    const reasons: Record<string, string> = { 'wake.not-responding': 'system-not-booted', 'github.refused': 'not-installed',
+      'maintenance.skipped': 'already-ran' }
     const entries = Object.keys(SENTENCES).map((action, n) => coded(n % 60, action,
       reasons[action] ? { ...params, reason: reasons[action] } : params, 'STORED'))
     for (const language of ['en', 'de']) {
@@ -233,6 +235,16 @@ describe('Activity text (unit)', () => {
       // what failed, in agentbox's words (the generic code)
       expect(activityText({ ...failed, error: 'action_failed' }, tr)).toBe('Maintenance window: x failed: disk full')
     }
+  })
+
+  it('words a rebuild left to the old timer and a window that ran already in its turn', () => {
+    expect(activityText(coded(0, 'maintenance.rebuild', { reason: 'old-timer' }, 'stored'), tr))
+      .toBe('activity.actions.maintenanceRebuildOldTimer')
+    expect(activityText(coded(0, 'maintenance.skipped', { reason: 'already-ran', time: '02:00' }, 'stored'), tr))
+      .toBe('activity.actions.maintenanceSkipped {"time":"02:00"}')
+    // a reason this UI does not know, or without the time: the stored text
+    expect(activityText(coded(0, 'maintenance.skipped', { reason: 'made-up', time: '02:00' }, 'stored'), tr)).toBe('stored')
+    expect(activityText(coded(0, 'maintenance.skipped', { reason: 'already-ran' }, 'stored'), tr)).toBe('stored')
   })
 
   it('keeps it when a parameter the sentence needs is missing or not text', () => {

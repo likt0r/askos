@@ -264,8 +264,12 @@ export const SENTENCES: Record<string, Sentence> = {
   // the steps of the Maintenance window, in their order (agentbox/maintenance.py)
   'maintenance.feeds': step('maintenanceFeeds'),
   'maintenance.versions': step('maintenanceVersions'),
-  'maintenance.rebuild': step('maintenanceRebuild'),
+  // left to the old rebuild timer while it is still there (reason old-timer)
+  'maintenance.rebuild': (p, tr, e) => (p.reason === 'old-timer' && e.outcome !== 'failed'
+    ? say(tr, 'maintenanceRebuildOldTimer') : step('maintenanceRebuild')(p, tr, e)),
   'maintenance.reset-check': step('maintenanceResetCheck'),
+  // the timer's window of this turn of maintenance_time ran already (reason already-ran)
+  'maintenance.skipped': (p, tr) => (p.reason === 'already-ran' && has(p, 'time') ? say(tr, 'maintenanceSkipped', { time: p.time }) : null),
 }
 
 /** The generic error code: agentbox's own message says more than its translation would. */

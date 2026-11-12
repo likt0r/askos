@@ -280,6 +280,9 @@ def _set(args):
     with state_files.locked(paths.REGISTRY):
         generate.ports_free()      # what apply() would stop on stops the change before it is saved
         diff = save(changes)
+        if "rebuild_day" in diff:
+            from . import maintenance     # it imports this module
+            maintenance.rebuild_day_changed()
         try:
             result = generate.apply() if diff else None
         except Fail as f:

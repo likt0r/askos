@@ -897,24 +897,47 @@ step ends, so the Builds' own entries (`build.*`) come before `maintenance.versi
 `maintenance.rebuild` (the weekly rebuild has no start entry), and the Resets' (`reset.*`)
 before `maintenance.reset-check`; `maintenance.feeds` comes first. The wait after the version
 check and after the rebuild comes also when that step failed, since it may have started a Build
-before it failed. The timer is `Persistent`: a window missed while the Host was off runs once
-after boot, not once per missed day. The weekly rebuild is caught up: when the window of a
-`rebuild_day` did not start it (the Host was off, or the Build could not start), the next
-window starts it, once, whatever day that is, and the one after that waits for the next
-`rebuild_day` (the dates of the last window and of the last weekly rebuild a window started are
-in `/var/lib/agentbox/maintenance.json`). It has no `WakeSystem=`: waking a sleeping Host is the
-Host's business. Two windows never run at once (a lock), and the timer starts none within 12
-hours of the last: a window it starts less than 12 hours after a window began does nothing, so
-a catch-up after midnight does not make the next regular window skip (`agentbox maintenance`
-by hand always runs). The weekly rebuild is judged by date alone, not by the clock time the
-window begins at (until `regenerate` that is the old `reset_time`, which may be before
-`maintenance_time`). The Feeds keep their own timer (boot plus 10 minutes, then every
+before it failed. Which Builds are the step's: those of its unit (`agentbox-build@update` for the
+version check, `agentbox-build@all` for the rebuild) begun since the step began whose request
+the window's side made (actor `timer` for the version check's automatic update, the window's own
+actor for the rebuild; the Build record keeps the actor of its request), so an owner's Update now
+that fails while the window waits does not fail the step; and a run of that unit since the step
+began that failed before it began any Build (systemd's `Result`, no Build record) fails the step
+too (`images.failed_since`, `images.unit_failed_since`). What this cannot tell apart: a run of
+the unit by someone else that fails before it begins a Build while the window waits counts as
+the window's, and an owner's "check now" (`agentbox-versions.service`, actor `timer` as well)
+whose automatic update runs during the window's version check counts as the window's update.
+The timer is `Persistent`: a window missed while the Host was off runs once after boot, not
+once per missed day. The weekly rebuild is caught up: when the window of a `rebuild_day` did
+not start it (the Host was off, or the Build could not start), the next window starts it,
+once, whatever day that is, and the one after that waits for the next `rebuild_day`. A day
+that only became `rebuild_day` by a change of the setting is no missed one: `set-settings`
+records the date of a change of `rebuild_day`, and a past `rebuild_day` counts as missed only
+when it lies after the last weekly rebuild and after that change (the date of the last weekly
+rebuild a window started, of the last change of `rebuild_day` and when the timer's last window
+began are in `/var/lib/agentbox/maintenance.json`). It has no `WakeSystem=`: waking a sleeping
+Host is the Host's business. Two windows never run at once (a lock), and the timer runs one
+window per turn of `maintenance_time`: a window it starts does nothing when a window it started
+already began at or after the latest turn (the latest time at `maintenance_time` that is not
+after now), that is, this turn ran already (two timers, a re-trigger); it records
+`maintenance.skipped` (reason `already-ran`) instead, and `--json` prints `{"steps": [],
+"already_ran": true}` (`already_ran` is `false` when the window ran). A catch-up hours late
+counts for the turn it catches up, so the next regular turn runs, also across midnight (a
+window of 23:00 caught up at 00:30, then the next at 23:00), and until `regenerate` the old
+timer's window at the old `reset_time` counts for the turn of `maintenance_time` two hours
+before it. `agentbox maintenance` by hand always runs and does not count for the timer. The
+weekly rebuild is judged by date alone, not by the clock time the window begins at (until
+`regenerate` that is the old `reset_time`, which may be before `maintenance_time`). The Feeds keep their own timer (boot plus 10 minutes, then every
 `feed_interval_hours`) for a Host that is awake for long. `maintenance_time` replaced
 `reset_time` and `rebuild_time` and the three timers of before (`agentbox-weekly`,
 `agentbox-rebuild`, `agentbox-versions.timer`). An RPM update disables and deletes
 `agentbox-rebuild.timer` and `agentbox-versions.timer` on a Host that has them, with
 `agentbox-rebuild.service`, each only when disabling it worked, and says that `regenerate`
 writes the window's timer once; it runs no `agentbox` command and enables nothing (ADR 0009).
+While `agentbox-rebuild.timer` is still there (its disabling failed), it still runs its own
+weekly Build of every Image, so the window starts no weekly rebuild, which that Build would
+refuse or collide with; it records `maintenance.rebuild` with the reason `old-timer` and counts
+the day as rebuilt.
 It leaves the old Reset check's `agentbox-weekly.timer`, which runs `agentbox --actor=timer
 weekly-check` at the old `reset_time`: as long as the window's timer is missing,
 `weekly-check` called by the timer runs the whole window instead of the Reset check alone, so

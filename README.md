@@ -621,10 +621,15 @@ which never becomes the current one, moves no VM. A step that fails is in Activi
 `timer`) and the window goes on with the next one; each step that ran leaves an entry when it ends, so
 Activity shows the window's order: the Builds' entries (`build.*`) come before `maintenance.versions`
 and `maintenance.rebuild`, the Resets' before `maintenance.reset-check`. A window missed while the Host was off runs once after it
-starts (`Persistent=true`), and the timer starts no window within 12 hours of the last (`sudo agentbox
-maintenance` by hand always runs one). The weekly rebuild is caught up: when the window of
-`rebuild_day` did not start it (the Host was off, or the Build could not start), the next window
-starts it, once, whatever day that is; the one after that waits for the next `rebuild_day`.
+starts (`Persistent=true`), and the timer runs one window per turn of `maintenance_time`: a second
+start in the same turn does nothing and leaves `maintenance.skipped` in Activity. A window caught up
+hours late counts for the turn it catches up, so the next turn runs at its time, also across
+midnight; `sudo agentbox maintenance` by hand always runs one and does not count. The weekly rebuild
+is caught up: when the window of `rebuild_day` did not start it (the Host was off, or the Build
+could not start), the next window starts it, once, whatever day that is; the one after that waits
+for the next `rebuild_day`. A day that only became `rebuild_day` because you changed the setting
+is not caught up. While the old weekly rebuild timer is still there (an update could not disable
+it), it does the weekly rebuild and the window leaves it to it.
 Agent Box never wakes a sleeping Host for it: that is the Host's business (an autosuspend that
 reads the timer, for instance). The Feeds also keep their own timer, ten minutes after boot
 and then every `feed_interval_hours`, for a Host that is awake for long.

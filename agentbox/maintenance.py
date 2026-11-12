@@ -24,12 +24,22 @@ A step that fails is recorded in Activity (maintenance.<step>, outcome failed, t
 call: `timer`) and the window goes on with the next one; a step that succeeded is recorded too,
 so the timeline shows the window's order: an entry is written when its step ends, so the
 Builds' own entries (build.*) and the Resets' (reset.*) come before maintenance.versions,
-maintenance.rebuild and maintenance.reset-check. A rebuild that is not due records nothing. A step
-whose Builds failed counts as failed. Two windows never run at once, and the timer starts none
-within 12 hours of the last: a window started by it (actor `timer`) less than 12 hours after a
-window began does nothing (the time of the last one is in RECORD). So a catch-up after midnight
-of a window missed at 23:00 does not make the next regular 23:00 window skip. By hand
-(`agentbox maintenance`) it always runs.
+maintenance.rebuild and maintenance.reset-check. A rebuild that is not due records nothing; while
+the old rebuild timer is still there (agentbox-rebuild.timer, which the RPM could not disable), the
+window starts no rebuild, so it cannot collide with that timer's Build, and records
+maintenance.rebuild with the reason old-timer. A step whose Builds failed counts as failed: a
+Build of the step's unit begun since the step began, on the request of the window (actor `timer`
+for the version check's update, the window's own actor for the rebuild), that did not become
+usable, or a run of that unit that failed before it began a Build at all (images.failed_since,
+images.unit_failed_since).
+
+Two windows never run at once, and the timer runs one window per turn: a window it starts (actor
+`timer`) does nothing when a window it started already began at or after the latest turn of
+maintenance_time (the latest daily time at maintenance_time that is not after now), so this
+turn ran already (two timers, a re-trigger); it records maintenance.skipped. A catch-up hours
+late (Persistent, after the Host was off) counts for the turn it catches up, so the next regular
+turn runs, also across midnight. By hand (`agentbox maintenance`) it always runs, and such a run
+does not count (RECORD keeps only when the timer's last window began).
 
 A Host updated from before the Maintenance window keeps the timer of the old Reset check
 (agentbox-weekly.timer, which runs `agentbox --actor=timer weekly-check` at the old reset_time)
@@ -43,6 +53,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 
 from . import activity, generate, images, lifecycle, paths, settings, state_files
@@ -50,18 +61,19 @@ from .errors import Fail, die
 from .sanitize import clean
 
 LOCK = os.path.join(paths.STATE, "maintenance")
-# when the last window began ("window", local time with offset) and the date of the last weekly
-# rebuild one started ("rebuild")
+# when the last window the timer started began ("timer_window", local time with offset), the date of
+# the last weekly rebuild a window started ("rebuild") and of the last change of rebuild_day
+# ("rebuild_day_changed")
 RECORD = os.path.join(paths.STATE, "maintenance.json")
 TIMER = f"{generate.MAINTENANCE}.timer"
 OLD_TIMER = "agentbox-weekly.timer"         # the old Reset check's, which runs weekly-check until regenerate
+OLD_REBUILD_TIMER = "agentbox-rebuild.timer"  # the old weekly rebuild's, when the RPM could not disable it
 FEEDS_UNIT = "agentbox-feeds.service"
 VERSIONS_UNIT = "agentbox-versions.service"
 START_SECONDS = 3 * 3600        # systemctl start of a step's unit; the units have time limits of their own
 POLL = paths.tunable("AGENTBOX_MAINTENANCE_POLL_SECONDS", 15)     # between two looks at the Builds
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 STAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}")
-GUARD_SECONDS = 12 * 3600       # the timer starts no window when the last one began less than this ago
 # the steps in their order, with what the Activity entries and the journal call them
 STEPS = (("feeds", "fetching the Feeds", "Feeds fetched"),
          ("versions", "version check", "version check done"),
@@ -96,23 +108,54 @@ def wait_for_builds(say):
         time.sleep(POLL)
 
 
-def _builds_done(started, target):
-    """After waiting: a Fail when a Build of agentbox-build@<target> begun since `started` failed."""
-    failed = images.failed_since(started, target)
+def _builds_done(started, target, actor):
+    """After waiting: a Fail when a Build of agentbox-build@<target> begun since `started` on the
+    request of `actor` failed, or when a run of that unit since then failed before it began any
+    Build (no Build record). A run that began only Builds of another actor's request (Update now
+    while the window waited) is not the window's."""
+    failed = images.failed_since(started, target, actor)
     if failed:
         die(f"the Build of {', '.join(failed)} failed", error="action_failed")
+    if not images.begun_since(started, target) and images.unit_failed_since(started, target):
+        name = images.unit(target)
+        die(f"{name} failed before it began a Build (journalctl -u {name})", error="action_failed", unit=name)
 
 
-def rebuild_due(now, day, last):
+def rebuild_due(now, day, last, changed=None):
     """Whether a window that began at `now` (epoch seconds, local time) starts the weekly rebuild:
     day (of DAYS) is rebuild_day, last the date of the last weekly rebuild a window started (None:
-    never). Judged by dates alone, not by the clock time of the window (that is maintenance_time,
-    or until `regenerate` the old reset_time, which may be earlier in the day): due when no
-    rebuild began on or after the last rebuild_day (so a missed one is caught up by the next
-    window, once); without a record only on rebuild_day itself."""
+    never), changed the date rebuild_day was last changed (None: unknown). Judged by dates alone,
+    not by the clock time of the window (that is maintenance_time, or until `regenerate` the old
+    reset_time, which may be earlier in the day): due on rebuild_day itself unless a rebuild began
+    that day; on another day only when the latest rebuild_day was missed, that is, it lies after the
+    last rebuild and after the last change of rebuild_day (a day that only became rebuild_day by
+    that change was none when its window ran), so a missed one is caught up by the next window,
+    once; without a record of a rebuild only on rebuild_day itself."""
     local = datetime.datetime.fromtimestamp(now).date()
     latest = local - datetime.timedelta(days=(local.weekday() - settings.DAYS.index(day)) % 7)
-    return latest == local if last is None else last < latest
+    if last is not None and last >= latest:
+        return False
+    if latest == local:
+        return True
+    return last is not None and (changed is None or latest > changed)
+
+
+def latest_turn(now, at):
+    """The latest time (epoch seconds) at or before `now` at which the timer starts a window daily
+    at `at` (maintenance_time, HH:MM, local time)."""
+    local = datetime.datetime.fromtimestamp(now)
+    hours, minutes = map(int, at.split(":"))
+    turn = local.replace(hour=hours, minute=minutes, second=0, microsecond=0)
+    if turn > local:
+        turn -= datetime.timedelta(days=1)
+    return turn.timestamp()
+
+
+def turn_ran(now, at, last):
+    """Whether the timer's window of the latest turn of maintenance_time `at` ran already: the
+    last window the timer started (`last`, epoch seconds, None: none) began at or after that turn
+    (and not after now, which only a clock set back would show)."""
+    return last is not None and latest_turn(now, at) <= last <= now
 
 
 def _read():
@@ -124,18 +167,19 @@ def _read():
         return {}
 
 
-def _recorded(key):
-    """The rebuild date of RECORD ("rebuild"), None when there is none or it cannot be read."""
-    value = _read().get(key)
+def _recorded(key, data=None):
+    """A date of RECORD ("rebuild", "rebuild_day_changed"), None when there is none or it cannot
+    be read."""
+    value = (_read() if data is None else data).get(key)
     try:
         return datetime.date.fromisoformat(value) if isinstance(value, str) and DATE.fullmatch(value) else None
     except ValueError:
         return None
 
 
-def _window_began():
-    """When the last window began (epoch seconds), None when unknown."""
-    value = _read().get("window")
+def _timer_window_began():
+    """When the last window the timer started began (epoch seconds), None when unknown."""
+    value = _read().get("timer_window")
     try:
         return (datetime.datetime.fromisoformat(value).timestamp()
                 if isinstance(value, str) and STAMP.fullmatch(value) else None)
@@ -143,20 +187,34 @@ def _window_began():
         return None
 
 
-def _record_window(when, rebuild=None):
-    """RECORD with the window's start (epoch seconds) and, when given, the date of a rebuild;
-    what is not given is kept."""
-    values = {}
-    if (began := _read().get("window")) is not None and isinstance(began, str):
-        values["window"] = began
-    if (d := _recorded("rebuild")) is not None:
-        values["rebuild"] = d.isoformat()
-    if rebuild is not None:
-        values["rebuild"] = datetime.date.fromtimestamp(rebuild).isoformat()
-    else:
-        values["window"] = datetime.datetime.fromtimestamp(when).astimezone().isoformat(timespec="seconds")
-    os.makedirs(paths.STATE, exist_ok=True)
-    state_files.write_atomic(RECORD, (json.dumps(values, sort_keys=True) + "\n").encode(), 0o644)
+def _update(**values):
+    """RECORD with these values (a window's start as epoch seconds for "timer_window", epoch
+    seconds whose date is kept for "rebuild" and "rebuild_day_changed"); what is not given and
+    still valid is kept."""
+    with state_files.locked(RECORD):
+        data = _read()
+        out = {}
+        if isinstance(data.get("timer_window"), str) and STAMP.fullmatch(data["timer_window"]):
+            out["timer_window"] = data["timer_window"]
+        for key in ("rebuild", "rebuild_day_changed"):
+            if (d := _recorded(key, data)) is not None:
+                out[key] = d.isoformat()
+        for key, when in values.items():
+            out[key] = (datetime.datetime.fromtimestamp(when).astimezone().isoformat(timespec="seconds")
+                        if key == "timer_window" else datetime.date.fromtimestamp(when).isoformat())
+        os.makedirs(paths.STATE, exist_ok=True)
+        state_files.write_atomic(RECORD, (json.dumps(out, sort_keys=True) + "\n").encode(), 0o644)
+
+
+def rebuild_day_changed():
+    """set-settings changed rebuild_day: its date goes into RECORD, so the next window does not
+    take a day that only now became rebuild_day for a missed one (rebuild_due). A failure is
+    said on stderr; the Settings are saved all the same."""
+    try:
+        _update(rebuild_day_changed=time.time())
+    except (OSError, Fail) as e:
+        print(f"agentbox: {RECORD}: {getattr(e, 'strerror', None) or getattr(e, 'message', e)}",
+              file=sys.stderr, flush=True)
 
 
 def _feeds(say, begun, as_json):
@@ -164,31 +222,44 @@ def _feeds(say, begun, as_json):
 
 
 def _versions(say, begun, as_json):
-    """The wait comes also when the version check failed: it may have started a Build first."""
+    """The wait comes also when the version check failed: it may have started a Build first. Its
+    automatic update is requested by the version check's unit, with actor `timer`."""
     started = int(time.time())
     try:
         _start(VERSIONS_UNIT)
     finally:
         wait_for_builds(say)
-    _builds_done(started, images.UPDATE)
+    _builds_done(started, images.UPDATE, "timer")
 
 
 def _rebuild(say, begun, as_json):
     """Due or not by the time the window began, however long the Builds before took. The wait
-    comes also when the start failed: its unit may run all the same."""
+    comes also when the start failed: its unit may run all the same. While the old rebuild timer
+    is still there (the RPM could not disable it), that timer rebuilds: the window leaves the
+    rebuild to it, so their two Builds do not collide, and says so; the day counts as rebuilt."""
     values = settings.load()
-    if not rebuild_due(begun, values["rebuild_day"], _recorded("rebuild")):
+    record = _read()
+    if not rebuild_due(begun, values["rebuild_day"], _recorded("rebuild", record),
+                       _recorded("rebuild_day_changed", record)):
         say(f"No weekly rebuild today (rebuild_day: {values['rebuild_day']})")
-        return "skipped"
+        return "skipped", None
+    if _unit_file(OLD_REBUILD_TIMER):
+        message = (f"weekly rebuild left to {OLD_REBUILD_TIMER}, which is still there (sudo agentbox "
+                   "regenerate takes it away)")
+        say(f"Maintenance window: {message}")
+        _update(rebuild=begun)
+        activity.record("action", "maintenance.rebuild", f"Maintenance window: {message}",
+                        params={"reason": "old-timer"})
+        return "skipped", message
     started = int(time.time())
     try:
         name = images.start("all")
-        _record_window(begun, rebuild=begun)
+        _update(rebuild=begun)
         say(f"Weekly rebuild started ({name})")
     finally:
         wait_for_builds(say)
-    _builds_done(started, "all")
-    return "ok"
+    _builds_done(started, "all", activity.actor())
+    return "ok", None
 
 
 def _reset_check(say, begun, as_json):
@@ -210,35 +281,55 @@ def _record(step, what, done, failure=None):
                     outcome="failed", error=error, error_params=params)
 
 
+def _skipped(say, as_json):
+    """The timer's window of this turn ran already: recorded (maintenance.skipped), nothing runs."""
+    at = settings.load()["maintenance_time"]
+    message = (f"Maintenance window not started: the window of {at} ran already (sudo agentbox maintenance "
+               "runs one by hand)")
+    say(message)
+    activity.record("action", "maintenance.skipped", message, params={"reason": "already-ran", "time": at})
+    if as_json:
+        print(json.dumps({"steps": [], "already_ran": True}))
+
+
+def _turn_ran(begun):
+    """Whether the timer's window of the latest turn ran already (turn_ran); False when the
+    Settings cannot be read (the window runs, and its steps say what is wrong)."""
+    try:
+        at = settings.load()["maintenance_time"]
+    except Fail:
+        return False
+    return turn_ran(begun, at, _timer_window_began())
+
+
 def maintenance(args, command="maintenance"):
     """agentbox maintenance [--json] (agentbox-maintenance.service, daily at maintenance_time): the
     Maintenance window, its steps one after another; a failing one does not stop the next. With
     --json only the JSON result goes to stdout: {"steps": [{"step", "outcome", "message"}],
-    "ran_today"} (ran_today: started by the timer less than 12 hours after a window began, so
-    nothing ran)."""
+    "already_ran"} (already_ran: started by the timer when its window of the latest turn of
+    maintenance_time ran already, so nothing ran and steps is empty; false otherwise)."""
     if any(a != "--json" for a in args):
         die(f"{command} [--json]", error="invalid_argument")
     as_json = "--json" in args
     say = (lambda line: None) if as_json else (lambda line: print(clean(line, False), flush=True))
     results, begun = [], time.time()
+    by_timer = activity.actor() == "timer"
     with state_files.locked_unless_held(LOCK) as mine:
         if not mine:
             die("a Maintenance window is running already (journalctl -fu agentbox-maintenance)",
                 error="action_failed")
-        last = _window_began()
-        if activity.actor() == "timer" and last is not None and 0 <= begun - last < GUARD_SECONDS:
-            say("A Maintenance window began less than 12 hours ago; the next one is at its time")
-            if as_json:
-                print(json.dumps({"steps": [], "ran_today": True}))
+        if by_timer and _turn_ran(begun):
+            _skipped(say, as_json)
             return
-        try:
-            _record_window(begun)
-        except OSError as e:        # the window runs all the same
-            say(f"agentbox: {RECORD}: {e.strerror}")
+        if by_timer:
+            try:
+                _update(timer_window=begun)
+            except (OSError, Fail) as e:        # the window runs all the same
+                say(f"agentbox: {RECORD}: {getattr(e, 'strerror', None) or getattr(e, 'message', e)}")
         for step, what, done in STEPS:
             say(f"== Maintenance window: {what}")
             try:
-                outcome, message = RUN[step](say, begun, as_json) or "ok", None
+                outcome, message = RUN[step](say, begun, as_json) or ("ok", None)
             except Fail as f:
                 message = clean(f.message.strip(), False) or f"exit {f.exit}"
                 outcome = "failed"
@@ -253,7 +344,7 @@ def maintenance(args, command="maintenance"):
                     _record(step, what, done)
             results.append({"step": step, "outcome": outcome, "message": message})
     if as_json:
-        print(json.dumps({"steps": results, "ran_today": False}))
+        print(json.dumps({"steps": results, "already_ran": False}))
     if any(r["outcome"] == "failed" for r in results):
         raise Fail("", 1, error="action_failed", raw=True)
 
@@ -285,8 +376,9 @@ def weekly_check(args):
     """agentbox weekly-check [--json]: the Reset check of the Maintenance window on its own
     (lifecycle.weekly_check). Called by the timer (actor `timer`, agentbox-weekly.service of a
     Host from before the Maintenance window) while the window's timer is missing, it runs the
-    whole window instead, at most once in 12 hours like the window's own timer, so an update leaves no
-    gap until `agentbox regenerate` writes that timer and takes agentbox-weekly away."""
+    whole window instead, once per turn of maintenance_time like the window's own timer, so an
+    update leaves no gap until `agentbox regenerate` writes that timer and takes agentbox-weekly
+    away."""
     if activity.actor() == "timer" and timer_missing():
         if "--json" not in args:
             print(f"{TIMER} is missing (sudo agentbox regenerate creates it): the whole Maintenance window "

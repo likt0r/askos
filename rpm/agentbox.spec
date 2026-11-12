@@ -178,10 +178,12 @@ fi
 # update only: the timers of the weekly rebuild and the version check that agentbox regenerate
 # wrote before the Maintenance window (#49), and the service only the rebuild timer started, are
 # disabled, stopped and deleted, and systemd forgets them; a run under way finishes. A timer whose
-# disabling fails stays, with its service, for agentbox regenerate to take away. The old Reset
-# check's timer, agentbox-weekly.timer, stays: until `agentbox regenerate` (or `agentbox setup`)
-# writes the Maintenance window's timer and takes it away, its `agentbox weekly-check` runs the
-# whole window (agentbox/maintenance.py), at the old Reset time; the package says so.
+# disabling fails stays, with its service, for agentbox regenerate to take away (while
+# agentbox-rebuild.timer is still there, the Maintenance window leaves the weekly rebuild to it, so
+# their Builds do not collide). The old Reset check's timer, agentbox-weekly.timer, stays: until
+# `agentbox regenerate` (or `agentbox setup`) writes the Maintenance window's timer and takes it
+# away, its `agentbox weekly-check` runs the whole window (agentbox/maintenance.py), at the old
+# Reset time; the package says so.
 if [ $1 -gt 1 ]; then
     found=
     for unit in agentbox-rebuild.timer agentbox-versions.timer; do
