@@ -36,7 +36,10 @@ jobs:
         run: npm ci
       # No root, no libvirt, no VM: the tests put fake programs on PATH and set AGENTBOX_ROOT.
       # There is no UI build here, so tests/test_control_room_ui.py skips; the ui job runs it.
-      - run: python3 -m unittest discover -s tests
+      # In parallel worker processes, one per CPU, as AGENTS.md runs them; one after another
+      # the suite no longer fits the time limit. One line per unit with its time; a unit has 10
+      # minutes on the runner's few CPUs.
+      - run: python3 tests/run_parallel.py --verbose --timeout 600
 
   ui:
     runs-on: ubuntu-latest
