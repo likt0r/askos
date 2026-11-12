@@ -160,7 +160,7 @@ class V1Test(unittest.TestCase):
             return []
 
     def calls(self):
-        return [c[1:] if c and c[0].startswith("--actor=") else c for c in self.raw_calls()]
+        return [[c[0], *c[2:]] if len(c) > 1 and c[1].startswith("--actor=") else c for c in self.raw_calls()]
 
     def stdin(self):
         with open(os.path.join(self.dir, "stdin.jsonl")) as f:
@@ -520,7 +520,7 @@ class EndpointTest(V1Test):
                 answer = self.request(method, path, body)
                 self.assertEqual(answer[:2], (status, ANSWER))
                 calls = self.raw_calls()[before:]
-                self.assertEqual(calls, [[ACTOR, *argv]])
+                self.assertEqual(calls, [[argv[0], ACTOR, *argv[1:]]])
 
     def test_vm_objects_pass_on_the_container_image_cleanup_fields(self):
         shown = vm("work", container_image_cleanup=False, container_image_cleanup_days=14)

@@ -117,7 +117,8 @@ def valid_actor(v):
 
 def take_actor(args):
     """Split the global option --actor TEXT (or --actor=TEXT) off the front of
-    the arguments, before the command: (value or None, the other arguments)."""
+    the arguments (before the command, or right after it): (value or None, the other
+    arguments)."""
     if args and args[0] == "--actor":
         if len(args) < 2:
             die("--actor needs a value", 2, error="invalid_argument", option="--actor")

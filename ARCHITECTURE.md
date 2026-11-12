@@ -845,17 +845,21 @@ Host after every Build
 
 ### Control Room
 A small Python standard-library service running as an unprivileged user; every action is one
-call of `sudo agentbox …` with fixed arguments, naming the browser's device (from its
-User-Agent) and address as the actor. Its sudoers rule names `agentbox` with any arguments;
-called through `sudo` by `agentbox-web`, agentbox itself runs only the commands the Control
-Room uses (`CONTROL_ROOM_COMMANDS` in `agentbox/cli.py`, which a test holds equal to the
-commands the backend runs) and refuses every other command and `--force` before anything
-runs, so even a taken-over backend cannot run `setup`, `import` or `regenerate`, or lift
-strong Signals. sudoers itself cannot pin the command: it matches the arguments joined with
-spaces, and the actor, which holds spaces, comes before the command. HTTPS with a
-self-signed certificate, a password with scrypt, sessions in memory, a login brake after five
-failures, CSRF protection via a custom header and `SameSite=Strict`. Sign-ins (successful, failed, refused by the
-brake) and sign-outs are Activity entries with address and device. Pairing codes, tokens
+call of `sudo agentbox <command> …` with fixed arguments, the command first, naming the
+browser's device (from its User-Agent) and address as the actor right after it. The Control
+Room's commands are `CONTROL_ROOM_COMMANDS` in `agentbox/cli.py`; tests hold it equal to the
+commands the backend runs and to the list in its sudoers rule. That rule lets `agentbox-web`
+run `agentbox` only with one of these commands as the first argument (a sudoers regular
+expression, sudo 1.9.10 or later). Since sudo matches the arguments joined with spaces, a first
+argument such as `start setup` still passes it; agentbox knows no such command. Called through
+`sudo` by `agentbox-web`, agentbox itself also runs only these commands, and refuses every other
+command and `--force` before anything runs (`control_room_refused`), which no sudoers rule could
+tell from a note that contains it. So even a taken-over backend cannot run `setup`, `import` or
+`regenerate`, or lift strong Signals, and agentbox's own check holds should sudo's matching ever
+be got around. HTTPS with a self-signed certificate, a password with scrypt, sessions in
+memory, a login brake after five failures, CSRF protection via a custom header and
+`SameSite=Strict`. Sign-ins (successful, failed, refused by the brake) and sign-outs are
+Activity entries with address and device. Pairing codes, tokens
 and passwords never appear in logs.
 
 Host readings come without privileges, every five seconds, from the kernel and `nvidia-smi`
@@ -1043,8 +1047,8 @@ One timeline of what happened on the Host and who caused it, kept in journald
   device) are no parameters and never collide with them. The Control Room words each entry
   from code and parameters in its language; the English description is the fallback for an
   action it does not know, and older entries, with German text and no code, show theirs. The actor
-  comes from the global option `--actor`: the Control Room passes device and address, the
-  Maintenance window passes `timer`, a connection to a VM's Orca port that wakes it passes
+  comes from the global option `--actor`, before the command or right after it: the Control
+  Room passes device and address after the command, the Maintenance window passes `timer`, a connection to a VM's Orca port that wakes it passes
   `Orca (<address>)`; without it, it is the user who ran `sudo`. `watch` records its
   entries with the actor `watch`. Setting a Claude token,
   GitHub owners or the GitHub App is of kind `credentials`, described without the secret.
