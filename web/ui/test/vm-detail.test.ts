@@ -392,6 +392,94 @@ describe('memory limit', () => {
   })
 })
 
+describe('Container image cleanup', () => {
+  const SET = (enabled: boolean, days: number) => OK({ vm: 'work', container_image_cleanup: enabled, container_image_cleanup_days: days,
+    previous: { container_image_cleanup: true, container_image_cleanup_days: 7 }, changed: true, message: 'deutsch' })
+  const shown = () => text('overview-container-image-cleanup')
+  const flip = async () => { await byTestId('container-image-cleanup-dialog').find('[role="switch"]').trigger('click'); await flushPromises() }
+  const isOn = () => byTestId('container-image-cleanup-dialog').find('[role="switch"]').attributes('aria-checked')
+
+  it('shows after N days or off, and on / 7 days when the VM object has no keys', async () => {
+    fakeApi({ 'GET /session': SIGNED_IN })
+    const { es } = await openApp('/vms/work/web', [{ ...WORK, reset_due: false }])
+    expect(shown()).toBe('Container image cleanup: after 7 days')
+    es.emit('vm', { ...WORK, reset_due: false, container_image_cleanup: true, container_image_cleanup_days: 14 })
+    await flushPromises()
+    expect(shown()).toBe('Container image cleanup: after 14 days')
+    es.emit('vm', { ...WORK, reset_due: false, container_image_cleanup: false, container_image_cleanup_days: 14 })
+    await flushPromises()
+    expect(shown()).toBe('Container image cleanup: off')
+  })
+
+  it('shows the value in German', async () => {
+    fakeApi({ 'GET /session': SIGNED_IN })
+    await openApp('/vms/work/web', [{ ...WORK, reset_due: false, container_image_cleanup: false }])
+    await useNuxtApp().$i18n.setLocale('de')
+    await flushPromises()
+    expect(shown()).toBe('Container-Images aufräumen: aus')
+  })
+
+  it('changes the days alone, checks them first, and sends only what changed', async () => {
+    const api = fakeApi({ 'GET /session': SIGNED_IN, 'PUT /vms/work/container-image-cleanup': SET(true, 14) })
+    await openApp('/vms/work/web', [{ ...WORK, reset_due: false }])
+    await click('container-image-cleanup-change')
+    expect(isOn()).toBe('true')
+    expect((byTestId('container-image-cleanup-days').element as HTMLInputElement).value).toBe('7')
+    expect(byTestId('container-image-cleanup-save').attributes('disabled')).toBeDefined()    // nothing changed yet
+    for (const bad of ['0', '366', 'x', '']) {
+      await type('container-image-cleanup-days', bad)
+      expect(text('container-image-cleanup-dialog')).toContain('A whole number of days from 1 to 365.')
+      expect(byTestId('container-image-cleanup-save').attributes('disabled')).toBeDefined()
+    }
+    await type('container-image-cleanup-days', '14')
+    await submit('container-image-cleanup-dialog')
+    const put = api.calls.find(c => c.method === 'PUT')!
+    expect(put.path).toBe('/vms/work/container-image-cleanup')
+    expect(put.headers['x-agentbox']).toBe('1')
+    expect(put.body).toEqual({ days: 14 })
+    expect(exists('container-image-cleanup-dialog')).toBe(false)
+    expect(document.body.textContent).toContain('Container image cleanup of work saved')
+  })
+
+  it('turns it off and keeps the days, which come back when it is turned on', async () => {
+    const api = fakeApi({ 'GET /session': SIGNED_IN, 'PUT /vms/work/container-image-cleanup': SET(false, 14) })
+    const { es } = await openApp('/vms/work/web', [{ ...WORK, reset_due: false, container_image_cleanup_days: 14 }])
+    await click('container-image-cleanup-change')
+    await flip()
+    expect(isOn()).toBe('false')
+    await submit('container-image-cleanup-dialog')
+    expect(api.calls.find(c => c.method === 'PUT')!.body).toEqual({ enabled: false })
+    es.emit('vm', { ...WORK, reset_due: false, container_image_cleanup: false, container_image_cleanup_days: 14 })
+    await flushPromises()
+    await click('container-image-cleanup-change')
+    expect(isOn()).toBe('false')
+    expect((byTestId('container-image-cleanup-days').element as HTMLInputElement).value).toBe('14')
+  })
+
+  it('sends both values when both changed', async () => {
+    const api = fakeApi({ 'GET /session': SIGNED_IN, 'PUT /vms/work/container-image-cleanup': SET(false, 30) })
+    await openApp('/vms/work/web', [{ ...WORK, reset_due: false }])
+    await click('container-image-cleanup-change')
+    await flip()
+    await type('container-image-cleanup-days', '30')
+    await submit('container-image-cleanup-dialog')
+    expect(api.calls.find(c => c.method === 'PUT')!.body).toEqual({ enabled: false, days: 30 })
+  })
+
+  it('shows the refusal by its code and stays open', async () => {
+    fakeApi({
+      'GET /session': SIGNED_IN,
+      'PUT /vms/work/container-image-cleanup': { status: 400, body: { error: { code: 'invalid_cleanup_days', message: 'x', field: 'days', detail: 'Tage' } } },
+    })
+    await openApp('/vms/work/web', [{ ...WORK, reset_due: false }])
+    await click('container-image-cleanup-change')
+    await type('container-image-cleanup-days', '30')
+    await submit('container-image-cleanup-dialog')
+    expect(text('container-image-cleanup-error')).toBe('The days for the Container image cleanup must be a whole number from 1 to 365.')
+    expect(exists('container-image-cleanup-dialog')).toBe(true)
+  })
+})
+
 describe('deleting a VM', () => {
   it('needs the typed name, archives the Data disk by default, and goes back to the list', async () => {
     const api = fakeApi({

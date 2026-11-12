@@ -21,6 +21,8 @@ export interface Vm {
   address?: string
   memory_mib?: number
   data_disk_gib?: number
+  container_image_cleanup?: boolean
+  container_image_cleanup_days?: number
   github_owners?: string[]
   image?: string
   build_pin?: string | null

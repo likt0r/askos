@@ -89,6 +89,9 @@ else `500 action_failed`, with the message in `detail`:
 | 400 | `invalid_cleanup_days` | the days of the Container image cleanup are not a whole number from 1 to 365 (`field`: `days`) |
 | 400 | `invalid_memory` | memory limit not a whole number from 1024 MiB to the Host's memory (`field`: `memory_mib`), when changing the limit or creating a VM (`POST /vms` formerly answered `invalid_argument` for this) |
 | 500 | `memory_not_applied` | the new memory limit is saved, but the VM could not be defined again; `agentbox regenerate` finishes it |
+| 400 | `invalid_cleanup_days` | days for the Container image cleanup not a whole number from 1 to 365 (`field`: `days`) |
+| 409 | `container_image_cleanup_missing` | the VM's Build has no Container image cleanup yet: build its Image and reset the VM first (only in Activity, from the hourly run) |
+| 502 | `container_image_cleanup_failed` | the Container image cleanup in the VM failed (only in Activity, from the hourly run) |
 | 503 | `guest_agent_unavailable` | the VM's guest agent does not answer |
 | 504 | `vm_query_timeout` | a query inside the VM took too long |
 | 502 | `vm_journal_failed` | journalctl failed inside the VM |
@@ -266,8 +269,10 @@ Sign-ins, failures, refusals by the brake and sign-outs are Activity entries (co
 - `devices`: open connections to the VM's Orca port by remote address; `null` when unknown.
 - `memory_mib`: the memory limit in the registry record; after a change a running VM uses
   it from its next Restart or Reset (`PUT /vms/<vm>/memory`).
-- `container_image_cleanup`, `container_image_cleanup_days`: the Container image cleanup of the
-  VM, on or off and its days (1 to 365); a record without them means `true` and `7`.
+- `container_image_cleanup`, `container_image_cleanup_days`: the VM's Container image
+  cleanup, on or off and its number of days (1 to 365), as `describe --json` gives them, two
+  separate values (turning it off keeps the days); the Control Room takes a missing key as
+  `true` and `7` (`PUT /vms/<vm>/container-image-cleanup`).
 - Memory in use is not part of it: `vms.<name>.memory_bytes` of the `host` event and of
   `GET /host`.
 
@@ -285,6 +290,7 @@ Sign-ins, failures, refusals by the brake and sign-outs are Activity entries (co
 | `POST /vms/<vm>/reset` | `{"start"?: true}` | `reset` (`--no-start` with `start: false`): same shape. The UI asks for confirmation first |
 | `POST /vms/<vm>/focus` | | `focus <vm>`: `{"focus", "others": [{"vm", "state"}], "message"}` |
 | `DELETE /focus` | | `focus off` |
+| `PUT /vms/<vm>/container-image-cleanup` | `{"enabled": true, "days": 14}` | `set-container-image-cleanup <vm> [on\|off] [--days N] --json`: `{"vm", "container_image_cleanup", "container_image_cleanup_days", "previous": {"container_image_cleanup", "container_image_cleanup_days"}, "changed", "message"}`; both keys optional, at least one (`enabled` a boolean, `days` a whole number, else `400 invalid_field` with `field` `enabled` or `days`); `400 invalid_cleanup_days` (`field` `days`), `404 vm_not_found`; works in every state of the VM and takes effect at the next hourly run |
 | `PUT /vms/<vm>/memory` | `{"memory_mib": 16384}` | `set-memory`: `{"vm", "memory_mib", "previous_mib", "changed", "state", "applies": "next_start"\|"next_restart"\|null, "message"}`; `next_start`: the VM is off and starts with it, `next_restart`: it keeps running with its memory until its next Restart or Reset; `null`: nothing changed. A paused VM is refused (`409 vm_paused`) |
 | `PUT /vms/<vm>/image` | `{"image", "build": null\|"<build>"}` | `set-image`: `{"vm", "image", "build", "message"}`; applies at the next Reset |
 | `PUT /vms/<vm>/github-owners` | `{"owners": ["likt0r", ...]}` | `set-owners`: `{"vm", "owners"}` |
@@ -428,6 +434,8 @@ first:
 | `delete` | `delete_data_disk` |
 | `set-memory` | `mib` |
 | `set-container-image-cleanup` | `enabled` (`true`/`false`), `days` (the values after the call) |
+| `container-image-cleanup.removed` | `removed` (Container images), `freed_bytes`, `days`; recorded by the hourly run only when it removed something (actor `timer`) |
+| `container-image-cleanup.failed` | `days`; outcome `failed` with an error code (`guest_agent_unavailable`, `vm_query_timeout`, `container_image_cleanup_missing`, `container_image_cleanup_failed`); actor `timer` |
 | `allow` | `domain` or, for a Regex entry, `regex` (the pattern; so for every command below that names `domain`), `scope` (a VM or `all`), `duration` (`15min`, `1h`, `8h`, `7d`) or `temporary`, `force` |
 | `extend` | `domain`, `scope`, `duration`, `force` |
 | `make-permanent` | `domain`, `scope`, `force` |
@@ -458,8 +466,6 @@ first:
 | `build.rejected` | `image`, `build`, `reason`, `message` (the first Safeguard problem) |
 | `build.unneeded` | `reason` |
 | `build.skipped`, `build.automatic` | `images`, `reason` |
-| `container-image-cleanup.removed` | `removed`, `freed_bytes` (the VM's two numbers), `days` |
-| `container-image-cleanup.failed` | `days` |
 
 `reason` (also in `params`) is a stable code where one was
 recorded, e.g. why an automatic Reset was postponed (`reset.postponed`: `gui-connected`,
@@ -555,8 +561,8 @@ Progress arrives live as `build` and `build-log` events; the log endpoint fills 
 
 Settings keys the Control Room may change: `reset_age_days`, `reset_time`, `rebuild_day`,
 `rebuild_time`, `builds_kept`, `default_memory_mib`, `default_data_disk_gib`,
-`default_image`, `default_container_image_cleanup`,
-`default_container_image_cleanup_days`, `open_web_max_minutes`, `temporary_entry_default`, `young_domain_days`,
+`default_image`, `default_container_image_cleanup`, `default_container_image_cleanup_days`,
+`open_web_max_minutes`, `temporary_entry_default`, `young_domain_days`,
 `feed_interval_hours`, `package_min_age_days`, `orca_version`, `activity_retention_days`,
 `session_hours`, `default_language`, `auto_update`. The password, home network and ports are
 not among them.

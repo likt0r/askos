@@ -21,6 +21,8 @@ const LATER = {
   default_memory_mib: 'fuer neue VMs',
   default_data_disk_gib: 'fuer neue VMs',
   default_image: 'fuer neue VMs',
+  default_container_image_cleanup: 'fuer neue VMs',
+  default_container_image_cleanup_days: 'fuer neue VMs',
   temporary_entry_default: 'fuer neue befristete Freigaben',
   young_domain_days: 'beim naechsten Abruf der Listen',
   session_hours: 'bei der naechsten Anmeldung',
@@ -29,7 +31,7 @@ const LATER = {
 
 const DEFAULTS: Record<string, string | number | boolean> = {
   reset_age_days: 7, reset_time: '04:00', auto_update: true, rebuild_day: 'sun', rebuild_time: '03:00', builds_kept: 3,
-  default_memory_mib: 26624, default_data_disk_gib: 300, default_image: 'base', open_web_max_minutes: 240,
+  default_memory_mib: 26624, default_data_disk_gib: 300, default_image: 'base', default_container_image_cleanup: true, default_container_image_cleanup_days: 7, open_web_max_minutes: 240,
   temporary_entry_default: '1h', young_domain_days: 14, feed_interval_hours: 12, package_min_age_days: 2,
   orca_version: '', activity_retention_days: 90, session_hours: 12, default_language: 'browser',
 }
@@ -65,7 +67,7 @@ describe('settings (units)', () => {
   const listed = [...section.slice(0, section.indexOf('The password')).matchAll(/`([a-z_]+)`/g)].map(m => m[1]!)
 
   it('knows the keys of docs/control-room-api.md, no more and no fewer', () => {
-    expect(listed.length).toBe(18)
+    expect(listed.length).toBe(20)
     expect([...listed].sort()).toEqual(Object.keys(SETTING_SPECS).sort())
     expect(Object.keys(SETTING_SPECS).sort()).toEqual(Object.keys(DEFAULTS).sort())
   })
@@ -100,6 +102,9 @@ describe('settings (units)', () => {
     expect(settingProblem('some_new_key', 'anything')).toBeNull()
     for (const lang of ['browser', 'en', 'de']) expect(settingProblem('default_language', lang)).toBeNull()
     expect(settingProblem('default_language', 'fr')).toEqual({ code: 'choice', options: 'browser, en, de' })
+    expect(settingProblem('default_container_image_cleanup_days', '366')).toEqual({ code: 'int', min: 1, max: 365 })
+    expect(settingProblem('default_container_image_cleanup', 'true')).toBeNull()
+    expect(settingValue('default_container_image_cleanup', 'false')).toBe(false)
     // orca_version: empty is automatic, else a version as agentbox/settings.py takes it
     for (const ok of ['', ' ', '1.4.250', '0.0.0', ' 1.4.250 ']) expect(settingProblem('orca_version', ok), ok).toBeNull()
     for (const bad of ['1.4', 'v1.4.250', '1.4.250-rc.0', '01.4.250', 'latest', '1.4.250;true']) {
@@ -142,12 +147,12 @@ describe('settings (units)', () => {
 describe('Settings page', () => {
   useFreshApp()
 
-  it('shows all 18 settings with label, current value and default, and when a change applies', async () => {
+  it('shows all 20 settings with label, current value and default, and when a change applies', async () => {
     const { wrapper } = await openPage('/settings', {
       'GET /settings': ok(settingsBody({ reset_age_days: 14, rebuild_day: 'fri', temporary_entry_default: '8h', young_domain_days: 28, default_language: 'en' })),
     })
     const rows = wrapper.findAll('[data-testid="setting"]')
-    expect(rows).toHaveLength(18)
+    expect(rows).toHaveLength(20)
     expect(new Set(rows.map(r => r.attributes('data-key')))).toEqual(new Set(Object.keys(DEFAULTS)))
     expect(wrapper.find('[data-testid="settings-load-error"]').exists()).toBe(false)
 
@@ -179,6 +184,10 @@ describe('Settings page', () => {
     expect(field(wrapper, 'auto_update').findAll('option').map(o => [o.attributes('value'), o.text()])).toEqual([['true', 'On'], ['false', 'Off']])
     expect(field(wrapper, 'auto_update').find('[data-testid="setting-default"]').text()).toBe('Default: On')
     expect(field(wrapper, 'auto_update').text()).toContain('Automatic updates')
+    // the Container image cleanup of new VMs: a choice of On and Off, and the days
+    expect(field(wrapper, 'default_container_image_cleanup').findAll('option').map(o => [o.attributes('value'), o.text()])).toEqual([['true', 'On'], ['false', 'Off']])
+    expect(field(wrapper, 'default_container_image_cleanup').text()).toContain('Container image cleanup of new VMs')
+    expect(field(wrapper, 'default_container_image_cleanup_days').find('[data-testid="setting-default"]').text()).toBe('Default: 7')
     // orca_version: empty is automatic, also as the default
     expect((input(wrapper, 'orca_version').element as HTMLInputElement).value).toBe('')
     expect(input(wrapper, 'orca_version').attributes('placeholder')).toBe('automatic')
@@ -586,7 +595,7 @@ describe('Settings page', () => {
       'PATCH /settings': ok(changedBody),
     })
     const rows = wrapper.findAll('[data-testid="setting"]')
-    expect(rows).toHaveLength(19)
+    expect(rows).toHaveLength(21)
     expect(rows.at(-1)!.attributes('data-key')).toBe('future_key')
     expect(rows.at(-1)!.text()).toContain('future_key')
     expect(rows.at(-1)!.find('[data-testid="setting-later"]').text()).toBe('beim naechsten Mal')

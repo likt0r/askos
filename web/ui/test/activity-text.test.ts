@@ -47,6 +47,13 @@ const ENTRIES: ActivityEntry[] = [
   coded(15, 'allow', {}, 'Allow : No such VM: x', { outcome: 'failed', error: 'vm_not_found' }),
   // the generic code: agentbox's own message says more
   coded(16, 'reset', {}, 'Reset: error: failed to get domain', { outcome: 'failed', error: 'action_failed' }),
+  // the Container image cleanup: the change, a run that removed something, a failed run
+  coded(17, 'set-container-image-cleanup', { enabled: 'true', days: '14' }, 'Container image cleanup on, after 14 days'),
+  coded(18, 'set-container-image-cleanup', { enabled: 'false' }, 'Container image cleanup off'),
+  coded(19, 'set-container-image-cleanup', { days: '3' }, 'Container image cleanup after 3 days'),
+  coded(20, 'container-image-cleanup.removed', { removed: '2', freed_bytes: '1610612736', days: '7' }, 'Container image cleanup removed 2'),
+  coded(21, 'container-image-cleanup.failed', { days: '7' }, 'Container image cleanup failed',
+    { outcome: 'failed', error: 'guest_agent_unavailable', error_params: {} }),
 ]
 
 const STORED = ['Frobnicate x', 'Freigabe example.org', 'Pause: something new', 'Allow : No such VM: x',
@@ -74,6 +81,11 @@ const EN = [
   'Build base-20261109-120000 failed: podman build failed (exit 1)',
   'Build base-20261109-120000 done',
   ...STORED,
+  'Container image cleanup on, after 14 days',
+  'Container image cleanup off',
+  'Container image cleanup after 3 days',
+  'Container image cleanup removed 2 Container images and freed 1.5 GiB',
+  'Container image cleanup failed: The VM\'s guest agent does not answer.',
 ]
 
 const DE = [
@@ -90,6 +102,11 @@ const DE = [
   'Build base-20261109-120000 gescheitert: podman build failed (exit 1)',
   'Build base-20261109-120000 fertig',
   ...STORED,
+  'Container-Images aufräumen an, nach 14 Tagen',
+  'Container-Images aufräumen aus',
+  'Container-Images aufräumen nach 3 Tagen',
+  'Container-Images aufräumen hat 2 Container-Images entfernt und 1.5 GiB frei gemacht',
+  'Container-Images aufräumen fehlgeschlagen: Der Gast-Agent der VM antwortet nicht.',
 ]
 
 async function list(entries: ActivityEntry[]) {
@@ -170,6 +187,7 @@ describe('Activity in the UI language', () => {
       minutes: '30', category: 'paste', list: 'watchlist', legacy: 'old-file', migrated: '2', skipped: '0', owners: 'a',
       app_id: '1', settings: 'reset_time', reason: 'idle', signals: 'young', images: 'base', release: '0.3.0',
       repository: 'a/b', request: 'a/b', folder: '/home/a/foo', files: '3', bytes: '120',
+      enabled: 'true', days: '7', removed: '2', freed_bytes: '2048',
     }
     // a reason the sentence knows, where it is a code of its own
     const reasons: Record<string, string> = { 'wake.not-responding': 'system-not-booted', 'github.refused': 'not-installed' }
