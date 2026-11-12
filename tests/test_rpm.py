@@ -163,6 +163,8 @@ class PackageTest(unittest.TestCase):
         # its regular expression needs sudo 1.9.10
         self.assertRegex(self.spec, r"(?m)^Requires:\s+sudo >= 1\.9\.10$")
         self.assertRegex(self.spec, r"(?m)^BuildRequires:\s+sudo >= 1\.9\.10$")
+        # and %post's visudo checks it, so an update brings that sudo before %post runs
+        self.assertRegex(self.spec, r"(?m)^Requires\(post\):\s+sudo >= 1\.9\.10$")
         # checked when built and again when installed
         self.assertIn("visudo -cqf rpm/agentbox-web.sudoers", spec_sections(self.spec, ("check",)))
         self.assertIn("visudo -cqf %{_sysconfdir}/sudoers.d/agentbox-web", spec_sections(self.spec, ("post",)))

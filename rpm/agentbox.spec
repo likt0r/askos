@@ -49,7 +49,7 @@ Requires:       openssl
 Requires:       iproute
 Requires:       curl
 # visudo and chattr in %%post
-Requires(post): sudo
+Requires(post): sudo >= 1.9.10
 Requires(post): e2fsprogs
 # agentbox setup: the owner user into libvirt and the members of agentbox-journal (usermod,
 # gpasswd), and chattr for a VM disk directory it makes
