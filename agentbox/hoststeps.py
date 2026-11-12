@@ -33,6 +33,10 @@ NO_LOGIN = ("nologin", "false")
 JOURNAL_SOCKETS = ("stdout", "socket", "dev-log")
 # the group journald runs as (stock systemd-journald@.service) and owns the runtime directory with
 JOURNALD_GROUP = "systemd-journal"
+# marker (generate._pending): sockets lost their group, so running writers lost their log streams
+STREAMS_LOST = "journal-streams"
+# the Control Room writes sign-ins with agentbox-journal as supplementary group
+JOURNAL_WRITERS = "agentbox-web.service"
 # what the VMs reach on the Host, each on its own network: the resolver, the proxy and the
 # token service
 VM_PORTS = ("53/udp", "53/tcp", "443/tcp", "9100/tcp")
@@ -191,8 +195,9 @@ def journal_sockets():
     root:systemd-journal when journald starts the first time, which takes the group from the
     sockets. So the directory is set right first, then the sockets' group and mode in place,
     without a restart of journald that would cut the log streams of running services. Services
-    whose connect failed have their output in /dev/null until they restart: the proxies
-    restart when a socket's group changed. The group only as root (tests run as a normal
+    whose connect failed have their output in /dev/null until they restart: the proxies and
+    the Control Room restart when a socket's group changed, and again in a later run when that
+    restart failed (a marker, removed once it succeeded). The group only as root (tests run as a normal
     user)."""
     root = os.geteuid() == 0
     gid = _group(activity.JOURNAL_GROUP, "the package creates it")[0] if root else -1
@@ -214,7 +219,6 @@ def journal_sockets():
         pass
     except OSError as e:
         die(f"{folder}: {e.strerror}", error="action_failed", path=folder)
-    regrouped = False
     for name in JOURNAL_SOCKETS:
         path = os.path.join(folder, name)
         try:
@@ -223,8 +227,8 @@ def journal_sockets():
                 continue
             changed = gid != -1 and st.st_gid != gid
             if changed:
+                generate._mark(STREAMS_LOST)       # before the chown: a run that dies still restarts
                 os.chown(path, -1, gid)
-                regrouped = True
             if stat.S_IMODE(st.st_mode) != 0o660:
                 os.chmod(path, 0o660)
                 changed = True
@@ -234,9 +238,10 @@ def journal_sockets():
             die(f"{path}: {e.strerror}", error="action_failed", path=path)
         if changed:
             said.append(f"{path}: {activity.JOURNAL_GROUP}, mode 660")
-    if regrouped:
-        _systemctl("try-restart", PROXIES)
-        said.append("running proxies restarted to reconnect their log streams")
+    if os.path.exists(generate._pending(STREAMS_LOST)):
+        _systemctl("try-restart", PROXIES, JOURNAL_WRITERS)
+        os.remove(generate._pending(STREAMS_LOST))
+        said.append("running proxies and the Control Room restarted to reconnect their log streams")
     return said
 
 

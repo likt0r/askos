@@ -63,14 +63,19 @@ class JournalSocketsTest(unittest.TestCase):
     """hoststeps.journal_sockets() as root, with ownership faked: the state journald's first
     start leaves (directory and sockets root:systemd-journal) is repaired, once."""
     JOURNALD_GID, JOURNAL_GID = 190, 974
+    RESTART = ["try-restart", "agentbox-proxy-*.service", "agentbox-web.service"]
 
     def setUp(self):
         sys.path.insert(0, REPO)
         try:
-            from agentbox import activity, errors, hoststeps
+            from agentbox import activity, errors, hoststeps, paths
         finally:
             sys.path.remove(REPO)
         self.hoststeps, self.errors = hoststeps, errors
+        self.state = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.state)
+        self.marker = os.path.join(self.state, "pending", "journal-streams")
+        self.restart_fails = False
         self.folder = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.folder)
         self.owner = {self.folder: (0, 0)}
@@ -98,10 +103,16 @@ class JournalSocketsTest(unittest.TestCase):
                 self.errors.die(f"the group {name} is missing ({comes_with})", error="action_failed", group=name)
             return self.groups[name], set()
 
-        for patch in (mock.patch.object(activity, "JOURNAL_RUN", self.folder), mock.patch.object(os, "geteuid", lambda: 0),
+        def systemctl(*args):
+            self.calls.append(list(args))
+            if self.restart_fails:
+                self.errors.die("systemctl try-restart fails", error="action_failed", program="systemctl")
+
+        for patch in (mock.patch.object(activity, "JOURNAL_RUN", self.folder), mock.patch.object(paths, "STATE", self.state),
+                      mock.patch.object(os, "geteuid", lambda: 0),
                       mock.patch.object(os, "lstat", lstat), mock.patch.object(os, "chown", chown),
                       mock.patch.object(hoststeps, "_group", group),
-                      mock.patch.object(hoststeps, "_systemctl", lambda *a: self.calls.append(list(a)))):
+                      mock.patch.object(hoststeps, "_systemctl", systemctl)):
             patch.start()
             self.addCleanup(patch.stop)
 
@@ -116,10 +127,29 @@ class JournalSocketsTest(unittest.TestCase):
         said = self.hoststeps.journal_sockets()
         self.assertEqual(self.owner[self.folder], (0, self.JOURNALD_GID))
         self.assertTrue(self.sockets(self.JOURNAL_GID))
-        self.assertEqual(self.calls, [["try-restart", "agentbox-proxy-*.service"]])
+        self.assertEqual(self.calls, [self.RESTART])
+        self.assertFalse(os.path.exists(self.marker))
         self.assertEqual(said, [f"{self.folder}: root:systemd-journal, mode 755"] +
                          [f"{self.folder}/{n}: agentbox-journal, mode 660" for n in ("stdout", "socket", "dev-log")] +
-                         ["running proxies restarted to reconnect their log streams"])
+                         ["running proxies and the Control Room restarted to reconnect their log streams"])
+        self.calls.clear()
+        self.assertEqual(self.hoststeps.journal_sockets(), [])
+        self.assertEqual(self.calls, [])
+
+    def test_a_failed_restart_is_tried_again_by_the_next_run(self):
+        for name in self.hoststeps.JOURNAL_SOCKETS:
+            self.owner[os.path.join(self.folder, name)] = (0, self.JOURNALD_GID)
+        self.restart_fails = True
+        with self.assertRaises(self.errors.Fail):
+            self.hoststeps.journal_sockets()
+        self.assertTrue(os.path.exists(self.marker))
+        self.assertTrue(self.sockets(self.JOURNAL_GID))
+        self.restart_fails = False
+        self.calls.clear()
+        self.assertEqual(self.hoststeps.journal_sockets()[-1:],
+                         ["running proxies and the Control Room restarted to reconnect their log streams"])
+        self.assertEqual(self.calls, [self.RESTART])
+        self.assertFalse(os.path.exists(self.marker))
         self.calls.clear()
         self.assertEqual(self.hoststeps.journal_sockets(), [])
         self.assertEqual(self.calls, [])

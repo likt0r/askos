@@ -870,7 +870,8 @@ One timeline of what happened on the Host and who caused it, kept in journald
   `systemd-journal` when journald first starts, and the group is gone.
   `agentbox setup` sets its members to those of `libvirt` (who manage every VM anyway, so
   `agentbox pair` without root can record) and repairs a running Host in place (directory,
-  sockets, then a restart of the proxies, whose log streams were lost). Admins need both
+  sockets, then a restart of the proxies and the Control Room, whose log streams were lost; a
+  restart that failed is tried again by the next run). Admins need both
   groups; every run of setup makes the members match, and a new membership
   counts from the next login. The Control Room gets the group with
   `SupplementaryGroups=`; the proxies and token services get it as `Group=`, because
@@ -944,8 +945,9 @@ certificate name, owner user) and does the Host steps, in this order
     A restart that fails stops setup before the lists move.
 14. **`agentbox migrate-lists`**.
 15. **Activity journal**: the namespace's runtime directory owned as journald owns it, its
-    running sockets with group and mode of the drop-in, in place; the proxies restart when a
-    socket's group changed (see Activity).
+    running sockets with group and mode of the drop-in, in place; the proxies and the Control
+    Room restart when a socket's group changed, and in the next run when that restart failed
+    (see Activity).
 16. **Feeds**: the first fetch started at once, while none has run yet.
 17. **Control Room**: `agentbox-web.service` enabled and started; restarted after a new Host
     setup.

@@ -543,7 +543,7 @@ class InstalledSetupTest(unittest.TestCase):
         self.assertOwned(self.JOURNAL, "root", "systemd-journal", 0o755)
 
     def test_proxies_that_lost_their_log_stream_restart(self):
-        self.assertIn(["try-restart", "agentbox-proxy-*.service"],
+        self.assertIn(["try-restart", "agentbox-proxy-*.service", "agentbox-web.service"],
                       [c["argv"] for c in self.first_calls if c["cmd"] == "systemctl"])
 
     def test_the_owner_controls_the_vms_and_may_write_activity(self):
