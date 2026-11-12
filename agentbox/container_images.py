@@ -123,7 +123,7 @@ def _one(rec, say):
     if virsh.state(ctx) != "running":
         say(f"{ctx}: skipped, the VM is not running")
         return _result(ctx, "skipped", "not_running")
-    with state_files.vm_lock_if_free(ctx) as taken:
+    with state_files.locked_unless_held(f"lifecycle-{ctx}") as taken:   # vm_lock, never waiting
         if not taken:
             say(f"{ctx}: skipped, another action holds the VM; the next hour tries again")
             return _result(ctx, "skipped", "locked")

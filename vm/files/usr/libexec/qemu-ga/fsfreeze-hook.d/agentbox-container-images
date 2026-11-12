@@ -248,14 +248,16 @@ def in_use(podman, images):
 
 def prune(days, home, podman):
     usage = Usage(home)
+    listed = int(time.time())
     images = images_of(podman)
     used = in_use(podman, images)
     now = int(time.time())
     today = datetime.date.fromtimestamp(now)
     with usage.held():
         last = usage.read()
-        # first seen now; images that are gone are forgotten
-        last = {i: last.get(i, now) for i in images}
+        # first seen now; images that are gone are forgotten, except those the recorder wrote
+        # after the listing (pulled meanwhile)
+        last = {**{i: t for i, t in last.items() if t >= listed}, **{i: last.get(i, now) for i in images}}
         usage.write(last)
     due = [image for i, image in images.items()
            if i not in used and not image["read_only"] and calendar_days(last[i], today) > days]
