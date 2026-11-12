@@ -9,15 +9,19 @@ UNRECOGNIZED_NAME = bytes((21, 3, 3, 0, 2, 2, 112))
 INTERNAL_ERROR = bytes((21, 3, 3, 0, 2, 2, 80))
 
 
+def server_name(*names):
+    """The data of a server_name extension listing these host names (RFC 6066, 3)."""
+    listed = b"".join(b"\x00" + len(n.encode("utf-8")).to_bytes(2, "big") + n.encode("utf-8") for n in names)
+    return len(listed).to_bytes(2, "big") + listed
+
+
 def raw_client_hello(name, padding=0, before=(), after=()):
     """The least a ClientHello naming name needs (RFC 8446, 4.1.2; RFC 6066, 3), with no
-    checks on the name; padding bytes after the extensions that their length does not cover.
-    before and after: further extensions (type, data) around the server_name extension."""
-    raw = name.encode("utf-8")
-    names = b"\x00" + len(raw).to_bytes(2, "big") + raw
-    more = lambda exts: b"".join(t.to_bytes(2, "big") + len(d).to_bytes(2, "big") + d for t, d in exts)
-    ext = (more(before) + b"\x00\x00" + (len(names) + 2).to_bytes(2, "big") + len(names).to_bytes(2, "big") + names
-           + more(after))
+    checks on the name (a tuple: several host names in the one extension); padding bytes
+    after the extensions that their length does not cover. before and after: further
+    extensions (type, data) around the server_name extension."""
+    exts = [*before, (0, server_name(*(name if isinstance(name, tuple) else (name,)))), *after]
+    ext = b"".join(t.to_bytes(2, "big") + len(d).to_bytes(2, "big") + d for t, d in exts)
     body = (b"\x03\x03" + bytes(32) + b"\x00" + b"\x00\x02\x13\x01" + b"\x01\x00"
             + len(ext).to_bytes(2, "big") + ext + bytes(padding))
     handshake = b"\x01" + len(body).to_bytes(3, "big") + body

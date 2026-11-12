@@ -22,7 +22,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_allowlist as allowlist_tests  # noqa: E402
 from client_hello import (ACCESS_DENIED, INTERNAL_ERROR, UNRECOGNIZED_NAME, answer, client_hello,  # noqa: E402
-                          raw_client_hello)
+                          raw_client_hello, server_name)
 from test_allowlist import PROXY, entry  # noqa: E402
 
 
@@ -78,14 +78,25 @@ class ParserTest(unittest.TestCase):
             with self.subTest(name=name):
                 self.refused(raw_client_hello(name), "no server name")
 
-    def test_encrypted_client_hello_counts_as_no_server_name(self):
-        # the outer name is only a front for the one hidden in the encrypted part
-        ech = (0xfe0d, b"\x00" + bytes(40))
-        for hello in (raw_client_hello("public.example", after=[ech]), raw_client_hello("public.example", before=[ech])):
-            self.assertEqual(self.refused(hello, "no server name").alert, proxy.UNRECOGNIZED_NAME)
+    def test_with_an_encrypted_client_hello_extension_the_outer_name_decides(self):
+        # browsers send one in every handshake as GREASE, with the real destination outside
+        grease = (0xfe0d, b"\x00\x00\x01\x00\x01" + bytes(1) + b"\x00\x20" + bytes(32) + b"\x00\x40" + bytes(64))
+        for hello in (raw_client_hello("registry.npmjs.org", after=[grease]),
+                      raw_client_hello("registry.npmjs.org", before=[grease])):
+            self.assertEqual(self.name(hello), "registry.npmjs.org")
         # other extensions around the server name change nothing
         self.assertEqual(self.name(raw_client_hello("example.org", before=[(0x002b, b"\x02\x03\x04")],
                                                     after=[(0x0015, bytes(10))])), "example.org")
+
+    def test_an_extension_twice_is_refused(self):
+        # the proxy would decide on one server_name, the destination might read the other
+        self.refused(raw_client_hello("allowed.example", after=[(0, server_name("other.example"))]))
+        self.refused(raw_client_hello("example.org", after=[(21, b""), (21, bytes(3))]))
+
+    def test_several_host_names_count_as_none(self):
+        e = self.refused(raw_client_hello(("allowed.example", "other.example")), "no server name")
+        self.assertEqual(e.alert, proxy.UNRECOGNIZED_NAME)
+        self.assertEqual(self.name(raw_client_hello(("allowed.example",))), "allowed.example")
 
     def test_an_address_as_server_name_is_passed_on_for_the_signals(self):
         # RFC 6066 forbids it; the classifier flags it (raw-ip, a strong Signal) and it stays blocked

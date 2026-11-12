@@ -116,7 +116,6 @@ def log(ctx, msg):
 
 # TLS record types, the handshake type and the extension of the server name (RFC 8446, 6066)
 HANDSHAKE, ALERT_RECORD, FATAL, CLIENT_HELLO, SERVER_NAME, HOST_NAME = 22, 21, 2, 1, 0, 0
-ENCRYPTED_CLIENT_HELLO = 0xfe0d     # the extension of Encrypted Client Hello (ECH)
 HOST = re.compile(r"[a-z0-9.-]{1,253}")
 NOT_TLS = "not a TLS handshake"
 
@@ -162,9 +161,8 @@ def _host_name(name):
 
 def _server_name(body):
     """The host name of the server_name extension in a ClientHello body (what follows the
-    handshake header): lowercased, without its trailing dot. A ClientHello with Encrypted
-    Client Hello names no server either: its real one is hidden in the encrypted part, the
-    outer server_name is a front."""
+    handshake header): lowercased, without its trailing dot. With an Encrypted Client Hello
+    extension this is the outer name, as for any ClientHello (ADR 0014)."""
     r = Reader(body)
     r.take(2 + 32)                  # version, random
     r.vector(1)                     # session id
@@ -178,13 +176,19 @@ def _server_name(body):
     found = {}
     while not extensions.done():
         kind, data = extensions.number(2), extensions.vector(2)
-        found.setdefault(kind, data)
-    if SERVER_NAME in found and ENCRYPTED_CLIENT_HELLO not in found:
+        if kind in found:           # RFC 8446, 4.2: never twice; which one would the server read?
+            raise Refused(NOT_TLS)
+        found[kind] = data
+    if SERVER_NAME in found:
         names = Reader(Reader(found[SERVER_NAME]).vector(2))
+        hosts = []
         while not names.done():
             name_type, name = names.number(1), names.vector(2)
             if name_type == HOST_NAME:
-                return _host_name(name)
+                hosts.append(name)
+        # RFC 6066, 3: one name of a type; with several the destination might pick another one
+        if len(hosts) == 1:
+            return _host_name(hosts[0])
     raise Refused("no server name", UNRECOGNIZED_NAME)
 
 
