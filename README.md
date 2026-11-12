@@ -437,6 +437,10 @@ is set for services and shells. Short image names such as `postgres:16-alpine` r
 docker.io, as with Docker (`/etc/containers/registries.conf.d/50-agentbox.conf`), not to
 Fedora's registries first.
 
+The agent's Podman storage lives on the VM's Data disk, so Container images, containers and
+volumes survive a Reset; containers that ran before it come back stopped, and `docker compose
+up` reuses what is there instead of downloading every Container image again.
+
 Containers and builds need no settings. They resolve names through the VM's resolver, the
 Host, so every connection they open goes to the Host's proxy like the rest of the VM's, and
 the Allowlist applies as to everything else. There are no proxy variables in the VM, so

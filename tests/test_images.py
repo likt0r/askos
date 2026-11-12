@@ -516,6 +516,21 @@ class SafeguardTest(ImagesTest):
         with open(os.path.join(rootfs, "etc/profile.d/agentbox.sh")) as f:
             self.assertNotRegex(f.read(), r"(?i)proxy")
 
+    def test_the_agents_podman_storage_lives_on_the_data_disk(self):
+        """ADR 0016: guest-setup binds the agent's whole Podman storage from the Data disk
+        at every start, created with the agent as owner on the first; nothing else of
+        Podman's user configuration is kept."""
+        rootfs = self.rootfs("base", self.base)
+        with open(os.path.join(rootfs, safeguards.GUEST_SETUP.lstrip("/"))) as f:
+            setup = f.read()
+        persist = setup.split("PERSIST=(", 1)[1].split(")", 1)[0].split()
+        self.assertIn(".local/share/containers", persist)
+        self.assertNotIn(".config/containers", persist)
+        # every lasting part is created with the agent as owner and bound from the Data disk
+        self.assertIn('install -d -o agent -g agent -m 700 "$DATA/home/$p" "$HOME_DIR/$p"', setup)
+        self.assertIn('mountpoint -q "$HOME_DIR/$p" || mount --bind "$DATA/home/$p" "$HOME_DIR/$p"',
+                      setup)
+
     def test_a_proxy_variable_or_option_is_rejected(self):
         self.image("weak", DERIVED + "COPY zz.conf /etc/systemd/system.conf.d/zz.conf\n"
                    "COPY proxy.sh /etc/profile.d/proxy.sh\nCOPY node.sh /etc/profile.d/node.sh\n"
