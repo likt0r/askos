@@ -35,6 +35,7 @@ PROXY = os.path.join(REPO, "proxy", "agentbox-proxy")
 AGENTBOX = os.path.join(REPO, "bin", "agentbox")
 TESTS = os.path.join(REPO, "tests")
 CHECK = 0.1                     # the proxy's check interval in these tests
+HELLO = 2.0                     # how long the proxy waits for a ClientHello in these tests
 SETTLE = 6 * CHECK              # long enough for the proxy to have acted on a change
 FIREFOX = "Firefox/Linux (192.0.2.23)"
 
@@ -105,6 +106,7 @@ class ProxyTest(unittest.TestCase):
         port = self.echo.server_address[1] if upstream is None else upstream
         env = {"PATH": os.environ["PATH"], "LANG": "C.UTF-8", "AGENTBOX_CONF_DIR": self.conf,
                "AGENTBOX_FEEDS_DIR": os.path.join(self.dir, "feeds"), "AGENTBOX_PROXY_CHECK_SECONDS": str(CHECK),
+               "AGENTBOX_PROXY_HELLO_SECONDS": str(HELLO),
                **({"AGENTBOX_PROXY_TEST_UPSTREAM": "127.0.0.1:%d" % port} if port is not False else {})}
         with open(self.log_path, "wb") as err:
             self.proxy = subprocess.Popen([sys.executable, "-I", PROXY, "work", self.sock], env=env,

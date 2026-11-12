@@ -1009,6 +1009,10 @@ otherwise in `lib/agentbox` under their own prefix.
 - **Encrypted Client Hello:** a client that brings its own ECH key (the resolver never
   answers the HTTPS records that carry one) could hide its real destination behind an
   allowed outer name served by the same provider, the way domain fronting does.
+- **Services of the Host on ports 53 and 443:** one that listens on all of the Host's
+  addresses is reachable from every VM through the Host's address on the VM's network,
+  where nftables lets those ports through. No service of Agent Box does; the resolver and
+  the proxy listen only on that address.
 - **Only TLS with a server name, on port 443, leaves a VM.** Plain HTTP, other ports, UDP
   (so HTTP/3) and TLS without a server name get nowhere, and an IP literal as the name is a
   raw IP, a strong Signal. A tool that needs one of them has no way out, which is the

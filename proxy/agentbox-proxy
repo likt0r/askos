@@ -98,7 +98,8 @@ RECORD_LIMIT = 2 ** 14          # the longest record TLS allows
 # a ClientHello in more bytes than one record of the longest length (header included) is not
 # taken as TLS: 16,389 bytes
 HELLO_LIMIT = 5 + RECORD_LIMIT
-HELLO_SECONDS = 10              # how long a client has to send its ClientHello
+# how long a client has to send its ClientHello
+HELLO_SECONDS = _seconds(os.environ.get("AGENTBOX_PROXY_HELLO_SECONDS"), 10.0)
 LINGER_SECONDS = 2              # how long a refused client's further bytes are read after the alert
 # so oft prueft der Proxy, ob Tunnel geschlossen werden muessen
 CHECK_SECONDS = _seconds(os.environ.get("AGENTBOX_PROXY_CHECK_SECONDS"), 1.0)
@@ -192,28 +193,47 @@ def _server_name(body):
     raise Refused("no server name", UNRECOGNIZED_NAME)
 
 
+class Hello:
+    """A ClientHello as its bytes arrive (it may span several records and TCP segments): each
+    record is taken apart once, when it is whole, so a client sending it in many small
+    pieces costs no more than one sending it at once."""
+
+    def __init__(self):
+        self.buf = bytearray()      # every byte read, to be passed on as it came
+        self.hello = bytearray()    # the handshake bytes of the records taken apart so far
+        self.pos = 0                # where the next record starts in buf
+        self.records = 0            # records taken apart
+
+    def feed(self, data):
+        """The server name once the ClientHello is whole, else None. Refused when the bytes
+        are no TLS handshake, or when the ClientHello names no server."""
+        self.buf += data
+        buf = self.buf
+        while len(buf) >= self.pos + 5:
+            pos = self.pos
+            kind, major, length = buf[pos], buf[pos + 1], int.from_bytes(buf[pos + 3:pos + 5], "big")
+            if kind != HANDSHAKE or major != 3 or not 0 < length <= RECORD_LIMIT:
+                raise Refused(NOT_TLS)
+            if len(buf) < pos + 5 + length:
+                return None
+            self.hello += buf[pos + 5:pos + 5 + length]
+            self.pos = pos + 5 + length
+            self.records += 1
+            hello = self.hello
+            if len(hello) < 4:
+                continue
+            if hello[0] != CLIENT_HELLO:
+                raise Refused(NOT_TLS)
+            size = int.from_bytes(hello[1:4], "big")
+            if len(hello) >= 4 + size:
+                return _server_name(bytes(hello[4:4 + size]))
+        return None
+
+
 def client_hello(buf):
     """The server name of the TLS ClientHello that buf starts with; None while buf does not
-    hold the whole ClientHello yet (it may span several records and TCP segments). Refused
-    when buf is no TLS handshake, or when the ClientHello names no server."""
-    hello, pos = bytearray(), 0
-    while True:
-        if len(buf) < pos + 5:
-            return None
-        kind, major, length = buf[pos], buf[pos + 1], int.from_bytes(buf[pos + 3:pos + 5], "big")
-        if kind != HANDSHAKE or major != 3 or not 0 < length <= RECORD_LIMIT:
-            raise Refused(NOT_TLS)
-        if len(buf) < pos + 5 + length:
-            return None
-        hello += buf[pos + 5:pos + 5 + length]
-        pos += 5 + length
-        if len(hello) < 4:
-            continue
-        if hello[0] != CLIENT_HELLO:
-            raise Refused(NOT_TLS)
-        size = int.from_bytes(hello[1:4], "big")
-        if len(hello) >= 4 + size:
-            return _server_name(bytes(hello[4:4 + size]))
+    hold the whole ClientHello yet. Refused as Hello.feed."""
+    return Hello().feed(buf)
 
 
 # --- Allowlist -----------------------------------------------------------------
@@ -484,35 +504,40 @@ async def refuse(reader, writer, alert=None):
     writer.close()
 
 
-async def read_hello(reader):
-    """(the bytes read, the server name of the ClientHello they start with). Refused when
-    they are no ClientHello within HELLO_LIMIT bytes, or name no server; EOFError when the
-    client leaves before sending anything."""
-    buf = bytearray()
+async def read_hello(reader, hello):
+    """(the bytes read, the server name of the ClientHello they start with), read into hello
+    (a Hello). Refused when they are no ClientHello within HELLO_LIMIT bytes, or name no
+    server; EOFError when the client leaves before sending anything."""
     while True:
-        host = client_hello(buf)
-        if host is not None:
-            return bytes(buf), host
-        if len(buf) >= HELLO_LIMIT:
+        if len(hello.buf) >= HELLO_LIMIT:
             raise Refused(NOT_TLS)
-        chunk = await reader.read(HELLO_LIMIT - len(buf))
+        chunk = await reader.read(HELLO_LIMIT - len(hello.buf))
         if not chunk:
-            if buf:
+            if hello.buf:
                 raise Refused(NOT_TLS)
             raise EOFError
-        buf += chunk
+        host = hello.feed(chunk)
+        if host is not None:
+            return bytes(hello.buf), host
 
 
 async def handle(ctx, lists, reader, writer):
     peer = writer.get_extra_info("peername")
     client = peer[0] if isinstance(peer, tuple) else "unix"
+    hello = Hello()
     try:
-        head, host = await asyncio.wait_for(read_hello(reader), HELLO_SECONDS)
+        head, host = await asyncio.wait_for(read_hello(reader, hello), HELLO_SECONDS)
     except Refused as e:
         log(ctx, f"BLOCKED {client} ({e.reason})")
         await refuse(reader, writer, e.alert)
         return
-    except (EOFError, asyncio.TimeoutError, ConnectionError):
+    except asyncio.TimeoutError:
+        # a ClientHello begun and not finished in time; a client that sent nothing leaves no line
+        if hello.buf:
+            log(ctx, f"BLOCKED {client} ({NOT_TLS})")
+        writer.close()
+        return
+    except (EOFError, ConnectionError):
         writer.close()
         return
 

@@ -47,9 +47,8 @@ import time
 from collections import Counter
 
 from . import activity, paths, patterns, registry, settings, state_files
-from .network import CLIENT_REASONS
 from .errors import Fail, die
-from .network import DOMAIN, done, valid_domain, when
+from .network import CLIENT_REASONS, DOMAIN, done, valid_domain, when
 from .sanitize import clean, field
 
 ALL = "all"

@@ -18,7 +18,10 @@ import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO)
 import vm_records  # noqa: E402
+from agentbox import network  # noqa: E402
 from journal_writers import CLI, FORGED, PROXY, proxy, write_passwd, writer  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -268,6 +271,29 @@ class BlockedTest(NetworkTest):
         failure = json.loads(err)
         self.assertEqual(failure["error"], "journal_failed")
         self.assertTrue(failure["message"].startswith("journalctl failed"), err)
+
+
+class BlockReasonsTest(unittest.TestCase):
+    """The codes of the proxy's reasons as the Control Room knows them (web/ui)."""
+
+    def ui(self, *parts):
+        with open(os.path.join(REPO, "web", "ui", *parts)) as f:
+            return f.read()
+
+    def test_the_ui_offers_nothing_to_allow_for_the_reasons_that_name_the_client(self):
+        code = self.ui("app", "utils", "access.ts")
+        listed = re.search(r"^export const CLIENT_REASONS = \[([^\]]*)\]$", code, re.M).group(1)
+        self.assertEqual(set(re.findall(r"'([a-z-]+)'", listed)),
+                         {network.BLOCK_REASONS[r] for r in network.CLIENT_REASONS})
+
+    def test_every_code_of_a_block_reason_is_worded(self):
+        for language in ("en", "de"):
+            text = self.ui("i18n", "locales", language, "access.ts")
+            block = text[text.index("    blocked: {"):]
+            block = block[block.index("      reasons: {"):]
+            worded = set(re.findall(r"^        '([a-z-]+)': ", block[:block.index("\n      },")], re.M))
+            with self.subTest(language=language):
+                self.assertEqual(set(network.BLOCK_REASONS.values()) | {"suspicious"}, worded)
 
 
 class AlertsTest(NetworkTest):

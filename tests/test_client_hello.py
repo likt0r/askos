@@ -109,6 +109,19 @@ class ParserTest(unittest.TestCase):
         self.assertEqual(self.name(hello), "example.org")
         self.assertEqual(self.name(hello + b"more"), "example.org")
 
+    def test_a_hello_in_one_byte_pieces_is_taken_apart_once(self):
+        # each byte is processed once, however the client splits records and segments
+        data = records(client_hello("example.org"), 1)
+        hello, result = proxy.Hello(), None
+        started = time.monotonic()
+        for i in range(len(data)):
+            result = hello.feed(data[i:i + 1])
+            if result is not None:
+                break
+        self.assertEqual((result, i), ("example.org", len(data) - 1))
+        self.assertEqual(hello.records, len(data) // 6)
+        self.assertLess(time.monotonic() - started, 2)      # more than 10 s when parsed from the start each time
+
     def test_a_hello_spread_over_several_records(self):
         hello = client_hello("example.org")
         for size in (1, 7, 64, 100):
@@ -207,7 +220,7 @@ class HelloProxyTest(allowlist_tests.ProxyTest):
 
     def test_a_hello_in_several_records_arriving_in_pieces(self):
         data = records(client_hello("example.org"), 50)
-        s = self.send(*(data[i:i + 37] for i in range(0, len(data), 37)))
+        s = self.send(*(data[i:i + 37] for i in range(0, len(data), 37)), pause=0.01)
         self.assertEqual(answer(s, data), "open")
 
     def test_without_a_server_name_the_alert_says_so(self):
@@ -240,8 +253,16 @@ class HelloProxyTest(allowlist_tests.ProxyTest):
     def test_a_client_that_sends_nothing_leaves_no_trace(self):
         s = self.send()
         s.close()
-        time.sleep(0.2)
+        idle = self.send()      # connects and waits past the deadline
+        self.assertEqual(self.rest(idle), b"")
         self.assertNotIn("BLOCKED", self.log())
+
+    def test_a_hello_that_stops_halfway_is_closed_at_the_deadline_and_logged(self):
+        started = time.monotonic()
+        s = self.send(client_hello("example.org")[:40])
+        self.assertEqual(self.rest(s), b"")
+        self.assertGreaterEqual(time.monotonic() - started, allowlist_tests.HELLO * 0.9)
+        self.assertIn("[work] BLOCKED unix (not a TLS handshake)\n", self.log())
 
     def test_a_blocked_destination_gets_access_denied(self):
         s = self.send(client_hello("other.example"))
