@@ -184,7 +184,7 @@ CONTROL_ROOM_USER = "agentbox-web"
 CONTROL_ROOM_COMMANDS = frozenset({
     # VMs
     "status", "describe", "create", "delete", "start", "pause", "restart", "reset", "focus", "set-memory",
-    "set-env", "set-image", "set-owners", "owners", "logs", "blocked", "alerts", "mark-seen",
+    "set-env", "set-image", "set-owners", "set-container-image-cleanup", "owners", "logs", "blocked", "alerts", "mark-seen",
     "open-web", "close-web", "pair", "pairings", "unpair", "revoke-pairings", "set-claude-token",
     "github-tokens",
     # Allowlist, Watchlist, Legitimate domains, Harmless marks
