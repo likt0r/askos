@@ -29,11 +29,11 @@ An isolated virtual machine in which agents work; the unit of separation, with i
 _Avoid_: context, environment, sandbox, container
 
 **VM registry**:
-The root-owned records on the Host that define which VMs exist, one per VM: name, network number, Orca port, Image, optional Build pin, memory limit, Data disk size, GitHub owners and creation date. Everything else about a VM is generated from its record.
+The root-owned records on the Host that define which VMs exist, one per VM: name, network number, Orca port, Image, optional Build pin, memory limit, Data disk size, Container image cleanup, GitHub owners and creation date. Everything else about a VM is generated from its record.
 _Avoid_: inventory, VM config
 
 **Image**:
-A clean operating-system template, defined by a Containerfile shipped in the installed Release and built on the Host, from which a VM's System disk is created; each VM uses exactly one Image.
+A clean operating-system template, defined by a Containerfile shipped in the installed Release and built on the Host, from which a VM's System disk is created; each VM uses exactly one Image. Not a Container image.
 _Avoid_: base disk, snapshot, template
 
 **Base image**:
@@ -53,8 +53,16 @@ A VM's disposable disk, recreated on every Reset from its Image's current Build 
 _Avoid_: root disk, OS disk
 
 **Data disk**:
-A VM's persistent disk holding repositories, Orca data and agent transcripts; survives every Reset and is archived when its VM is deleted, unless deleting it is asked for.
+A VM's persistent disk holding repositories, Orca data, agent transcripts and the VM's containers with their Container images and volumes; survives every Reset and is archived when its VM is deleted, unless deleting it is asked for.
 _Avoid_: home disk, volume
+
+**Container image**:
+An image a VM pulls or builds with Podman (`docker` in the VM) to run containers from, kept on its Data disk. Not an Image, which a VM's System disk is made from (German UI: Container-Image).
+_Avoid_: docker image, podman image, image (on its own)
+
+**Container image cleanup**:
+The removal of a VM's Container images that no container uses and that were neither pulled, built nor used to create or start a container for a number of days set per VM; it can be turned off per VM and never removes containers or volumes (German UI: Container-Images aufräumen).
+_Avoid_: prune, garbage collection, image cache
 
 ## Delivery
 
