@@ -69,7 +69,9 @@ flowchart LR
 - One KVM VM per unit of separation ([ADR 0001](docs/adr/0001-vm-is-the-unit-of-separation.md),
   [ADR 0002](docs/adr/0002-vms-instead-of-containers.md)). Each has its own kernel, so a
   kernel exploit inside a VM does not reach the Host.
-- Each VM is one record in the **VM registry** (`/etc/agentbox/vms/<name>.json`, root-owned).
+- Each VM is one record in the **VM registry** (`/etc/agentbox/vms/<name>.json`, root-owned);
+  it holds, among others, the VM's memory limit, Data disk size and Container image cleanup
+  (on or off, and its days).
   `agentbox regenerate` derives everything else from it: the libvirt network and the domain
   (through virt-install), the proxy, token-service and Orca-port units, the nftables rules,
   the storage pool of the disks, the Data disk and the Claude-token placeholder. Running it

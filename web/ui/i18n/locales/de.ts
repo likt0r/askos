@@ -108,6 +108,7 @@ export default {
     no_free_network: 'Alle Netze sind belegt.',
     vm_not_running: 'Die VM läuft nicht.',
     vm_paused: 'Die VM ist pausiert. Erst aufwecken, dann erneut versuchen.',
+    invalid_cleanup_days: 'Die Tage für das Container-Image-Aufräumen müssen eine ganze Zahl von 1 bis 365 sein.',
     invalid_memory: 'Die Speichergrenze muss mindestens 1024 MiB und höchstens der Speicher des Hosts sein.',
     memory_not_applied: 'Die Speichergrenze ist gespeichert, aber die VM konnte nicht neu definiert werden. agentbox regenerate auf dem Host holt das nach.',
     guest_agent_unavailable: 'Der Gast-Agent der VM antwortet nicht.',

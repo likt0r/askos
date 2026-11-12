@@ -341,6 +341,21 @@ class RecordTest(ActivityTest):
              "Memory limit 512 MiB: memory limit (MiB) must be a whole number from 1024 to 1048576"),
         ])
 
+    def test_container_image_cleanup(self):
+        """A change is recorded with the values that apply; a call that changes nothing, or
+        fails, as the others."""
+        for args, code in ((("work", "--days", "14"), 0), (("work", "--days", "14"), 0), (("work", "off"), 0),
+                           (("work", "on", "--days", "30"), 0), (("work", "--days", "0"), 1)):
+            self.assertEqual(self.run_agentbox("--actor", FIREFOX, "set-container-image-cleanup", *args)[0], code, args)
+        self.assertEqual([(e["AGENTBOX_ACTION"], e["AGENTBOX_VM"], e["AGENTBOX_ACTOR"], e["AGENTBOX_OUTCOME"],
+                           e.get("AGENTBOX_PARAM_ENABLED"), e.get("AGENTBOX_PARAM_DAYS"))
+                          for e in self.entries()], [
+            ("set-container-image-cleanup", "work", FIREFOX, "ok", "true", "14"),
+            ("set-container-image-cleanup", "work", FIREFOX, "ok", "false", "14"),
+            ("set-container-image-cleanup", "work", FIREFOX, "ok", "true", "30"),
+            ("set-container-image-cleanup", "work", FIREFOX, "failed", None, None),
+        ])
+
     def write_conf(self, name, text):
         with open(self.path(f"etc/agentbox/{name}"), "w") as f:
             f.write(text)

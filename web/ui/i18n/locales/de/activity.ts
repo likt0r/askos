@@ -43,6 +43,7 @@ export default {
       deleteWithDisk: 'VM und ihre Data disk löschen',
       setMemory: 'Speichergrenze {mib} MiB',
       setMemoryAny: 'Speichergrenze ändern',
+      setContainerImageCleanup: 'Container-Image-Aufräumen ändern',
       allow: 'Freigabe {entry}',
       disallow: 'Freigabe {entry} entfernen',
       extend: 'Freigabe {entry} verlängern',

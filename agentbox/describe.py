@@ -189,6 +189,7 @@ def vm(rec, units, observed, backing, now=None, current=None, starts=None):
     token_since = state_files.claude_token_since(name)
     values = settings.load()
     found = devices(units).get(name, []) if units is not None else None
+    cleanup = registry.cleanup(rec)
     return {
         "name": name,
         "state": state,
@@ -198,6 +199,8 @@ def vm(rec, units, observed, backing, now=None, current=None, starts=None):
         "address": registry.guest_ip(rec),
         "memory_mib": rec["memory_mib"],
         "data_disk_gib": rec["data_disk_gib"],
+        "container_image_cleanup": cleanup[0],
+        "container_image_cleanup_days": cleanup[1],
         "github_owners": list(rec["github_owners"]),
         "created": rec["created"],
         "image": rec["image"],
@@ -281,6 +284,9 @@ def describe(args):
               + (f", {disk['age_days']} days old" if disk["age_days"] is not None else "")
               + (", the next Reset brings " + v["next_build"] if v["reset_changes_build"] else ""))
         print(f"  Memory:       {v['memory_mib']} MiB, Data disk {v['data_disk_gib']} GiB")
+        cleanup = (f"after {v['container_image_cleanup_days']} days" if v["container_image_cleanup"]
+                   else f"off ({v['container_image_cleanup_days']} days)")
+        print(f"  Container image cleanup: {cleanup}")
         print(f"  Agents:       {agents or 'none'}")
         print(f"  Devices:      {devs or 'none'}")
     for p in result["problems"]:

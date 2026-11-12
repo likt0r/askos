@@ -207,6 +207,7 @@ agentbox status                     # VMs, memory, agents
 agentbox create lab --owner likt0r --copy-allowlist-from priv   # a new VM
 agentbox delete lab --confirm lab   # delete a VM, its Data disk is archived
 agentbox set-memory lab 32768       # memory limit in MiB, from the VM's next start or Restart
+agentbox set-container-image-cleanup lab off   # or on, and --days 14 (1 to 365)
 agentbox blocked priv               # what a VM tried to reach and was refused
 agentbox allow priv docs.rs         # add an Allowlist entry for one VM
 agentbox allow all crates.io --for 8h --note "Rust crates"   # for all VMs, for 8 hours
@@ -326,6 +327,7 @@ creates none without the text file.
 
 `agentbox create <name>` takes `--image` (an Image with a Build, `base` by default), `--memory-mib` (default
 26624, at most the Host's memory), `--data-disk-gib` (default 300), `--owner` (repeatable)
+`--container-image-cleanup on|off` and `--container-image-cleanup-days` (defaults from the Settings: on, 7),
 and `--copy-allowlist-from <vm>` (a one-time copy of that VM's own Allowlist entries;
 deleting a VM removes its own entries). Names are 2 to 16 characters of `a-z`, `0-9` and `-`,
 start with a letter and cannot be changed later; words the CLI or the Control Room use
@@ -351,6 +353,10 @@ and deletes it afterwards. The source stays on the Host: delete it yourself once
 it. VMs whose Build predates the command need a new Build and a Reset first (`agentbox build
 base --reset <vm>`). There is no free-space check in the VM and no scan for secrets: what the
 folder holds, the VM gets.
+
+`agentbox set-container-image-cleanup <name> [on|off] [--days N]` turns the VM's Container image
+cleanup on or off and sets its days (1 to 365), in any state of the VM; `describe` shows both. A
+record without them means on and 7 days.
 
 `agentbox set-memory <name> <mib>` changes the memory limit later, within the same bounds
 as `create` (1024 MiB up to the Host's memory). It writes the record and the VM's libvirt
@@ -607,6 +613,7 @@ every setting has its default; a broken file is an error naming the file and the
 | `rebuild_day`, `rebuild_time` | sun, 03:00 | mon…sun, HH:MM, the weekly Build of every Image |
 | `builds_kept` | 3 | 1–20, Builds kept per Image (from the next Build) |
 | `default_memory_mib`, `default_data_disk_gib`, `default_image` | 26624, 300, base | defaults of `create` |
+| `default_container_image_cleanup`, `default_container_image_cleanup_days` | true, 7 | true, false and 1–365: the Container image cleanup a new VM starts with (for new VMs) |
 | `open_web_max_minutes` | 240 | 1–1440, longest Open web |
 | `temporary_entry_default` | 1h | 15min, 1h, 8h, 7d (`allow --temporary`, and `duration: default` in the API) |
 | `young_domain_days` | 14 | 7, 14, 21, 28, 35 (days of the newly-registered list) |

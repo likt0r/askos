@@ -24,6 +24,11 @@ RESERVED = {"off", "all", "new", "status", "login", "logout", "activity", "allow
 API_VERSION = re.compile(r"v[0-9]+")
 IMAGE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 ORCA_BASE = 6800                     # Orca port = ORCA_BASE + network number
+# The Container image cleanup of a record: on or off, and its days. Both fields are
+# optional: a record without them means the cleanup on and 7 days, and no code rewrites
+# an existing record to add them (every reader uses these defaults).
+CLEANUP_DAYS = (1, 365)
+CLEANUP_DEFAULT = (True, 7)
 FIELDS = {"name": str, "network": int, "orca_port": int, "image": str, "build": (str, type(None)),
           "memory_mib": int, "data_disk_gib": int, "github_owners": list, "created": str}
 
@@ -57,6 +62,14 @@ def problem(rec, name):
         return "memory_mib or data_disk_gib too small"
     if not all(isinstance(o, str) for o in rec["github_owners"]):
         return "github_owners must be a list of names"
+    if "container_image_cleanup" in rec and not isinstance(rec["container_image_cleanup"], bool):
+        return "field container_image_cleanup has the wrong type"
+    if "container_image_cleanup_days" in rec:
+        days = rec["container_image_cleanup_days"]
+        if isinstance(days, bool) or not isinstance(days, int):
+            return "field container_image_cleanup_days has the wrong type"
+        if not CLEANUP_DAYS[0] <= days <= CLEANUP_DAYS[1]:
+            return f"container_image_cleanup_days must be {CLEANUP_DAYS[0]} to {CLEANUP_DAYS[1]}"
     return None
 
 
@@ -139,6 +152,13 @@ def save(rec):
 def check(name):
     load(name)
     return name
+
+
+def cleanup(rec):
+    """(on, days) of the VM's Container image cleanup: the record's two fields, else the
+    defaults of a record without them (on, 7 days)."""
+    return (rec.get("container_image_cleanup", CLEANUP_DEFAULT[0]),
+            rec.get("container_image_cleanup_days", CLEANUP_DEFAULT[1]))
 
 
 def dom(name):

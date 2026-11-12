@@ -30,11 +30,16 @@ Controls the agent VMs on this Host.
                                                      Host that is set up, only the Host steps
   agentbox watch                                     (Control Room) events as JSON lines until stdin ends
   agentbox create <vm> [--image I] [--memory-mib N] [--data-disk-gib N] [--owner O]...
+                [--container-image-cleanup on|off] [--container-image-cleanup-days N]
                 [--copy-allowlist-from VM] [--json]    new VM; network and Orca port are picked automatically
   agentbox delete <vm> --confirm <vm> [--delete-data-disk] [--json]
                 delete a VM; its Data disk is archived, or deleted with --delete-data-disk
   agentbox set-memory <vm> <mib> [--json]            memory limit (1024 MiB up to the Host's memory); applies
-                                                     from the next start, for a running VM after a Restart
+                                                      from the next start, for a running VM after a Restart
+  agentbox set-container-image-cleanup <vm> [on|off] [--days N] [--json]
+                                                      the VM's Container image cleanup: on or off, and after
+                                                      how many days an unused Container image goes (1 to 365);
+                                                      whatever state the VM is in
   agentbox start|wake|pause|restart <vm> [--json]
   agentbox reset <vm> [--no-start] [--json]          fresh System disk from the VM's Image
   agentbox focus <vm|off> [--json]                   pause every other VM
