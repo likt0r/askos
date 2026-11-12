@@ -131,7 +131,11 @@ def nft_rules(records):
     """A VM network reaches only the Host's resolver, proxy and token service on it. Only DHCP
     is accepted before the address check (the VM asks before it has an address); everything
     else, the resolver's port 53 included, only to the Host's address on the VM's own network,
-    so no other resolver on the Host (one on its LAN address) can be reached."""
+    so no other resolver on the Host (one on its LAN address) can be reached. What reaches the
+    Host's address on another port is refused at once (a TCP reset, ICMP port unreachable for
+    UDP), so a program fails without waiting for a timeout: every name resolves to that address.
+    Other addresses, IPv6 and anything but TCP and UDP are dropped. A reject ends the packet like
+    a drop, so firewalld's zone libvirt (a later hook) never sees it."""
     return "".join(line + "\n" for line in [
         "table inet agentbox_vm",
         "delete table inet agentbox_vm",
@@ -147,6 +151,8 @@ def nft_rules(records):
         "    ct state established,related accept",
         "    udp dport 53 accept",
         "    tcp dport { 53, 443, 9100 } accept",
+        "    meta l4proto tcp reject with tcp reset",
+        "    meta l4proto udp reject with icmp type port-unreachable",
         "    drop",
         "  }",
         "}",

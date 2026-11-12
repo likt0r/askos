@@ -241,6 +241,8 @@ table inet agentbox_vm {
     ct state established,related accept
     udp dport 53 accept
     tcp dport { 53, 443, 9100 } accept
+    meta l4proto tcp reject with tcp reset
+    meta l4proto udp reject with icmp type port-unreachable
     drop
   }
 }
@@ -329,6 +331,23 @@ class RegenerateTest(RegistryTest):
         self.assertIn("    udp dport 53 accept", after)
         self.assertIn("    tcp dport { 53, 443, 9100 } accept", after)
         self.assertEqual(after[-2:], ["    drop", "  }"])
+
+    def test_closed_ports_of_the_host_are_refused_and_everything_else_dropped(self):
+        # every name resolves to the Host, so a closed port there must fail at once; other
+        # addresses and IPv6 are dropped before any reject, and the rejects come after every accept
+        self.assertEqual(self.run_agentbox("regenerate")[0], 0)
+        rules = self.read("etc/agentbox/vm-input.nft").splitlines()
+        start = rules.index("  chain from_vm {") + 1
+        chain = rules[start:rules.index("  }", start)]
+        self.assertEqual(chain[0], "    meta nfproto ipv6 drop")
+        checks = [i for i, line in enumerate(chain) if " ip daddr != " in line]
+        self.assertEqual([chain[i].split()[-1] for i in checks], ["drop", "drop"])
+        rejects = [i for i, line in enumerate(chain) if "reject" in line]
+        self.assertEqual([chain[i] for i in rejects], ["    meta l4proto tcp reject with tcp reset",
+                                                       "    meta l4proto udp reject with icmp type port-unreachable"])
+        accepts = [i for i, line in enumerate(chain) if line.endswith(" accept")]
+        self.assertLess(max(checks + accepts), min(rejects))
+        self.assertEqual(chain[max(rejects) + 1:], ["    drop"])
 
     def test_defines_networks_that_are_missing(self):
         self.scenario(vms={"priv": {"uuid": PRIV_UUID}},

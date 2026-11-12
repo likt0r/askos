@@ -217,6 +217,9 @@ flowchart LR
   `no-hosts` and `no-resolv` in the network's definition); any other record type (AAAA,
   HTTPS) gets an empty answer. So whatever a VM connects to, it connects to the Host, and
   the proxy there takes the real destination from the TLS handshake.
+  A connection to any other port of the Host's address is refused at once (a TCP reset, ICMP
+  port unreachable for UDP), so a program fails without waiting for a timeout; packets to
+  other addresses and IPv6 are dropped.
 - Containers in a VM are behind the same limits. They run on rootless Podman: `docker` is
   Podman under that name, and `podman compose` and `docker compose` run Docker Compose, which
   builds and starts containers through the agent's Podman socket. `guest-setup` writes the
