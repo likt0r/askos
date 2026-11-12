@@ -154,10 +154,11 @@ flowchart LR
   Image (`agentbox-inbox receive <device> <target>`). It opens the disk as root, drops to the
   user `agent` before it reads it and unpacks with `tarfile`'s `data` filter, so nothing lands
   outside the target and no device file or setuid bit arrives; the target must be a new
-  directory under `~/code` (missing parents are created, an existing one is refused, nothing is
-  overwritten), and hooks in `.git/hooks` other than the samples are removed. Only a JSON result
-  with two whole numbers (files, bytes) comes back and is checked as untrusted. The disk is
-  detached and the tar file deleted after success and after every failure. A VM that is off is
+  directory under `~/code` (missing parents are created and removed again after a failure, an existing one is
+  refused, nothing is overwritten), and hooks in `.git/hooks` (also of nested repositories and
+  submodules) other than the samples are removed. Only a JSON result with two whole numbers (files, bytes) comes back and is checked as untrusted. The disk is
+  detached and the tar file deleted after success and after every failure; a disk an
+  interrupted import left behind is detached before the next one attaches. A VM that is off is
   started as `pair` starts it, a paused one is refused, and a VM whose Build lacks the wrapper
   fails with `inbox_missing`. Every import is recorded in Activity with folder, target, files
   and bytes.

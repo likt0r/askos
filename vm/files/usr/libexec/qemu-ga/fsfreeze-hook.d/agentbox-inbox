@@ -14,12 +14,13 @@ Runs as root only until the device is open; from there on it reads the tar file 
 as the user agent, so whatever links it meets in ~/code, it can do nothing the agent cannot.
 tarfile's filter "data" refuses links leading out of the target, device files and
 names leading out of it, and drops setuid bits and the owner. Afterwards everything in
-.git/hooks except the *.sample files is removed. Prints {"files": N, "bytes": N}: the
+.git/hooks (also of nested repositories and of .git/modules) except the *.sample files is removed. Prints {"files": N, "bytes": N}: the
 regular files unpacked and their size.
 
 Exit codes: 2 invalid arguments, a target leading out of ~/code; 3 the target exists;
 4 ~/code is not on the Data disk (yet); 5 the archive is refused or unreadable; 124 time
-limit; 1 anything else. A failed run removes what it unpacked.
+limit; 1 anything else, among it a device that does not appear within 30 s. A failed run
+removes what it unpacked and the parent folders it made.
 
 Without root (tests, or the agent starting it itself) AGENTBOX_INBOX_ROOT puts the device
 and ~/code under that directory, and the Data disk is not looked for.
@@ -39,6 +40,7 @@ DEVICE = "/dev/disk/by-id/virtio-agentbox-inbox"
 USER = "agent"
 LIMIT = 1800                 # seconds for the whole run; the Host waits a little longer
 DATA_DISK_WAIT = 120         # right after a start, guest-setup may not have bound ~/code yet
+DEVICE_WAIT = 30             # udev creates the link of a hot-plugged disk a moment after the attach
 MAX_TARGET = 1024
 
 
@@ -72,6 +74,15 @@ def wait_for_data_disk(code):
         time.sleep(1)
 
 
+def wait_for_device(path, seconds):
+    """The device link exists: udev creates it a moment after a hot-plug."""
+    deadline = time.monotonic() + seconds
+    while not os.path.exists(path):
+        if time.monotonic() > deadline:
+            raise Refused(f"{DEVICE} does not appear within {seconds:g} s", 1)
+        time.sleep(0.25)
+
+
 def become(user):
     pw = pwd.getpwnam(user)
     os.setgroups([])
@@ -81,14 +92,33 @@ def become(user):
     os.umask(0o022)
 
 
-def make_target(code, target):
-    """Create the target (with missing parents) as an empty directory; its path."""
+def make_parents(code, parent_rel, made):
+    """Create the parents of the target below ~/code; every folder made is added to `made`."""
+    here = code
+    for part in parent_rel.split(os.sep) if parent_rel else []:
+        here = os.path.join(here, part)
+        try:
+            os.mkdir(here, 0o755)
+            made.append(here)
+        except FileExistsError:
+            if not os.path.isdir(here):
+                raise Refused(f"~/code/{parent_rel} exists and is not a folder; nothing was changed", 3)
+
+
+def remove_made(made):
+    """The folders this run made, the innermost first, those that are empty."""
+    for path in reversed(made):
+        try:
+            os.rmdir(path)
+        except OSError:
+            pass
+
+
+def make_target(code, target, made):
+    """Create the target (with missing parents, added to `made`) as an empty directory; its path."""
     parent_rel, name = os.path.split(target)
     parent = os.path.join(code, parent_rel)
-    try:
-        os.makedirs(parent, 0o755, exist_ok=True)
-    except (FileExistsError, NotADirectoryError):
-        raise Refused(f"~/code/{parent_rel} exists and is not a folder; nothing was changed", 3)
+    make_parents(code, parent_rel, made)
     real_code, real_parent = os.path.realpath(code), os.path.realpath(parent)
     if real_parent != real_code and not real_parent.startswith(real_code + os.sep):
         raise Refused(f"~/code/{target} leads out of {CODE}", 2)
@@ -97,6 +127,7 @@ def make_target(code, target):
         os.mkdir(dest, 0o755)
     except FileExistsError:
         raise Refused(f"~/code/{target} exists already; nothing was changed", 3)
+    made.append(dest)
     return dest
 
 
@@ -113,9 +144,8 @@ def unpack(disk, dest):
     return files, size
 
 
-def remove_hooks(dest):
-    """Everything in .git/hooks but the *.sample files (core.hooksPath ignores them anyway)."""
-    hooks = os.path.join(dest, ".git", "hooks")
+def clean_hooks(hooks):
+    """Everything in this hooks folder but the *.sample files (core.hooksPath ignores them anyway)."""
     try:
         st = os.lstat(hooks)
     except (FileNotFoundError, NotADirectoryError):
@@ -134,6 +164,22 @@ def remove_hooks(dest):
             os.unlink(path)
 
 
+def remove_hooks(dest):
+    """The hooks of every .git folder below dest (nested repositories too) and of the
+    repositories in their modules folders, links not followed."""
+    for here, dirs, _ in os.walk(dest):
+        if ".git" not in dirs:
+            continue
+        dirs.remove(".git")
+        git = os.path.join(here, ".git")
+        if os.path.islink(git):
+            continue
+        clean_hooks(os.path.join(git, "hooks"))
+        for inner, _, files in os.walk(os.path.join(git, "modules")):
+            if "HEAD" in files:
+                clean_hooks(os.path.join(inner, "hooks"))
+
+
 def receive(device, target):
     seam = os.environ.get("AGENTBOX_INBOX_ROOT", "") if os.geteuid() != 0 else ""
     if device != DEVICE:
@@ -144,19 +190,24 @@ def receive(device, target):
     code = seam + CODE
     if not seam:
         wait_for_data_disk(code)
+    wait_for_device(seam + device, float(os.environ.get("AGENTBOX_INBOX_DEVICE_WAIT", DEVICE_WAIT))
+                    if seam else DEVICE_WAIT)
     fd = os.open(seam + device, os.O_RDONLY | os.O_CLOEXEC)
     if not seam and not stat.S_ISBLK(os.fstat(fd).st_mode):
         os.close(fd)
         raise Refused(f"{device} is not a block device", 5)
     if os.geteuid() == 0:
         become(USER)
+    made, dest = [], None
     with os.fdopen(fd, "rb") as disk:
-        dest = make_target(code, target)
         try:
+            dest = make_target(code, target, made)
             files, size = unpack(disk, dest)
             remove_hooks(dest)
         except BaseException:
-            shutil.rmtree(dest, ignore_errors=True)
+            if dest:
+                shutil.rmtree(dest, ignore_errors=True)
+            remove_made(made)
             raise
     return files, size
 

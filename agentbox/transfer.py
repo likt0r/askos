@@ -126,6 +126,9 @@ def check_source(source):
         return False
     if stat.S_ISDIR(st.st_mode):
         return True
+    if stat.S_ISLNK(st.st_mode):
+        die(f"{shown}: .git is a symbolic link; import the folder it points to, or replace the link by the "
+            "repository", error="not_a_folder", folder=shown)
     main = _main_repository(source, git)
     die(f"{shown} is a linked worktree (.git is no folder); import its main repository instead"
         + (f": {clean(main, False)}" if main else ""), error="linked_worktree", folder=shown)
@@ -174,8 +177,13 @@ def pack(source, fd):
         finally:
             os._exit(status)
     os.close(w)
-    with os.fdopen(r) as pipe:
-        data = pipe.read()
+    try:
+        with os.fdopen(r) as pipe:
+            data = pipe.read()
+    except BaseException:                          # an interrupted parent leaves no child behind
+        os.kill(pid, signal.SIGKILL)
+        os.waitpid(pid, 0)
+        raise
     os.waitpid(pid, 0)
     try:
         result = json.loads(data)
@@ -404,14 +412,25 @@ def _result(ctx, target, code, out, err):
     return {"files": numbers[0], "bytes": numbers[1]}
 
 
-def _transfer(ctx, tar, target):
-    """Attach the tar file, have the VM unpack it, detach it: {"files", "bytes"}."""
-    _attach(ctx, tar)
-    try:
-        answer = _receive(ctx, target)
-    except BaseException:
+def _clear_leftover(ctx):
+    """Detach a disk with the target of the inbox that an interrupted import left behind."""
+    r = virsh.run("domblklist", dom(ctx))
+    if r.returncode == 0 and TARGET_DEV in (line.split()[0] for line in r.stdout.splitlines() if line.split()):
         problem = _detach(ctx)
         if problem:
+            die(f"{ctx}: the disk {TARGET_DEV} of an earlier import could not be detached: {problem}",
+                error="import_failed", vm=ctx)
+
+
+def _transfer(ctx, tar, target):
+    """Attach the tar file, have the VM unpack it, detach it: {"files", "bytes"}."""
+    _clear_leftover(ctx)
+    try:
+        _attach(ctx, tar)
+        answer = _receive(ctx, target)
+    except BaseException:
+        problem = _detach(ctx)          # also after an interrupted attach; no such disk is no problem
+        if problem and "No disk found" not in problem:
             print(f"agentbox: {ctx}: the disk {TARGET_DEV} could not be detached: {problem}", file=sys.stderr)
         raise
     problem = _detach(ctx)

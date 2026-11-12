@@ -12,6 +12,7 @@ Run from the repo root: python3 -m unittest discover -s tests
 import io
 import json
 import os
+import signal
 import stat
 import subprocess
 import sys
@@ -175,6 +176,17 @@ class RepositoryTest(ImportTest):
         self.assertIn(f"import its main repository instead: {src}", said["message"])
         self.assertEqual((self.calls(), self.transfers()), ([], []))
 
+    def test_a_git_that_is_a_symbolic_link_is_refused_as_such(self):
+        src = self.repository()
+        elsewhere = os.path.join(self.projects, "elsewhere")
+        os.rename(os.path.join(src, ".git"), elsewhere)
+        os.symlink(elsewhere, os.path.join(src, ".git"))
+        said = self.failure("work", src)
+        self.assertEqual(said["error"], "not_a_folder")
+        self.assertIn(".git is a symbolic link", said["message"])
+        self.assertNotIn("worktree", said["message"])
+        self.assertEqual((self.calls(), self.transfers()), ([], []))
+
     def test_a_repository_inside_the_folder_goes_by_the_same_rule(self):
         src = self.repository()
         inner = os.path.join(src, "vendor", "lib")
@@ -307,7 +319,8 @@ class TransportTest(ImportTest):
         said = self.failure("work", self.src)
         self.assertEqual(said["error"], "import_failed")
         self.assertIn("cannot be attached", said["message"])
-        self.assertEqual((self.calls("detach-disk"), self.calls("guest-exec"), self.transfers()), ([], [], []))
+        self.assertEqual((self.calls("guest-exec"), self.transfers()), ([], []))
+        self.assertEqual(self.attached(), [])
 
     def test_detaching_failing_is_an_error_even_when_the_folder_arrived(self):
         self.scenario(detach_fails=True)
@@ -316,6 +329,65 @@ class TransportTest(ImportTest):
         self.assertIn("the folder is in ~/code/foo, but the disk vdc could not be detached", said["message"])
         self.assertTrue(os.path.isfile(self.code("foo", "a.txt")))
         self.assertEqual(self.transfers(), [])
+
+
+    def test_a_stopped_import_detaches_the_disk_and_the_next_one_works(self):
+        self.scenario(attach_signals_parent=True)
+        code, out, err = self.run_agentbox("import", "work", self.src)
+        self.assertNotEqual(code, 0, out)
+        self.assertCleanedUp()
+        self.scenario()
+        self.assertEqual(self.imported("work", self.src)["files"], 1)
+
+    def test_a_disk_left_by_an_interrupted_import_is_detached_first(self):
+        self.scenario(vms={"work": {"disks": {"vdc": {"source": "/gone.tar", "serial": "agentbox-inbox"}}}})
+        self.assertEqual(self.imported("work", self.src)["files"], 1)
+        cmds = [c["cmd"] for c in self.calls() if c["cmd"] in ("attach-disk", "detach-disk")]
+        self.assertEqual(cmds, ["detach-disk", "attach-disk", "detach-disk"])
+        self.assertEqual(self.transfers(), [])
+
+    def test_a_leftover_disk_that_cannot_be_detached_stops_the_import(self):
+        self.scenario(detach_fails=True,
+                      vms={"work": {"disks": {"vdc": {"source": "/gone.tar", "serial": "agentbox-inbox"}}}})
+        said = self.failure("work", self.src)
+        self.assertEqual(said["error"], "import_failed")
+        self.assertIn("vdc", said["message"])
+        self.assertEqual((self.calls("attach-disk"), self.transfers()), ([], []))
+
+
+class PackTest(unittest.TestCase):
+    def test_a_child_is_killed_and_reaped_when_the_parent_is_interrupted(self):
+        sys.path.insert(0, REPO)
+        from agentbox import transfer
+        pids = []
+        real_fork = os.fork
+
+        def fork():
+            pid = real_fork()
+            pids.append(pid)
+            return pid
+
+        def slow(source, fd):
+            time.sleep(60)
+
+        def interrupt(signum, frame):
+            raise KeyboardInterrupt
+        with tempfile.TemporaryDirectory() as d, open(os.path.join(d, "out"), "wb") as out:
+            old = signal.signal(signal.SIGALRM, interrupt)
+            self.addCleanup(signal.signal, signal.SIGALRM, old)
+            self.addCleanup(signal.alarm, 0)
+            self.addCleanup(setattr, transfer, "_archive", transfer._archive)
+            self.addCleanup(setattr, os, "fork", real_fork)
+            transfer._archive, os.fork = slow, fork
+            signal.alarm(1)
+            with self.assertRaises(KeyboardInterrupt):
+                transfer.pack(d, out.fileno())
+        os.fork = real_fork
+        [pid] = [p for p in pids if p]
+        with self.assertRaises(ChildProcessError):
+            os.waitpid(pid, os.WNOHANG)               # reaped already
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
 
 
 class LifecycleTest(ImportTest):
@@ -526,6 +598,55 @@ class WrapperTest(unittest.TestCase):
                      (link_info(".git/hooks/post-merge", "pre-push.sample"), None))
         self.assertEqual(self.receive()[0], 0)
         self.assertEqual(os.listdir(os.path.join(self.code, "foo", ".git", "hooks")), ["pre-push.sample"])
+
+    def test_hooks_of_nested_repositories_and_submodules_are_removed_too(self):
+        hook = (tarfile.TarInfo, b"#!/bin/sh\n")
+        members = [(dir_info(".git"), None), (dir_info(".git/hooks"), None)]
+        for git in (".git", "vendor/.git", ".git/modules/sub", ".git/modules/sub/modules/deep"):
+            if git != ".git":
+                members += [(dir_info(git), None), (tarfile.TarInfo(git + "/HEAD"), b"ref: refs/heads/main\n")]
+            members += [(dir_info(git + "/hooks"), None), (tarfile.TarInfo(git + "/hooks/pre-commit"), hook[1]),
+                        (tarfile.TarInfo(git + "/hooks/keep.sample"), hook[1])]
+        members += [(dir_info("sub"), None), (link_info("sub/.git", "../.git/modules/sub"), None)]
+        self.archive(*members)
+        self.assertEqual(self.receive()[0], 0)
+        foo = os.path.join(self.code, "foo")
+        for git in (".git", "vendor/.git", ".git/modules/sub", ".git/modules/sub/modules/deep"):
+            self.assertEqual(os.listdir(os.path.join(foo, git, "hooks")), ["keep.sample"], git)
+
+    def test_hooks_behind_a_link_are_not_followed(self):
+        outside = os.path.join(self.root, "outside", "hooks")
+        write(os.path.join(outside, "pre-commit"), "x")
+        self.archive((dir_info(".git"), None), (dir_info("lnk"), None), (link_info("lnk/.git", "../.git"), None))
+        self.assertEqual(self.receive()[0], 0)
+        self.assertTrue(os.path.exists(os.path.join(outside, "pre-commit")))
+
+    def test_a_device_that_appears_late_is_waited_for(self):
+        device = self.root + DEVICE
+        os.makedirs(os.path.dirname(device))
+        env = {"PATH": os.environ["PATH"], "AGENTBOX_INBOX_ROOT": self.root, "AGENTBOX_INBOX_DEVICE_WAIT": "20"}
+        p = subprocess.Popen([sys.executable, "-I", WRAPPER, "receive", DEVICE, "foo"], env=env,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        time.sleep(1.5)
+        self.archive((tarfile.TarInfo("a.txt"), b"abc"))
+        out, err = p.communicate(timeout=30)
+        self.assertEqual((p.returncode, json.loads(out)), (0, {"files": 1, "bytes": 3}), err)
+
+    def test_a_device_that_never_appears_fails_with_a_clear_message(self):
+        env = {"PATH": os.environ["PATH"], "AGENTBOX_INBOX_ROOT": self.root, "AGENTBOX_INBOX_DEVICE_WAIT": "1"}
+        r = subprocess.run([sys.executable, "-I", WRAPPER, "receive", DEVICE, "x/foo"], env=env,
+                           capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn(f"{DEVICE} does not appear", r.stderr)
+        self.assertEqual(self.everything(), ["var", "var/home", "var/home/agent", "var/home/agent/code"])
+
+    def test_parents_made_for_a_failed_run_are_removed_but_not_those_that_were_there(self):
+        self.archive((tarfile.TarInfo("ok.txt"), b"ok"), (tarfile.TarInfo("../evil"), b"x"))
+        os.makedirs(os.path.join(self.code, "there"))
+        self.assertEqual(self.receive("a/b/foo")[0], 5)
+        self.assertEqual(self.receive("there/c/foo")[0], 5)
+        self.assertEqual(os.listdir(self.code), ["there"])
+        self.assertEqual(os.listdir(os.path.join(self.code, "there")), [])
 
     def test_only_its_device_and_fsfreeze_calls(self):
         self.archive((tarfile.TarInfo("a.txt"), b"a"))

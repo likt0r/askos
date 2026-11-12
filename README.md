@@ -342,8 +342,8 @@ file Git does not ignore (`git ls-files --cached --others --exclude-standard`), 
 `node_modules`, `.venv` or an ignored `.env` stay on the Host; of a folder without Git
 everything. A linked worktree (`.git` is a file) is refused: import its main repository.
 Symbolic links stay links; links leading out of the folder and special files are skipped and
-named. An existing target is refused and nothing is overwritten; hooks in `.git/hooks` other
-than the `*.sample` files are removed. A VM that is off is started, a paused one is refused.
+named. An existing target is refused and nothing is overwritten; hooks in `.git/hooks` (also of nested
+repositories and submodules) other than the `*.sample` files are removed. A VM that is off is started, a paused one is refused.
 The Host packs the folder into a tar file, attaches it to the VM as a read-only disk for as
 long as the VM unpacks it and deletes it afterwards. The source stays on the Host: delete it
 yourself once the VM has it. VMs whose Build predates the command need a new Build and a Reset

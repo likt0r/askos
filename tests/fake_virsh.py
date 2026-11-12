@@ -19,6 +19,8 @@ scenario.json:
                 pinned_backing  the backing file the VM runs on after `start` (default: the
                               one in its System disk's header then, as libvirt fixes it)
                 defined       the domain exists in libvirt (default true)
+                disks         disks attached before any change, by target:
+                              {"vdc": {"source": "/x.tar", "serial": "agentbox-inbox"}} (default none)
                 uuid          its UUID (default: derived from the name)
   networks    libvirt networks that exist before any change, by name:
               {"agentbox-work": {"active": true, "autostart": true, "xml": "<network>..."}}
@@ -38,10 +40,13 @@ scenario.json:
   missing_wrappers  paths guest-exec cannot run: the guest agent fails as qemu-ga does
               for a program the Image lacks
   attach_fails, detach_fails  attach-disk or detach-disk fails with libvirt's error
+  attach_signals_parent  a successful attach-disk sends SIGTERM to the program that called virsh
 
 `attach-disk <domain> <file> <target> ... --serial S` and `detach-disk <domain> <target>`
 change a running VM's disks (domains.json), recorded with their arguments; a copy of each
 attached file is kept in FAKE_VIRSH_DIR/attached/, so a test sees what the VM got.
+
+`domblklist <domain>` lists the targets and sources of the System disk and the attached disks.
 
 `dumpxml` shows the System disk (under AGENTBOX_ROOT) and, while running, the
 backing file fixed at `start`. `start` adds the VM's QEMU process, started now, with
@@ -67,6 +72,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -135,6 +141,7 @@ def domain_state(scenario, domain):
     conf = vm_config(scenario, domain)
     initial = {"state": conf.get("state", scenario.get("state", "running")),
                "managed_save": conf.get("managed_save", False), "defined": conf.get("defined", True),
+               "disks": conf.get("disks") or {},
                "uuid": conf.get("uuid", str(uuid.uuid5(uuid.NAMESPACE_DNS, domain)))}
     return {**initial, **load("domains.json", {}).get(domain, {})}
 
@@ -435,6 +442,14 @@ def libvirt(scenario, cmd, rest):
         return lifecycle(scenario, cmd, rest[0])
     if cmd in ("attach-disk", "detach-disk"):
         return disks(scenario, cmd, rest)
+    if cmd == "domblklist":
+        st = domain_state(scenario, rest[0])
+        if not st["defined"]:
+            return no_domain(rest[0])
+        print(f" vda      {system_disk(rest[0])}")
+        for target, disk in (st.get("disks") or {}).items():
+            print(f" {target}      {disk['source']}")
+        return 0
     return 1
 
 
@@ -466,6 +481,10 @@ def disks(scenario, cmd, rest):
         attached[target] = {"source": source, "serial": serial}
         save_state(domain, disks=attached)
         print("Disk attached successfully")
+        sys.stdout.flush()
+        if scenario.get("attach_signals_parent"):
+            os.kill(os.getppid(), signal.SIGTERM)
+            time.sleep(0.5)
         return 0
     target, options = rest[1], rest[2:]
     record({"cmd": cmd, "dom": domain, "target": target, "options": options})
