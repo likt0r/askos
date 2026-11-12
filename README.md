@@ -275,7 +275,7 @@ unknown then. A new Host starts with entries for all VMs (`proxy/allowlist`), am
 `claudeusercontent.com`, so claude.ai artifacts load in every VM without Open web; a subdomain
 the threat-intelligence Feed lists there passes with an Alert only, since a domain entry is
 checked when it is added
-([ARCHITECTURE.md](ARCHITECTURE.md#known-residual-risks)). `agentbox disallow all
+([ARCHITECTURE.md](ARCHITECTURE.md#what-it-does-not-protect-against)). `agentbox disallow all
 claudeusercontent.com` removes the entry: artifacts then need Open web, which keeps Feed-listed
 ones blocked, or an entry of their own.
 An entry can also be a pattern, a **Regex entry**: `--regex PATTERN` in place of the domain,
