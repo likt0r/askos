@@ -89,9 +89,6 @@ else `500 action_failed`, with the message in `detail`:
 | 400 | `invalid_cleanup_days` | the days of the Container image cleanup are not a whole number from 1 to 365 (`field`: `days`) |
 | 400 | `invalid_memory` | memory limit not a whole number from 1024 MiB to the Host's memory (`field`: `memory_mib`), when changing the limit or creating a VM (`POST /vms` formerly answered `invalid_argument` for this) |
 | 500 | `memory_not_applied` | the new memory limit is saved, but the VM could not be defined again; `agentbox regenerate` finishes it |
-| 400 | `invalid_cleanup_days` | days for the Container image cleanup not a whole number from 1 to 365 (`field`: `days`) |
-| 409 | `container_image_cleanup_missing` | the VM's Build has no Container image cleanup yet: build its Image and reset the VM first (only in Activity, from the hourly run) |
-| 502 | `container_image_cleanup_failed` | the Container image cleanup in the VM failed (only in Activity, from the hourly run) |
 | 503 | `guest_agent_unavailable` | the VM's guest agent does not answer |
 | 504 | `vm_query_timeout` | a query inside the VM took too long |
 | 502 | `vm_journal_failed` | journalctl failed inside the VM |

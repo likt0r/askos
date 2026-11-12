@@ -1467,10 +1467,6 @@ AGENTBOX_ERRORS = {
     "invalid_cleanup_days": (400, "Days for the Container image cleanup out of range (1 to 365)"),
     "memory_not_applied": (500, "The memory limit is saved, but the VM was not defined again; "
                                 "agentbox regenerate finishes it"),
-    "invalid_cleanup_days": (400, "Days for the Container image cleanup out of range (1 to 365)"),
-    "container_image_cleanup_missing": (409, "The VM's Build has no Container image cleanup yet; build its Image "
-                                                    "and reset the VM first"),
-    "container_image_cleanup_failed": (502, "The Container image cleanup in the VM failed"),
     "guest_agent_unavailable": (503, "The VM's guest agent does not answer"),
     "vm_query_timeout": (504, "The query in the VM took too long"),
     "vm_journal_failed": (502, "Reading the VM's journal failed"),
