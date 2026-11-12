@@ -92,6 +92,23 @@ def _test_upstream():
     return (host, int(port)) if host and port.isdigit() else None
 
 
+def _test_resolve():
+    """Nur in Tests (AGENTBOX_CONF_DIR gesetzt): dieser Resolver antwortet statt getaddrinfo
+    (AGENTBOX_PROXY_TEST_RESOLVE, JSON {name: [adresse, ...]}), geprueft wie jede Aufloesung
+    auf oeffentliche Adressen; ein Name, der nicht darin steht, loest zu nichts auf. Ein Name,
+    der passt, verbindet sich wie immer zum Test-Upstream."""
+    if "AGENTBOX_CONF_DIR" not in os.environ:
+        return None
+    try:
+        table = json.loads(os.environ.get("AGENTBOX_PROXY_TEST_RESOLVE") or "null")
+    except ValueError:
+        return None
+    if not isinstance(table, dict):
+        return None
+    return {name: addrs for name, addrs in table.items()
+            if isinstance(name, str) and isinstance(addrs, list) and all(isinstance(a, str) for a in addrs)}
+
+
 suspicious = _load_suspicious()
 PORT = 443
 RECORD_LIMIT = 2 ** 14          # the longest record TLS allows
@@ -104,6 +121,7 @@ LINGER_SECONDS = 2              # how long a refused client's further bytes are 
 # so oft prueft der Proxy, ob Tunnel geschlossen werden muessen
 CHECK_SECONDS = _seconds(os.environ.get("AGENTBOX_PROXY_CHECK_SECONDS"), 1.0)
 TEST_UPSTREAM = _test_upstream()
+TEST_RESOLVE = _test_resolve()
 OPEN = "open"            # Tunnel, den nur das offene Web erlaubt
 # TLS alerts (RFC 8446, 6.2) the proxy answers a refused connection with
 ACCESS_DENIED, UNRECOGNIZED_NAME, INTERNAL_ERROR = 49, 112, 80
@@ -468,16 +486,26 @@ def _address(a):
         return None
 
 
+def _public(addrs):
+    """The addresses, IPv4 first, or None unless every one of them is public."""
+    ips = {a: _address(a) for a in addrs}
+    if not ips or not all(ip is not None and ip.is_global for ip in ips.values()):
+        return None
+    # IPv4 first: a Host does not always have a working IPv6 route
+    return sorted(ips, key=lambda a: ips[a].version)
+
+
 async def resolve_public(host):
     """The addresses of host, IPv4 first, or None unless every one of them is public."""
+    if TEST_RESOLVE is not None:
+        # nur in Tests: die Adressen des Namens stehen in AGENTBOX_PROXY_TEST_RESOLVE,
+        # geprueft wie jede Aufloesung; erlaubt geht die Verbindung zum Test-Upstream
+        addrs = _public(TEST_RESOLVE.get(host, ()))
+        return [TEST_UPSTREAM[0]] if addrs and TEST_UPSTREAM else addrs
     if TEST_UPSTREAM:
         return [TEST_UPSTREAM[0]]
     infos = await asyncio.get_running_loop().getaddrinfo(host, PORT, type=socket.SOCK_STREAM)
-    addrs = {a: _address(a) for a in dict.fromkeys(info[4][0] for info in infos)}
-    if not addrs or not all(ip is not None and ip.is_global for ip in addrs.values()):
-        return None
-    # IPv4 first: a Host does not always have a working IPv6 route
-    return sorted(addrs, key=lambda a: addrs[a].version)
+    return _public(dict.fromkeys(info[4][0] for info in infos))
 
 
 async def connect_any(addrs):

@@ -4,8 +4,11 @@ The parser (`client_hello` in proxy/agentbox-proxy) against handshakes Python's 
 (OpenSSL) really writes: with and without a server name, TLS 1.2 and 1.3, fragmented,
 truncated, garbage, and random mutations of a real one. Then the proxy on its socket
 (test_allowlist.ProxyTest): what it answers and logs for each kind of connection, that
-the ClientHello reaches the destination first, and, socket-activated on TCP as on the
-Host, that its log names the client's address.
+the ClientHello reaches the destination first, what it does with the addresses a name
+resolves to (a resolver the tests replace, AGENTBOX_PROXY_TEST_RESOLVE, honoured only
+next to AGENTBOX_CONF_DIR like the test upstream, the check for public addresses
+running as always), and, socket-activated on TCP as on the Host, that its log names
+the client's address.
 
 Run from the repo root: python3 -m unittest discover -s tests
 """
@@ -361,6 +364,43 @@ class RefusalTest(allowlist_tests.ProxyTest):
         self.start(upstream=False)
         self.assertEqual(self.refusal("localhost"), ACCESS_DENIED)
         self.assertIn("[work] BLOCKED localhost (does not resolve to a public address)\n", self.log())
+
+
+class PublicAddressTest(allowlist_tests.ProxyTest):
+    """Which addresses a name may resolve to: unless every one of them is public, the
+    connection is refused even when an entry allows the name, so a VM reaches neither the
+    Host, the home network nor a cloud metadata address through a name that points there.
+    The resolver is replaced for the test (AGENTBOX_PROXY_TEST_RESOLVE), so the names
+    resolve to chosen addresses while the check runs; a name that passes connects to the
+    test upstream like any allowed destination."""
+
+    RESOLVE = {
+        "host.example": ["127.0.0.1"],                                # the Host itself
+        "home.example": ["10.0.0.5"],                                 # a private range (the home network)
+        "metadata.example": ["169.254.169.254", "fd00:ec2::254"],     # link-local, the cloud metadata addresses
+        "ipv6.example": ["fe80::1", "fd12:3456:789a::1"],             # IPv6 that is not global
+        "mixed.example": ["93.184.215.14", "10.0.0.1"],               # public and non-public together
+        "public.example": ["93.184.215.14", "2606:4700::1"],          # public addresses only
+    }
+
+    def setUp(self):
+        super().setUp()
+        self.store(*(entry(host, "all") for host in self.RESOLVE))
+        self.start(resolve=self.RESOLVE)
+
+    def test_a_name_resolving_to_a_non_public_address_is_refused(self):
+        for host in ("host.example", "home.example", "metadata.example", "ipv6.example"):
+            with self.subTest(host=host):
+                self.assertTrue(self.refused(host), self.log())
+                self.assertIn(f"[work] BLOCKED {host} (does not resolve to a public address)\n", self.log())
+
+    def test_a_name_resolving_to_public_and_non_public_addresses_is_refused(self):
+        self.assertTrue(self.refused("mixed.example"), self.log())
+        self.assertIn("[work] BLOCKED mixed.example (does not resolve to a public address)\n", self.log())
+
+    def test_a_name_resolving_to_public_addresses_only_goes_through(self):
+        self.tunnel("public.example")
+        self.assertIn("[work] ALLOWED public.example (allowlist public.example all)\n", self.log())
 
 
 class SocketActivationTest(allowlist_tests.ProxyTest):

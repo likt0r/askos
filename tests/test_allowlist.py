@@ -100,14 +100,18 @@ class ProxyTest(unittest.TestCase):
     def close_web(self):
         os.remove(os.path.join(self.conf, "open-work"))
 
-    def start(self, upstream=None):
+    def start(self, upstream=None, resolve=None):
         """The proxy, every allowed destination going to upstream (port on 127.0.0.1; the echo
-        server by default; False: the proxy resolves names and connects itself)."""
+        server by default; False: the proxy resolves names and connects itself). resolve: the
+        addresses names resolve to, as {name: [address, ...]} (AGENTBOX_PROXY_TEST_RESOLVE,
+        honoured only next to AGENTBOX_CONF_DIR like the test upstream), the check for public
+        addresses running as always; a name not in it resolves to nothing."""
         port = self.echo.server_address[1] if upstream is None else upstream
         env = {"PATH": os.environ["PATH"], "LANG": "C.UTF-8", "AGENTBOX_CONF_DIR": self.conf,
                "AGENTBOX_FEEDS_DIR": os.path.join(self.dir, "feeds"), "AGENTBOX_PROXY_CHECK_SECONDS": str(CHECK),
                "AGENTBOX_PROXY_HELLO_SECONDS": str(HELLO),
-               **({"AGENTBOX_PROXY_TEST_UPSTREAM": "127.0.0.1:%d" % port} if port is not False else {})}
+               **({"AGENTBOX_PROXY_TEST_UPSTREAM": "127.0.0.1:%d" % port} if port is not False else {}),
+               **({"AGENTBOX_PROXY_TEST_RESOLVE": json.dumps(resolve)} if resolve is not None else {})}
         with open(self.log_path, "wb") as err:
             self.proxy = subprocess.Popen([sys.executable, "-I", PROXY, "work", self.sock], env=env,
                                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err)
