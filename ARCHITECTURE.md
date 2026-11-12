@@ -1016,8 +1016,8 @@ otherwise in `lib/agentbox` under their own prefix.
   allowed outer name served by the same provider, the way domain fronting does.
 - **Services of the Host on ports 53 and 443:** one that listens on all of the Host's
   addresses keeps the resolver or the proxy from binding the Host's address in a VM
-  network, so Agent Box refuses to set up the networks while it runs: `regenerate`, `setup`
-  and every change that brings VM networks up stop before anything changes and name the
+  network, so Agent Box refuses to set up the networks while it runs: `regenerate`, `setup`,
+  `create`, `delete` and a change of the Settings stop before anything changes and name the
   port. A service bound to other addresses is no obstacle, and nftables keeps the VMs from
   it.
 - **Only TLS with a server name, on port 443, leaves a VM.** Plain HTTP, other ports and TLS

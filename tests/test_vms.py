@@ -97,6 +97,15 @@ class CreateTest(VmsTest):
         self.assertIn("ListenStream=10.77.3.1:443\n", self.read("etc/systemd/system/agentbox-proxy-lab.socket"))
         self.assertIn('    iifname "abox-lab" ip daddr != 10.77.3.1 drop\n', self.read("etc/agentbox/vm-input.nft"))
 
+    def test_a_service_on_the_proxy_port_of_all_addresses_stops_it_before_any_change(self):
+        self.listening(tcp=[("00000000:01BB", "0A")])
+        before = self.files()
+        code, out, err = self.run_agentbox("create", "lab")
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("another service listens on 443/tcp on all of the Host's addresses", err)
+        self.assertEqual(self.files(), before)
+        self.assertEqual(self.calls(), [])
+
     def test_new_vm_is_configured_through_regenerate(self):
         self.ok("create", "lab")
         for unit in UNITS:
@@ -341,6 +350,15 @@ class DeleteTest(VmsTest):
         """Every file that belongs to work, priv or all VMs (the Allowlist: test_allowlist_entries_go)."""
         return {k: v for k, v in self.files().items()
                 if "lab" not in k and not k.endswith(("vm-input.nft", "allowlist.json")) and "/pending/" not in k}
+
+    def test_a_service_on_the_resolver_port_of_all_addresses_stops_it_before_any_change(self):
+        self.listening(udp6=[("0" * 32 + ":0035", "07")])
+        before = self.files()
+        code, out, err = self.run_agentbox("delete", "lab", "--confirm", "lab")
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("another service listens on 53/udp on all of the Host's addresses", err)
+        self.assertEqual(self.files(), before)
+        self.assertEqual(self.calls(), [])
 
     def test_allowlist_entries_go_with_the_vm(self):
         self.assertEqual(self.entries("lab"), [("docs.rs", None, "")])

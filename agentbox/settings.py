@@ -248,6 +248,7 @@ def _set(args):
         die(usage, error="invalid_argument")
     from . import generate     # generate imports activity, which imports this module
     with state_files.locked(paths.REGISTRY):
+        generate.ports_free()      # what apply() would stop on stops the change before it is saved
         diff = save(changes)
         try:
             result = generate.apply() if diff else None

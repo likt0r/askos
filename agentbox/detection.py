@@ -15,6 +15,7 @@ as seen when it happened before its mark.
 import ipaddress
 import json
 import os
+import re
 import subprocess
 import time
 
@@ -28,6 +29,8 @@ from .sanitize import clean
 # Signals that do not depend on the name: they raise Alerts even for harmless domains (as in the classifier)
 STRUCTURAL = {"raw-ip", "metadata"}
 SEEN_KEEP = 2 * 86400                # Alerts are listed for 24 hours; older marks are dropped
+# a name only a resolver reads as an address, before the classifier is asked (alert_host)
+NUMERIC_HOST = re.compile(r"[0-9a-fx.]{1,253}")
 HARMLESS_HEADER = b"# Domains with a Harmless mark, with their subdomains (agentbox mark-harmless/unmark-harmless)\n"
 
 
@@ -259,14 +262,18 @@ def seen_marks(ctx):
 
 
 def alert_host(d):
-    """What an Alert can name: a domain or an IP address (as the proxy logs it)."""
+    """What an Alert can name: a domain or an IP address (as the proxy logs it), also one in a
+    form only a resolver reads as an address (16909060, 0x01020304; the classifier's
+    is_address, which raises raw-ip for it)."""
     try:
         return str(ipaddress.ip_address(d))
     except ValueError:
         pass
-    if not DOMAIN.fullmatch(d):
-        die(f"invalid domain: {d}", error="invalid_domain", domain=d)
-    return d
+    if DOMAIN.fullmatch(d):
+        return d
+    if NUMERIC_HOST.fullmatch(d) and patterns.rules().is_address(d):
+        return d
+    die(f"invalid domain: {d}", error="invalid_domain", domain=d)
 
 
 def mark_seen(args):

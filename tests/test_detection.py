@@ -622,6 +622,16 @@ class SeenTest(CliTest):
         # the marks belong to this VM only
         self.assertEqual(self.seen_files(), ["alerts-seen-work.json"])
 
+    def test_an_address_in_a_form_only_a_resolver_reads_can_be_marked(self):
+        # the classifier raises raw-ip for them (is_address); garbage of the same characters stays refused
+        self.journal((-600, "16909060", "raw-ip"), (-500, "0x01020304", "raw-ip"), (-400, "b.example", "young"))
+        for host in ("16909060", "0x01020304"):
+            self.assertEqual(self.run_agentbox("mark-seen", "work", host)[0], 0, host)
+        self.assertEqual(self.alerts(), {"16909060": True, "0x01020304": True, "b.example": False})
+        for bad in ("0xg1", "abc", "..", "1" * 254):
+            with self.subTest(bad=bad):
+                self.assertEqual(self.run_agentbox("mark-seen", "work", bad)[:2], (1, ""))
+
     def test_alerts_of_harmless_destinations_are_left_out(self):
         # a Signal that does not depend on the name (metadata) keeps its Alert
         self.journal((-600, "githbu.com", "lookalike"), (-500, "www.githbu.com", "lookalike"),

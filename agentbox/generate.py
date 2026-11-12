@@ -419,8 +419,10 @@ def _network_matches(rec):
 
 def _resolver_current(rec, xml):
     """Whether a network's dumped XML has the resolver network_xml() gives it: every dnsmasq
-    option, and DNS not switched off."""
+    option, DNS not switched off, and nothing that sends names or packets on (a `server=`
+    option, a `<forwarder>`, a `<forward>`)."""
     return (not re.search(r"<dns\b[^>]*\benable=['\"]no['\"]", xml)
+            and not re.search(r"<dnsmasq:option\s+value=['\"]server=|<forwarder\b|<forward\b", xml)
             and all(re.search(rf"<dnsmasq:option\s+value=['\"]{re.escape(o)}['\"]", xml)
                     for o in _dnsmasq_options(rec)))
 
