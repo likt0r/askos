@@ -127,6 +127,7 @@ install -m 0644 rpm/units/agentbox-web.service rpm/units/agentbox-vmnet.service 
 install -m 0644 rpm/units/agentbox-journal.conf %{buildroot}%{_unitdir}/systemd-journald@agentbox.socket.d/
 
 install -D -m 0644 rpm/agentbox.sysusers %{buildroot}%{_sysusersdir}/agentbox.conf
+install -D -m 0644 rpm/agentbox.tmpfiles %{buildroot}%{_tmpfilesdir}/agentbox.conf
 install -D -m 0440 rpm/agentbox-web.sudoers %{buildroot}%{_sysconfdir}/sudoers.d/agentbox-web
 
 # the Host's directories; what goes into them comes from agentbox setup and the CLI
@@ -171,6 +172,8 @@ if [ $1 -eq 1 ]; then
         if [ -z "$(ls -A "$d")" ]; then chattr +C "$d" 2>/dev/null || :; fi
     done
 fi
+# the Activity journal's runtime directory, owned as journald owns it (agentbox.tmpfiles)
+%tmpfiles_create agentbox.conf
 # No %%systemd_post: its preset would leave the units disabled on a new Host anyway, and
 # would disable the ones a Host has enabled. agentbox setup enables and starts what it needs.
 
@@ -251,6 +254,7 @@ fi
 %{_unitdir}/agentbox-allowlist-expire.timer
 %{_unitdir}/systemd-journald@agentbox.socket.d/
 %{_sysusersdir}/agentbox.conf
+%{_tmpfilesdir}/agentbox.conf
 %config %attr(0440,root,root) %{_sysconfdir}/sudoers.d/agentbox-web
 %dir %attr(0755,root,root) %{_sysconfdir}/agentbox
 %dir %attr(0750,root,agentbox-web) %{_sysconfdir}/agentbox/web
