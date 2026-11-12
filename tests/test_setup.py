@@ -64,21 +64,25 @@ class JournalSocketsTest(unittest.TestCase):
     start leaves (directory and sockets root:systemd-journal) is repaired, once."""
     JOURNALD_GID, JOURNAL_GID = 190, 974
 
-    def test_the_state_journald_leaves_is_repaired_and_the_proxies_restart_once(self):
+    def setUp(self):
         sys.path.insert(0, REPO)
         try:
-            from agentbox import activity, hoststeps
+            from agentbox import activity, errors, hoststeps
         finally:
             sys.path.remove(REPO)
-        folder = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, folder)
-        owner = {folder: (0, 0)}
+        self.hoststeps, self.errors = hoststeps, errors
+        self.folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.folder)
+        self.owner = {self.folder: (0, 0)}
+        self.calls = []
+        self.groups = {"systemd-journal": self.JOURNALD_GID, "agentbox-journal": self.JOURNAL_GID}
         for name in hoststeps.JOURNAL_SOCKETS:
             with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
-                s.bind(os.path.join(folder, name))
-            os.chmod(os.path.join(folder, name), 0o660)
-            owner[os.path.join(folder, name)] = (0, self.JOURNALD_GID)
-        real_lstat = os.lstat
+                s.bind(os.path.join(self.folder, name))
+            os.chmod(os.path.join(self.folder, name), 0o660)
+            self.owner[os.path.join(self.folder, name)] = (0, self.JOURNAL_GID)
+        os.chmod(self.folder, 0o755)
+        real_lstat, owner = os.lstat, self.owner
 
         def lstat(path):
             st = list(real_lstat(path))
@@ -89,28 +93,49 @@ class JournalSocketsTest(unittest.TestCase):
             old = owner[path]
             owner[path] = (old[0] if uid == -1 else uid, old[1] if gid == -1 else gid)
 
-        calls = []
-        patches = (mock.patch.object(activity, "JOURNAL_RUN", folder), mock.patch.object(os, "geteuid", lambda: 0),
-                   mock.patch.object(os, "lstat", lstat), mock.patch.object(os, "chown", chown),
-                   mock.patch.object(hoststeps, "_group", lambda *a: (self.JOURNAL_GID, set())),
-                   mock.patch.object(hoststeps, "_getent",
-                                     lambda *a: [["systemd-journal", "x", str(self.JOURNALD_GID), ""]]),
-                   mock.patch.object(hoststeps, "_systemctl", lambda *a: calls.append(list(a))))
-        for patch in patches:
+        def group(name, comes_with):
+            if name not in self.groups:
+                self.errors.die(f"the group {name} is missing ({comes_with})", error="action_failed", group=name)
+            return self.groups[name], set()
+
+        for patch in (mock.patch.object(activity, "JOURNAL_RUN", self.folder), mock.patch.object(os, "geteuid", lambda: 0),
+                      mock.patch.object(os, "lstat", lstat), mock.patch.object(os, "chown", chown),
+                      mock.patch.object(hoststeps, "_group", group),
+                      mock.patch.object(hoststeps, "_systemctl", lambda *a: self.calls.append(list(a)))):
             patch.start()
             self.addCleanup(patch.stop)
-        owner[folder] = (0, 0)
 
-        said = hoststeps.journal_sockets()
-        self.assertEqual(owner[folder], (0, self.JOURNALD_GID))
-        for name in hoststeps.JOURNAL_SOCKETS:
-            self.assertEqual(owner[os.path.join(folder, name)], (0, self.JOURNAL_GID))
-        self.assertEqual(calls, [["try-restart", "agentbox-proxy-*.service"]])
-        self.assertEqual(len(said), 5)
+    def sockets(self, gid):
+        return {name: self.owner[os.path.join(self.folder, name)] for name in self.hoststeps.JOURNAL_SOCKETS} == \
+            {name: (0, gid) for name in self.hoststeps.JOURNAL_SOCKETS}
 
-        calls.clear()
-        self.assertEqual(hoststeps.journal_sockets(), [])
-        self.assertEqual(calls, [])
+    def test_the_state_journald_leaves_is_repaired_and_the_proxies_restart_once(self):
+        self.owner[self.folder] = (0, 0)
+        for name in self.hoststeps.JOURNAL_SOCKETS:
+            self.owner[os.path.join(self.folder, name)] = (0, self.JOURNALD_GID)
+        said = self.hoststeps.journal_sockets()
+        self.assertEqual(self.owner[self.folder], (0, self.JOURNALD_GID))
+        self.assertTrue(self.sockets(self.JOURNAL_GID))
+        self.assertEqual(self.calls, [["try-restart", "agentbox-proxy-*.service"]])
+        self.assertEqual(said, [f"{self.folder}: root:systemd-journal, mode 755"] +
+                         [f"{self.folder}/{n}: agentbox-journal, mode 660" for n in ("stdout", "socket", "dev-log")] +
+                         ["running proxies restarted to reconnect their log streams"])
+        self.calls.clear()
+        self.assertEqual(self.hoststeps.journal_sockets(), [])
+        self.assertEqual(self.calls, [])
+
+    def test_only_the_directory_wrong_is_repaired_without_a_restart(self):
+        self.owner[self.folder] = (0, 0)
+        os.chmod(self.folder, 0o700)
+        said = self.hoststeps.journal_sockets()
+        self.assertEqual(said, [f"{self.folder}: root:systemd-journal, mode 755"])
+        self.assertEqual(os.stat(self.folder).st_mode & 0o777, 0o755)
+        self.assertEqual(self.calls, [])
+
+    def test_a_missing_group_of_journald_stops_setup(self):
+        del self.groups["systemd-journal"]
+        with self.assertRaisesRegex(self.errors.Fail, "group systemd-journal is missing"):
+            self.hoststeps.journal_sockets()
 
 
 class SetupTest(RegistryTest):

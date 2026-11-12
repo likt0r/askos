@@ -6,6 +6,8 @@ The CLI's dispatcher records every command except an explicit list of read-only 
 
 _Amended by #85 (2026-11-08):_ `vm/setup-vms.sh` is gone. The RPM ([ADR 0009](0009-agent-box-ships-as-a-fedora-rpm.md)) creates the group and brings the drop-in; `agentbox setup` makes the members match those of `libvirt` on every run and gives sockets created before the drop-in applied their group and mode in place.
 
+_Amended by #42 (2026-11-12):_ The sockets did not only predate the drop-in: at every boot journald's first start makes systemd chown its `RuntimeDirectory` (`/run/systemd/journal.agentbox`) and the sockets in it to `root:systemd-journal` when the directory is owned otherwise, which removed the group `agentbox-journal` again. The package's tmpfiles entry makes the directory `root:systemd-journal` at boot, so the chown leaves the sockets alone, and `agentbox setup` repairs directory and sockets of a running Host in place and restarts the proxies, whose log streams were lost.
+
 ## Consequences
 
 - The proxy's and token service's logs are read with `journalctl --namespace=agentbox` (or `+agentbox`, which adds the default journal, where they were logged before the move).

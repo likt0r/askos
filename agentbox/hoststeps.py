@@ -198,13 +198,18 @@ def journal_sockets():
     gid = _group(activity.JOURNAL_GROUP, "the package creates it")[0] if root else -1
     said = []
     folder = activity.JOURNAL_RUN
-    system = _getent("group", JOURNALD_GROUP) if root else []
+    journald = _group(JOURNALD_GROUP, "comes with systemd")[0] if root else -1
     try:
         st = os.lstat(folder)
-        if system and system[0][2].isdigit() and stat.S_ISDIR(st.st_mode) and \
-                (st.st_uid, st.st_gid) != (0, int(system[0][2])):
-            os.chown(folder, 0, int(system[0][2]))
-            said.append(f"{folder}: root:{JOURNALD_GROUP}")
+        if journald != -1 and stat.S_ISDIR(st.st_mode):
+            changed = (st.st_uid, st.st_gid) != (0, journald)
+            if changed:
+                os.chown(folder, 0, journald)
+            if stat.S_IMODE(st.st_mode) != 0o755:
+                os.chmod(folder, 0o755)
+                changed = True
+            if changed:
+                said.append(f"{folder}: root:{JOURNALD_GROUP}, mode 755")
     except FileNotFoundError:
         pass
     except OSError as e:
