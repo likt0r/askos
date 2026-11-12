@@ -407,9 +407,9 @@ cannot stop normal work there. Two of the built-in ones are hosts of arbitrary u
 `github.io` and `githubusercontent.com` (anyone's GitHub Pages site, GitHub's raw-content
 hosts): they keep the pattern Signals off the brand as well, but Feed hits on their subdomains
 count, so a known phishing or payload site there stays blocked in Open web. The domains
-themselves, like `github.com`, keep their treatment, and a Legitimate domain of the Host below
-one (the owner's own pages site) is the more specific entry and lifts the Feed hits below it
-again. The classifier
+themselves, like `github.com`, keep their treatment, and no Legitimate entry lifts those Feed
+hits again, also not one of the Host below one (however specific), so one from before this rule
+stops suppressing them. The classifier
 lifts them when it classifies; `agentbox-feeds` stores the Feeds as fetched, so a removed
 Legitimate domain counts again at once, and a Feed entry above one (`vendor.example` above
 `cdn.vendor.example`) still counts for its other subdomains. Watchlist

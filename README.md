@@ -302,8 +302,10 @@ Room's Watchlist view, and every change is recorded in Activity
 `blockchain` (strong) or `payload` (weak), plus `--source` (the incident) and `--note`;
 `watch-set-note` and `legitimate-set-note` change notes. A Legitimate domain gets no pattern
 Signals except the blockchain pattern (`rpc.`, `mainnet`, `infura`, …), and Feed hits for it and its
-subdomains do not count; the Feeds are stored as fetched, so this takes effect, and ends, at
-once. Changes that would lift strong
+subdomains do not count — except the built-in user-content hosts (`github.io`,
+`githubusercontent.com`), whose subdomains serve what anyone publishes: Feed hits on those count,
+whatever Legitimate entry covers them. The Feeds are stored as fetched, so this takes effect, and
+ends, at once. Changes that would lift strong
 Signals need `--force`, and only the CLI on the Host passes it:
 - removing a Watchlist entry of a strong category, or lowering it to `payload`;
 - adding a Legitimate domain that has strong Signals itself or has threat-intelligence entries
