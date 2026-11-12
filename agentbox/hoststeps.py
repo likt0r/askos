@@ -31,6 +31,8 @@ SERVICE_USERS = ("agentbox-web", "agentbox-proxy", "agentbox-feeds", "agentbox-g
 NO_LOGIN = ("nologin", "false")
 # the running sockets of the Activity journal (ADR 0007)
 JOURNAL_SOCKETS = ("stdout", "socket", "dev-log")
+# the group journald runs as (stock systemd-journald@.service) and owns the runtime directory with
+JOURNALD_GROUP = "systemd-journal"
 # what the VMs reach on the Host, each on its own network: the resolver, the proxy and the
 # token service
 VM_PORTS = ("53/udp", "53/tcp", "443/tcp", "9100/tcp")
@@ -183,14 +185,33 @@ def groups(user):
 
 def journal_sockets():
     """The running sockets of the Activity journal: only root and agentbox-journal write there
-    (ADR 0007). The package's drop-in gives them group and mode when systemd creates them; ones
-    created before keep theirs until journald restarts, so they get them in place, without a
-    restart that would cut the log streams of running services. The group only as root (tests
-    run as a normal user)."""
-    gid = _group(activity.JOURNAL_GROUP, "the package creates it")[0] if os.geteuid() == 0 else -1
+    (ADR 0007). The package's drop-in gives them group and mode when systemd creates them, and
+    its tmpfiles entry makes the directory root:systemd-journal, journald's own owner. A
+    directory owned otherwise (root:root) makes systemd chown it and everything in it to
+    root:systemd-journal when journald starts the first time, which takes the group from the
+    sockets. So the directory is set right first, then the sockets' group and mode in place,
+    without a restart of journald that would cut the log streams of running services. Services
+    whose connect failed have their output in /dev/null until they restart: the proxies
+    restart when a socket's group changed. The group only as root (tests run as a normal
+    user)."""
+    root = os.geteuid() == 0
+    gid = _group(activity.JOURNAL_GROUP, "the package creates it")[0] if root else -1
     said = []
+    folder = activity.JOURNAL_RUN
+    system = _getent("group", JOURNALD_GROUP) if root else []
+    try:
+        st = os.lstat(folder)
+        if system and system[0][2].isdigit() and stat.S_ISDIR(st.st_mode) and \
+                (st.st_uid, st.st_gid) != (0, int(system[0][2])):
+            os.chown(folder, 0, int(system[0][2]))
+            said.append(f"{folder}: root:{JOURNALD_GROUP}")
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        die(f"{folder}: {e.strerror}", error="action_failed", path=folder)
+    regrouped = False
     for name in JOURNAL_SOCKETS:
-        path = os.path.join(activity.JOURNAL_RUN, name)
+        path = os.path.join(folder, name)
         try:
             st = os.lstat(path)
             if not stat.S_ISSOCK(st.st_mode):
@@ -198,6 +219,7 @@ def journal_sockets():
             changed = gid != -1 and st.st_gid != gid
             if changed:
                 os.chown(path, -1, gid)
+                regrouped = True
             if stat.S_IMODE(st.st_mode) != 0o660:
                 os.chmod(path, 0o660)
                 changed = True
@@ -207,6 +229,9 @@ def journal_sockets():
             die(f"{path}: {e.strerror}", error="action_failed", path=path)
         if changed:
             said.append(f"{path}: {activity.JOURNAL_GROUP}, mode 660")
+    if regrouped:
+        _systemctl("try-restart", PROXIES)
+        said.append("running proxies restarted to reconnect their log streams")
     return said
 
 

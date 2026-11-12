@@ -144,6 +144,16 @@ class PackageTest(unittest.TestCase):
         self.assertEqual(groups, {activity.JOURNAL_GROUP})
         self.assertIn("install -D -m 0644 rpm/agentbox.sysusers %{buildroot}%{_sysusersdir}/agentbox.conf", self.spec)
 
+    def test_the_runtime_directory_of_the_activity_journal_has_journalds_owner_before_it_starts(self):
+        """Else journald's first start per boot chowns the directory and the sockets in it to
+        root:systemd-journal, and the proxies cannot connect their stdout."""
+        self.assertEqual(meaningful(read("rpm", "agentbox.tmpfiles")),
+                         ["d /run/systemd/journal.agentbox 0755 root systemd-journal -"])
+        self.assertIn("install -D -m 0644 rpm/agentbox.tmpfiles %{buildroot}%{_tmpfilesdir}/agentbox.conf", self.spec)
+        self.assertIn("%{_tmpfilesdir}/agentbox.conf", spec_sections(self.spec, ("files",)))
+        self.assertIn("%tmpfiles_create agentbox.conf", spec_sections(self.spec, ("post",)))
+        self.assertEqual(hoststeps.JOURNALD_GROUP, "systemd-journal")
+
     def test_the_sudoers_rule_lets_the_control_room_run_only_the_packages_cli(self):
         rule = meaningful(read("rpm", "agentbox-web.sudoers"))
         self.assertEqual(rule, [f"agentbox-web ALL=(root) NOPASSWD: {paths.CLI}",
@@ -468,11 +478,14 @@ class InstalledSetupTest(unittest.TestCase):
             os.chmod(path, 0o755)
         # running sockets of the Activity journal from before the package's drop-in applied (not
         # socket: agentbox would write there, and nothing reads it here)
+        # in the state journald's first start leaves when the directory was root:root: all of it
+        # root:systemd-journal
         os.makedirs(cls.JOURNAL, exist_ok=True)
         for name in ("stdout", "dev-log"):
             with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
                 s.bind(os.path.join(cls.JOURNAL, name))
             os.chmod(os.path.join(cls.JOURNAL, name), 0o666)
+            os.chown(os.path.join(cls.JOURNAL, name), 0, grp.getgrnam("systemd-journal").gr_gid)
         # a new Host: no VMs from before the registry
         cls.scenario(vms={"work": {"defined": False}, "priv": {"defined": False}})
         cls.first = cls.setup("--password-stdin", "--cert-name", "rpm-test", stdin="a password of twenty characters\n")
@@ -527,6 +540,11 @@ class InstalledSetupTest(unittest.TestCase):
     def test_the_running_activity_journal_admits_only_root_and_its_group(self):
         for name in ("stdout", "dev-log"):
             self.assertOwned(os.path.join(self.JOURNAL, name), "root", "agentbox-journal", 0o660)
+        self.assertOwned(self.JOURNAL, "root", "systemd-journal", 0o755)
+
+    def test_proxies_that_lost_their_log_stream_restart(self):
+        self.assertIn(["try-restart", "agentbox-proxy-*.service"],
+                      [c["argv"] for c in self.first_calls if c["cmd"] == "systemctl"])
 
     def test_the_owner_controls_the_vms_and_may_write_activity(self):
         libvirt = grp.getgrnam("libvirt")

@@ -863,9 +863,14 @@ One timeline of what happened on the Host and who caused it, kept in journald
 - Who may write is decided when writing. The namespace's sockets (`stdout`, `socket`,
   `dev-log` under `/run/systemd/journal.agentbox/`) belong to root and the group
   `agentbox-journal`, mode 0660; the default journal's stay world-writable.
-  The package creates the group and brings a drop-in for `systemd-journald@agentbox.socket`;
+  The package creates the group and brings a drop-in for `systemd-journald@agentbox.socket`
+  and a tmpfiles entry that makes `/run/systemd/journal.agentbox` `root:systemd-journal`, as
+  journald's `RuntimeDirectory=` wants it: a directory owned otherwise (`root:root`, as
+  socket activation creates it at boot) would make systemd chown it and the sockets in it to
+  `systemd-journal` when journald first starts, and the group is gone.
   `agentbox setup` sets its members to those of `libvirt` (who manage every VM anyway, so
-  `agentbox pair` without root can record) and changes running sockets in place. Admins need both
+  `agentbox pair` without root can record) and repairs a running Host in place (directory,
+  sockets, then a restart of the proxies, whose log streams were lost). Admins need both
   groups; every run of setup makes the members match, and a new membership
   counts from the next login. The Control Room gets the group with
   `SupplementaryGroups=`; the proxies and token services get it as `Group=`, because
@@ -938,8 +943,9 @@ certificate name, owner user) and does the Host steps, in this order
     without the Host's Watchlist and Legitimate domains once the next step moves them aside.
     A restart that fails stops setup before the lists move.
 14. **`agentbox migrate-lists`**.
-15. **Activity journal**: running sockets of the namespace that predate the package's drop-in
-    get its group and mode in place (see Activity).
+15. **Activity journal**: the namespace's runtime directory owned as journald owns it, its
+    running sockets with group and mode of the drop-in, in place; the proxies restart when a
+    socket's group changed (see Activity).
 16. **Feeds**: the first fetch started at once, while none has run yet.
 17. **Control Room**: `agentbox-web.service` enabled and started; restarted after a new Host
     setup.

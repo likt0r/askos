@@ -818,8 +818,8 @@ class HostStepsTest(SetupTest):
         self.assertNotEqual(self.read("etc/agentbox/web/password"), "scrypt$32768$8$1$00$00\n")
 
     def test_running_sockets_of_the_activity_journal_admit_only_its_group(self):
-        """Made before the package's drop-in applied: systemd made them before the package
-        was installed."""
+        """Sockets with a wrong mode get it in place (the group and the directory's owner need
+        root, see tests/test_rpm.py)."""
         folder = self.path("run/systemd/journal.agentbox")
         os.makedirs(folder)
         for name in ("stdout", "dev-log"):          # not socket: agentbox itself would write there

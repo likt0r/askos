@@ -1,0 +1,6 @@
+# The runtime directory of the Activity journal's journald instance, owned like journald's
+# own (rpm/agentbox.spec, ADR 0007). The stock systemd-journald@.service runs as the group
+# systemd-journal with RuntimeDirectory=systemd/journal.%i; when its first start finds the
+# directory owned otherwise, systemd chowns everything below it, the sockets of the
+# drop-in included, to root:systemd-journal and they lose the group agentbox-journal.
+d /run/systemd/journal.agentbox 0755 root systemd-journal -
