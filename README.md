@@ -457,6 +457,13 @@ RUN sed -i 's|http://|https://|g' /etc/apt/sources.list.d/* /etc/apt/sources.lis
     apt-get update
 ```
 
+Every hour the Host runs the **Container image cleanup** in each running VM that has it on (7
+days by default): it removes the Container images no container uses, running or stopped, that
+were not pulled, built or used to create or start a container for more than that many
+calendar days. A Container image the cleanup has not seen used counts as used when it first
+sees it. It never removes containers or volumes. Runs that removed something or failed are in
+Activity.
+
 ### Images and Builds
 
 An **Image** is defined in this repository, ships with each Release and is built on the Host

@@ -110,14 +110,17 @@ class PackageTest(unittest.TestCase):
         cls.spec = read("rpm", "agentbox.spec")
 
     def test_the_package_brings_the_units_setup_enables(self):
-        """The Control Room, the rules of the VM networks, the expiry timer and the drop-in of
-        the Activity journal's sockets; agentbox setup enables the units (libvirt-guests is
+        """The Control Room, the rules of the VM networks, the expiry timer, the timer of the
+        Container image cleanup and the drop-in of the Activity journal's sockets; agentbox setup
+        enables the units (libvirt-guests is
         libvirt's own). The Control Room's address and port come from the Host setup instead of
         its unit (agentbox setup), so the package's unit binds nothing on its own."""
         shipped = sorted(os.listdir(UNITS))
         self.assertEqual(shipped, ["agentbox-allowlist-expire.service", "agentbox-allowlist-expire.timer",
+                                   "agentbox-container-image-cleanup.service", "agentbox-container-image-cleanup.timer",
                                    "agentbox-journal.conf", "agentbox-vmnet.service", "agentbox-web.service"])
-        self.assertLessEqual({hoststeps.EXPIRY_TIMER, generate.VMNET, "agentbox-web.service"}, set(shipped))
+        self.assertLessEqual({hoststeps.EXPIRY_TIMER, hoststeps.CONTAINER_IMAGE_CLEANUP_TIMER, generate.VMNET,
+                              "agentbox-web.service"}, set(shipped))
         self.assertNotIn("AGENTBOX_WEB_BIND", read("rpm", "units", "agentbox-web.service"))
         # all of them installed, the journald drop-in where systemd looks for it
         for name in shipped:
@@ -129,7 +132,7 @@ class PackageTest(unittest.TestCase):
         self.assertIn("ExecStop=/usr/sbin/nft delete table inet agentbox_vm", vmnet)
 
     def test_the_units_name_the_files_of_the_package(self):
-        for name in ("agentbox-web.service", "agentbox-allowlist-expire.service"):
+        for name in ("agentbox-web.service", "agentbox-allowlist-expire.service", "agentbox-container-image-cleanup.service"):
             text = read("rpm", "units", name)
             program = re.search(r"^ExecStart=(\S+)", text, re.MULTILINE).group(1)
             self.assertIn(program, (paths.CLI, paths.LIBEXEC + "/agentbox-web"))
@@ -187,9 +190,9 @@ class PackageTest(unittest.TestCase):
                           "agentbox setup", "vmnet"):
             self.assertNotIn(forbidden, scriptlets)
         self.assertNotRegex(scriptlets, r"%systemd_(user_)?post\b")
-        self.assertIn("%systemd_preun agentbox-web.service agentbox-allowlist-expire.timer", scriptlets)
-        self.assertIn("%systemd_postun_with_restart agentbox-web.service agentbox-allowlist-expire.timer",
-                      scriptlets)
+        timers = "agentbox-allowlist-expire.timer agentbox-container-image-cleanup.timer"
+        self.assertIn(f"%systemd_preun agentbox-web.service {timers}", scriptlets)
+        self.assertIn(f"%systemd_postun_with_restart agentbox-web.service {timers}", scriptlets)
 
 
 @unittest.skipUnless(STATE, "only in the installation test (rpm/install-test.sh)")
@@ -459,7 +462,8 @@ class InstalledSetupTest(unittest.TestCase):
 
     OWNER = "owner"
     # the units setup enables itself (agentbox/hoststeps.py, agentbox/setup.py)
-    ENABLED = ["agentbox-allowlist-expire.timer", "agentbox-vmnet.service", "agentbox-web.service",
+    ENABLED = ["agentbox-allowlist-expire.timer", "agentbox-container-image-cleanup.timer", "agentbox-vmnet.service",
+               "agentbox-web.service",
                "libvirt-guests.service"]
     WATCHED = ("/etc", "/var/lib/agentbox", "/var/lib/systemd")
     JOURNAL = "/run/systemd/journal.agentbox"

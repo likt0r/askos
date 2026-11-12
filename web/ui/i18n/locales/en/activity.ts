@@ -121,6 +121,8 @@ export default {
       buildSkipped: 'Automatic update of {images} not started: a Build is running; the next check tries again',
       buildAutomatic: 'Automatic update started: Build of {images}',
       buildAutomaticFailed: 'Automatic update of {images} not started',
+      containerImageCleanupRemoved: 'Container image cleanup: removed {n} Container images ({bytes} bytes) not used for more than {days} days',
+      containerImageCleanupFailed: 'Container image cleanup failed',
     },
     // parts of the sentences above
     parts: {

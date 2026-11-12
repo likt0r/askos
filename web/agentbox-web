@@ -1532,6 +1532,9 @@ AGENTBOX_ERRORS = {
     "target_exists": (409, "The target exists in the VM already; nothing was changed"),
     "inbox_missing": (409, "The VM's Build cannot receive folders yet; build its Image and reset the VM first"),
     "import_failed": (500, "Copying the folder into the VM failed"),
+    "container_image_cleanup_missing": (409, "The VM's Build has no Container image cleanup yet; build its Image "
+                                             "and reset the VM first"),
+    "container_image_cleanup_failed": (502, "The Container image cleanup in the VM failed"),
     "invalid_argument": (400, "Invalid value"),
     "action_failed": (500, "The action failed"),
 }

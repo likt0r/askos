@@ -73,6 +73,22 @@ def vm_lock(name):
     return locked(f"lifecycle-{name}")
 
 
+@contextlib.contextmanager
+def vm_lock_if_free(name):
+    """The lifecycle lock of a VM (vm_lock) only if nobody holds it at this moment, never
+    waiting for it: yields whether it was taken (and is held for the block)."""
+    fd = _lock_fd(f"lifecycle-{name}")
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            taken = True
+        except BlockingIOError:
+            taken = False
+        yield taken
+    finally:
+        os.close(fd)
+
+
 def write_atomic(path, data, mode=0o644, gid=-1, uid=-1):
     """Replace a file atomically: a uniquely named temporary file next to it,
     flushed to disk, then renamed over it. Mode independent of the umask; owner

@@ -1,0 +1,8 @@
+# The Container image cleanup of the running VMs (rpm/agentbox.spec), started by its timer.
+[Unit]
+Description=Remove unused Container images in the running VMs
+
+[Service]
+Type=oneshot
+# the Actor in the Activity
+ExecStart=/usr/bin/agentbox --actor=timer cleanup-container-images

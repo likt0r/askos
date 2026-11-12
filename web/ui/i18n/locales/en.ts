@@ -172,6 +172,8 @@ export default {
     target_exists: 'The target exists in the VM already. Nothing was changed.',
     inbox_missing: 'The VM\'s Build cannot receive folders yet. Build its Image and reset the VM first.',
     import_failed: 'Copying the folder into the VM failed.',
+    container_image_cleanup_missing: 'The VM\'s Build has no Container image cleanup yet. Build its Image and reset the VM first.',
+    container_image_cleanup_failed: 'The Container image cleanup in the VM failed.',
     invalid_argument: 'agentbox refused a value.',
     sudo_failed: 'The Control Room may not run agentbox (sudo rule missing).',
     action_failed: 'agentbox reported an error.',
