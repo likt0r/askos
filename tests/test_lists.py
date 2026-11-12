@@ -445,6 +445,26 @@ class LegitimateTest(CliTest):
         # a built-in one stays: below it nothing more is lifted
         self.ok("legitimate-add", "cdn.github.com")
 
+    def test_below_a_user_content_host_a_legitimate_domain_of_the_host_lifts_feed_hits(self):
+        # github.io and githubusercontent.com are built-in Legitimate domains whose subdomains
+        # belong to arbitrary users: Feed hits below them count, and a Legitimate domain of the
+        # Host below one (the owner's own pages site) is the more specific entry and lifts them
+        write(os.path.join(self.feeds, "threat-intelligence"),
+              b"".join(d.encode() + b"\n" for d in sorted(["bad.example", "c2.mine.github.io"])))
+        self.assertEqual([s["signal"] for s in self.check("c2.mine.github.io")["signals"]], ["threat"])
+        self.assertEqual(self.refused("legitimate-add", "mine.github.io"),
+                         "mine.github.io has strong Signals (threat-intelligence list: c2.mine.github.io). "
+                         "Legitimate only with --force")
+        self.ok("legitimate-add", "mine.github.io", "--force")
+        self.assertEqual(self.check("c2.mine.github.io")["signals"], [])
+        self.assertEqual(self.check("c2.mine.github.io")["legitimate"], "mine.github.io")
+        self.assertEqual(self.check("x.mine.github.io")["signals"], [])
+        # nothing at or below it: no --force, and the user-content domains themselves are built in
+        self.ok("legitimate-add", "other.github.io")
+        self.assertEqual(self.json("legitimate-add", "github.io"),
+                         {"domain": "github.io", "regex": None, "builtin": True,
+                          "message": "github.io is built in and legitimate already"})
+
     def test_without_the_threat_intelligence_list_only_with_force(self):
         # before the first fetch nothing tells which of its entries the domain would lift
         os.remove(os.path.join(self.feeds, "threat-intelligence"))
@@ -887,6 +907,9 @@ class SelfTest(unittest.TestCase):
         # its lists are stored as fetched: an entry above a Legitimate domain counts for its neighbours
         self.assertIn("ok      cdn.vendor-selftest.example: expected -, got -", out)
         self.assertIn("ok      api.vendor-selftest.example: expected threat, got threat", out)
+        # a Feed hit on a github.io subdomain counts: the host serves user content
+        self.assertIn("ok      evil.github.io: expected threat, got threat", out)
+        self.assertIn("ok      user.github.io: expected -, got -", out)
         # a broken Watchlist closes Open web
         self.assertIn("ok      free-selftest.example: Open web: expected blocked for Watchlist unreadable", out)
 
@@ -899,7 +922,8 @@ class SelfTest(unittest.TestCase):
             write(os.path.join(conf, "legitimate.json"), record(legit("githbu.com"), legit("example.org")))
             code, out, err = self.run_self_test(conf)
         self.assertEqual((code, err), (0, ""), out)
-        self.assertIn("ok      objects.githubusercontent.com: expected payload, got payload", out)
+        # a Feed hit on a user-content host counts besides the hand Watchlist entry
+        self.assertIn("ok      objects.githubusercontent.com: expected payload,threat, got payload,threat", out)
         self.assertIn("ok      npmjs.com: expected c2, got c2", out)
 
     def test_needs_no_particular_entry(self):

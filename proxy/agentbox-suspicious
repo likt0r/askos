@@ -46,7 +46,10 @@ das offene Web):
                                      -remove) und die eingebauten (GENUINE): keine
                                      Muster-Merkmale ausser dem Blockchain-Muster, Treffer der
                                      HaGeZi-Listen fuer sie und darunter zaehlen nicht (beim
-                                     Einstufen, die Listen liegen ungefiltert)
+                                     Einstufen, die Listen liegen ungefiltert); ausgenommen
+                                     Subdomains der User-Content-Domains (USER_CONTENT:
+                                     github.io, githubusercontent.com), auf denen beliebige
+                                     Nutzer veroeffentlichen: deren Treffer zaehlen
                                      Bis agentbox migrate-lists sie anlegt, gelten an ihrer
                                      Stelle die Textdateien suspicious-domains und
                                      legitimate-domains (eine Domain pro Zeile).
@@ -115,6 +118,13 @@ GENUINE = {
 }
 BRANDS = ("npm", "npmjs", "pypi", "pythonhosted", "crates", "github", "ghcr", "anthropic",
           "claude", "openai", "docker", "yarnpkg", "nodejs")
+# Von GENUINE die Domains, deren Subdomains beliebigen Nutzern gehoeren: GitHub Pages
+# (<nutzer>.github.io) und die Raw-Hosts von GitHub (raw.githubusercontent.com, ...). Sie
+# bleiben fuer die Marke legitim (keine Muster-Merkmale, die Domain selbst mit
+# eingerechnet), aber Treffer der HaGeZi-Listen auf ihren Subdomains zaehlen: dort kann
+# jeder Inhalte veroeffentlichen. Ein Eintrag des Hosts darunter (die eigene Pages-Site)
+# ist der spezifischere und hebt sie wieder auf (explain, lifts).
+USER_CONTENT = frozenset({"github.io", "githubusercontent.com"})
 # Kuerzere Namen sind zu oft echte Woerter oder Kuerzel (pypa): keine Tippfehler-Pruefung,
 # und kuerzere Vorlagen (bun, pypi, ghcr) machen fast jedes Wort zum Tippfehler (bunny)
 MIN_TYPO = 5
@@ -669,9 +679,18 @@ def legitimate_domains():
 
 
 def legitimate(host):
-    """Der Eintrag der legitimen Domains, unter den host faellt, sonst None."""
+    """Der spezifischste Eintrag der legitimen Domains, unter den host faellt, sonst None;
+    er entscheidet, auch ueber einer User-Content-Domain (USER_CONTENT) hinweg."""
     hits = _within(host, legitimate_domains())
-    return hits[-1] if hits else None
+    return hits[0] if hits else None
+
+
+def _user_content(domain):
+    """Die User-Content-Domain (USER_CONTENT), deren Subdomain domain ist (nicht die Domain
+    selbst), sonst None."""
+    labels = domain.split(".")
+    return next((d for d in (".".join(labels[i:]) for i in range(1, len(labels))) if d in USER_CONTENT),
+                None)
 
 
 def legitimate_pattern(host):
@@ -890,9 +909,13 @@ def explain(host):
             found.append(_reason(category, "watchlist", f"Watchlist: {entry}" + (f" ({source})" if source else ""),
                                  domain=entry, **more))
     # Bekannt legitim: keine Muster, Treffer der HaGeZi-Listen zaehlen nicht (fuer die Domain
-    # und darunter; ein Eintrag ueber ihr zaehlt weiter fuer ihre Nachbarn). A regex
-    # Legitimate domain lifts only the weak ones.
-    if legitimate(host):
+    # und darunter; ein Eintrag ueber ihr zaehlt weiter fuer ihre Nachbarn). Ausnahme die
+    # Subdomains einer User-Content-Domain (USER_CONTENT): deren Treffer in den HaGeZi-Listen
+    # zaehlen, ihre Muster-Merkmale nicht. A regex Legitimate domain lifts only the weak ones.
+    legit = legitimate(host)
+    if legit in USER_CONTENT and legit != host:
+        found += _feed_signals(host)
+    elif legit:
         pass
     elif legitimate_pattern(host):
         found += [r for r in _name_signals(host) if r["signal"] in STRONG]
@@ -904,9 +927,9 @@ def explain(host):
     return found
 
 
-def _name_signals(host):
-    """Signals from the HaGeZi lists and from patterns in the name, which Legitimate
-    domains do not get, as a list of _reason(); the blockchain pattern is not one of them."""
+def _feed_signals(host):
+    """Die Treffer der HaGeZi-Listen fuer host, als Liste von _reason(): der Teil der
+    Namen-Merkmale, der auch unter einer User-Content-Domain zaehlt (USER_CONTENT)."""
     found = []
     hit = _feeds["threat-intelligence"].match(host)
     if hit:
@@ -914,7 +937,13 @@ def _name_signals(host):
     hit = _feeds["newly-registered"].match(host)
     if hit:
         found.append(_reason("young", "young-feed", f"newly registered (HaGeZi NRD): {hit}", domain=hit))
+    return found
 
+
+def _name_signals(host):
+    """Signals from the HaGeZi lists and from patterns in the name, which Legitimate
+    domains do not get, as a list of _reason(); the blockchain pattern is not one of them."""
+    found = _feed_signals(host)
     reg = registrable(host)
     name = reg.split(".")[0]
     tld = reg.rsplit(".", 1)[-1]
@@ -985,14 +1014,18 @@ def lifts(domain):
     ein Eintrag ueber ihr; das Blockchain-Muster nicht, das bleibt), und Eintraege der
     Threat-Intelligence-Liste, die domain oder eine Subdomain sind, auch unter einer
     legitimen Domain des Hosts (die kann wieder gehen, diese bliebe): die Liste liegt
-    ungefiltert. Nichts unter einer eingebauten, die bleibt. feed_present: ob es die
-    Threat-Intelligence-Liste gibt (sonst ist nicht pruefbar, was darunter steht)."""
+    ungefiltert. Nichts unter einer eingebauten, die bleibt - ausgenommen unter einer
+    User-Content-Domain (USER_CONTENT): deren Subdomains koennten die Treffer wieder
+    zaehlen. feed_present: ob es die Threat-Intelligence-Liste gibt (sonst ist nicht
+    pruefbar, was darunter steht)."""
     domain = normalise(domain)
     feed = _feeds["threat-intelligence"]
-    if _within(domain, GENUINE):
+    user = _user_content(domain)
+    if _within(domain, GENUINE) and not user:
         return {"domain": domain, "signals": [], "feed_entries": [], "feed_present": True}
     return {"domain": domain,
-            "signals": sorted({r["signal"] for r in _name_signals(domain) if r["signal"] in STRONG}),
+            "signals": sorted({r["signal"] for r in (_feed_signals(domain) if user else _name_signals(domain))
+                               if r["signal"] in STRONG}),
             "feed_entries": feed.below(domain, LIFTS_SHOWN),
             "feed_present": feed.current() is not None}
 
@@ -1034,12 +1067,14 @@ SELFTEST_WATCHLIST = ("exfil-selftest.example", "exfil", "self-test")
 SELFTEST_LEGITIMATE = ("legit-selftest.example", "cdn.vendor-selftest.example")
 SELFTEST_FEEDS = {
     "threat-intelligence": ["evil-selftest.example", "github.com", "objects.githubusercontent.com",
-                            "cdn.legit-selftest.example", "vendor-selftest.example", "mirror2-selftest.example"],
+                            "evil.github.io", "cdn.legit-selftest.example", "vendor-selftest.example",
+                            "mirror2-selftest.example"],
     "newly-registered": ["npmjs.com", "young-selftest.example", "mirror1-selftest.example"],
 }
 SELFTEST_HARMLESS = ["npm-selftest.example"]
 # (host, erwartete Merkmale, genau) - ohne offenes Web, nichts davon wird aufgeloest. Echte
-# Namen nur fuer die eingebauten legitimen Domains, sonst .example, das die Listen des Hosts
+# Namen nur fuer die eingebauten legitimen Domains und Subdomains davon (github.io: nur eine
+# echte Subdomain ist User Content), sonst .example, das die Listen des Hosts
 # nicht nennen; deckt ein Eintrag der Verdachtsliste des Hosts einen Fall doch ab, kommt seine
 # Kategorie zu den erwarteten Merkmalen. Dazu kommt ein Eintrag der Verdachtsliste des Hosts
 # (der erste), wenn sie einen hat.
@@ -1048,7 +1083,9 @@ SELFTEST_CASES = [
     ("cdn.evil-selftest.example", {"threat"}, True),     # Threat-Intelligence-Liste, per Suffix
     ("www.young-selftest.example", {"young"}, True),     # Liste neu registrierter Domains
     ("github.com", set(), True),                         # Listeneintrag, aber legitim (eingebaut)
-    ("objects.githubusercontent.com", set(), True),
+    ("evil.github.io", {"threat"}, True),                # ... ausser Subdomains von User Content:
+    ("objects.githubusercontent.com", {"threat"}, True), # deren Treffer zaehlen (eingebaut)
+    ("user.github.io", set(), True),                     # ohne Treffer keine Merkmale darunter
     ("npmjs.com", set(), True),
     ("cdn.legit-selftest.example", set(), True),         # Listeneintrag, aber legitim (Host)
     ("cdn.vendor-selftest.example", set(), True),        # Listeneintrag darueber, aber legitim

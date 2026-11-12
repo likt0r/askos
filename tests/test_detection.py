@@ -165,6 +165,24 @@ class FeedSignalsTest(ProxyTest):
             with self.subTest(host=host):
                 self.assertEqual(self.alert(host), ["threat"])
 
+    def test_feed_hits_on_user_content_hosts_count(self):
+        # github.io and githubusercontent.com are built-in Legitimate domains whose subdomains
+        # serve what anyone publishes: a Feed hit on one counts (also in Open web), while the
+        # pattern Signals stay off the brand and the domains themselves keep their treatment
+        self.feed("threat-intelligence", ["bad.example", "registry.example", "cdn.registry.example",
+                                          "vendor.example", "evil.github.io", "raw.githubusercontent.com"])
+        self.start()
+        self.assertEqual(self.alert("evil.github.io"), ["threat"])
+        self.assertEqual(self.alert("x.evil.github.io"), ["threat"])
+        self.assertEqual(self.alert("raw.githubusercontent.com"), ["threat"])
+        self.assertIsNone(self.alert("user.github.io"))       # no pattern Signal under github.io
+        self.assertIsNone(self.alert("github.io"))            # the domain itself is the brand's own
+        self.assertIsNone(self.alert("githubusercontent.com"))
+        self.assertIsNone(self.alert("github.com"))
+        self.open_web()
+        self.assertEqual(self.connect("x.evil.github.io"), ACCESS_DENIED)
+        self.assertEqual(self.blocked_reason("x.evil.github.io"), "suspicious: threat")
+
     def test_threat_list_hit_stays_blocked_in_open_web(self):
         self.open_web()
         self.start()
