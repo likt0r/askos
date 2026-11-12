@@ -219,17 +219,13 @@ flowchart LR
   the proxy there takes the real destination from the TLS handshake.
 - Containers in a VM are behind the same limits. They run on rootless Podman: `docker` is
   Podman under that name, and `podman compose` and `docker compose` run Docker Compose, which
-  builds and starts containers through the agent's Podman socket. The VM forwards nothing for
-  containers, so they can get out only through the proxy, which passes only HTTPS. Builds get
-  the proxy and running containers do not, by the owner's decision: compose services call each
-  other by name over HTTP, and many programs send those calls to the proxy when proxy
-  variables are set. Podman passes the proxy into the `RUN` lines of `podman build` and the
-  VM's `/etc/hosts` with `host.agentbox` into every container, and running containers get no
-  proxy from the caller's environment (`/etc/containers/containers.conf.d/50-agentbox.conf`).
-  A build that goes through the Docker API on the Podman socket, Compose builds included, gets
-  no proxy, since Podman passes none there; a compose file gives its builds the proxy as build
-  arguments. A service that needs the internet is given the proxy in its compose file. These
-  settings only point builds at the proxy, and none of them is a Safeguard.
+  builds and starts containers through the agent's Podman socket. `guest-setup` writes the
+  Host's address on the VM's network into `/etc/resolv.conf` as the VM's only nameserver
+  (NetworkManager keeps out of it, `dns=none`). Containers resolve through it too: pasta
+  forwards their queries to it, and aardvark, the resolver of compose networks, forwards to it
+  the names it does not know. So containers and builds reach the outside through the proxy
+  like the rest of the VM, and need no settings: no service, shell, container or build in the
+  VM carries a proxy variable.
 - From the home network a VM is reachable only through its Orca port; no other port of a VM
   is forwarded. Dev servers inside a VM are viewed in Orca's built-in browser: the page is
   shown on the laptop, but Orca carries its connections through the pairing connection
@@ -566,7 +562,9 @@ Host after every Build
   and reads files; nothing from the Image runs, and links are resolved inside the Image. It
   verifies npm's global configuration (`ignore-scripts=true`, `min-release-age`, npm 12 or
   later), the minimum age for uv (`uv.toml` and `UV_EXCLUDE_NEWER`), pnpm and Bun, the Git
-  hooks path and `pre-push` hook, the proxy variables and `dns=none`, both guest-agent
+  hooks path and `pre-push` hook, the resolver (`guest-setup`'s nameserver line, `dns=none`,
+  no `DNS=` or `FallbackDNS=` for systemd-resolved), no proxy variable or option in systemd's
+  `DefaultEnvironment`, both guest-agent
   wrappers, that Claude Code fetches no claude.ai connectors (`ENABLE_CLAUDEAI_MCP_SERVERS=false`
   in systemd's `DefaultEnvironment`, which reaches `orca serve`, the agents and terminals it
   starts, and exported last by `/etc/profile.d/agentbox.sh` for shells; see Credentials for

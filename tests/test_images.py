@@ -288,6 +288,36 @@ class ReleaseSourceTest(ImagesTest):
         self.assertEqual(self.current(), f"base-{OLD}.qcow2")
         self.assertEqual(self.podman("run"), [])          # no disk made
 
+    def test_a_release_with_another_resolver_or_a_proxy_is_discarded(self):
+        """ADR 0014: a Base image whose VM resolves elsewhere than through the Host, or whose
+        services get proxy variables, is no Build."""
+        setup = os.path.join(self.source, "vm/files/usr/lib/agentbox/guest-setup")
+        with open(setup) as f:
+            content = f.read()
+        self.assertIn(safeguards.RESOLVER + "\n", content)
+        with open(setup, "w") as f:
+            f.write(content.replace(safeguards.RESOLVER, 'echo "nameserver 127.0.0.1" > /etc/resolv.conf'))
+        conf = os.path.join(self.source, "vm/files/usr/lib/systemd/system.conf.d/agentbox.conf")
+        with open(conf, "a") as f:
+            f.write('DefaultEnvironment="https_proxy=http://10.0.0.1:8080" "NODE_USE_ENV_PROXY=1" '
+                    '"NODE_OPTIONS=--use-env-proxy"\n')
+        resolved = os.path.join(self.source, "vm/files/usr/lib/systemd/resolved.conf.d")
+        os.makedirs(resolved)
+        with open(os.path.join(resolved, "50-dns.conf"), "w") as f:
+            f.write("[Resolve]\nFallbackDNS=9.9.9.9\n")
+        code, out = self.build()
+        self.assertEqual(code, 1, out)
+        new = self.newest()
+        self.assertEqual(new["status"], "rejected")
+        self.assertIn(f"DNS: guest-setup does not make the Host the only resolver ({safeguards.RESOLVER})",
+                      new["problems"])
+        self.assertIn("DNS: /usr/lib/systemd/resolved.conf.d/50-dns.conf sets FallbackDNS= (the Host is the only "
+                      "resolver)", new["problems"])
+        for name in ("NODE_OPTIONS", "NODE_USE_ENV_PROXY", "https_proxy"):
+            self.assertIn(f"Proxy: {name} is set; the VM reaches the outside without proxy variables", new["problems"])
+        self.assertEqual(self.current(), f"base-{OLD}.qcow2")
+        self.assertEqual(self.podman("run"), [])          # no disk made
+
     def test_builds_from_before_name_the_commit_of_main(self):
         """Records written before ADR 0010 hold the repository and the commit, no Release."""
         build = "20261102-030000"
@@ -445,13 +475,55 @@ class SafeguardTest(ImagesTest):
         self.rejected("weak", "Git: /usr/lib/agentbox/hooks/pre-push is missing",
                       "/usr/lib/agentbox/hooks/pre-push is missing (compared with the Base image)")
 
-    def test_a_changed_proxy_is_rejected(self):
-        conf = os.path.join(REPO, "vm/files/usr/lib/systemd/system.conf.d/agentbox.conf")
-        with open(conf) as f:
-            changed = f.read().replace("HTTPS_PROXY=http://host.agentbox:3128", "HTTPS_PROXY=")
-        self.image("weak", DERIVED + "COPY agentbox.conf /usr/lib/systemd/system.conf.d/agentbox.conf\n",
-                   **{"agentbox.conf": changed})
-        self.rejected("weak", "Proxy: HTTPS_PROXY is  instead of http://host.agentbox:3128")
+    def test_the_base_image_resolves_through_the_host_and_sets_no_proxy(self):
+        """ADR 0014: guest-setup writes the Host's address on the VM's network as the only
+        nameserver, NetworkManager leaves it alone, and no service or shell has a proxy."""
+        self.assertEqual(self.builds()[self.base]["problems"], [])
+        rootfs = self.rootfs("base", self.base)
+        with open(os.path.join(rootfs, safeguards.GUEST_SETUP.lstrip("/"))) as f:
+            setup = f.read()
+        self.assertIn('gw="${ip%.*}.1"\n', setup)
+        self.assertLess(setup.index('gw="${ip%.*}.1"'), setup.index(safeguards.RESOLVER))
+        self.assertIn("rm -f /etc/resolv.conf\n" + safeguards.RESOLVER + "\n", setup)
+        self.assertNotIn("127.0.0.1", setup)
+        env = safeguards.systemd_environment(rootfs)
+        self.assertEqual([n for n in env if re.search(r"(?i)proxy", n + "=" + env[n])], [])
+        with open(os.path.join(rootfs, "etc/profile.d/agentbox.sh")) as f:
+            self.assertNotRegex(f.read(), r"(?i)proxy")
+
+    def test_a_proxy_variable_or_option_is_rejected(self):
+        self.image("weak", DERIVED + "COPY zz.conf /etc/systemd/system.conf.d/zz.conf\n"
+                   "COPY proxy.sh /etc/profile.d/proxy.sh\nCOPY node.sh /etc/profile.d/node.sh\n"
+                   "COPY java.sh /etc/profile.d/java.sh\n",
+                   **{"zz.conf": '[Manager]\nDefaultEnvironment="HTTPS_PROXY=http://10.0.0.1:8080" '
+                                 '"_JAVA_OPTIONS=-Dhttps.proxyHost=10.0.0.1" "NODE_OPTIONS=--use-env-proxy" '
+                                 '"JAVA_TOOL_OPTIONS=-Djava.net.useSystemProxies=true"\n',
+                      "proxy.sh": "export all_proxy=socks5://10.0.0.1:1080\n",
+                      "node.sh": "export NODE_OPTIONS=--use-env-proxy\n",
+                      "java.sh": "export JDK_JAVA_OPTIONS=-Djava.net.useSystemProxies=true\n"})
+        self.rejected("weak", "Proxy: HTTPS_PROXY is set; the VM reaches the outside without proxy variables",
+                      "Proxy: _JAVA_OPTIONS is set", "Proxy: NODE_OPTIONS is set", "Proxy: JAVA_TOOL_OPTIONS is set",
+                      "/etc/systemd/system.conf.d/zz.conf is new or changed and concerns a Safeguard",
+                      "/etc/profile.d/proxy.sh is new or changed and concerns a Safeguard",
+                      "/etc/profile.d/node.sh is new or changed and concerns a Safeguard",
+                      "/etc/profile.d/java.sh is new or changed and concerns a Safeguard")
+
+    def test_another_resolver_is_rejected(self):
+        with open(os.path.join(REPO, "vm/files/usr/lib/agentbox/guest-setup")) as f:
+            changed = f.read().replace(safeguards.RESOLVER, 'echo "nameserver 9.9.9.9" > /etc/resolv.conf')
+        self.image("weak", DERIVED + "COPY guest-setup /usr/lib/agentbox/guest-setup\n", **{"guest-setup": changed})
+        self.rejected("weak", "DNS: guest-setup does not make the Host the only resolver",
+                      "/usr/lib/agentbox/guest-setup differs from the Base image")
+
+    def test_dns_servers_for_systemd_resolved_are_rejected(self):
+        self.image("weak", DERIVED + "COPY resolved.conf /etc/systemd/resolved.conf\n"
+                   "COPY dns.conf /etc/systemd/resolved.conf.d/dns.conf\n",
+                   **{"resolved.conf": "[Resolve]\nFallbackDNS=1.1.1.1\n",
+                      "dns.conf": "[Resolve]\nDNS=9.9.9.9\n"})
+        self.rejected("weak", "DNS: /etc/systemd/resolved.conf sets FallbackDNS=",
+                      "DNS: /etc/systemd/resolved.conf.d/dns.conf sets DNS=",
+                      "/etc/systemd/resolved.conf is new or changed and concerns a Safeguard",
+                      "/etc/systemd/resolved.conf.d/dns.conf is new or changed and concerns a Safeguard")
 
     def test_dns_switched_on_is_rejected(self):
         self.image("weak", DERIVED + "COPY nm.conf /etc/NetworkManager/conf.d/agentbox.conf\n",
@@ -1300,11 +1372,10 @@ class DefinitionTest(ImagesTest):
 
 
 class ContainersTest(ImagesTest):
-    """#27, #34: docker (podman-docker) and docker compose (Docker Compose) reach the agent's
-    rootless Podman, builds reach the outside through the Host's proxy as the VM does, with
-    NO_PROXY as local as the services' and host.agentbox resolvable, and running containers get
-    no proxy (the owner's decision). Only a real VM can run them; this checks what the Base
-    image carries."""
+    """#27, #34, ADR 0014: docker (podman-docker) and docker compose (Docker Compose) reach the
+    agent's rootless Podman, and containers and builds reach the outside as the rest of the VM
+    does, through its resolver and the Host's proxy, with no settings. Only a real VM can run
+    them; this checks what the Base image carries."""
 
     SOCKET = "unix:///run/user/1000/podman/podman.sock"
 
@@ -1334,40 +1405,17 @@ class ContainersTest(ImagesTest):
         self.assertIn("podman-docker", re.search(r"dnf -y install [^&]*", containerfile).group(0).split())
         self.assertTrue(os.path.isfile(os.path.join(self.root, "etc/containers/nodocker")))   # no notice
 
-    def test_builds_get_the_proxy_and_running_containers_do_not(self):
-        """The owner's decision: compose services call each other by name over HTTP, and many
-        programs send those calls to the proxy when proxy variables are set, so only builds get
-        the proxy; a service gets it by hand."""
+    def test_containers_and_builds_get_no_proxy(self):
+        """Nothing in the VM points a container, a build or a program at a proxy: no proxy
+        variable for Podman or its containers, and no Docker config, which would hand one to
+        every container Docker Compose starts. Nothing under vm/ (any Image, any file) sets one."""
         conf = tomllib.loads(self.read("/etc/containers/containers.conf.d/50-agentbox.conf"))
-        # Podman itself, and with it the proxy podman build passes into RUN
-        wanted = {name: self.env[name] for name in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")}
-        wanted.update(NO_PROXY=self.env["NO_PROXY"], no_proxy=self.env["no_proxy"])
-        self.assertEqual(self.env["NO_PROXY"], "localhost,127.0.0.1,.localhost,host.agentbox")
-        env = conf["engine"]["env"]
-        self.assertEqual(env[-1], {"append": True})         # Podman's own defaults stay
-        self.assertEqual(dict(e.split("=", 1) for e in env[:-1]), wanted)
-        # running containers: nothing from the caller's environment, nothing set for them
-        self.assertIs(conf["containers"]["http_proxy"], False)
-        self.assertNotIn("env", conf["containers"])
-        self.assertFalse(conf["containers"].get("env_host", False))
-        # a container given the proxy by hand, and every build, resolves host.agentbox
-        self.assertEqual(conf["containers"]["base_hosts_file"], "/etc/hosts")
-        self.assertIn('echo "$gw host.agentbox" >> /etc/hosts', self.read(safeguards.GUEST_SETUP))
-
-    def test_compose_is_docker_compose_with_no_proxy_of_its_own(self):
-        """podman compose and docker compose (podman-docker) run Docker Compose, which reads
-        nested variables podman-compose cannot (#34). It gets no Docker config with proxies,
-        which it would put into every container it starts; its builds get the proxy only from
-        build args in the compose file."""
-        conf = tomllib.loads(self.read("/etc/containers/containers.conf.d/50-agentbox.conf"))
-        self.assertEqual(conf["engine"]["compose_providers"], ["/usr/libexec/docker/cli-plugins/docker-compose"])
-        self.assertIs(conf["engine"]["compose_warning_logs"], False)
-        install = re.search(r"dnf -y install [^&]*", self.read_repo("vm/Containerfile")).group(0).split()
-        self.assertIn("docker-compose", install)
-        self.assertNotIn("podman-compose", install)
+        self.assertEqual(list(conf), ["engine"])
+        self.assertNotIn("env", conf["engine"])
         self.assertNotIn(".docker", self.read(safeguards.GUEST_SETUP))
         self.assertNotIn("DOCKER_CONFIG", self.env)
-        # nothing under vm/ (any Image, any file) is or writes a Docker config
+        setting = re.compile(r"(?i)\w*_proxy\b|proxy(host|port)|\.docker/config\.json|docker-config\.json|"
+                             r"DOCKER_CONFIG")
         for top, dirs, files in os.walk(os.path.join(REPO, "vm")):
             for name in dirs + files:
                 path = os.path.join(top, name)
@@ -1376,9 +1424,18 @@ class ContainersTest(ImagesTest):
                 self.assertFalse(rel.endswith(os.path.join(".docker", "config.json")), rel)
                 if name in files:
                     with open(path, errors="replace") as f:
-                        text = f.read()
-                    for needle in (".docker/config.json", "docker-config.json", "DOCKER_CONFIG"):
-                        self.assertFalse(needle in text, f"{rel} mentions {needle}")
+                        found = setting.search(f.read())
+                    self.assertIsNone(found, f"{rel}: {found and found.group(0)}")
+
+    def test_compose_is_docker_compose(self):
+        """podman compose and docker compose (podman-docker) run Docker Compose, which reads
+        nested variables podman-compose cannot (#34)."""
+        conf = tomllib.loads(self.read("/etc/containers/containers.conf.d/50-agentbox.conf"))
+        self.assertEqual(conf["engine"]["compose_providers"], ["/usr/libexec/docker/cli-plugins/docker-compose"])
+        self.assertIs(conf["engine"]["compose_warning_logs"], False)
+        install = re.search(r"dnf -y install [^&]*", self.read_repo("vm/Containerfile")).group(0).split()
+        self.assertIn("docker-compose", install)
+        self.assertNotIn("podman-compose", install)
 
     def test_short_image_names_resolve_to_docker_io(self):
         """#32: Fedora searches registry.fedoraproject.org first, which the proxy blocks, so a

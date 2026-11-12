@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Laeuft bei jedem Start der VM als root, vor orca serve.
-#  - liest den Kontext (work/priv) und den Orca-Port aus fw_cfg (von titan gesetzt)
-#  - traegt titan als host.agentbox ein
-#  - richtet das Home des Agenten frisch ein und bindet nur die dauerhaften
-#    Teile von der Datenplatte ein
+# Runs as root at every start of the VM, before orca serve.
+#  - reads the context (work/priv) and the Orca port from fw_cfg (set by the Host)
+#  - names the Host host.agentbox and makes it the resolver
+#  - sets up the agent's home afresh and binds only the lasting parts from the
+#    Data disk
 set -euo pipefail
 
 DATA=/var/lib/agentbox-data
@@ -40,7 +40,7 @@ if [[ "$token" == sk-ant-* ]]; then
 fi
 hostnamectl set-hostname "agentbox-$CONTEXT"
 
-# titan ist die .1 im eigenen isolierten Netz (es gibt keine Default-Route)
+# The Host is the .1 of the VM's own isolated network
 for _ in $(seq 30); do
   ip=$(ip -4 -o addr show scope global | awk '{print $4; exit}' | cut -d/ -f1)
   [ -n "$ip" ] && break
@@ -48,16 +48,18 @@ for _ in $(seq 30); do
 done
 [ -n "${ip:-}" ] || { echo "guest-setup: no IP address" >&2; exit 1; }
 gw="${ip%.*}.1"
-# Rootless Podman (pasta) braucht eine Default-Route. titan leitet nichts
-# weiter und nimmt nur Proxy und Token-Dienst an, ins Internet fuehrt sie nicht.
+# Rootless Podman (pasta) needs a default route. The Host forwards nothing and answers only
+# its resolver, proxy and token service, so the route leads nowhere else.
 ip route replace default via "$gw"
 sed -i '/ host\.agentbox$/d' /etc/hosts
 echo "$gw host.agentbox" >> /etc/hosts
 
-# Kein DNS nach aussen. Podmans DNS fuer Compose-Dienste (aardvark) braucht
-# trotzdem eine resolv.conf.
+# The Host's resolver answers every name with the Host, whose proxy takes the destination
+# from the TLS handshake. Containers resolve through it too: pasta forwards their queries to
+# this nameserver, and aardvark (compose networks) forwards to it the names it does not know.
+# NetworkManager leaves this file alone (dns=none).
 rm -f /etc/resolv.conf
-echo "nameserver 127.0.0.1" > /etc/resolv.conf
+echo "nameserver $gw" > /etc/resolv.conf
 
 # Ohne Datenplatte lieber nicht starten als still auf die Systemplatte schreiben
 mountpoint -q "$DATA" || { echo "guest-setup: the Data disk is not mounted" >&2; exit 1; }
