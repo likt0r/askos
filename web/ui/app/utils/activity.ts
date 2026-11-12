@@ -147,6 +147,9 @@ const either = (name: string, key: string, other: string, value = name): Sentenc
   has(p, name) ? say(tr, key, { [value]: p[name] }) : say(tr, other)
 const flagged = (name: string, key: string, other: string): Sentence => (p, tr) => say(tr, flag(p, name) ? key : other)
 
+/** A step of the Maintenance window: done, or failed (the failure's own words follow). */
+const step = (key: string): Sentence => (_p, tr, e) => say(tr, e.outcome === 'failed' ? `${key}Failed` : key)
+
 const NOT_RESPONDING: Record<string, string> = { 'system-not-booted': 'notRespondingSystem', 'orca-not-answering': 'notRespondingOrca' }
 
 export const SENTENCES: Record<string, Sentence> = {
@@ -258,6 +261,15 @@ export const SENTENCES: Record<string, Sentence> = {
   'build.unneeded': plain('buildUnneeded'),
   'build.skipped': (p, tr) => (has(p, 'images') ? say(tr, 'buildSkipped', { images: p.images }) : null),
   'build.automatic': (p, tr, e) => (has(p, 'images') ? say(tr, e.outcome === 'failed' ? 'buildAutomaticFailed' : 'buildAutomatic', { images: p.images }) : null),
+  // the steps of the Maintenance window, in their order (agentbox/maintenance.py)
+  'maintenance.feeds': step('maintenanceFeeds'),
+  'maintenance.versions': step('maintenanceVersions'),
+  // left to the old rebuild timer while it is still there (reason old-timer)
+  'maintenance.rebuild': (p, tr, e) => (p.reason === 'old-timer' && e.outcome !== 'failed'
+    ? say(tr, 'maintenanceRebuildOldTimer') : step('maintenanceRebuild')(p, tr, e)),
+  'maintenance.reset-check': step('maintenanceResetCheck'),
+  // the timer's window of this turn of maintenance_time ran already (reason already-ran)
+  'maintenance.skipped': (p, tr) => (p.reason === 'already-ran' && has(p, 'time') ? say(tr, 'maintenanceSkipped', { time: p.time }) : null),
 }
 
 /** The generic error code: agentbox's own message says more than its translation would. */

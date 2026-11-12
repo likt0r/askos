@@ -191,6 +191,13 @@ export default {
       waitsForTimer: 'waits for its timer',
       startsOnConnection: 'starts on connection',
       waitsForTrigger: 'waits for its trigger',
+      // what the Host lacks for its maintenance (warnings of the services event, by code)
+      warnings: {
+        maintenance_timer_missing: {
+          title: 'The timer of the Maintenance window is missing',
+          description: 'Run sudo agentbox regenerate on the Host once: it creates the timer. Until then, a Host updated from an earlier Release runs the Maintenance window with the timer of its old Reset check, at the old Reset time.',
+        },
+      },
     },
   },
 }

@@ -28,7 +28,7 @@ const LATER = {
 } as Record<string, string>
 
 const DEFAULTS: Record<string, string | number | boolean> = {
-  reset_age_days: 7, reset_time: '04:00', auto_update: true, rebuild_day: 'sun', rebuild_time: '03:00', builds_kept: 3,
+  maintenance_time: '02:00', reset_age_days: 7, auto_update: true, rebuild_day: 'sun', builds_kept: 3,
   default_memory_mib: 26624, default_data_disk_gib: 300, default_image: 'base', open_web_max_minutes: 240,
   temporary_entry_default: '1h', young_domain_days: 14, feed_interval_hours: 12, package_min_age_days: 2,
   orca_version: '', activity_retention_days: 90, session_hours: 12, default_language: 'browser',
@@ -65,7 +65,7 @@ describe('settings (units)', () => {
   const listed = [...section.slice(0, section.indexOf('The password')).matchAll(/`([a-z_]+)`/g)].map(m => m[1]!)
 
   it('knows the keys of docs/control-room-api.md, no more and no fewer', () => {
-    expect(listed.length).toBe(18)
+    expect(listed.length).toBe(17)
     expect([...listed].sort()).toEqual(Object.keys(SETTING_SPECS).sort())
     expect(Object.keys(SETTING_SPECS).sort()).toEqual(Object.keys(DEFAULTS).sort())
   })
@@ -85,9 +85,12 @@ describe('settings (units)', () => {
     expect(settingProblem('reset_age_days', '-3')).toEqual({ code: 'int', min: 1, max: 365 })
     expect(settingProblem('reset_age_days', '')).toEqual({ code: 'empty' })
     expect(settingProblem('default_memory_mib', '1023')).toEqual({ code: 'int', min: 1024, max: 1048576 })
-    expect(settingProblem('reset_time', '23:59')).toBeNull()
-    expect(settingProblem('reset_time', '24:00')).toEqual({ code: 'time' })
-    expect(settingProblem('reset_time', '4:00')).toEqual({ code: 'time' })
+    expect(settingProblem('maintenance_time', '23:59')).toBeNull()
+    expect(settingProblem('maintenance_time', '24:00')).toEqual({ code: 'time' })
+    expect(settingProblem('maintenance_time', '4:00')).toEqual({ code: 'time' })
+    // the keys of before the Maintenance window (#49) are gone
+    expect(SETTING_SPECS).not.toHaveProperty('reset_time')
+    expect(SETTING_SPECS).not.toHaveProperty('rebuild_time')
     expect(settingProblem('rebuild_day', 'sun')).toBeNull()
     expect(settingProblem('rebuild_day', 'sunday')?.code).toBe('choice')
     expect(settingProblem('young_domain_days', '21')).toBeNull()
@@ -111,12 +114,12 @@ describe('settings (units)', () => {
     const info = (def: string | number, value: string | number = def) => ({ value, default: def, is_default: value === def, applies_later: null, allowed: '' })
     expect(settingValue('reset_age_days', ' 9 ')).toBe(9)
     expect(settingValue('young_domain_days', '21')).toBe(21)
-    expect(settingValue('reset_time', '05:30')).toBe('05:30')
+    expect(settingValue('maintenance_time', '05:30')).toBe('05:30')
     expect(toSend('reset_age_days', '9', info(7))).toBe(9)
     expect(toSend('reset_age_days', '7', info(7, 9))).toBe('default')
     expect(toSend('reset_age_days', '007', info(7, 9))).toBe('default')
     expect(toSend('young_domain_days', '14', info(14, 21))).toBe('default')
-    expect(toSend('reset_time', '04:00', info('04:00', '05:30'))).toBe('default')
+    expect(toSend('maintenance_time', '02:00', info('02:00', '05:30'))).toBe('default')
     expect(toSend('default_image', 'work', info('base'))).toBe('work')
     expect(toSend('default_language', 'browser', info('browser', 'de'))).toBe('default')
     expect(toSend('default_language', 'en', info('browser'))).toBe('en')
@@ -142,12 +145,12 @@ describe('settings (units)', () => {
 describe('Settings page', () => {
   useFreshApp()
 
-  it('shows all 18 settings with label, current value and default, and when a change applies', async () => {
+  it('shows all 17 settings with label, current value and default, and when a change applies', async () => {
     const { wrapper } = await openPage('/settings', {
       'GET /settings': ok(settingsBody({ reset_age_days: 14, rebuild_day: 'fri', temporary_entry_default: '8h', young_domain_days: 28, default_language: 'en' })),
     })
     const rows = wrapper.findAll('[data-testid="setting"]')
-    expect(rows).toHaveLength(18)
+    expect(rows).toHaveLength(17)
     expect(new Set(rows.map(r => r.attributes('data-key')))).toEqual(new Set(Object.keys(DEFAULTS)))
     expect(wrapper.find('[data-testid="settings-load-error"]').exists()).toBe(false)
 
@@ -157,7 +160,11 @@ describe('Settings page', () => {
     expect(age.find('[data-testid="setting-default"]').text()).toBe('Default: 7')
     // a value that is not the default can go back to it; one that is, cannot
     expect(age.find('[data-testid="setting-restore"]').exists()).toBe(true)
-    expect(field(wrapper, 'reset_time').find('[data-testid="setting-restore"]').exists()).toBe(false)
+    expect(field(wrapper, 'maintenance_time').find('[data-testid="setting-restore"]').exists()).toBe(false)
+    // one time of day for the whole Maintenance window, first among Resets and Builds
+    expect(field(wrapper, 'maintenance_time').text()).toContain('Maintenance window')
+    expect(field(wrapper, 'maintenance_time').find('[data-testid="setting-default"]').text()).toBe('Default: 02:00')
+    expect(rows[0]!.attributes('data-key')).toBe('maintenance_time')
 
     // choices show the translated option, also as the default
     expect((input(wrapper, 'rebuild_day').element as HTMLSelectElement).value).toBe('fri')
@@ -253,7 +260,7 @@ describe('Settings page', () => {
 
     it('checks a time as HH:MM and a choice against its options', async () => {
       const { wrapper, api } = await openPage('/settings', { 'GET /settings': ok(settingsBody()) })
-      await type(wrapper, 'rebuild_time', '25:00')
+      await type(wrapper, 'maintenance_time', '25:00')
       const select = input(wrapper, 'rebuild_day')
       ;(select.element as HTMLSelectElement).insertAdjacentHTML('beforeend', '<option value="xyz">xyz</option>')
       await select.setValue('xyz')
@@ -262,7 +269,7 @@ describe('Settings page', () => {
       await flushPromises()
       expect(patches(api.calls)).toHaveLength(0)
       expect(field(wrapper, 'rebuild_day').find('[data-testid="setting-error"]').text()).toContain('One of: Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday.')
-      expect(field(wrapper, 'rebuild_time').find('[data-testid="setting-error"]').exists()).toBe(true)
+      expect(field(wrapper, 'maintenance_time').find('[data-testid="setting-error"]').exists()).toBe(true)
     })
 
     it('clears the message of a field when it is edited again', async () => {
@@ -327,16 +334,16 @@ describe('Settings page', () => {
 
     it('sends "default" for a value equal to the default', async () => {
       const { wrapper, api } = await openPage('/settings', {
-        'GET /settings': ok(settingsBody({ reset_age_days: 14, young_domain_days: 28, reset_time: '05:30', default_image: 'work' })),
+        'GET /settings': ok(settingsBody({ reset_age_days: 14, young_domain_days: 28, maintenance_time: '05:30', default_image: 'work' })),
         'PATCH /settings': ok(changedBody),
       })
       await type(wrapper, 'reset_age_days', '7')
       await type(wrapper, 'young_domain_days', '14')
-      await type(wrapper, 'reset_time', '04:00')
+      await type(wrapper, 'maintenance_time', '02:00')
       await type(wrapper, 'default_image', 'base')
       await save(wrapper).trigger('click')
       await flushPromises()
-      expect(patches(api.calls)[0]!.body).toEqual({ reset_age_days: 'default', young_domain_days: 'default', reset_time: 'default', default_image: 'default' })
+      expect(patches(api.calls)[0]!.body).toEqual({ reset_age_days: 'default', young_domain_days: 'default', maintenance_time: 'default', default_image: 'default' })
     })
 
     it('sends a choice with numbers as a number', async () => {
@@ -446,15 +453,15 @@ describe('Settings page', () => {
     it('shows invalid_setting with a field next to that field, translated, and marks nothing as saved', async () => {
       const { wrapper, api } = await openPage('/settings', {
         'GET /settings': ok(settingsBody()),
-        'PATCH /settings': { status: 400, body: { error: { code: 'invalid_setting', message: 'Invalid setting', field: 'reset_time', detail: 'reset_time: ungueltiger Wert 04:61 (erlaubt: Uhrzeit HH:MM)' } } },
+        'PATCH /settings': { status: 400, body: { error: { code: 'invalid_setting', message: 'Invalid setting', field: 'maintenance_time', detail: 'maintenance_time: ungueltiger Wert 04:61 (erlaubt: Uhrzeit HH:MM)' } } },
       })
       const loaded = reads(api.calls)
-      await type(wrapper, 'reset_time', '05:30')
+      await type(wrapper, 'maintenance_time', '05:30')
       await type(wrapper, 'reset_age_days', '9')
       await save(wrapper).trigger('click')
       await flushPromises()
       expect(patches(api.calls)).toHaveLength(1)
-      const err = field(wrapper, 'reset_time').find('[data-testid="setting-error"]')
+      const err = field(wrapper, 'maintenance_time').find('[data-testid="setting-error"]')
       expect(err.text()).toContain('A setting has a value that is not allowed.')
       expect(err.text()).toContain('A time as HH:MM')
       expect(wrapper.findAll('[data-testid="setting-error"]')).toHaveLength(1)
@@ -549,14 +556,14 @@ describe('Settings page', () => {
     it('"Discard changes" restores the loaded values and sends nothing', async () => {
       const { wrapper, api } = await openPage('/settings', { 'GET /settings': ok(settingsBody({ reset_age_days: 14 })) })
       await type(wrapper, 'reset_age_days', '0')
-      await type(wrapper, 'reset_time', '06:00')
+      await type(wrapper, 'maintenance_time', '06:00')
       await save(wrapper).trigger('click')
       await flushPromises()
       expect(wrapper.find('[data-testid="settings-problems"]').exists()).toBe(true)
       await wrapper.find('[data-testid="settings-discard"]').trigger('click')
       await flushPromises()
       expect((input(wrapper, 'reset_age_days').element as HTMLInputElement).value).toBe('14')
-      expect((input(wrapper, 'reset_time').element as HTMLInputElement).value).toBe('04:00')
+      expect((input(wrapper, 'maintenance_time').element as HTMLInputElement).value).toBe('02:00')
       expect(wrapper.find('[data-testid="settings-actions"]').exists()).toBe(false)
       expect(wrapper.find('[data-testid="settings-problems"]').exists()).toBe(false)
       expect(wrapper.findAll('[data-testid="setting-error"]')).toHaveLength(0)
@@ -586,7 +593,7 @@ describe('Settings page', () => {
       'PATCH /settings': ok(changedBody),
     })
     const rows = wrapper.findAll('[data-testid="setting"]')
-    expect(rows).toHaveLength(19)
+    expect(rows).toHaveLength(18)
     expect(rows.at(-1)!.attributes('data-key')).toBe('future_key')
     expect(rows.at(-1)!.text()).toContain('future_key')
     expect(rows.at(-1)!.find('[data-testid="setting-later"]').text()).toBe('beim naechsten Mal')
@@ -599,7 +606,7 @@ describe('Settings page', () => {
   it('renders in German', async () => {
     const { wrapper, api } = await openPage('/settings', {
       'GET /settings': ok(settingsBody({ reset_age_days: 14, rebuild_day: 'fri' })),
-      'PATCH /settings': { status: 400, body: { error: { code: 'invalid_setting', message: 'x', field: 'reset_time' } } },
+      'PATCH /settings': { status: 400, body: { error: { code: 'invalid_setting', message: 'x', field: 'maintenance_time' } } },
     })
     await useNuxtApp().$i18n.setLocale('de')
     await flushPromises()
@@ -608,6 +615,7 @@ describe('Settings page', () => {
     expect(age.find('[data-testid="setting-default"]').text()).toBe('Standard: 7')
     expect(age.find('[data-testid="setting-restore"]').text()).toBe('Standard verwenden')
     expect(field(wrapper, 'rebuild_day').find('[data-testid="setting-default"]').text()).toBe('Standard: Sonntag')
+    expect(field(wrapper, 'maintenance_time').text()).toContain('Wartungsfenster')
     expect(field(wrapper, 'default_language').find('[data-testid="setting-default"]').text()).toBe('Standard: Sprache des Browsers')
     expect(field(wrapper, 'default_language').find('option[value="browser"]').text()).toBe('Sprache des Browsers')
     expect(field(wrapper, 'builds_kept').find('[data-testid="setting-later"]').text()).toMatch(/^Gilt ab dem nächsten Build/)
@@ -622,11 +630,11 @@ describe('Settings page', () => {
     await flushPromises()
     expect(field(wrapper, 'reset_age_days').find('[data-testid="setting-error"]').text()).toBe('Eine ganze Zahl von 1 bis 365.')
     await type(wrapper, 'reset_age_days', '15')
-    await type(wrapper, 'reset_time', '05:00')
+    await type(wrapper, 'maintenance_time', '05:00')
     await save(wrapper).trigger('click')
     await flushPromises()
     expect(patches(api.calls)).toHaveLength(1)
-    expect(field(wrapper, 'reset_time').find('[data-testid="setting-error"]').text()).toContain('Eine Einstellung hat einen unzulässigen Wert.')
+    expect(field(wrapper, 'maintenance_time').find('[data-testid="setting-error"]').text()).toContain('Eine Einstellung hat einen unzulässigen Wert.')
     expect(wrapper.text()).not.toContain('A setting has a value')
   })
 

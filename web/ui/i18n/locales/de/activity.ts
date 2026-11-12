@@ -125,6 +125,16 @@ export default {
       buildSkipped: 'Automatisches Update von {images} nicht gestartet: ein Build läuft; die nächste Prüfung versucht es wieder',
       buildAutomatic: 'Automatisches Update gestartet: Build von {images}',
       buildAutomaticFailed: 'Automatisches Update von {images} nicht gestartet',
+      maintenanceFeeds: 'Wartungsfenster: Feeds abgerufen',
+      maintenanceFeedsFailed: 'Wartungsfenster: Abruf der Feeds gescheitert',
+      maintenanceVersions: 'Wartungsfenster: Versionsprüfung fertig',
+      maintenanceVersionsFailed: 'Wartungsfenster: Versionsprüfung gescheitert',
+      maintenanceRebuild: 'Wartungsfenster: wöchentlicher Neubau aller Images fertig',
+      maintenanceRebuildFailed: 'Wartungsfenster: wöchentlicher Neubau gescheitert',
+      maintenanceRebuildOldTimer: 'Wartungsfenster: wöchentlicher Neubau agentbox-rebuild.timer überlassen, der noch da ist (sudo agentbox regenerate entfernt ihn)',
+      maintenanceResetCheck: 'Wartungsfenster: Reset-Prüfung fertig',
+      maintenanceResetCheckFailed: 'Wartungsfenster: Reset-Prüfung gescheitert',
+      maintenanceSkipped: 'Wartungsfenster nicht gestartet: das Fenster von {time} lief schon',
     },
     // Teile der Sätze oben
     parts: {

@@ -638,6 +638,27 @@ describe('System page: services', () => {
     expect(wrapper.find('[data-testid="service-row"]').attributes('data-color')).toBe('success')
   })
 
+  it('warns while the timer of the Maintenance window is missing, in the user\'s language', async () => {
+    const { wrapper, es } = await openSystem()
+    const message = 'The timer of the Maintenance window (agentbox-maintenance.timer) is missing: sudo agentbox regenerate creates it'
+    es.emit('services', { units: [unit('agentbox-weekly.timer', 'active')], warnings: [{ code: 'maintenance_timer_missing', message }] })
+    await flushPromises()
+    const warning = wrapper.find('[data-testid="services-warning"]')
+    expect(warning.attributes('data-code')).toBe('maintenance_timer_missing')
+    expect(warning.text()).toContain('The timer of the Maintenance window is missing')
+    expect(warning.text()).toContain('sudo agentbox regenerate')
+    await useNuxtApp().$i18n.setLocale('de')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="services-warning"]').text()).toContain('Der Timer des Wartungsfensters fehlt')
+    // one this UI does not know yet: the server's English; none once regenerate created the timer
+    es.emit('services', { units: [], warnings: [{ code: 'something_new', message: 'Something is missing' }] })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="services-warning"]').text()).toContain('Something is missing')
+    es.emit('services', { units: [unit('agentbox-maintenance.timer', 'active')], warnings: [] })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="services-warning"]').exists()).toBe(false)
+  })
+
   it('treats a malformed services event as not known', async () => {
     const { wrapper, es } = await openSystem()
     es.emit('services', { units: 'nope' })
@@ -655,8 +676,8 @@ describe('System page: services', () => {
         unit('agentbox-proxy-priv.socket', 'active', { triggered_by: [] }),
         unit('agentbox-proxy-work.service', 'inactive', { sub: 'dead', triggered_by: ['agentbox-proxy-work.socket'] }),
         unit('agentbox-proxy-work.socket', 'active', { sub: 'listening', triggered_by: [] }),
-        unit('agentbox-rebuild.service', 'failed', { sub: 'failed', triggered_by: ['agentbox-rebuild.timer'] }),
-        unit('agentbox-rebuild.timer', 'active', { sub: 'waiting', triggered_by: [] }),
+        unit('agentbox-maintenance.service', 'failed', { sub: 'failed', triggered_by: ['agentbox-maintenance.timer'] }),
+        unit('agentbox-maintenance.timer', 'active', { sub: 'waiting', triggered_by: [] }),
         unit('agentbox-versions-fetch.service', 'inactive', { sub: 'dead', triggered_by: null }),
         unit('agentbox-web.service', 'active', { triggered_by: [] }),
       ],
@@ -665,8 +686,8 @@ describe('System page: services', () => {
     const r = wrapper.findAll('[data-testid="service-row"]')
     expect(r.map(x => [x.attributes('data-unit'), x.attributes('data-trigger')])).toEqual([
       // the group with the failed service first
-      ['agentbox-rebuild.timer', undefined],
-      ['agentbox-rebuild.service', 'agentbox-rebuild.timer'],
+      ['agentbox-maintenance.timer', undefined],
+      ['agentbox-maintenance.service', 'agentbox-maintenance.timer'],
       ['agentbox-feeds.timer', undefined],
       ['agentbox-feeds.service', 'agentbox-feeds.timer'],
       ['agentbox-proxy-priv.socket', undefined],
@@ -685,9 +706,9 @@ describe('System page: services', () => {
     expect(row('agentbox-proxy-priv.service').text()).toContain('active (running)')
     expect(row('agentbox-proxy-priv.service').attributes('data-color')).toBe('success')
     // failed stays failed, red and counted
-    expect(row('agentbox-rebuild.service').text()).toContain('failed')
-    expect(row('agentbox-rebuild.service').text()).not.toContain('waits')
-    expect(row('agentbox-rebuild.service').attributes('data-color')).toBe('error')
+    expect(row('agentbox-maintenance.service').text()).toContain('failed')
+    expect(row('agentbox-maintenance.service').text()).not.toContain('waits')
+    expect(row('agentbox-maintenance.service').attributes('data-color')).toBe('error')
     expect(wrapper.find('[data-testid="services-failed"]').text()).toBe('1 not running')
     // no trigger known: systemd's state as before
     expect(row('agentbox-versions-fetch.service').text()).toContain('inactive (dead)')

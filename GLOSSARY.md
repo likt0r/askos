@@ -7,7 +7,7 @@ The web interface on the Host for operating VMs, the allowlist, alerts and crede
 _Avoid_: dashboard, admin panel, web UI
 
 **Settings**:
-The one root-owned record (`/etc/agentbox/settings.json`) of what the owner can tune: Reset age and time, rebuild schedule, Builds kept, defaults for new VMs, longest Open web, default temporary-entry duration, young-domain threshold, feed interval, package minimum age, Orca version, automatic updates, Activity retention, session length and language (German UI: Einstellungen). Every value has a built-in default. The Control Room password and everything in the Host setup are not Settings; they change only on the Host.
+The one root-owned record (`/etc/agentbox/settings.json`) of what the owner can tune: Reset age, the time of the Maintenance window, rebuild day, Builds kept, defaults for new VMs, longest Open web, default temporary-entry duration, young-domain threshold, feed interval, package minimum age, Orca version, automatic updates, Activity retention, session length and language (German UI: Einstellungen). Every value has a built-in default. The Control Room password and everything in the Host setup are not Settings; they change only on the Host.
 _Avoid_: config, preferences, options
 
 **Activity**:
@@ -93,8 +93,12 @@ Replacing a VM's System disk with a fresh copy of its Image's Build; the Data di
 _Avoid_: wipe, rebuild, reprovision
 
 **Update** (of an Image):
-A new Build of an Image followed, once it succeeded, by a Reset of the VMs the owner picked onto it; a failed Build resets nothing. The way new versions of the agents, Orca and the packages reach VMs, never an update inside a running VM (German UI: Aktualisieren). Not installing a new Release, which is updating Agent Box itself. With automatic updates (a Setting, on by default) the daily version check builds every Image with an update at once and the daily Reset check moves idle VMs onto it; **Update now** runs the check, those Builds and the Resets of the VMs picked at once (German UI: Jetzt aktualisieren).
+A new Build of an Image followed, once it succeeded, by a Reset of the VMs the owner picked onto it; a failed Build resets nothing. The way new versions of the agents, Orca and the packages reach VMs, never an update inside a running VM (German UI: Aktualisieren). Not installing a new Release, which is updating Agent Box itself. With automatic updates (a Setting, on by default) the version check of the Maintenance window builds every Image with an update at once and, once those Builds are done, its Reset check moves idle VMs onto them; **Update now** runs the check, those Builds and the Resets of the VMs picked at once (German UI: Jetzt aktualisieren).
 _Avoid_: upgrade, refresh
+
+**Maintenance window**:
+The Host's daily maintenance at one time of day (a Setting), one step after another, each once the one before it has finished: fetching the Feeds, the version check with the Builds of an automatic Update, the weekly Build of every Image on the rebuild day (or, when that day's window did not start it, in the next window, once), and the Reset check, which resets idle VMs that are due. A step that fails is in Activity and the next one still runs; a window missed while the Host was off runs once after it starts, and its timer runs one window per turn of its time of day (a catch-up hours late counts for the turn it catches up, a window by hand never counts). Agent Box never wakes a sleeping Host for it (German UI: Wartungsfenster).
+_Avoid_: maintenance timer, nightly job, cron
 
 **Focus**:
 Pausing all other VMs so one VM gets the Host's resources.
@@ -141,7 +145,7 @@ Known suspicious destinations, maintained by hand on the Host (each entry with a
 _Avoid_: blocklist, denylist
 
 **Feed**:
-An external list fetched by a timer on the Host and looked up locally: HaGeZi's threat-intelligence list (part of the Watchlist) and its list of newly registered domains (the young Signal).
+An external list fetched on the Host, by its own timer and in every Maintenance window, and looked up locally: HaGeZi's threat-intelligence list (part of the Watchlist) and its list of newly registered domains (the young Signal).
 _Avoid_: blocklist, IOC source
 
 **Legitimate domain**:

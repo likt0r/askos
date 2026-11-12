@@ -287,10 +287,11 @@ class RegenerateTest(RegistryTest):
         self.scenario(vms={"priv": {"uuid": PRIV_UUID}})
 
     def units(self):
-        """The per-VM units; the timers and services of the Settings are in test_settings.py,
-        those of the Builds in test_images.py, those of the version check in test_versions.py."""
+        """The per-VM units; the timers and services of the Settings are in test_settings.py and
+        test_maintenance.py, those of the Builds in test_images.py, those of the version check in
+        test_versions.py."""
         names = os.listdir(self.path("etc/systemd/system"))
-        return sorted(u for u in names if not u.startswith(("agentbox-weekly", "agentbox-feeds", "agentbox-rebuild",
+        return sorted(u for u in names if not u.startswith(("agentbox-maintenance", "agentbox-feeds",
                                                              "agentbox-build@", "agentbox-versions")))
 
     def virt_install(self, vm):
@@ -621,14 +622,11 @@ class RegenerateTest(RegistryTest):
             ["restart", "agentbox-vmnet.service"],
             ["try-restart", "systemd-journald@agentbox.service"],
             ["enable", "--now", "systemd-journald@agentbox.socket"],
-            ["stop", "agentbox-weekly.timer"], ["daemon-reload"], ["start", "agentbox-weekly.timer"],
-            ["restart", "agentbox-feeds.timer"],
-            ["enable", "--now", "agentbox-weekly.timer", "agentbox-feeds.timer"],
-            ["stop", "agentbox-rebuild.timer"], ["daemon-reload"], ["start", "agentbox-rebuild.timer"],
-            ["enable", "--now", "agentbox-rebuild.timer"],
-            ["stop", "agentbox-versions.timer"], ["daemon-reload"], ["start", "agentbox-versions.timer"],
+            ["daemon-reload"], ["restart", "agentbox-feeds.timer"], ["enable", "--now", "agentbox-feeds.timer"],
+            ["daemon-reload"],
             ["daemon-reload"], ["start", "--no-block", "agentbox-versions.service"],
-            ["enable", "--now", "agentbox-versions.timer"],
+            ["stop", "agentbox-maintenance.timer"], ["daemon-reload"], ["start", "agentbox-maintenance.timer"],
+            ["enable", "--now", "agentbox-maintenance.timer"],
             ["daemon-reload"],
             ["enable", "--now", "agentbox-proxy-work.socket", "agentbox-ghvm-work.socket", "agentbox-gui-work.socket",
              "agentbox-proxy-priv.socket", "agentbox-ghvm-priv.socket", "agentbox-gui-priv.socket"]])

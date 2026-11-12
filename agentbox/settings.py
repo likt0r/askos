@@ -11,6 +11,10 @@ file is world-readable and holds nothing secret.
 all of them, saves nothing when one is invalid, and otherwise saves and applies what
 depends on them (generate.apply: timers, journald retention) without a restart by
 hand. The Control Room password, the home network and the ports are not settings.
+
+maintenance_time (#49) replaced reset_time and rebuild_time: a file that still holds
+reset_time reads as maintenance_time two hours before it (when the version check ran), and
+rebuild_time is ignored; the next save writes the file without either (RETIRED).
 """
 import json
 import os
@@ -103,9 +107,10 @@ BUILD = "from the next Build"
 NEW_VMS = "for new VMs"
 SPEC = {
     "reset_age_days": Setting(7, _int(1, 365)),
-    "reset_time": Setting("04:00", _pattern(TIME, "time HH:MM")),
+    # the Maintenance window (maintenance.py, #49): Feeds, version check, the weekly rebuild on
+    # rebuild_day and the Reset check, one after another, daily at this time
+    "maintenance_time": Setting("02:00", _pattern(TIME, "time HH:MM")),
     "rebuild_day": Setting("sun", _choice(*DAYS)),
-    "rebuild_time": Setting("03:00", _pattern(TIME, "time HH:MM")),
     "builds_kept": Setting(3, _int(1, 20), BUILD),
     "default_memory_mib": Setting(26624, _int(1024, MAX_MEMORY_MIB), NEW_VMS),
     "default_data_disk_gib": Setting(300, _int(1, MAX_DATA_DISK_GIB), NEW_VMS),
@@ -115,8 +120,8 @@ SPEC = {
     "young_domain_days": Setting(14, _young_days(), "at the next fetch of the Feeds"),
     "feed_interval_hours": Setting(12, _int(1, 168)),
     "package_min_age_days": Setting(2, _int(1, 30), BUILD),
-    # #114: the version check (2 hours before reset_time) starts a Build of every Image with an
-    # update, and the daily Reset check also resets idle VMs whose Image has a newer Build
+    # #114: the version check of the Maintenance window starts a Build of every Image with an
+    # update, and its Reset check also resets idle VMs whose Image has a newer Build
     "auto_update": Setting(True, _bool()),
     # the Orca release every Build installs (#113); empty: the newest at least
     # package_min_age_days old (vm/build/orca-release)
@@ -132,11 +137,17 @@ SPEC = {
                                 "from the next sign-in or the next load of the Control Room"),
 }
 DEFAULTS = {k: s.default for k, s in SPEC.items()}
+# keys of before the Maintenance window (#49): read from an existing file, never written again
+RETIRED = ("reset_time", "rebuild_time")
+VERSION_CHECK_LEAD = 120     # minutes the version check ran before reset_time, until #49
 
 
 def check(key, value):
     """The valid value, or a Fail saying what is wrong with it."""
     spec = SPEC.get(key)
+    if spec is None and key in RETIRED:
+        die(f"{key} is no longer a setting: the Maintenance window (maintenance_time) runs the version check, "
+            "the weekly rebuild and the Reset check one after another", error="unknown_setting", setting=key)
     if spec is None:
         shown = clean(str(key), False)[:40]
         die(f"unknown setting: {shown} (known: {', '.join(SPEC)})", error="unknown_setting", setting=shown)
@@ -158,6 +169,7 @@ def stored():
         die(f"{SETTINGS}: unreadable or not JSON", error="action_failed")
     if not isinstance(data, dict):
         die(f"{SETTINGS}: a JSON object expected", error="action_failed")
+    data = _migrated(data)
     out = {}
     for key, value in data.items():
         try:
@@ -169,6 +181,24 @@ def stored():
         except Fail as f:
             die(f"{SETTINGS}: {f.message}", error="action_failed")
     return out
+
+
+def _migrated(data):
+    """The file's values with the keys of before the Maintenance window taken over (#49):
+    maintenance_time from reset_time, VERSION_CHECK_LEAD earlier (the day before when that
+    is before midnight), unless the file names maintenance_time itself; reset_time and
+    rebuild_time dropped. A reset_time that is no time is the error it always was."""
+    data = dict(data)
+    old = data.pop("reset_time", None)
+    data.pop("rebuild_time", None)
+    if old is not None and "maintenance_time" not in data:
+        if not isinstance(old, str) or not TIME.fullmatch(old):
+            die(f"{SETTINGS}: reset_time: invalid value {clean(str(old), False)[:40]} (allowed: time HH:MM)",
+                error="action_failed")
+        hours, minutes = map(int, old.split(":"))
+        at = (hours * 60 + minutes - VERSION_CHECK_LEAD) % (24 * 60)
+        data["maintenance_time"] = f"{at // 60:02d}:{at % 60:02d}"
+    return data
 
 
 def load():
@@ -250,6 +280,9 @@ def _set(args):
     with state_files.locked(paths.REGISTRY):
         generate.ports_free()      # what apply() would stop on stops the change before it is saved
         diff = save(changes)
+        if "rebuild_day" in diff:
+            from . import maintenance     # it imports this module
+            maintenance.rebuild_day_changed()
         try:
             result = generate.apply() if diff else None
         except Fail as f:
