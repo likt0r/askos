@@ -33,11 +33,11 @@ or never begun, is an Activity entry (reset.update) naming the Build it used.
 
 An update of everything (#114) runs as agentbox-build@update (build-run update): Update now
 (`agentbox update-now [--reset <vm>]...`) first runs the version check (the fetch as
-agentbox-feeds through its unit, then versions.check), and the daily version check starts it
-itself when auto_update is on and an Image has an update (start_automatic, never while a
-Build runs). Under the run lock it decides which Images to build (update_images: those a new
-Build would update; with the Base image every Image, which build on it), builds them, and
-then resets the VMs picked (Update now) onto their Image's current Build. A failed Build
+agentbox-feeds through its unit, then versions.check), and the version check of the Maintenance
+window (maintenance.py) starts it itself when auto_update is on and an Image has an update
+(start_automatic, never while a Build runs). Under the run lock it decides which Images to
+build (update_images: those a new Build would update; with the Base image every Image, which
+build on it), builds them, and then resets the VMs picked (Update now) onto their Image's current Build. A failed Build
 resets nothing. Its Builds are recorded with the reason "update".
 
 What a VM gets at Reset: its record's Image (`image`) at its current Build, or the
@@ -272,7 +272,7 @@ def behind(rec, file, cur):
     """(Image, Build) of the current Build `cur` of the VM's Image when the VM takes it at its
     next Reset (no Build pin) and its System disk came from an earlier Build of that Image
     (`file`: the disk file of the Build it came from); else None, also when either is unknown.
-    With auto_update, the daily Reset check moves such a VM (#114)."""
+    With auto_update, the Reset check of the Maintenance window moves such a VM (#114)."""
     m = DISK.fullmatch(file or "")
     if rec["build"] or not cur or not m or m.group(1) != rec["image"]:
         return None
@@ -751,9 +751,9 @@ def build_run(args):
 
 
 def _check_versions(say):
-    """The version check of Update now, as the daily timer runs it: the fetch as agentbox-feeds
-    through its unit (systemctl start waits for it), then the root part (versions.check). What
-    fails stays unknown and never stops the update."""
+    """The version check of Update now, as the Maintenance window runs it: the fetch as
+    agentbox-feeds through its unit (systemctl start waits for it), then the root part
+    (versions.check). What fails stays unknown and never stops the update."""
     say(f"== Checking versions: asking npm and GitHub ({versions.FETCH_UNIT}, as agentbox-feeds)")
     try:
         r = subprocess.run(["systemctl", "start", versions.FETCH_UNIT], capture_output=True, text=True,
@@ -771,9 +771,9 @@ def _check_versions(say):
 
 def _update_run(actor, picks, check, say):
     """build-run update: Update now (check: the version check first) and the automatic update
-    the daily check starts. Under the run lock it builds the Images a new Build would update
-    (_run), then resets the VMs picked onto their Image's current Build. A failed Build resets
-    nothing."""
+    the version check of the Maintenance window starts. Under the run lock it builds the Images
+    a new Build would update (_run), then resets the VMs picked onto their Image's current
+    Build. A failed Build resets nothing."""
     try:
         if check:
             _check_versions(say)
@@ -869,11 +869,12 @@ def _changes(image, offered):
 
 
 def start_automatic(say):
-    """With auto_update on, after the daily version check (versions.check_versions): an update
-    of the Images a new Build would update, started at once (agentbox-build@update), unless a
-    Build or an update runs (the run lock is held, or the update's unit runs): it never waits
-    and never runs two Builds at once; the next check tries again. Its start is recorded in
-    Activity (build.automatic, reason update)."""
+    """With auto_update on, after the version check of the Maintenance window
+    (versions.check_versions): an update of the Images a new Build would update, started at once
+    (agentbox-build@update), unless a Build or an update runs (the run lock is held, or the
+    update's unit runs): it never waits and never runs two Builds at once; the next check tries
+    again. Its start is recorded in Activity (build.automatic, reason update). The window waits
+    for its Builds (building())."""
     view = overview()
     wanted = update_images(view)
     if not wanted:
@@ -882,7 +883,7 @@ def start_automatic(say):
     changes = "; ".join(f"{i['name']}: {_changes(i, view['available'])}" for i in view["images"]
                         if i["name"] in wanted and i["update"])
     targets = ", ".join(wanted)
-    # a unit that was started but has not taken the run lock yet (the weekly rebuild) counts too
+    # a unit that was started but has not taken the run lock yet counts too
     builds = (UPDATE, "all", *(i["name"] for i in view["images"]))
     if state_files.held(RUN_LOCK) or any(_active(unit(t)) for t in builds):
         say(f"Automatic update of {targets} not started: a Build is running; the next check tries again")
@@ -901,6 +902,64 @@ def start_automatic(say):
     # what the Builds would bring stays in the description: free English text, no parameter
     activity.record("build", "build.automatic", f"Automatic update started: Build of {targets} ({changes})",
                     params={"images": wanted, "reason": "update"})
+
+
+def building():
+    """Whether a Build runs or is about to (the Maintenance window waits for it, maintenance.py):
+    the run lock is held, a unit of a Build is active (update, all, or an Image the Host or the
+    installed Release knows), or a request file younger than a minute waits for the unit that
+    takes it at its start (start() wrote it, then started the unit without waiting)."""
+    if state_files.held(RUN_LOCK):
+        return True
+    names = dict.fromkeys([*available(), *builds(), *(_defined() or [])])
+    if any(_active(unit(t)) for t in (UPDATE, "all", *names)):
+        return True
+    for n in _listdir(paths.BUILDS):
+        if not re.fullmatch(r"request-.+\.json", n):
+            continue
+        try:
+            if time.time() - os.stat(os.path.join(paths.BUILDS, n)).st_mtime < 60:
+                return True
+        except FileNotFoundError:
+            continue
+    return False
+
+
+def _since(started, target):
+    return [r for r in _records() if r.get("unit") == unit(target) and isinstance(r.get("started"), int)
+            and r["started"] >= started]
+
+
+def failed_since(started, target, actor):
+    """The Builds that agentbox-build@<target> began at or after `started` (epoch seconds) on the
+    request of `actor` (the actor of the request file, which the Build record keeps) and that did
+    not become usable, as "<image>-<build>" (the Maintenance window: Builds it waited for that
+    failed; a Build of another actor's request, Update now while the window waited, is not the
+    window's)."""
+    return [f"{r['image']}-{r['build']}" for r in _since(started, target)
+            if r.get("actor") == actor and r.get("status") not in USABLE]
+
+
+def begun_since(started, target):
+    """Whether agentbox-build@<target> began a Build at or after `started`, on anyone's request."""
+    return bool(_since(started, target))
+
+
+def unit_failed_since(started, target):
+    """Whether agentbox-build@<target> began a run at or after `started` (epoch seconds) that
+    failed (systemd's Result of its latest run, which left the inactive state then): a run that
+    fails before it begins a Build leaves no Build record. False when systemd cannot say."""
+    try:
+        r = subprocess.run(["systemctl", "show", "--timestamp=unix", "--property=Result,InactiveExitTimestamp",
+                            "--", unit(target)], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if r.returncode != 0:
+        return False
+    props = dict(line.partition("=")[::2] for line in r.stdout.splitlines())
+    began = re.fullmatch(r"@(\d+)", props.get("InactiveExitTimestamp", "").strip())
+    result = props.get("Result", "").strip()
+    return began is not None and int(began.group(1)) >= started and result not in ("", "success")
 
 
 # --- commands ------------------------------------------------------------------------------

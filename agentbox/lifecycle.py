@@ -1,5 +1,5 @@
 """A VM's lifecycle: status, start, wake, Pause, Reset, Restart, Focus, the
-weekly Reset and the Host as Observer of the VM's Orca.
+Reset check of the Maintenance window and the Host as Observer of the VM's Orca.
 
 Where the Bash version let a failing program (virsh, qemu-img, the Orca CLI) end
 the command (`set -e`), the port passes that program's own error message through
@@ -393,7 +393,11 @@ def _result(ctx, as_json, lines):
 
 
 def status(args):
-    """agentbox status [--json]"""
+    """agentbox status [--json]: the VMs, and what the Host lacks for its maintenance
+    (maintenance.warnings): with --json under "host_warnings", only when there is something
+    (no VM name has an underscore), in text after the table."""
+    from . import maintenance           # maintenance imports this module
+    warnings = maintenance.warnings()
     if "--json" in args:
         out = {}
         for ctx in registry.names():
@@ -412,6 +416,8 @@ def status(args):
                         "open_until": state_files.open_until(ctx),
                         "claude_token_since": state_files.claude_token_since(ctx),
                         "gui_connections": gui_connections(ctx)}
+        if warnings:
+            out["host_warnings"] = warnings
         print(json.dumps(out))
         return
     vms = registry.names()
@@ -429,6 +435,8 @@ def status(args):
         agents = agents_text(agent_states(ctx)) if st == "running" else "-"
         print(row.format(ctx, st, mem or "-", "-" if base is None else base, f"{age} days", agents or "none"),
               flush=True)
+    for w in warnings:
+        print(f"\nWarning: {w['message']}", flush=True)
 
 
 def start_cmd(args):
@@ -509,11 +517,24 @@ def focus_cmd(args):
 
 
 def weekly_check(args):
-    """agentbox weekly-check [--json] (daily timer): Reset VMs whose System disk is
-    reset_age_days (Settings) old, and with auto_update on (#114) those whose Image has a
-    newer current Build than their System disk (not those pinned to a Build), but only when
-    they are idle; when in doubt (Orca not answering) postpone."""
+    """agentbox weekly-check [--json]: the Reset check of the Maintenance window (reset_check),
+    on its own."""
     as_json = "--json" in args
+    results, failed = reset_check(as_json)
+    if as_json:
+        print(json.dumps(results))
+    if failed:
+        raise Fail("", failed, error="action_failed", raw=True)
+
+
+def reset_check(as_json=False):
+    """The Reset check, the last step of the Maintenance window (maintenance.py): Reset VMs
+    whose System disk is reset_age_days (Settings) old, and with auto_update on (#114) those
+    whose Image has a newer current Build than their System disk (not those pinned to a
+    Build), but only when they are idle; when in doubt (Orca not answering) postpone. Each VM
+    on its own: one failing does not keep the others from being checked. Returns (one result
+    per VM, the exit code of the first failure or 0); what it did goes to stdout, failures to
+    stderr, unless as_json."""
     results = []
     failed = 0
     now = int(time.time())
@@ -545,10 +566,7 @@ def weekly_check(args):
                         "update": "-".join(update) if update else None, "message": _message(lines)})
         _record_check(ctx, action, reason, update, lines[-1] if lines else "", failure and failure.error,
                       failure and failure.params)
-    if as_json:
-        print(json.dumps(results))
-    if failed:
-        raise Fail("", failed, error="action_failed", raw=True)
+    return results, failed
 
 
 CHECK_REASONS = {"idle": "idle", "stopped": "the VM was off", "gui-connected": "a device is connected",
@@ -637,4 +655,4 @@ def observe(args):
 
 
 COMMANDS = {"status": status, "start": start_cmd, "wake": wake_cmd, "pause": pause_cmd, "reset": reset_cmd,
-            "restart": restart_cmd, "focus": focus_cmd, "weekly-check": weekly_check, "observe": observe}
+            "restart": restart_cmd, "focus": focus_cmd, "observe": observe}

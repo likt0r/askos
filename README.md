@@ -203,7 +203,7 @@ Observer automatically when it was one (otherwise `agentbox observe <vm>`).
 ## Day to day
 
 ```sh
-agentbox status                     # VMs, memory, agents
+agentbox status                     # VMs, memory, agents; warns when the Maintenance window's timer is missing
 agentbox create lab --owner likt0r --copy-allowlist-from priv   # a new VM
 agentbox delete lab --confirm lab   # delete a VM, its Data disk is archived
 agentbox set-memory lab 32768       # memory limit in MiB, from the VM's next start or Restart
@@ -235,7 +235,9 @@ agentbox import priv ~/projects/foo # copy a folder into the VM, unpacked: ~/cod
 agentbox import priv ~/projects/foo clients/foo-new   # ... to ~/code/clients/foo-new
 agentbox images                     # Images, their Builds, which VM uses and is pinned to which, tool versions
 agentbox containerfile rust         # the Containerfile of an Image in the installed Release (its next Build)
-systemctl start agentbox-versions   # check now what a new Build would bring (the daily timer does it too)
+systemctl start agentbox-versions   # check now what a new Build would bring (the Maintenance window does it daily)
+systemctl list-timers agentbox-maintenance   # when the next Maintenance window runs (maintenance_time)
+journalctl -u agentbox-maintenance  # what the last Maintenance windows did, step by step
 agentbox update-now --reset priv    # Update now: check, build every Image with an update, then reset priv
 agentbox build base                 # rebuild the Base image now (--all: every Image)
 agentbox build base --reset priv    # Update: rebuild, then reset priv onto the new Build if it succeeded
@@ -268,7 +270,13 @@ says why it is there. Allowing a domain that is already allowed never shortens i
 expiry, `set-note` changes the note, `disallow` removes it. Destinations with strong Signals
 need `--force` for `allow`, `extend` and `make-permanent`; the Control Room never passes it.
 While the Watchlist cannot be read, every destination needs it: which Signals are strong is
-unknown then.
+unknown then. A new Host starts with entries for all VMs (`proxy/allowlist`), among them
+`claudeusercontent.com`, so claude.ai artifacts load in every VM without Open web; a subdomain
+the threat-intelligence Feed lists there passes with an Alert only, since a domain entry is
+checked when it is added
+([ARCHITECTURE.md](ARCHITECTURE.md#known-residual-risks)). `agentbox disallow all
+claudeusercontent.com` removes the entry: artifacts then need Open web, which keeps Feed-listed
+ones blocked, or an entry of their own.
 An entry can also be a pattern, a **Regex entry**: `--regex PATTERN` in place of the domain,
 in every command of the four lists (Allowlist, Watchlist, Legitimate domains, Harmless marks),
 also to remove or change it ([ADR 0013](docs/adr/0013-regex-entries-in-every-list.md)). It
@@ -304,9 +312,10 @@ Room's Watchlist view, and every change is recorded in Activity
 `watch-set-note` and `legitimate-set-note` change notes. A Legitimate domain gets no pattern
 Signals except the blockchain pattern (`rpc.`, `mainnet`, `infura`, …), and Feed hits for it and its
 subdomains do not count — except the built-in user-content hosts (`github.io`,
-`githubusercontent.com`), whose subdomains serve what anyone publishes: Feed hits on those count,
-whatever Legitimate entry covers them. The Feeds are stored as fetched, so this takes effect, and
-ends, at once. Changes that would lift strong
+`githubusercontent.com`, `claudeusercontent.com`), whose subdomains serve what anyone publishes:
+Feed hits on those count, whatever Legitimate entry covers them (also the `claudeusercontent.com`
+entry a Host set up earlier has from its starting list). The Feeds are stored as fetched, so this
+takes effect, and ends, at once. Changes that would lift strong
 Signals need `--force`, and only the CLI on the Host passes it:
 - removing a Watchlist entry of a strong category, or lowering it to `payload`;
 - adding a Legitimate domain that has strong Signals itself or has threat-intelligence entries
@@ -524,8 +533,8 @@ Safeguard in the built filesystem, makes the disk with bootc-image-builder and o
 makes it the Image's current Build. A Build that fails or whose check finds a Safeguard
 missing or weakened is discarded: the previous Build stays in use, and the failure is in
 the log and in Activity (kind `build`). Builds run one at a time; `agentbox build --all`
-(and the weekly timer, `rebuild_day` and `rebuild_time` of the Settings) builds the Base
-image first, then every other Image on it.
+(and the Maintenance window on `rebuild_day` of the Settings) builds the Base image first,
+then every other Image on it.
 
 The check verifies, in every Build: npm's global configuration ignores install scripts and
 has `min-release-age` (and npm is at least version 12), uv, pnpm and Bun have the same
@@ -576,8 +585,8 @@ release pins (`vm/build/orca-release`). Any mismatch fails the Build. The npm to
 newest versions published at least `package_min_age_days` ago (npm `--before` in
 `vm/Containerfile`); the packages are Fedora's at the time of the Build.
 
-Once a day, two hours before the Reset time (`agentbox-versions.timer`, from `reset_time`;
-at once: `sudo systemctl start agentbox-versions`) the Host checks what a new Build would
+Once a day, in the Maintenance window (below; at once: `sudo systemctl start
+agentbox-versions`) the Host checks what a new Build would
 bring: for the npm tools the version the Build would pick now, from the npm registry; for Orca the release the Build would take now, from GitHub
 (by the same rule, or the pinned one); for the Base image the number of Fedora package updates for its
 current Build, counted with `dnf check-update` in a container from it. The questions to the
@@ -595,13 +604,14 @@ Data disks stay; a VM pinned to a Build cannot be picked, and a failed Build res
 Each step (the Build, each Reset) is in Activity. Nothing is ever updated inside a running
 VM: the next Reset would undo it, and it would skip the Safeguard check of a Build.
 
-**Automatic updates** (`auto_update`, on by default): when the daily check finds an update
-for an Image (a tool a new Build would change, or package updates), it starts the Build at
-once instead of waiting for the weekly rebuild, in the unit `agentbox-build@update`; when the
-Base image has one, every Image is built on the new Base Build. The minimum age and the
-Orca pin still decide what is installed. Changing `orca_version` or `package_min_age_days` re-runs the version check (via `regenerate`), which with `auto_update` on can start a Build at that time of day; Resets still happen only at `reset_time`. A Build that runs already (the run lock is held) or
-an update that runs keeps it from starting; the next day's check tries again. The daily Reset
-check then also resets every VM whose Image has a newer current Build than its System disk,
+**Automatic updates** (`auto_update`, on by default): when the version check of the
+Maintenance window finds an update for an Image (a tool a new Build would change, or package
+updates), it starts the Build at once instead of waiting for the weekly rebuild, in the unit
+`agentbox-build@update`; when the Base image has one, every Image is built on the new Base
+Build. The minimum age and the Orca pin still decide what is installed. Changing `orca_version` or `package_min_age_days` re-runs the version check (via `regenerate`), which with `auto_update` on can start a Build at that time of day; Resets still happen only in the Maintenance window. A Build that runs already (the run lock is held) or
+an update that runs keeps it from starting; the next day's check tries again. The window waits
+until those Builds have finished; its Reset check then also resets every VM whose Image has a
+newer current Build than its System disk,
 however young the disk, with the same rules as the Reset by age: only when no Orca client is
 connected and no agent works, else it is postponed to the next night; a VM pinned to a Build
 is left alone. Activity shows the start (`build.automatic`), each Build and each automatic
@@ -615,6 +625,48 @@ part), a Build of every Image with an update (none when nothing is new), and, wh
 Build succeeded, a Reset of the VMs you picked onto the newest Build of their Image. Sessions
 in them end, their Data disks stay; a VM pinned to a Build cannot be picked, and a failed
 Build resets nothing. Progress: `journalctl -fu agentbox-build@update`.
+
+### Maintenance window
+The Host's daily maintenance runs once a day at one time, `maintenance_time` of the Settings
+(02:00 by default): `agentbox-maintenance.timer` starts `agentbox-maintenance.service`
+(`agentbox maintenance`), which runs these steps one after another, each once the one before
+it has finished:
+
+1. fetch the Feeds (`agentbox-feeds.service`);
+2. the version check (`agentbox-versions.service`); with `auto_update` it starts the Builds of
+   every Image with an update, and the window waits until they are done;
+3. on `rebuild_day` the weekly Build of every Image (`agentbox-build@all`), again waiting until
+   it is done;
+4. the Reset check: Resets by age, and with `auto_update` idle VMs moved onto their Image's
+   newer Build, only when they are idle, as always.
+
+So the Reset check never moves a VM onto a Build that is still being made, and a failed Build,
+which never becomes the current one, moves no VM. A step that fails is in Activity (actor
+`timer`) and the window goes on with the next one; each step that ran leaves an entry when it ends, so
+Activity shows the window's order: the Builds' entries (`build.*`) come before `maintenance.versions`
+and `maintenance.rebuild`, the Resets' before `maintenance.reset-check`. A window missed while the Host was off runs once after it
+starts (`Persistent=true`), and the timer runs one window per turn of `maintenance_time`: a second
+start in the same turn does nothing and leaves `maintenance.skipped` in Activity. A window caught up
+hours late counts for the turn it catches up, so the next turn runs at its time, also across
+midnight; `sudo agentbox maintenance` by hand always runs one and does not count. The weekly rebuild
+is caught up: when the window of `rebuild_day` did not start it (the Host was off, or the Build
+could not start), the next window starts it, once, whatever day that is; the one after that waits
+for the next `rebuild_day`. A day that only became `rebuild_day` because you changed the setting
+is not caught up. While the old weekly rebuild timer is still there (an update could not disable
+it), it does the weekly rebuild and the window leaves it to it.
+Agent Box never wakes a sleeping Host for it: that is the Host's business (an autosuspend that
+reads the timer, for instance). The Feeds also keep their own timer, ten minutes after boot
+and then every `feed_interval_hours`, for a Host that is awake for long. The [Container image
+cleanup](#containers-in-a-vm) is no step of the window: its own timer runs it every hour.
+
+**After updating from a Release before the Maintenance window, run `sudo agentbox regenerate`
+once.** The update cannot write the window's timer (the package runs no `agentbox` command), so
+it takes away only the old timers of the version check and the weekly rebuild. The old Reset
+check's timer stays and runs the whole window at the old Reset time (two hours after the
+`maintenance_time` the Settings show), so maintenance goes on until then. `regenerate` writes
+`agentbox-maintenance.timer` and takes the old timer away; from then on the window runs at
+`maintenance_time`. Until it runs, `agentbox status` and the Control Room's System page say
+that the window's timer is missing.
 
 ### Activity
 `agentbox activity` shows the newest entries first; filters: `--kind` (`signin`, `action`,
@@ -631,18 +683,22 @@ sign-in, ...) say so. `sudo agentbox set-settings KEY=VALUE...` changes one or m
 value is validated first and nothing is saved when one is invalid (`VALUE` `default` goes
 back to the built-in default and removes the key from the file, also when it holds the
 default value, so a later change of the built-in default applies). Saving a changed value
-regenerates what depends on it, so no restart by hand is needed: the timers of the daily Reset check (`reset_time`), of the weekly rebuild
-(`rebuild_day`, `rebuild_time`) and of the Feeds (`feed_interval_hours`), the Feeds service
-(`young_domain_days`), the version check (`package_min_age_days`, `orca_version`; a change
-checks at once; its time follows `reset_time`) and the retention of Activity. Without `/etc/agentbox/settings.json`
-every setting has its default; a broken file is an error naming the file and the value.
+regenerates what depends on it, so no restart by hand is needed: the timer of the Maintenance
+window (`maintenance_time`; a new time waits for its next turn instead of starting a window at
+once) and of the Feeds (`feed_interval_hours`), the Feeds service (`young_domain_days`), the
+version check (`package_min_age_days`, `orca_version`; a change checks at once) and the
+retention of Activity. Without `/etc/agentbox/settings.json`
+every setting has its default; a broken file is an error naming the file and the value. A
+file from before the Maintenance window that still holds `reset_time` gives a
+`maintenance_time` two hours before it (when the version check ran then), and `rebuild_time`
+no longer counts; the next change writes the file without both.
 
 | Key | Default | Allowed |
 | --- | --- | --- |
+| `maintenance_time` | 02:00 | HH:MM, when the daily [Maintenance window](#maintenance-window) starts |
 | `reset_age_days` | 7 | 1–365, age of the System disk for the automatic Reset |
-| `reset_time` | 04:00 | HH:MM, when the daily check runs (the version check runs two hours before) |
-| `auto_update` | true | true, false: Images with an update are built after the daily version check, and the daily Reset check moves idle VMs onto the new Build (see [Tool versions](#tool-versions)) |
-| `rebuild_day`, `rebuild_time` | sun, 03:00 | mon…sun, HH:MM, the weekly Build of every Image |
+| `auto_update` | true | true, false: Images with an update are built after the version check of the Maintenance window, and once they are done its Reset check moves idle VMs onto the new Build (see [Tool versions](#tool-versions)) |
+| `rebuild_day` | sun | mon…sun, the day the Maintenance window builds every Image; when that day's window did not, the next window does, once |
 | `builds_kept` | 3 | 1–20, Builds kept per Image (from the next Build) |
 | `default_memory_mib`, `default_data_disk_gib`, `default_image` | 26624, 300, base | defaults of `create` |
 | `default_container_image_cleanup`, `default_container_image_cleanup_days` | true, 7 | true, false and 1–365: the Container image cleanup a new VM starts with (for new VMs) |

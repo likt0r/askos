@@ -100,14 +100,18 @@ class ProxyTest(unittest.TestCase):
     def close_web(self):
         os.remove(os.path.join(self.conf, "open-work"))
 
-    def start(self, upstream=None):
+    def start(self, upstream=None, resolve=None):
         """The proxy, every allowed destination going to upstream (port on 127.0.0.1; the echo
-        server by default; False: the proxy resolves names and connects itself)."""
+        server by default; False: the proxy resolves names and connects itself). resolve: the
+        addresses names resolve to, as {name: [address, ...]} (AGENTBOX_PROXY_TEST_RESOLVE,
+        honoured only next to AGENTBOX_CONF_DIR like the test upstream), the check for public
+        addresses running as always; a name not in it resolves to nothing."""
         port = self.echo.server_address[1] if upstream is None else upstream
         env = {"PATH": os.environ["PATH"], "LANG": "C.UTF-8", "AGENTBOX_CONF_DIR": self.conf,
                "AGENTBOX_FEEDS_DIR": os.path.join(self.dir, "feeds"), "AGENTBOX_PROXY_CHECK_SECONDS": str(CHECK),
                "AGENTBOX_PROXY_HELLO_SECONDS": str(HELLO),
-               **({"AGENTBOX_PROXY_TEST_UPSTREAM": "127.0.0.1:%d" % port} if port is not False else {})}
+               **({"AGENTBOX_PROXY_TEST_UPSTREAM": "127.0.0.1:%d" % port} if port is not False else {}),
+               **({"AGENTBOX_PROXY_TEST_RESOLVE": json.dumps(resolve)} if resolve is not None else {})}
         with open(self.log_path, "wb") as err:
             self.proxy = subprocess.Popen([sys.executable, "-I", PROXY, "work", self.sock], env=env,
                                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err)
@@ -181,6 +185,19 @@ class ScopeTest(ProxyTest):
         self.assertIn("[work] ALLOWED cdn.all.example (allowlist all.example all)\n", log)
         self.assertIn("[work] ALLOWED work.example (allowlist work.example work)\n", log)
         self.assertIn("[work] BLOCKED priv.example (not on the Allowlist)\n", log)
+
+    def test_an_allowlist_entry_of_a_user_content_host_lets_a_feed_hit_through_with_an_alert(self):
+        # Known residual risk, to change with #59 (the Allowlist no longer passing before the Open
+        # web check): claudeusercontent.com is on the starting Allowlist, and decide() lets an
+        # Allowlist domain entry pass before the Open web check, so a threat-intelligence Feed hit
+        # below it is allowed with an Alert, not blocked as it is when the web is open.
+        self.store(entry("claudeusercontent.com", "all", added_by="migration"))
+        write(os.path.join(self.dir, "feeds", "threat-intelligence"), "evil.claudeusercontent.com\n")
+        self.start()
+        self.tunnel("evil.claudeusercontent.com")
+        log = self.log()
+        self.assertIn("[work] ALERT evil.claudeusercontent.com [threat]\n", log)
+        self.assertIn("[work] ALLOWED evil.claudeusercontent.com (allowlist claudeusercontent.com all)\n", log)
 
     def test_the_most_specific_entry_is_logged_the_vms_own_on_a_tie(self):
         self.store(entry("example.org", "all"), entry("example.org", "work"), entry("api.example.org", "all"))

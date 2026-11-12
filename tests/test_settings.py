@@ -16,15 +16,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from fake_journald import Journald  # noqa: E402
 from test_vms import VmsTest  # noqa: E402
 
-DEFAULTS = {"reset_age_days": 7, "reset_time": "04:00", "rebuild_day": "sun", "rebuild_time": "03:00",
+DEFAULTS = {"reset_age_days": 7, "maintenance_time": "02:00", "rebuild_day": "sun",
             "builds_kept": 3, "default_memory_mib": 26624, "default_data_disk_gib": 300, "default_image": "base",
             "default_container_image_cleanup": True, "default_container_image_cleanup_days": 7,
             "open_web_max_minutes": 240, "temporary_entry_default": "1h", "young_domain_days": 14,
             "feed_interval_hours": 12, "package_min_age_days": 2, "auto_update": True, "orca_version": "",
             "activity_retention_days": 90, "session_hours": 12, "default_language": "browser"}
 INVALID = {
-    "reset_age_days": ["0", "366", "abc", "1.5", "-1", ""], "reset_time": ["24:00", "4:00", "04:60", "x"],
-    "rebuild_day": ["monday", "", "7"], "rebuild_time": ["25:00"], "builds_kept": ["0", "21"],
+    "reset_age_days": ["0", "366", "abc", "1.5", "-1", ""], "maintenance_time": ["24:00", "4:00", "04:60", "x"],
+    "rebuild_day": ["monday", "", "7"], "builds_kept": ["0", "21"],
     "default_memory_mib": ["1023", "1048577"], "default_data_disk_gib": ["0", "16385"],
     "default_image": ["Base", "-x", "a b", "a" * 33],
     "default_container_image_cleanup": ["", "on", "True", "1"], "default_container_image_cleanup_days": ["0", "366", "x", "1.5", ""], "open_web_max_minutes": ["0", "1441"],
@@ -37,7 +37,7 @@ INVALID = {
     "default_language": ["fr", "EN", "Browser", "auto", ""],
 }
 RESTART = ["restart", "agentbox-feeds.timer"]
-STAMP = "var/lib/systemd/timers/stamp-agentbox-weekly.timer"
+STAMP = "var/lib/systemd/timers/stamp-agentbox-maintenance.timer"
 
 
 class SettingsTest(VmsTest):
@@ -69,7 +69,7 @@ class ShowTest(SettingsTest):
         self.assertRegex(out, r"(?m)^package_min_age_days +3 +\(changed, default: 2; applies from the next Build\)$")
         later = {k: v["applies_later"] for k, v in json.loads(self.ok("settings", "--json"))["settings"].items()}
         self.assertEqual(later["package_min_age_days"], "from the next Build")
-        self.assertIsNone(later["reset_time"])
+        self.assertIsNone(later["maintenance_time"])
 
 
 class OrcaVersionTest(SettingsTest):
@@ -139,19 +139,9 @@ class AutoUpdateTest(SettingsTest):
                 else:
                     self.assertIn("auto_update: invalid value", self.refused("settings"))
 
-    def test_the_version_check_runs_two_hours_before_the_reset_check(self):
+    def test_the_switch_needs_no_unit(self):
+        # the version check and the Reset check of the Maintenance window read it when they run
         self.ok("regenerate")
-        self.assertIn("OnCalendar=*-*-* 02:00\n", self.unit("agentbox-versions.timer"))
-        self.forget_calls()
-        self.ok("set-settings", "reset_time=01:30")
-        self.assertIn("OnCalendar=*-*-* 23:30\n", self.unit("agentbox-versions.timer"))
-        # a new time waits for it, like the Reset timer, and checks nothing at once
-        calls = self.systemctl()
-        self.assertNotIn(["start", "--no-block", "agentbox-versions.service"], calls)
-        self.assertLess(calls.index(["stop", "agentbox-versions.timer"]), calls.index(["start", "agentbox-versions.timer"]))
-        self.assertGreater(os.path.getmtime(self.path("var/lib/systemd/timers/stamp-agentbox-versions.timer")),
-                           time.time() - 60)
-        # the switch itself needs no unit: the check and the Reset check read it when they run
         self.forget_calls()
         self.ok("set-settings", "auto_update=false")
         self.assertEqual([c for c in self.systemctl() if c[0] != "enable"], [])
@@ -166,14 +156,14 @@ class SetTest(SettingsTest):
         self.assertEqual(self.mode(self.SETTINGS), 0o644)
 
     def test_json_says_what_changed_and_what_applies_later(self):
-        result = json.loads(self.ok("set-settings", "package_min_age_days=5", "reset_time=05:30", "--json"))
+        result = json.loads(self.ok("set-settings", "package_min_age_days=5", "maintenance_time=05:30", "--json"))
         self.assertEqual(result["changed"], {"package_min_age_days": {"from": 2, "to": 5},
-                                             "reset_time": {"from": "04:00", "to": "05:30"}})
+                                             "maintenance_time": {"from": "02:00", "to": "05:30"}})
         self.assertEqual(result["applies_later"], {"package_min_age_days": "from the next Build"})
         self.assertTrue(result["regenerated"]["timers"])
 
     def test_every_setting_accepts_a_valid_value(self):
-        valid = {"reset_age_days": "1", "reset_time": "23:59", "rebuild_day": "mon", "rebuild_time": "00:00",
+        valid = {"reset_age_days": "1", "maintenance_time": "23:59", "rebuild_day": "mon",
                  "builds_kept": "20", "default_memory_mib": "1024", "default_data_disk_gib": "16384",
                  "default_image": "rust-2", "default_container_image_cleanup": "false",
                  "default_container_image_cleanup_days": "365", "open_web_max_minutes": "1440", "temporary_entry_default": "7d",
@@ -196,13 +186,13 @@ class SetTest(SettingsTest):
 
     def test_one_invalid_value_keeps_the_valid_ones_unsaved(self):
         self.ok("set-settings", "builds_kept=4")
-        err = self.refused("set-settings", "reset_age_days=9", "reset_time=99:99")
-        self.assertIn("reset_time", err)
+        err = self.refused("set-settings", "reset_age_days=9", "maintenance_time=99:99")
+        self.assertIn("maintenance_time", err)
         self.assertEqual(self.stored(), {"builds_kept": 4})
 
     def test_unknown_keys_are_refused_password_network_and_ports_among_them(self):
         for key in ("password", "web_password", "home_network", "network", "port", "web_port", "bind", "orca_port",
-                    "nonsense", "", "Reset_Time"):
+                    "nonsense", "", "Maintenance_Time"):
             with self.subTest(key=key):
                 self.assertIn("unknown setting", self.refused("set-settings", f"{key}=x"))
                 # `default` is no way around the check (it once crashed with a KeyError)
@@ -210,7 +200,7 @@ class SetTest(SettingsTest):
         self.assertFalse(self.exists(self.SETTINGS))
 
     def test_malformed_calls_are_refused(self):
-        for args in ([], ["--json"], ["reset_time"], ["reset_time=05:00", "reset_time=06:00"]):
+        for args in ([], ["--json"], ["maintenance_time"], ["maintenance_time=05:00", "maintenance_time=06:00"]):
             with self.subTest(args=args):
                 self.assertIn("set-settings KEY=VALUE", self.refused("set-settings", *args))
 
@@ -256,7 +246,8 @@ class SetTest(SettingsTest):
         self.assertEqual(self.systemctl(), [])
 
     def test_broken_files_are_a_clear_error_everywhere(self):
-        for text in ("kaputt", "[]", '{"builds_kept": 0}', '{"nonsense": 1}', '{"reset_time": "x"}'):
+        for text in ("kaputt", "[]", '{"builds_kept": 0}', '{"nonsense": 1}', '{"maintenance_time": "x"}',
+                     '{"reset_time": "x"}', '{"reset_time": 4}'):
             with self.subTest(text=text):
                 self.write(self.SETTINGS, text)
                 for args in (["settings"], ["set-settings", "builds_kept=4"], ["regenerate"], ["create", "lab"],
@@ -298,51 +289,68 @@ class DefaultLanguageTest(SettingsTest):
 class TimerTest(SettingsTest):
     def test_regenerate_writes_the_timers_with_the_defaults(self):
         self.ok("regenerate")
-        self.assertIn("OnCalendar=*-*-* 04:00\n", self.unit("agentbox-weekly.timer"))
-        self.assertIn("Persistent=true", self.unit("agentbox-weekly.timer"))
-        self.assertIn("ExecStart=/usr/bin/agentbox --actor=timer weekly-check",
-                      self.unit("agentbox-weekly.service"))
+        self.assertIn("OnCalendar=*-*-* 02:00\n", self.unit("agentbox-maintenance.timer"))
+        self.assertIn("ExecStart=/usr/bin/agentbox --actor=timer maintenance\n",
+                      self.unit("agentbox-maintenance.service"))
         self.assertIn("OnUnitActiveSec=12h\n", self.unit("agentbox-feeds.timer"))
+        self.assertIn("OnBootSec=10min\n", self.unit("agentbox-feeds.timer"))
         self.assertIn("Environment=AGENTBOX_FEEDS_YOUNG_DAYS=14\n", self.unit("agentbox-feeds.service"))
         self.assertIn("User=agentbox-feeds", self.unit("agentbox-feeds.service"))
+        self.assertIn(["enable", "--now", "agentbox-maintenance.timer"], self.systemctl())
+        self.assertIn(["enable", "--now", "agentbox-feeds.timer"], self.systemctl())
 
     def test_saving_regenerates_and_restarts_the_timers(self):
         self.ok("regenerate")
         self.forget_calls()
-        self.ok("set-settings", "reset_time=05:30", "feed_interval_hours=6", "young_domain_days=21")
-        self.assertIn("OnCalendar=*-*-* 05:30\n", self.unit("agentbox-weekly.timer"))
+        self.ok("set-settings", "maintenance_time=05:30", "feed_interval_hours=6", "young_domain_days=21")
+        self.assertIn("OnCalendar=*-*-* 05:30\n", self.unit("agentbox-maintenance.timer"))
         self.assertIn("OnUnitActiveSec=6h\n", self.unit("agentbox-feeds.timer"))
         self.assertIn("Environment=AGENTBOX_FEEDS_YOUNG_DAYS=21\n", self.unit("agentbox-feeds.service"))
         calls = self.systemctl()
         self.assertLess(calls.index(["daemon-reload"]), calls.index(RESTART))
-        self.assertIn(["enable", "--now", "agentbox-weekly.timer", "agentbox-feeds.timer"], calls)
+        self.assertIn(["enable", "--now", "agentbox-maintenance.timer"], calls)
+        self.assertIn(["enable", "--now", "agentbox-feeds.timer"], calls)
 
-    def test_a_new_reset_time_does_not_catch_up_a_run(self):
-        # Persistent=true would run the Reset check at once if the timer were reloaded or
-        # restarted with its last run before the new time: stopped, stamped now, started
+    def test_a_new_maintenance_time_does_not_catch_up_a_run(self):
+        # Persistent=true would run the window at once if the timer were reloaded or restarted
+        # with its last run before the new time: stopped, stamped now, started
         self.ok("regenerate")
         os.utime(self.path(STAMP), (0, 0))
         self.forget_calls()
-        self.ok("set-settings", "reset_time=05:30")
+        self.ok("set-settings", "maintenance_time=05:30")
         calls = self.systemctl()
-        self.assertNotIn(["restart", "agentbox-weekly.timer"], [c[:2] for c in calls])
-        stop, reload, start = (calls.index(["stop", "agentbox-weekly.timer"]), calls.index(["daemon-reload"]),
-                               calls.index(["start", "agentbox-weekly.timer"]))
+        self.assertNotIn(["restart", "agentbox-maintenance.timer"], [c[:2] for c in calls])
+        self.assertNotIn(["start", "agentbox-maintenance.service"], calls)
+        stop, reload, start = (calls.index(["stop", "agentbox-maintenance.timer"]), calls.index(["daemon-reload"]),
+                               calls.index(["start", "agentbox-maintenance.timer"]))
         self.assertLess(stop, reload)
         self.assertLess(reload, start)
         self.assertGreater(os.path.getmtime(self.path(STAMP)), time.time() - 60)
+        # the Feeds keep their own timer
+        self.assertNotIn(RESTART, calls)
 
     def test_settings_without_timers_leave_them_alone(self):
         self.ok("regenerate")
         self.forget_calls()
         self.ok("set-settings", "builds_kept=5", "package_min_age_days=4", "default_memory_mib=8192")
         self.assertNotIn(RESTART, self.systemctl())
-        self.assertNotIn(["stop", "agentbox-weekly.timer"], self.systemctl())
-        self.assertNotIn(["stop", "agentbox-rebuild.timer"], self.systemctl())
-        # the rebuild schedule moves only the rebuild timer (test_images.TimerTest)
-        self.ok("set-settings", "rebuild_day=fri", "rebuild_time=02:00")
-        self.assertNotIn(RESTART, self.systemctl())
-        self.assertNotIn(["stop", "agentbox-weekly.timer"], self.systemctl())
+        self.assertNotIn(["stop", "agentbox-maintenance.timer"], self.systemctl())
+        # the rebuild day needs no unit: the window reads it when it runs
+        self.forget_calls()
+        self.ok("set-settings", "rebuild_day=fri")
+        self.assertEqual([c for c in self.systemctl() if c[0] != "enable"], [])
+
+    def test_a_changed_rebuild_day_is_recorded_for_the_maintenance_window(self):
+        # the window takes a rebuild_day for a missed one only after the change (maintenance.rebuild_due)
+        record = "var/lib/agentbox/maintenance.json"
+        self.write(record, json.dumps({"rebuild": "2026-11-11"}))
+        self.ok("set-settings", "builds_kept=5")
+        self.assertEqual(json.loads(self.read(record)), {"rebuild": "2026-11-11"})
+        self.ok("set-settings", "rebuild_day=sun")      # the default: unchanged
+        self.assertNotIn("rebuild_day_changed", json.loads(self.read(record)))
+        self.ok("set-settings", "rebuild_day=wed")
+        today = time.strftime("%Y-%m-%d", time.gmtime())
+        self.assertEqual(json.loads(self.read(record)), {"rebuild": "2026-11-11", "rebuild_day_changed": today})
 
     def test_an_unchanged_regenerate_does_not_restart_them(self):
         self.ok("regenerate")
@@ -353,14 +361,25 @@ class TimerTest(SettingsTest):
     def test_a_failed_restart_is_retried_by_the_next_regenerate(self):
         self.ok("regenerate")
         self.scenario(systemctl_fails=["restart"])
-        code, out, err = self.run_agentbox("set-settings", "reset_time=06:00")
+        code, out, err = self.run_agentbox("set-settings", "feed_interval_hours=6")
         self.assertEqual((code, out), (1, ""))
         self.assertIn("saved, but not applied", err)
-        self.assertEqual(self.stored(), {"reset_time": "06:00"})
+        self.assertEqual(self.stored(), {"feed_interval_hours": 6})
         self.scenario()
         self.forget_calls()
         self.ok("regenerate")
         self.assertIn(RESTART, self.systemctl())
+
+    def test_a_failed_start_of_the_timer_is_retried_by_the_next_regenerate(self):
+        self.ok("regenerate")
+        self.scenario(systemctl_fails=["start"])
+        code, out, err = self.run_agentbox("set-settings", "maintenance_time=06:00")
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("saved, but not applied", err)
+        self.scenario()
+        self.forget_calls()
+        self.ok("regenerate")
+        self.assertIn(["start", "agentbox-maintenance.timer"], self.systemctl())
 
     def test_retention_is_applied_to_the_journal_namespace(self):
         self.ok("regenerate")
@@ -368,6 +387,55 @@ class TimerTest(SettingsTest):
         self.ok("set-settings", "activity_retention_days=30")
         self.assertIn("MaxRetentionSec=30day", self.read("etc/systemd/journald@agentbox.conf"))
         self.assertIn(["try-restart", "systemd-journald@agentbox.service"], self.systemctl())
+
+
+class MigrationTest(SettingsTest):
+    """A settings.json from before the Maintenance window (#49), with reset_time and rebuild_time:
+    maintenance_time is reset_time minus two hours (when the version check ran), rebuild_time is
+    dropped, and both keys leave the file at its next write."""
+
+    def test_reset_time_becomes_the_maintenance_time_two_hours_earlier(self):
+        for reset, maintenance in (("04:00", "02:00"), ("05:30", "03:30"), ("02:00", "00:00"), ("01:15", "23:15"),
+                                   ("00:00", "22:00"), ("23:59", "21:59")):
+            with self.subTest(reset=reset):
+                self.write(self.SETTINGS, json.dumps({"reset_time": reset, "rebuild_day": "sat",
+                                                      "rebuild_time": "03:00"}))
+                values = self.settings()
+                self.assertEqual((values["maintenance_time"], values["rebuild_day"]), (maintenance, "sat"))
+                self.assertEqual(set(values), set(DEFAULTS))
+                info = json.loads(self.ok("settings", "--json"))["settings"]["maintenance_time"]
+                self.assertEqual(info["is_default"], maintenance == "02:00")
+
+    def test_a_maintenance_time_in_the_file_wins(self):
+        self.write(self.SETTINGS, '{"reset_time": "05:30", "maintenance_time": "01:00"}')
+        self.assertEqual(self.settings()["maintenance_time"], "01:00")
+        self.write(self.SETTINGS, '{"rebuild_time": "03:00"}')
+        self.assertEqual(self.settings(), DEFAULTS)
+
+    def test_regenerate_writes_the_timer_at_that_time_and_leaves_the_file(self):
+        text = '{"reset_time": "05:30", "rebuild_time": "03:00"}'
+        self.write(self.SETTINGS, text)
+        self.ok("regenerate")
+        self.assertIn("OnCalendar=*-*-* 03:30\n", self.unit("agentbox-maintenance.timer"))
+        self.assertEqual(self.read(self.SETTINGS), text)
+
+    def test_the_old_keys_are_dropped_at_the_next_write(self):
+        self.write(self.SETTINGS, '{"builds_kept": 5, "rebuild_time": "03:00", "reset_time": "05:30"}')
+        self.assertIn("reset_age_days: 7 -> 9", self.ok("set-settings", "reset_age_days=9"))
+        self.assertEqual(self.stored(), {"builds_kept": 5, "maintenance_time": "03:30", "reset_age_days": 9})
+        self.write(self.SETTINGS, '{"reset_time": "05:30"}')
+        self.assertIn("maintenance_time: 03:30 -> 02:00", self.ok("set-settings", "maintenance_time=default"))
+        self.assertEqual(self.stored(), {})
+
+    def test_the_old_keys_are_no_settings_any_more(self):
+        for key in ("reset_time", "rebuild_time"):
+            for value in ("05:00", "default"):
+                with self.subTest(key=key, value=value):
+                    err = self.refused("set-settings", f"{key}={value}")
+                    self.assertIn(f"{key} is no longer a setting", err)
+                    self.assertIn("maintenance_time", err)
+        self.assertFalse(self.exists(self.SETTINGS))
+        self.assertNotIn("reset_time", json.loads(self.ok("settings", "--json"))["settings"])
 
 
 class ConsumerTest(SettingsTest):

@@ -147,8 +147,9 @@ class CheckoutTest(unittest.TestCase):
         return code, stderr.getvalue()
 
     def test_commands_that_change_the_host_refuse_before_anything_runs(self):
-        for args in (["regenerate"], ["set-settings", "reset_time=05:00"], ["create", "lab"], ["setup"],
-                     ["weekly-check"], ["build", "base"], ["allow", "work", "example.org"], ["pair", "work"]):
+        for args in (["regenerate"], ["set-settings", "maintenance_time=05:00"], ["create", "lab"], ["setup"],
+                     ["weekly-check"], ["maintenance"], ["build", "base"], ["allow", "work", "example.org"],
+                     ["pair", "work"]):
             with self.subTest(args=args):
                 self.assertEqual(self.main(*args), (
                     1, f"agentbox: {args[0]}: this agentbox is not installed ({REPO}) and does not change the "

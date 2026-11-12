@@ -850,16 +850,17 @@ class ErrorTest(V1Test):
     def test_an_invalid_setting_names_its_field(self):
         # the UI shows the message next to that input: the setting comes from the parameters,
         # and only a known key is a field
-        settings = dict(method="PATCH", path="/api/v1/settings", body={"reset_time": "99:99"})
-        answer = self.fails(failure("invalid_setting", "reset_time: invalid value 99:99", setting="reset_time",
-                                    value="99:99"), **settings)
+        settings = dict(method="PATCH", path="/api/v1/settings", body={"maintenance_time": "99:99"})
+        answer = self.fails(failure("invalid_setting", "maintenance_time: invalid value 99:99",
+                                    setting="maintenance_time", value="99:99"), **settings)
         self.assertError(answer, 400, "invalid_setting")
-        self.assertEqual(answer[1]["error"]["field"], "reset_time")
-        answer = self.fails(failure("invalid_setting", "reset_time: invalid value", setting="nokey"), **settings)
+        self.assertEqual(answer[1]["error"]["field"], "maintenance_time")
+        answer = self.fails(failure("invalid_setting", "maintenance_time: invalid value", setting="nokey"),
+                            **settings)
         self.assertNotIn("field", answer[1]["error"])
-        answer = self.fails(failure("invalid_setting", "reset_time: invalid value"), **settings)
+        answer = self.fails(failure("invalid_setting", "maintenance_time: invalid value"), **settings)
         self.assertNotIn("field", answer[1]["error"])
-        answer = self.fails(failure("invalid_setting", "x", setting=["reset_time"]), **settings)
+        answer = self.fails(failure("invalid_setting", "x", setting=["maintenance_time"]), **settings)
         self.assertNotIn("field", answer[1]["error"])
 
     def test_memory_limit_refusals(self):
@@ -1057,7 +1058,8 @@ STATE = {"vms": [vm("work"), vm("priv", "paused")], "problems": []}
 
 
 class EventsTest(V1Test):
-    WATCH = [("vms", STATE), ("services", {"units": [{"unit": "ollama.service", "active": "active"}]}),
+    WATCH = [("vms", STATE), ("services", {"units": [{"unit": "ollama.service", "active": "active"}],
+                                           "warnings": [{"code": "maintenance_timer_missing", "message": "m"}]}),
              ("host-reboot", {"needed": False, "packages": [], "checked": "2026-11-03T12:00:00Z"})]
 
     def setUp(self):
@@ -1160,6 +1162,7 @@ class EventsTest(V1Test):
         self.assertEqual(obj["watch"]["running"], True)
         self.assertEqual(obj["host_reboot"]["needed"], False)
         self.assertEqual(obj["services"], [{"unit": "ollama.service", "active": "active"}])
+        self.assertEqual(obj["warnings"], [{"code": "maintenance_timer_missing", "message": "m"}])
         self.assertEqual(obj["ui"]["ui"], "nuxt")
 
     def test_one_watch_for_every_client_and_never_a_call(self):

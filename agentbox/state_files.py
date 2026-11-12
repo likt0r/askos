@@ -65,6 +65,22 @@ def held(path):
     return False
 
 
+@contextlib.contextmanager
+def locked_unless_held(path):
+    """The lock of `path` (locked()) for the block, taken only if nobody holds it: yields True
+    then, else False at once, without waiting."""
+    fd = _lock_fd(path)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        yield True
+    finally:
+        os.close(fd)
+
+
 def vm_lock(name):
     """The lifecycle lock of a VM (#52). Everything that stops the VM and needs it to
     stay off (Reset, Restart, Pause, delete) holds it for its whole length; everything

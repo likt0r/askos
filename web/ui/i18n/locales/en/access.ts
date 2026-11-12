@@ -314,7 +314,7 @@ export default {
     },
     legitimate: {
       title: 'Legitimate domains',
-      intro: 'Registries, vendors and distributions: no pattern Signals except the blockchain pattern, and Feed hits for them and their subdomains do not count, except on subdomains of github.io and githubusercontent.com, where anyone publishes. They allow nothing by themselves; Watchlist entries still apply.',
+      intro: 'Registries, vendors and distributions: no pattern Signals except the blockchain pattern, and Feed hits for them and their subdomains do not count, except on subdomains of github.io, githubusercontent.com and claudeusercontent.com, where anyone publishes. They allow nothing by themselves; Watchlist entries still apply.',
       count: 'no domains | one domain | {n} domains',
       filter: 'Filter',
       domain: 'Domain',

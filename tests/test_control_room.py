@@ -412,6 +412,12 @@ class ActorTest(ControlRoomTest):
         self.logs({})
         self.assertEqual([c[0] for c in self.raw_calls()], ["--actor=Edge/Windows (127.0.0.1)"] * 2)
 
+    def test_the_old_status_shows_only_vms(self):
+        # the warnings of `status --json` are for the new Control Room (System)
+        self.respond({"work": {"state": "running"}, "host_warnings": [{"code": "maintenance_timer_missing",
+                                                                       "message": "m"}]})
+        self.assertEqual(self.get("/api/status"), (200, {"work": {"state": "running"}}))
+
     def test_device_from_the_user_agent(self):
         for agent, device in ((FIREFOX_LINUX, "Firefox/Linux"), (SAFARI_IPHONE, "Safari/iPhone"),
                               (EDGE_WINDOWS, "Edge/Windows"), (CHROME_ANDROID, "Chrome/Android"),

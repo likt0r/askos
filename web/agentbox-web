@@ -374,7 +374,7 @@ def activity(query):
 
 # Einstellungen, die der Leitstand aendern darf (agentbox prueft die Werte; ein Test haelt
 # die Liste mit `agentbox settings` gleich). Passwort, Heimnetz und Ports gehoeren nicht dazu.
-SETTING_KEYS = ("reset_age_days", "reset_time", "rebuild_day", "rebuild_time", "builds_kept",
+SETTING_KEYS = ("reset_age_days", "maintenance_time", "rebuild_day", "builds_kept",
                 "default_memory_mib", "default_data_disk_gib", "default_image", "default_container_image_cleanup",
                 "default_container_image_cleanup_days", "open_web_max_minutes", "temporary_entry_default",
                 "young_domain_days", "feed_interval_hours", "package_min_age_days", "auto_update", "orca_version",
@@ -722,7 +722,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return serve_events(self)
         try:
             if parts == ["status"]:
-                return self.send_json(200, agentbox_json("status", "--json"))
+                # die alte Oberflaeche kennt nur VMs: host_warnings zeigt die neue (System)
+                return self.send_json(200, {k: v for k, v in agentbox_json("status", "--json").items()
+                                            if k != "host_warnings"})
             if parts == ["activity"]:
                 ok, out = activity(url.query)
                 if not ok:
@@ -1115,6 +1117,7 @@ class Watch:
         self.status = {"running": False, "since": None, "restarts": 0, "last_exit": None}
         self.reboot = None
         self.services = None
+        self.warnings = None        # was der Host fuer seine Wartung braucht (services-Ereignis)
 
     def start(self):
         self.set_status(running=False)
@@ -1200,6 +1203,7 @@ class Watch:
         elif name == "services":
             with self.lock:
                 self.services = data.get("units")
+                self.warnings = data.get("warnings")
         elif name == "alert":
             signals = ", ".join(str(s) for s in data.get("signals") or [])
             notify("alert", "critical", f"{vm} tried to reach {data.get('domain')}"
@@ -1844,8 +1848,9 @@ def get_host(h, m, url, body):
 @route("GET", "/system")
 def get_system(h, m, url, body):
     with watcher.lock:
-        status, reboot, services = dict(watcher.status), watcher.reboot, watcher.services
-    return 200, {"watch": status, "host_reboot": reboot, "services": services, "ui": ui.public()}
+        status, reboot, services, warnings = dict(watcher.status), watcher.reboot, watcher.services, watcher.warnings
+    return 200, {"watch": status, "host_reboot": reboot, "services": services, "warnings": warnings,
+                 "ui": ui.public()}
 
 
 # VMs

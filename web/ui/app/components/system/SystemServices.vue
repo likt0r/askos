@@ -1,15 +1,31 @@
 <script setup lang="ts">
 // The Host's agentbox units and Ollama: running, stopped or failed. A service that a timer or
 // a socket starts (systemd's TriggeredBy) is shown under it, and waits for it while inactive.
-const { t } = useI18n()
+// Above them, what the Host lacks for its maintenance (the event's warnings, by stable code).
+const { t, te } = useI18n()
 const live = useLive()
 
 interface Unit { unit: string, load: string, active: string, sub: string, description: string, triggered_by?: string[] | null }
 interface Group { unit: Unit, started: Unit[] }
+interface Warning { code: string, message: string }
 const units = computed<Unit[] | null>(() => {
   const s = live.state.services as { units?: Unit[] } | null
   return Array.isArray(s?.units) ? s.units : null
 })
+const warnings = computed<Warning[]>(() => {
+  const s = live.state.services as { warnings?: unknown } | null
+  return Array.isArray(s?.warnings)
+    ? s.warnings.filter((w): w is Warning => typeof w?.code === 'string' && typeof w?.message === 'string')
+    : []
+})
+
+/** A warning in the user's language; one this UI does not know yet in the server's English. */
+function warningText(w: Warning) {
+  const key = `system.services.warnings.${w.code}`
+  return te(`${key}.title`)
+    ? { title: t(`${key}.title`), description: t(`${key}.description`) }
+    : { title: w.message, description: '' }
+}
 
 /** The timers and sockets that start the unit (none when unknown). */
 function triggers(u: Unit): string[] {
@@ -68,6 +84,17 @@ function stateText(u: Unit) {
       </h2>
       <UBadge v-if="units && failed" color="error" variant="subtle" :label="t('system.services.failed', { n: failed })" data-testid="services-failed" />
     </div>
+    <UAlert
+      v-for="w in warnings"
+      :key="w.code"
+      color="warning"
+      variant="subtle"
+      icon="i-lucide-triangle-alert"
+      :title="warningText(w).title"
+      :description="warningText(w).description || undefined"
+      data-testid="services-warning"
+      :data-code="w.code"
+    />
     <p v-if="!units" class="text-sm text-muted" data-testid="services-unknown">
       {{ t('system.services.unknown') }}
     </p>

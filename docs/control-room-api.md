@@ -35,7 +35,7 @@ Every error has the same shape and an HTTP status that fits:
 
 ```json
 {"error": {"code": "invalid_setting", "message": "Invalid value for a setting",
-           "field": "reset_time", "detail": "reset_time: invalid value 99:99 (allowed: ...)"}}
+           "field": "maintenance_time", "detail": "maintenance_time: invalid value 99:99 (allowed: ...)"}}
 ```
 
 - `code`: stable, snake_case; the UI translates it. New codes may be added.
@@ -263,7 +263,7 @@ Sign-ins, failures, refusals by the brake and sign-outs are Activity entries (co
   `next_build`: what the next Reset uses (the pin, else the current Build).
 - `system_disk`: when the System disk was created (its last Reset) and from which Build;
   all `null` without a disk. `reset_changes_build`: the next Reset brings a different
-  Build or Image. `reset_due`: the daily Reset check would reset the VM: its System disk
+  Build or Image. `reset_due`: the Reset check of the Maintenance window would reset the VM: its System disk
   is at least `reset_age_days` old, or, with `auto_update` on, its Image has a newer current
   Build than the one its System disk came from and the VM has no Build pin (the automatic
   Reset happens when the VM is idle).
@@ -479,6 +479,8 @@ first:
 | `build.rejected` | `image`, `build`, `reason`, `message` (the first Safeguard problem) |
 | `build.unneeded` | `reason` |
 | `build.skipped`, `build.automatic` | `images`, `reason` |
+| `maintenance.feeds`, `maintenance.versions`, `maintenance.rebuild`, `maintenance.reset-check` | none, except `reason` of `maintenance.rebuild` (see the end of this row): one entry per step of the Maintenance window (kind `action`, actor `timer`), in that order of the steps, written when each step ends (so the Builds' `build.*` entries come before `maintenance.versions` and `maintenance.rebuild`, the Resets' `reset.*` before `maintenance.reset-check`; the weekly rebuild has no start entry), outcome `ok` or `failed` with the error code, its message in `description`: `action_failed` for a failure the step reports (a unit that did not start or failed, a failed Build, a VM the Reset check could not handle; a weekly rebuild that cannot start carries the code of `agentbox build --all` instead, e.g. `build_running` or `not_set_up`), `unexpected_error` for a fault of the step itself (`params.type`: the kind of fault); a rebuild that is not due records none. `maintenance.rebuild` with `params.reason` `old-timer` (outcome `ok`): the window started no weekly rebuild because the old `agentbox-rebuild.timer` is still there and rebuilds itself (an RPM update could not disable it; `sudo agentbox regenerate` takes it away) |
+| `maintenance.skipped` | `reason` (`already-ran`), `time` (`maintenance_time`, `HH:MM`): a window the timer started did nothing, because the timer's window of the latest turn of `maintenance_time` began already (kind `action`, actor `timer`); a window by hand is never skipped. The UI shows the stored text for a reason it does not know |
 
 `reason` (also in `params`) is a stable code where one was
 recorded, e.g. why an automatic Reset was postponed (`reset.postponed`: `gui-connected`,
@@ -529,7 +531,7 @@ reason and an error by its `message`.
 | Method and path | Response |
 |---|---|
 | `GET /host` | readings, thresholds and 30 minutes of history: `{"interval", "history_seconds", "thresholds", "time", "readings": [{"id", "kind", "device", "source", "unit", "value", "threshold", "over", ...}], "vms": {"<vm>": {"memory_bytes"}}, "history": [{"time", "values", "vms"}]}` |
-| `GET /system` | `{"watch": <watch event>, "host_reboot": <host-reboot event>\|null, "services": [<unit>]\|null, "ui": <version event>}` |
+| `GET /system` | `{"watch": <watch event>, "host_reboot": <host-reboot event>\|null, "services": [<unit>]\|null, "warnings": [<warning>]\|null, "ui": <version event>}`; `services` and `warnings` as in the last `services` event (`null` before the first) |
 
 ## Images and Builds
 
@@ -572,17 +574,23 @@ Progress arrives live as `build` and `build-log` events; the log endpoint fills 
 | `GET /settings` | | `settings`: `{"settings": {"<key>": {"value", "default", "is_default", "applies_later", "allowed"}}}` |
 | `PATCH /settings` | `{"<key>": <value>, ...}` | `set-settings`: `{"changed": {"<key>": {"from", "to"}}, "applies_later": {"<key>": "<text>"}, "regenerated": ...}`; all or nothing; `"default"` restores the default and removes the key from settings.json; an `invalid_setting` error has `field`, the key whose value is wrong |
 
-Settings keys the Control Room may change: `reset_age_days`, `reset_time`, `rebuild_day`,
-`rebuild_time`, `builds_kept`, `default_memory_mib`, `default_data_disk_gib`,
+Settings keys the Control Room may change: `reset_age_days`, `maintenance_time`, `rebuild_day`,
+`builds_kept`, `default_memory_mib`, `default_data_disk_gib`,
 `default_image`, `default_container_image_cleanup`, `default_container_image_cleanup_days`,
 `open_web_max_minutes`, `temporary_entry_default`, `young_domain_days`,
 `feed_interval_hours`, `package_min_age_days`, `orca_version`, `activity_retention_days`,
 `session_hours`, `default_language`, `auto_update`. The password, home network and ports are
 not among them.
+`maintenance_time` (`HH:MM`, default `"02:00"`) is when the daily **Maintenance window** starts:
+it fetches the Feeds, checks the versions (with `auto_update` it builds every Image with an
+update and waits for those Builds), on `rebuild_day` rebuilds every Image, and then runs the
+Reset check, each step once the one before it has finished. It replaced `reset_time` and
+`rebuild_time`: `PATCH` refuses them as `unknown_setting`, and a Host whose
+`settings.json` still holds `reset_time` shows `maintenance_time` two hours earlier.
 `auto_update` is `true` (the default) or `false` (JSON booleans; the text `"true"`/`"false"` is
-taken too): with it on, the daily version check (two hours before `reset_time`) starts an
-update of every Image with an update at once, and the daily Reset check also moves idle VMs
-onto a newer Build of their Image.
+taken too): with it on, the version check of the Maintenance window starts an update of every
+Image with an update at once, and its Reset check also moves idle VMs onto a newer Build of
+their Image once those Builds have finished.
 `orca_version` is text: `""` (the default) lets every Build take the newest Orca release at
 least `package_min_age_days` old, a version such as `"1.4.250"` pins that release.
 
@@ -618,7 +626,7 @@ and, after a drop, `Last-Event-ID`.
 | `build` | `{"image", "build", "status": "running"\|"ok"\|"failed"\|"rejected", "step", "started", "finished", "release", "commit", "base_build", "error", "problems", "actor", "unit"}` (`release` and `commit` as in `GET /images`) | a Build started, moved to its next step (`build`, `check`, `disk`, `done`) or ended |
 | `build-log` | `{"unit", "target", "image", "build", "entries": [{"time", "priority", "message", "cursor"}], "cursor", "truncated"}` | new lines of a running Build, gathered for half a second; `truncated`: lines were skipped (fetch them with the log endpoint and `after_cursor`) |
 | `host-reboot` | `{"needed": true\|false\|null, "packages": [..], "checked": "<time>"}` | on connect and when it changes (checked every six hours with `dnf needs-restarting`; `null`: unknown) |
-| `services` | `{"units": [{"unit", "load", "active", "sub", "description", "triggered_by": ["<unit>", ...]\|null}]}` | on connect and when one changes: the Host's agentbox units (proxies, token services, Orca ports, timers, Builds) and `ollama.service`. `triggered_by`: the timers and sockets that start the unit (systemd's `TriggeredBy`, e.g. `agentbox-feeds.timer` for `agentbox-feeds.service`, `agentbox-proxy-<vm>.socket` for the proxy); `[]` for none, `null` when unknown. Such a unit is `inactive` between its runs, which is no fault |
+| `services` | `{"units": [{"unit", "load", "active", "sub", "description", "triggered_by": ["<unit>", ...]\|null}], "warnings": [{"code", "message"}]}` | on connect and when one changes: the Host's agentbox units (proxies, token services, Orca ports, timers, Builds) and `ollama.service`. `triggered_by`: the timers and sockets that start the unit (systemd's `TriggeredBy`, e.g. `agentbox-feeds.timer` for `agentbox-feeds.service`, `agentbox-proxy-<vm>.socket` for the proxy); `[]` for none, `null` when unknown. Such a unit is `inactive` between its runs, which is no fault. `warnings`: what the Host lacks for its maintenance, `[]` for nothing, each with a stable `code` and the English `message` (the UI shows the message for a code it does not know); the same list as `host_warnings` of `agentbox status --json`. Codes: `maintenance_timer_missing`, the Maintenance window's timer `agentbox-maintenance.timer` is missing on a Host whose timers `agentbox regenerate` wrote before (after an update from a Release before the Maintenance window; until then the old Reset timer runs the window at the old Reset time), and `sudo agentbox regenerate` creates it |
 | `notification` | see below | something worth a browser notification |
 
 ### Notifications

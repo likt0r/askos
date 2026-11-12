@@ -9,7 +9,8 @@ Each line is {"event": <name>, "time": <ISO time>, "data": {...}}:
                first, and again when a VM appears or goes or a record breaks
   vm           one VM whose object changed (state, agents, what answers, devices, ...)
   services     the Host's agentbox units and Ollama, with the timers and sockets that
-               start each; first, and on every change
+               start each, and what the Host lacks for its maintenance (warnings, as
+               `status --json` names them); first, and on every change
   activity     a new Activity entry, as `agentbox activity --json` shows it
   alert        a VM tried to reach a suspicious destination (the proxy's ALERT line)
   github-token the token service issued, refused or failed a GitHub token
@@ -48,7 +49,7 @@ import sys
 import threading
 import time
 
-from . import activity, describe, images, lifecycle, paths, registry, responding
+from . import activity, describe, images, lifecycle, maintenance, paths, registry, responding
 from .errors import Fail, die
 from .sanitize import PAIR_ANY, SECRET, entry as journal_entry, field
 
@@ -170,9 +171,9 @@ class Poller:
                     emit("vm", v)
         self.vms, self.problems = vms, snap["problems"]
         if units is not None:
-            found = describe.services(units, self.triggers)
+            found = {"units": describe.services(units, self.triggers), "warnings": maintenance.warnings()}
             if found != self.services:
-                emit("services", {"units": found})
+                emit("services", found)
                 self.services = found
         self.poll_builds()
 

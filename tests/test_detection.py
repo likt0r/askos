@@ -198,6 +198,30 @@ class FeedSignalsTest(ProxyTest):
         self.assertEqual(self.connect("raw.githubusercontent.com"), ACCESS_DENIED)
         self.assertEqual(self.blocked_reason("raw.githubusercontent.com"), "suspicious: threat")
 
+    def test_feed_hits_on_claudeusercontent_count_also_with_the_seeded_legitimate_entry(self):
+        # claudeusercontent.com serves claude.ai artifacts anyone shares, each under its own
+        # subdomain: a built-in user-content host. Hosts set up before it was built in have it
+        # in legitimate.json from the list a new Host starts with; that entry must not keep
+        # Feed hits below it lifted. claude.ai, claude.com and anthropic.com stay as they were.
+        write(os.path.join(self.conf, "legitimate.json"), json.dumps({"entries": [
+            {"domain": d, "note": "", "added": 1793700000, "added_by": "migration"}
+            for d in ("registry.example", "cdn.vendor.example", "pnpm.io", "claudeusercontent.com")]}))
+        self.feed("threat-intelligence", ["bad.example", "registry.example", "cdn.registry.example", "vendor.example",
+                                          "evil.claudeusercontent.com", "claude.ai", "x.claude.com",
+                                          "api.anthropic.com"])
+        self.start()
+        self.assertEqual(self.alert("evil.claudeusercontent.com"), ["threat"])
+        self.assertEqual(self.alert("x.evil.claudeusercontent.com"), ["threat"])
+        # no hit, no pattern Signal (artifact subdomains look random), the domain itself as before
+        self.assertIsNone(self.alert("0f3a9c7e2b6d4e1f8a5c3b9d7e2f6a1c.claudeusercontent.com"))
+        self.assertIsNone(self.alert("claudeusercontent.com"))
+        for host in ("claude.ai", "www.claude.ai", "x.claude.com", "api.anthropic.com"):
+            with self.subTest(host=host):
+                self.assertIsNone(self.alert(host))
+        self.open_web()
+        self.assertEqual(self.connect("evil.claudeusercontent.com"), ACCESS_DENIED)
+        self.assertEqual(self.blocked_reason("evil.claudeusercontent.com"), "suspicious: threat")
+
     def test_threat_list_hit_stays_blocked_in_open_web(self):
         self.open_web()
         self.start()

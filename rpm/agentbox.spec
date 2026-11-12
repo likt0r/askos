@@ -9,8 +9,9 @@
 # writes Settings, the VM registry, the certificate or the Host setup (ADR 0009).
 #
 # An update restarts the Control Room, the expiry and cleanup timers and, when their code
-# changed, the proxies of the VMs, and never a VM; removal also takes the units agentbox
-# regenerate wrote (docs/releasing.md). rpm/upgrade-test.sh checks both.
+# changed, the proxies of the VMs, and never a VM; on a Host from before the Maintenance window
+# it takes the timers that window replaced. Removal also takes the units agentbox regenerate
+# wrote (docs/releasing.md). rpm/upgrade-test.sh checks both.
 
 Name:           agentbox
 Version:        @VERSION@
@@ -175,6 +176,37 @@ if [ $1 -eq 1 ]; then
 fi
 # the Activity journal's runtime directory, owned as journald owns it (agentbox.tmpfiles)
 %tmpfiles_create agentbox.conf
+# update only: the timers of the weekly rebuild and the version check that agentbox regenerate
+# wrote before the Maintenance window (#49), and the service only the rebuild timer started, are
+# disabled, stopped and deleted, and systemd forgets them; a run under way finishes. A timer whose
+# disabling fails stays, with its service, for agentbox regenerate to take away (while
+# agentbox-rebuild.timer is still there, the Maintenance window leaves the weekly rebuild to it, so
+# their Builds do not collide). The old Reset check's timer, agentbox-weekly.timer, stays: until
+# `agentbox regenerate` (or `agentbox setup`) writes the Maintenance window's timer and takes it
+# away, its `agentbox weekly-check` runs the whole window (agentbox/maintenance.py), at the old
+# Reset time; the package says so.
+if [ $1 -gt 1 ]; then
+    found=
+    for unit in agentbox-rebuild.timer agentbox-versions.timer; do
+        if [ -f "%{_sysconfdir}/systemd/system/$unit" ]; then found="$found $unit"; fi
+    done
+    if [ -n "$found" ]; then
+        for unit in $found; do
+            if /usr/lib/systemd/systemd-update-helper remove-system-units $unit; then
+                rm -f "%{_sysconfdir}/systemd/system/$unit"
+                if [ $unit = agentbox-rebuild.timer ]; then
+                    rm -f "%{_sysconfdir}/systemd/system/agentbox-rebuild.service"
+                fi
+            else
+                echo "agentbox: $unit could not be disabled; sudo agentbox regenerate takes it away" >&2
+            fi
+        done
+        systemctl daemon-reload || :
+        echo "agentbox: the Feeds, the version check, the weekly rebuild and the Reset check now run one" \
+             "after another in one Maintenance window; until sudo agentbox regenerate writes its timer" \
+             "(once), the Reset check's timer runs the whole window at the old Reset time" >&2
+    fi
+fi
 # No %%systemd_post: its preset would leave the units disabled on a new Host anyway, and
 # would disable the ones a Host has enabled. agentbox setup enables and starts what it needs.
 
@@ -184,18 +216,20 @@ fi
 # the Host restarts.
 %systemd_preun agentbox-web.service agentbox-allowlist-expire.timer agentbox-container-image-cleanup.timer
 # removal only: the units agentbox regenerate wrote to /etc/systemd/system run programs of
-# this package: per VM the proxy, the token service and the Orca port, and the Reset check,
-# the Feeds, the Builds and the version check. They are disabled, stopped and deleted with it, and systemd forgets
+# this package: per VM the proxy, the token service and the Orca port, and the Maintenance
+# window, the Feeds, the Builds and the version check (and the timers of before the
+# Maintenance window, should any be left). They are disabled, stopped and deleted with it, and systemd forgets
 # them, so none is left enabled pointing at a removed program; agentbox setup writes them again after a new
 # install. Running instances of the templates end with their connection or Build. The
 # Host's records and state in /etc/agentbox and /var/lib/agentbox, its VMs and their
 # networks stay (docs/releasing.md).
 if [ $1 -eq 0 ] && cd %{_sysconfdir}/systemd/system 2>/dev/null; then
     generated="agentbox-proxy-*.socket agentbox-proxy-*.service agentbox-ghvm-*.socket agentbox-ghvm-*@.service
-               agentbox-gui-*.socket agentbox-gui-*@.service agentbox-weekly.timer agentbox-weekly.service
-               agentbox-feeds.timer agentbox-feeds.service agentbox-rebuild.timer agentbox-rebuild.service
-               agentbox-build@.service agentbox-versions.timer agentbox-versions.service
-               agentbox-versions-fetch.service"
+               agentbox-gui-*.socket agentbox-gui-*@.service agentbox-maintenance.timer
+               agentbox-maintenance.service agentbox-feeds.timer agentbox-feeds.service
+               agentbox-build@.service agentbox-versions.service agentbox-versions-fetch.service
+               agentbox-weekly.timer agentbox-weekly.service agentbox-rebuild.timer agentbox-rebuild.service
+               agentbox-versions.timer"
     units=
     for unit in $generated; do
         case $unit in

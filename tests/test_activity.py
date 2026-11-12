@@ -239,7 +239,7 @@ class RecordTest(ActivityTest):
         os.symlink("base-20261101.qcow2", os.path.join(images, "base.qcow2"))
         self.scenario(vms={"lab": {"defined": False}, "work": {"state": "shut off"}})
         for args in (["reset", "work", "--no-start"], ["extend", "all", "a.example", "--for", "8h", "--force"],
-                     ["set-settings", "reset_time=04:00", "ghp_notakey", "--json"],
+                     ["set-settings", "maintenance_time=04:00", "ghp_notakey", "--json"],
                      ["set-github-app", "-----BEGIN RSA PRIVATE KEY-----", "--no-prompt"],
                      ["create", "lab", "--image", "base", "--memory-mib", "8192"],
                      ["delete", "lab", "--confirm", "lab", "--delete-data-disk"], ["open-web", "work", "x30"]):
@@ -249,7 +249,7 @@ class RecordTest(ActivityTest):
             ("reset", {"NO_START": "true"}),
             ("extend", {"DOMAIN": "a.example", "SCOPE": "all", "DURATION": "8h", "FORCE": "true"}),
             # Settings by their keys only, the App ID only when it is one
-            ("set-settings", {"SETTINGS": "reset_time"}),
+            ("set-settings", {"SETTINGS": "maintenance_time"}),
             ("set-github-app", {}),
             ("create", {"IMAGE": "base"}),
             ("delete", {"DELETE_DATA_DISK": "true"}),
@@ -260,15 +260,17 @@ class RecordTest(ActivityTest):
         """A failure's parameters keep a Setting only when it is a known one, as the command's
         own do: unknown_setting names what was passed, which could be a pasted secret."""
         for args in (["set-settings", "my-pasted-secret=x"], ["set-settings", f"{TOKEN}=x"],
-                     ["set-settings", "reset_time=99:99"]):
+                     ["set-settings", "maintenance_time=99:99"], ["set-settings", "reset_time=04:00"]):
             self.assertNotEqual(self.run_agentbox(*args)[0], 0, args)
         entries = [{k: v for k, v in e.items() if k.startswith(("AGENTBOX_ERROR", "AGENTBOX_PARAM_"))}
                    for e in self.entries()]
         self.assertEqual(entries, [
             {"AGENTBOX_ERROR": "unknown_setting"},
             {"AGENTBOX_ERROR": "unknown_setting"},
-            {"AGENTBOX_ERROR": "invalid_setting", "AGENTBOX_ERROR_PARAM_SETTING": "reset_time",
-             "AGENTBOX_PARAM_SETTINGS": "reset_time"}])
+            {"AGENTBOX_ERROR": "invalid_setting", "AGENTBOX_ERROR_PARAM_SETTING": "maintenance_time",
+             "AGENTBOX_PARAM_SETTINGS": "maintenance_time"},
+            # a key of before the Maintenance window is no Setting either
+            {"AGENTBOX_ERROR": "unknown_setting"}])
         # the description says what failed, cleaned like every value
         self.assertNotIn(b"sk-ant", self.raw())
 
@@ -600,9 +602,10 @@ class WeeklyCheckTest(ActivityTest):
                           "image_has_no_build", "base", "error"))
 
     def test_the_installed_timer_passes_its_actor(self):
+        # the Reset check runs in the Maintenance window, whose service passes the actor
         self.assertEqual(self.run_agentbox("regenerate")[0], 0)
-        with open(self.path("etc/systemd/system/agentbox-weekly.service")) as f:
-            self.assertIn("ExecStart=/usr/bin/agentbox --actor=timer weekly-check\n", f.read())
+        with open(self.path("etc/systemd/system/agentbox-maintenance.service")) as f:
+            self.assertIn("ExecStart=/usr/bin/agentbox --actor=timer maintenance\n", f.read())
 
 
 def journal_entry(ident, message, age, **fields):
@@ -1129,7 +1132,7 @@ class ControlRoomWordsTest(unittest.TestCase):
         """The commands DESCRIBE words, the sign-ins, Alerts, and the action of every
         activity.record() call in agentbox/."""
         sys.path.insert(0, REPO)
-        from agentbox import activity
+        from agentbox import activity, maintenance
         actions = set(activity.DESCRIBE) | activity.SIGN_INS | {"alert"} | {a for a, _ in activity.GITHUB.values()}
         folder = os.path.join(REPO, "agentbox")
         for name in sorted(os.listdir(folder)):
@@ -1144,6 +1147,8 @@ class ControlRoomWordsTest(unittest.TestCase):
                 action = node.args[1]
                 if isinstance(action, ast.Constant):
                     actions.add(action.value)
+                elif ast.unparse(action) == "f'maintenance.{step}'":     # a step of the Maintenance window
+                    actions |= {f"maintenance.{step}" for step, _, _ in maintenance.STEPS}
                 else:       # build.<status> of a Build that failed or was rejected (images._Failed)
                     self.assertEqual(ast.unparse(action), "f'build.{f.status}'")
                     actions |= {"build.failed", "build.rejected"}

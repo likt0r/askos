@@ -27,11 +27,10 @@ const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const
 /** Every key the Control Room may change (docs/control-room-api.md). The password, the home
  * network and the ports are not among them and never appear here. */
 export const SETTING_SPECS: Record<string, Spec> = {
+  maintenance_time: { type: 'time' },
   reset_age_days: { type: 'int', min: 1, max: 365 },
-  reset_time: { type: 'time' },
   auto_update: { type: 'choice', options: ['true', 'false'], boolean: true },
   rebuild_day: { type: 'choice', options: DAYS },
-  rebuild_time: { type: 'time' },
   builds_kept: { type: 'int', min: 1, max: 20 },
   default_memory_mib: { type: 'int', min: 1024, max: 1048576, unit: 'MiB' },
   default_data_disk_gib: { type: 'int', min: 1, max: 16384, unit: 'GiB' },
@@ -50,7 +49,7 @@ export const SETTING_SPECS: Record<string, Spec> = {
 }
 
 export const SETTING_GROUPS: { id: string, keys: string[] }[] = [
-  { id: 'schedule', keys: ['reset_age_days', 'reset_time', 'auto_update', 'rebuild_day', 'rebuild_time', 'builds_kept', 'package_min_age_days', 'orca_version'] },
+  { id: 'schedule', keys: ['maintenance_time', 'reset_age_days', 'auto_update', 'rebuild_day', 'builds_kept', 'package_min_age_days', 'orca_version'] },
   { id: 'newVms', keys: ['default_memory_mib', 'default_data_disk_gib', 'default_image', 'default_container_image_cleanup', 'default_container_image_cleanup_days'] },
   { id: 'access', keys: ['open_web_max_minutes', 'temporary_entry_default', 'young_domain_days', 'feed_interval_hours'] },
   { id: 'controlRoom', keys: ['activity_retention_days', 'session_hours', 'default_language'] },

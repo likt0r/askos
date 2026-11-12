@@ -11,8 +11,8 @@ import re
 import sys
 
 from . import activity, allowlist, container_images, credentials, describe, detection, generate, github, guest
-from . import images, lifecycle
-from . import lists, network, pairings, paths, settings, setup, transfer, version, versions, vms, watch
+from . import images, lifecycle, lists, maintenance, network, pairings, paths, settings, setup, transfer
+from . import version, versions, vms, watch
 from .errors import Fail
 
 USAGE = """\
@@ -94,8 +94,8 @@ Controls the agent VMs on this Host.
   agentbox legitimate [--json]                       Legitimate domains (added and built-in)
   agentbox legitimate-add <domain> [--note TEXT] [--force] [--json]
                 no more pattern Signals (except blockchain) and HaGeZi hits for it and its
-                subdomains (HaGeZi hits below github.io and githubusercontent.com still
-                count); lifting strong Signals only with --force
+                subdomains (HaGeZi hits below github.io, githubusercontent.com and
+                claudeusercontent.com still count); lifting strong Signals only with --force
   agentbox legitimate-remove <domain> [--json]       remove an added one (built-in ones stay)
   agentbox legitimate-set-note <domain> --note TEXT [--json]
   agentbox migrate-lists [--json]                    take over the Watchlist and Legitimate domains from
@@ -116,8 +116,15 @@ Controls the agent VMs on this Host.
   agentbox migrate [--json]                          take over work and priv into the VM registry once
   agentbox regenerate [--json]                       networks, units, disks and VM definitions from the registry,
                                                      and the VMs' ports in the firewalld zone libvirt
-  agentbox weekly-check [--json]                     (timer, daily) Reset old VMs when idle; with auto_update
-                                                     also VMs whose Image has a newer Build
+  agentbox maintenance [--json]                      (timer, daily at maintenance_time) the Maintenance window:
+                                                     fetch the Feeds, check versions (with auto_update the
+                                                     Builds of each Image with an update), the weekly rebuild
+                                                     on rebuild_day, then the Reset check, each step after the
+                                                     one before and its Builds have finished
+  agentbox weekly-check [--json]                     the Reset check of the Maintenance window on its own: Reset
+                                                     old VMs when idle; with auto_update also VMs whose Image
+                                                     has a newer Build. Run by the old Reset timer while the
+                                                     window's timer is missing: the whole window
   agentbox cleanup-container-images [--json]         (timer, hourly) in each running VM with the Container
                                                      image cleanup on, remove the Container images no
                                                      container uses that were not used for its days
@@ -137,9 +144,9 @@ Controls the agent VMs on this Host.
   agentbox set-image <vm> <image> [--build B] [--json]
                 a VM's Image, pinned to an earlier Build or not; applies from the next Reset
   agentbox build-run <image>|all                     (unit agentbox-build@) run a Build
-  agentbox fetch-versions [--json]                   (timer, daily, as agentbox-feeds) ask npm and GitHub for
+  agentbox fetch-versions [--json]                   (Maintenance window, as agentbox-feeds) ask npm and GitHub for
                                                      the versions available
-  agentbox check-versions [--json]                   (timer, then as root) check and take over the answers,
+  agentbox check-versions [--json]                   (Maintenance window, then as root) check and take over the answers,
                                                      package updates of the current Builds; with auto_update
                                                      then an Update of the Images with an update; everything
                                                      again: systemctl start agentbox-versions.service
@@ -158,7 +165,7 @@ COMMANDS = {**guest.COMMANDS, **lifecycle.COMMANDS, **network.COMMANDS, **creden
             **pairings.COMMANDS, **settings.COMMANDS, **github.COMMANDS, **allowlist.COMMANDS,
             **images.COMMANDS, **describe.COMMANDS, **watch.COMMANDS, **lists.COMMANDS,
             **setup.COMMANDS, **version.COMMANDS, **versions.COMMANDS, **transfer.COMMANDS,
-            **container_images.COMMANDS}
+            **maintenance.COMMANDS, **container_images.COMMANDS}
 
 # The options that take a value, as USAGE shows them ("--note TEXT", "--for 15min|1h|...").
 # Given as --note VALUE, the value is the next argument, whatever it looks like.

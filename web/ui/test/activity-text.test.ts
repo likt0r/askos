@@ -185,12 +185,13 @@ describe('Activity in the UI language', () => {
     const params: Record<string, string> = {
       domain: 'd.example', scope: 'all', duration: '1h', target: 'priv', image: 'base', build: '20261101', mib: '8192',
       minutes: '30', category: 'paste', list: 'watchlist', legacy: 'old-file', migrated: '2', skipped: '0', owners: 'a',
-      app_id: '1', settings: 'reset_time', reason: 'idle', signals: 'young', images: 'base', release: '0.3.0',
+      app_id: '1', settings: 'maintenance_time', reason: 'idle', signals: 'young', images: 'base', release: '0.3.0',
       repository: 'a/b', request: 'a/b', folder: '/home/a/foo', files: '3', bytes: '120', env: 'A=1', names: 'A',
-      enabled: 'true', days: '7', removed: '2', freed_bytes: '2048',
+      enabled: 'true', days: '7', removed: '2', freed_bytes: '2048', time: '02:00',
     }
     // a reason the sentence knows, where it is a code of its own
-    const reasons: Record<string, string> = { 'wake.not-responding': 'system-not-booted', 'github.refused': 'not-installed' }
+    const reasons: Record<string, string> = { 'wake.not-responding': 'system-not-booted', 'github.refused': 'not-installed',
+      'maintenance.skipped': 'already-ran' }
     const entries = Object.keys(SENTENCES).map((action, n) => coded(n % 60, action,
       reasons[action] ? { ...params, reason: reasons[action] } : params, 'STORED'))
     for (const language of ['en', 'de']) {
@@ -246,6 +247,27 @@ describe('Activity text (unit)', () => {
     const one = coded(0, 'container-image-cleanup.removed', { removed: '1', freed_bytes: '1048576', days: '7' }, 'stored')
     expect(activityText(one, tr)).toContain('activity.actions.cleanupRemovedOne')
     expect(activityText({ ...one, params: { ...one.params, removed: '2' } }, tr)).toContain('activity.actions.cleanupRemoved ')
+  })
+
+  it('words each step of the Maintenance window, done or failed', () => {
+    for (const [action, key] of [['maintenance.feeds', 'maintenanceFeeds'], ['maintenance.versions', 'maintenanceVersions'],
+      ['maintenance.rebuild', 'maintenanceRebuild'], ['maintenance.reset-check', 'maintenanceResetCheck']]) {
+      expect(activityText(coded(0, action!, {}, 'stored'), tr)).toBe(`activity.actions.${key}`)
+      const failed = coded(0, action!, {}, 'Maintenance window: x failed: disk full', { outcome: 'failed', error: 'unexpected_error' })
+      expect(activityText(failed, tr)).toBe(`activity.actions.${key}Failed: errors.unexpected_error {"field":""}`)
+      // what failed, in agentbox's words (the generic code)
+      expect(activityText({ ...failed, error: 'action_failed' }, tr)).toBe('Maintenance window: x failed: disk full')
+    }
+  })
+
+  it('words a rebuild left to the old timer and a window that ran already in its turn', () => {
+    expect(activityText(coded(0, 'maintenance.rebuild', { reason: 'old-timer' }, 'stored'), tr))
+      .toBe('activity.actions.maintenanceRebuildOldTimer')
+    expect(activityText(coded(0, 'maintenance.skipped', { reason: 'already-ran', time: '02:00' }, 'stored'), tr))
+      .toBe('activity.actions.maintenanceSkipped {"time":"02:00"}')
+    // a reason this UI does not know, or without the time: the stored text
+    expect(activityText(coded(0, 'maintenance.skipped', { reason: 'made-up', time: '02:00' }, 'stored'), tr)).toBe('stored')
+    expect(activityText(coded(0, 'maintenance.skipped', { reason: 'already-ran' }, 'stored'), tr)).toBe('stored')
   })
 
   it('keeps it when a parameter the sentence needs is missing or not text', () => {

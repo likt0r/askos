@@ -195,6 +195,104 @@ class PackageTest(unittest.TestCase):
         self.assertIn(f"%systemd_postun_with_restart agentbox-web.service {timers}", scriptlets)
 
 
+class RetiredTimersTest(unittest.TestCase):
+    """#49: an update takes the timers of the version check and the weekly rebuild (and the service
+    only the rebuild timer started), as %post runs it: the block of the spec with
+    /etc/systemd/system under a temporary directory, systemd-update-helper and systemctl stand-ins
+    that record their arguments. The old Reset check's timer stays: until regenerate, its
+    weekly-check runs the whole Maintenance window (test_maintenance.TransitionTest)."""
+
+    RETIRED = ("agentbox-rebuild.timer", "agentbox-versions.timer")
+    LEFT_FOR_REGENERATE = ("agentbox-weekly.timer", "agentbox-weekly.service")
+    KEPT = ("agentbox-maintenance.timer", "agentbox-maintenance.service", "agentbox-feeds.timer",
+            "agentbox-feeds.service", "agentbox-versions.service", "agentbox-versions-fetch.service",
+            "agentbox-build@.service", "agentbox-proxy-work.socket")
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = tmp.name
+        self.units = os.path.join(self.dir, "etc", "systemd", "system")
+        os.makedirs(self.units)
+        os.makedirs(os.path.join(self.dir, "bin"))
+        for name in ("systemd-update-helper", "systemctl"):
+            with open(os.path.join(self.dir, "bin", name), "w") as f:
+                # a unit named in the file "fails" cannot be disabled
+                f.write(f'#!/bin/sh\necho "{name} $*" >> "{self.dir}/calls"\n'
+                        f'for unit in "$@"; do grep -qxF "$unit" "{self.dir}/fails" 2>/dev/null && exit 1; done\n'
+                        'exit 0\n')
+            os.chmod(os.path.join(self.dir, "bin", name), 0o755)
+        post = spec_sections(read("rpm", "agentbox.spec"), ("post",))
+        block = re.search(r"(?ms)^if \[ \$1 -gt 1 \]; then\n    found=\n.*?^fi$", post).group(0)
+        self.script = (block.replace("%{_sysconfdir}", os.path.join(self.dir, "etc"))
+                       .replace("/usr/lib/systemd/systemd-update-helper", os.path.join(self.dir, "bin",
+                                                                                       "systemd-update-helper")))
+
+    def unit(self, *names):
+        for name in names:
+            with open(os.path.join(self.units, name), "w") as f:
+                f.write("[Unit]\n")
+
+    def post(self, arg):
+        """The block as %post runs it, $1 = arg (1: install, 2: update); (stderr, calls)."""
+        r = subprocess.run(["/bin/sh", "-c", self.script, "post", str(arg)], capture_output=True, text=True,
+                           env={"PATH": os.path.join(self.dir, "bin") + ":/usr/bin:/bin"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        try:
+            with open(os.path.join(self.dir, "calls")) as f:
+                calls = f.read().splitlines()
+        except FileNotFoundError:
+            calls = []
+        return r.stderr, calls
+
+    def test_an_update_disables_and_deletes_them_and_says_what_runs_until_regenerate(self):
+        self.unit(*self.RETIRED, "agentbox-rebuild.service", *self.LEFT_FOR_REGENERATE, *self.KEPT)
+        err, calls = self.post(2)
+        self.assertEqual(calls, [f"systemd-update-helper remove-system-units {u}" for u in self.RETIRED]
+                         + ["systemctl daemon-reload"])
+        self.assertEqual(sorted(os.listdir(self.units)), sorted(self.KEPT + self.LEFT_FOR_REGENERATE))
+        self.assertIn("Maintenance window", err)
+        self.assertIn("sudo agentbox regenerate", err)
+        self.assertIn("the Reset check's timer runs the whole window at the old Reset time", err)
+
+    def test_the_old_reset_timer_stays_for_regenerate(self):
+        self.unit(*self.LEFT_FOR_REGENERATE, *self.KEPT)
+        self.assertEqual(self.post(2), ("", []))
+        self.assertEqual(sorted(os.listdir(self.units)), sorted(self.KEPT + self.LEFT_FOR_REGENERATE))
+
+    def test_only_what_was_disabled_is_deleted(self):
+        self.unit(*self.RETIRED, "agentbox-rebuild.service", *self.KEPT)
+        with open(os.path.join(self.dir, "fails"), "w") as f:
+            f.write("agentbox-rebuild.timer\n")
+        err, calls = self.post(2)
+        self.assertEqual(calls, [f"systemd-update-helper remove-system-units {u}" for u in self.RETIRED]
+                         + ["systemctl daemon-reload"])
+        # the rebuild timer could not be disabled: it stays, with its service, for regenerate
+        self.assertEqual(sorted(os.listdir(self.units)),
+                         sorted(self.KEPT + ("agentbox-rebuild.timer", "agentbox-rebuild.service")))
+        self.assertIn("agentbox-rebuild.timer could not be disabled; sudo agentbox regenerate takes it away", err)
+
+    def test_only_those_there_and_a_service_left_alone(self):
+        self.unit("agentbox-versions.timer", "agentbox-rebuild.service", *self.KEPT)
+        _, calls = self.post(2)
+        self.assertEqual(calls, ["systemd-update-helper remove-system-units agentbox-versions.timer",
+                                 "systemctl daemon-reload"])
+        self.assertEqual(sorted(os.listdir(self.units)), sorted(self.KEPT + ("agentbox-rebuild.service",)))
+
+    def test_a_host_without_them_and_an_install_are_left_alone(self):
+        self.unit(*self.KEPT)
+        self.assertEqual(self.post(2), ("", []))
+        self.unit(*self.RETIRED)
+        self.assertEqual(self.post(1), ("", []))
+        self.assertEqual(sorted(os.listdir(self.units)), sorted(self.KEPT + self.RETIRED))
+
+    def test_regenerate_takes_away_what_the_package_leaves(self):
+        self.assertEqual(set(self.RETIRED + self.LEFT_FOR_REGENERATE[:1]), set(generate.RETIRED_TIMERS))
+        self.assertEqual({"agentbox-weekly.service", "agentbox-rebuild.service"}, set(generate.RETIRED_SERVICES))
+        self.assertIn("for unit in agentbox-rebuild.timer agentbox-versions.timer; do", self.script)
+        self.assertNotIn("agentbox-weekly", self.script)
+
+
 @unittest.skipUnless(STATE, "only in the installation test (rpm/install-test.sh)")
 class InstalledTest(unittest.TestCase):
     """The installed RPM, as root in a fresh Fedora container."""

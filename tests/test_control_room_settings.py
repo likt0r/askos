@@ -20,9 +20,10 @@ from test_control_room import ControlRoomTest, SERVER, failure  # noqa: E402
 setUpModule = test_control_room.setUpModule
 tearDownModule = test_control_room.tearDownModule
 
-SHOWN = {"settings": {"reset_time": {"value": "04:00", "default": "04:00", "is_default": True,
+SHOWN = {"settings": {"maintenance_time": {"value": "02:00", "default": "02:00", "is_default": True,
                                      "applies_later": None, "allowed": "Uhrzeit HH:MM"}}}
-SAVED = {"changed": {"reset_time": {"from": "04:00", "to": "05:30"}}, "applies_later": {}, "regenerated": {}}
+SAVED = {"changed": {"maintenance_time": {"from": "02:00", "to": "05:30"}}, "applies_later": {},
+         "regenerated": {}}
 
 
 class SettingsApiTest(ControlRoomTest):
@@ -37,24 +38,25 @@ class SettingsApiTest(ControlRoomTest):
 
     def test_post_passes_the_values_to_agentbox(self):
         self.respond(SAVED)
-        status, obj, _ = self.post("/api/settings", {"reset_time": "05:30", "session_hours": 8,
+        status, obj, _ = self.post("/api/settings", {"maintenance_time": "05:30", "session_hours": 8,
                                                      "default_language": "browser"})
         self.assertEqual((status, obj), (200, SAVED))
-        self.assertEqual(self.calls(), [["set-settings", "reset_time=05:30", "session_hours=8",
+        self.assertEqual(self.calls(), [["set-settings", "maintenance_time=05:30", "session_hours=8",
                                          "default_language=browser", "--json"]])
 
     def test_a_refusal_of_agentbox_is_passed_on(self):
-        self.respond("", stderr=failure("invalid_setting", "reset_time: invalid value 99:99 (allowed: time HH:MM)",
-                                        setting="reset_time"), exitcode=1)
-        status, obj, _ = self.post("/api/settings", {"reset_time": "99:99"})
-        self.assertEqual((status, obj), (400, {"ok": False, "message": "reset_time: invalid value 99:99 "
+        self.respond("", stderr=failure("invalid_setting",
+                                        "maintenance_time: invalid value 99:99 (allowed: time HH:MM)",
+                                        setting="maintenance_time"), exitcode=1)
+        status, obj, _ = self.post("/api/settings", {"maintenance_time": "99:99"})
+        self.assertEqual((status, obj), (400, {"ok": False, "message": "maintenance_time: invalid value 99:99 "
                                                                       "(allowed: time HH:MM)"}))
 
     def test_only_known_keys_are_accepted(self):
         for key in ("password", "home_network", "network", "port", "bind", "orca_port", "--json", "x=y",
-                    "Reset_Time"):
+                    "Maintenance_Time"):
             with self.subTest(key=key):
-                status, obj, _ = self.post("/api/settings", {"reset_time": "05:30", key: "x"})
+                status, obj, _ = self.post("/api/settings", {"maintenance_time": "05:30", key: "x"})
                 self.assertEqual(status, 400)
                 self.assertFalse(obj["ok"])
                 self.assertIn("unknown setting", obj["message"])
@@ -68,8 +70,8 @@ class SettingsApiTest(ControlRoomTest):
                                         ["set-settings", "auto_update=true", "--json"]])
 
     def test_odd_values_and_empty_bodies_are_rejected(self):
-        for body in ({}, {"reset_time": True}, {"builds_kept": 1.5}, {"builds_kept": [3]}, {"reset_time": None},
-                     {"reset_time": {"a": 1}}):
+        for body in ({}, {"maintenance_time": True}, {"builds_kept": 1.5}, {"builds_kept": [3]},
+                     {"maintenance_time": None}, {"maintenance_time": {"a": 1}}):
             with self.subTest(body=body):
                 self.assertEqual(self.post("/api/settings", body)[0], 400)
         self.assertEqual(self.calls(), [])
@@ -78,7 +80,7 @@ class SettingsApiTest(ControlRoomTest):
         self.assertEqual(self.post("/api/settings", {}, header=False, raw=b"")[0], 403)
         self.cookie = None
         self.assertEqual(self.get("/api/settings")[0], 401)
-        self.assertEqual(self.post("/api/settings", {"reset_time": "05:30"})[0], 401)
+        self.assertEqual(self.post("/api/settings", {"maintenance_time": "05:30"})[0], 401)
         self.assertEqual(self.calls(), [])
 
     def test_the_known_keys_are_the_ones_of_agentbox(self):
