@@ -15,6 +15,14 @@ export function deviceCount(vm: Vm): number | null {
   return vm.devices.length
 }
 
+/** The VM's Container image cleanup; records without the fields mean on and 7 days. */
+export function containerImageCleanup(vm: Pick<Vm, 'container_image_cleanup' | 'container_image_cleanup_days'>) {
+  return {
+    enabled: vm.container_image_cleanup ?? true,
+    days: vm.container_image_cleanup_days ?? 7,
+  }
+}
+
 export interface NotResponding {
   /** what does not answer: the system did not boot (not even the guest agent), Orca alone, or not known */
   what: 'system' | 'orca' | 'unknown'

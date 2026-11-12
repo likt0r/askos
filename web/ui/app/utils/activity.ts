@@ -2,6 +2,7 @@
 // Allowlist changes, Alerts, GitHub tokens, pairings, Builds, Resets, Settings and credentials.
 import { refusalText, signalName } from './access'
 import { parseApiTime } from './clock'
+import { formatHostBytes } from './host'
 
 export const ACTIVITY_KINDS = [
   'signin', 'action', 'allowlist', 'alert', 'github', 'pairing', 'build', 'reset', 'settings', 'credentials',
@@ -160,6 +161,12 @@ export const SENTENCES: Record<string, Sentence> = {
   'create': either('image', 'createImage', 'create'),
   'delete': flagged('delete_data_disk', 'deleteWithDisk', 'delete'),
   'set-memory': either('mib', 'setMemory', 'setMemoryAny'),
+  'set-container-image-cleanup': (p, tr) => {
+    const on = flag(p, 'enabled')
+    if (has(p, 'enabled', 'days')) return say(tr, on ? 'cleanupOnDays' : 'cleanupOffDays', { days: p.days })
+    if (has(p, 'enabled')) return say(tr, on ? 'cleanupOn' : 'cleanupOff')
+    return has(p, 'days') ? say(tr, 'cleanupDays', { days: p.days }) : say(tr, 'cleanupAny')
+  },
   'allow': listed('allow', 'for'),
   'disallow': listed('disallow'),
   'extend': listed('extend', 'by'),
@@ -224,6 +231,9 @@ export const SENTENCES: Record<string, Sentence> = {
   },
   'github.error': (p, tr) => (has(p, 'request') ? say(tr, 'githubError', { request: p.request }) : null),
   'allowlist.expired': listed('expired'),
+  'container-image-cleanup.removed': (p, tr) => (has(p, 'removed', 'freed_bytes')
+    ? say(tr, 'cleanupRemoved', { removed: p.removed, freed: formatHostBytes(Number(p.freed_bytes)) }) : null),
+  'container-image-cleanup.failed': plain('cleanupFailed'),
   'wake.not-responding': (p, tr) => (NOT_RESPONDING[p.reason ?? ''] ? say(tr, NOT_RESPONDING[p.reason!]!) : null),
   'reset.automatic': (p, tr) => {
     if (p.reason === 'update') return has(p, 'image', 'build') ? say(tr, 'resetAutomaticUpdate', { image: p.image, build: p.build }) : null

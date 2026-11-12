@@ -65,7 +65,7 @@ app/
                            (the Containerfile: link, text), SystemBuildLog,
                            GithubAppSection (App, Installations, replace App ID/key), SystemServices
   components/vm/           VM detail: Overview, Actions, NotResponding, ConfirmDialog, DeleteDialog,
-                           ImageDialog, MemoryDialog, CreateDialog (VM list), LogView (Log tab),
+                           ImageDialog, MemoryDialog, ContainerImageCleanupDialog, CreateDialog (VM list), LogView (Log tab),
                            PairView (Pair tab)
   components/allowlist/    EntryList, AddDialog, Refusal (/allowlist and the Web tab),
                            OpenWeb, BlockedList (Web tab)
