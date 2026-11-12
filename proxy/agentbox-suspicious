@@ -48,8 +48,9 @@ das offene Web):
                                      HaGeZi-Listen fuer sie und darunter zaehlen nicht (beim
                                      Einstufen, die Listen liegen ungefiltert); ausgenommen
                                      Subdomains der User-Content-Domains (USER_CONTENT:
-                                     github.io, githubusercontent.com), auf denen beliebige
-                                     Nutzer veroeffentlichen: deren Treffer zaehlen
+                                     github.io, githubusercontent.com, claudeusercontent.com),
+                                     auf denen beliebige Nutzer veroeffentlichen: deren
+                                     Treffer zaehlen
                                      Bis agentbox migrate-lists sie anlegt, gelten an ihrer
                                      Stelle die Textdateien suspicious-domains und
                                      legitimate-domains (eine Domain pro Zeile).
@@ -113,18 +114,21 @@ STRUCTURAL = {"raw-ip", "metadata"}
 GENUINE = {
     "npmjs.org", "npmjs.com", "pypi.org", "pythonhosted.org", "python.org", "crates.io",
     "rust-lang.org", "github.com", "githubusercontent.com", "githubassets.com", "github.io",
-    "ghcr.io", "anthropic.com", "claude.ai", "claude.com", "openai.com", "chatgpt.com",
-    "docker.io", "docker.com", "yarnpkg.com", "nodejs.org", "bun.sh", "opencode.ai",
+    "ghcr.io", "anthropic.com", "claude.ai", "claude.com", "claudeusercontent.com", "openai.com",
+    "chatgpt.com", "docker.io", "docker.com", "yarnpkg.com", "nodejs.org", "bun.sh", "opencode.ai",
 }
 BRANDS = ("npm", "npmjs", "pypi", "pythonhosted", "crates", "github", "ghcr", "anthropic",
           "claude", "openai", "docker", "yarnpkg", "nodejs")
 # Von GENUINE die Domains, deren Subdomains beliebigen Nutzern gehoeren: GitHub Pages
-# (<nutzer>.github.io) und die Raw-Hosts von GitHub (raw.githubusercontent.com, ...). Sie
-# bleiben fuer die Marke legitim (keine Muster-Merkmale, die Domain selbst mit
-# eingerechnet), aber Treffer der HaGeZi-Listen auf ihren Subdomains zaehlen: dort kann
-# jeder Inhalte veroeffentlichen. Kein Eintrag der legitimen Domains hebt sie auf, auch
-# keiner des Hosts darunter nicht, und sei er noch so spezifisch (explain).
-USER_CONTENT = frozenset({"github.io", "githubusercontent.com"})
+# (<nutzer>.github.io), die Raw-Hosts von GitHub (raw.githubusercontent.com, ...) und die
+# Artifacts von claude.ai (<id>.claudeusercontent.com). Sie bleiben fuer die Marke legitim
+# (keine Muster-Merkmale, die Domain selbst mit eingerechnet), aber Treffer der
+# HaGeZi-Listen auf ihren Subdomains zaehlen: dort kann jeder Inhalte veroeffentlichen.
+# Kein Eintrag der legitimen Domains hebt sie auf, auch keiner des Hosts darunter nicht,
+# und sei er noch so spezifisch (explain); auch nicht claudeusercontent.com, das die Liste
+# eines neuen Hosts (legitimate-domains) frueher als Eintrag des Hosts brachte. Eingebaut,
+# damit es kein Host abschalten kann.
+USER_CONTENT = frozenset({"github.io", "githubusercontent.com", "claudeusercontent.com"})
 # Kuerzere Namen sind zu oft echte Woerter oder Kuerzel (pypa): keine Tippfehler-Pruefung,
 # und kuerzere Vorlagen (bun, pypi, ghcr) machen fast jedes Wort zum Tippfehler (bunny)
 MIN_TYPO = 5
@@ -1066,15 +1070,15 @@ SELFTEST_WATCHLIST = ("exfil-selftest.example", "exfil", "self-test")
 SELFTEST_LEGITIMATE = ("legit-selftest.example", "cdn.vendor-selftest.example")
 SELFTEST_FEEDS = {
     "threat-intelligence": ["evil-selftest.example", "github.com", "objects.githubusercontent.com",
-                            "evil.github.io", "cdn.legit-selftest.example", "vendor-selftest.example",
-                            "mirror2-selftest.example"],
+                            "evil.github.io", "evil.claudeusercontent.com", "cdn.legit-selftest.example",
+                            "vendor-selftest.example", "mirror2-selftest.example"],
     "newly-registered": ["npmjs.com", "young-selftest.example", "mirror1-selftest.example"],
 }
 SELFTEST_HARMLESS = ["npm-selftest.example"]
 # (host, erwartete Merkmale, genau) - ohne offenes Web, nichts davon wird aufgeloest. Echte
-# Namen nur fuer die eingebauten legitimen Domains und Subdomains davon (github.io: nur eine
-# echte Subdomain ist User Content), sonst .example, das die Listen des Hosts
-# nicht nennen; deckt ein Eintrag der Verdachtsliste des Hosts einen Fall doch ab, kommt seine
+# Namen nur fuer die eingebauten legitimen Domains und Subdomains davon (github.io,
+# claudeusercontent.com: nur eine echte Subdomain ist User Content), sonst .example, das
+# die Listen des Hosts nicht nennen; deckt ein Eintrag der Verdachtsliste des Hosts einen Fall doch ab, kommt seine
 # Kategorie zu den erwarteten Merkmalen. Dazu kommt ein Eintrag der Verdachtsliste des Hosts
 # (der erste), wenn sie einen hat.
 SELFTEST_CASES = [
@@ -1085,6 +1089,8 @@ SELFTEST_CASES = [
     ("evil.github.io", {"threat"}, True),                # ... ausser Subdomains von User Content:
     ("objects.githubusercontent.com", {"threat"}, True), # deren Treffer zaehlen (eingebaut)
     ("user.github.io", set(), True),                     # ohne Treffer keine Merkmale darunter
+    ("evil.claudeusercontent.com", {"threat"}, True),    # Artifacts von claude.ai, auch mit dem
+                                                         # Eintrag des Hosts aus der Erstbefuellung
     ("npmjs.com", set(), True),
     ("cdn.legit-selftest.example", set(), True),         # Listeneintrag, aber legitim (Host)
     ("cdn.vendor-selftest.example", set(), True),        # Listeneintrag darueber, aber legitim

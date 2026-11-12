@@ -267,7 +267,13 @@ says why it is there. Allowing a domain that is already allowed never shortens i
 expiry, `set-note` changes the note, `disallow` removes it. Destinations with strong Signals
 need `--force` for `allow`, `extend` and `make-permanent`; the Control Room never passes it.
 While the Watchlist cannot be read, every destination needs it: which Signals are strong is
-unknown then.
+unknown then. A new Host starts with entries for all VMs (`proxy/allowlist`), among them
+`claudeusercontent.com`, so claude.ai artifacts load in every VM without Open web; a subdomain
+the threat-intelligence Feed lists there passes with an Alert only, since a domain entry is
+checked when it is added
+([ARCHITECTURE.md](ARCHITECTURE.md#known-residual-risks)). `agentbox disallow all
+claudeusercontent.com` removes the entry: artifacts then need Open web, which keeps Feed-listed
+ones blocked, or an entry of their own.
 An entry can also be a pattern, a **Regex entry**: `--regex PATTERN` in place of the domain,
 in every command of the four lists (Allowlist, Watchlist, Legitimate domains, Harmless marks),
 also to remove or change it ([ADR 0013](docs/adr/0013-regex-entries-in-every-list.md)). It
@@ -303,9 +309,10 @@ Room's Watchlist view, and every change is recorded in Activity
 `watch-set-note` and `legitimate-set-note` change notes. A Legitimate domain gets no pattern
 Signals except the blockchain pattern (`rpc.`, `mainnet`, `infura`, …), and Feed hits for it and its
 subdomains do not count — except the built-in user-content hosts (`github.io`,
-`githubusercontent.com`), whose subdomains serve what anyone publishes: Feed hits on those count,
-whatever Legitimate entry covers them. The Feeds are stored as fetched, so this takes effect, and
-ends, at once. Changes that would lift strong
+`githubusercontent.com`, `claudeusercontent.com`), whose subdomains serve what anyone publishes:
+Feed hits on those count, whatever Legitimate entry covers them (also the `claudeusercontent.com`
+entry a Host set up earlier has from its starting list). The Feeds are stored as fetched, so this
+takes effect, and ends, at once. Changes that would lift strong
 Signals need `--force`, and only the CLI on the Host passes it:
 - removing a Watchlist entry of a strong category, or lowering it to `payload`;
 - adding a Legitimate domain that has strong Signals itself or has threat-intelligence entries

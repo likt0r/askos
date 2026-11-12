@@ -403,13 +403,17 @@ flowchart LR
 
 **Legitimate domains** (registries, vendors, distributions) get no pattern Signals except the
 blockchain pattern, and Feed hits for one or a subdomain of it do not count, so a broken feed
-cannot stop normal work there. Two of the built-in ones are hosts of arbitrary user content,
-`github.io` and `githubusercontent.com` (anyone's GitHub Pages site, GitHub's raw-content
-hosts): they keep the pattern Signals off the brand as well, but Feed hits on their subdomains
-count, so a known phishing or payload site there stays blocked in Open web. The domains
-themselves, like `github.com`, keep their treatment, and no Legitimate entry lifts those Feed
-hits again, also not one of the Host below one (however specific), so one from before this rule
-stops suppressing them. The classifier
+cannot stop normal work there. Three of the built-in ones are hosts of arbitrary user content,
+`github.io`, `githubusercontent.com` and `claudeusercontent.com` (anyone's GitHub Pages site,
+GitHub's raw-content hosts, the artifacts anyone shares from claude.ai): they keep the pattern
+Signals off the brand as well, but Feed hits on their subdomains count, so a known phishing or
+payload site there stays blocked in Open web. The domains themselves keep their treatment, as do
+the brands' own domains such as `github.com`, `claude.ai`, `claude.com` and `anthropic.com`. No
+Legitimate entry lifts those Feed hits again, also not one of the Host at or below a
+user-content host (however specific), so one from before this rule stops suppressing them: the
+list a new Host started with brought `claudeusercontent.com` as an entry of the Host, which
+stays in its `legitimate.json` but lifts nothing below it. Built-in domains cannot be removed,
+so no Host can switch the rule off. The classifier
 lifts them when it classifies; `agentbox-feeds` stores the Feeds as fetched, so a removed
 Legitimate domain counts again at once, and a Feed entry above one (`vendor.example` above
 `cdn.vendor.example`) still counts for its other subdomains. Watchlist
@@ -492,7 +496,8 @@ resolving any name. Besides its own test entries it checks one real Watchlist en
 Host, so a list that does not load is noticed, and that a broken Watchlist closes Open web.
 Its cases use names under `.example` besides the built-in Legitimate domains, and a Host
 entry covering one of them is expected as well, so ordinary entries cannot fail it. One case
-is a Feed hit on a `github.io` subdomain, which counts as user content (above). It covers
+is a Feed hit on a `github.io` subdomain, another on a `claudeusercontent.com` subdomain, both
+counting as user content (above). It covers
 one Regex entry per list, in lists of only its own test entries (the text files from before
 the records have no patterns): a Watchlist pattern raises its Signal, a Legitimate pattern
 lifts a weak Signal but not a strong one, a Harmless pattern stops an Alert, and an Allowlist
@@ -1108,12 +1113,14 @@ otherwise in `lib/agentbox` under their own prefix.
   per-VM revocation limit the damage; they do not prevent it.
 - **GitHub is on the allowlist** and so is a possible channel to send data out, for example
   in issues or commits of a repository the VM may write to.
-- **User content under a Legitimate domain the Host keeps.** Feed hits count under the
-  built-in user-content hosts (`github.io`, `githubusercontent.com`;
-  [Detection](#detection)), but a Legitimate domain of the Host can be such a host as well:
-  the list a new Host starts with brings `claudeusercontent.com`, which serves claude.ai
-  artifacts, and Feed hits below it do not count until the owner removes the entry.
-  Mitigation: the hand-maintained Watchlist, which applies to Legitimate domains as well.
+- **User content below an Allowlist entry.** A domain entry is checked for strong Signals only
+  when it is added, and the Allowlist a new Host starts with has `githubusercontent.com` and
+  `claudeusercontent.com` (so claude.ai artifacts load in every VM without Open web). A
+  subdomain the threat-intelligence Feed lists there passes the proxy; it raises an Alert,
+  because Feed hits on the built-in user-content hosts count ([Detection](#detection)), but is
+  not blocked. An owner who prefers the block removes the entry (`agentbox disallow all
+  claudeusercontent.com`): artifacts then need Open web or an entry of their own, and Open web
+  keeps Feed-listed ones blocked.
 - **Domain fronting:** the proxy checks the server name of the TLS handshake only; what
   goes on inside the connection it cannot see. An allowed domain served by a shared CDN
   (e.g. `registry.npmjs.org`) can carry traffic to other sites on that CDN. HTTP/2

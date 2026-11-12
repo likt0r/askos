@@ -462,6 +462,25 @@ class LegitimateTest(CliTest):
                          {"domain": "github.io", "regex": None, "builtin": True,
                           "message": "github.io is built in and legitimate already"})
 
+    def test_claudeusercontent_is_a_built_in_user_content_host_also_with_the_seeded_entry(self):
+        # a Host set up before it was built in has claudeusercontent.com in legitimate.json from
+        # the list a new Host starts with: that entry neither keeps Feed hits below it lifted nor
+        # can switch the rule off (built in: listed once, as such, and it cannot be removed)
+        write(os.path.join(self.conf, "legitimate.json"), record(
+            legit("registry.example", "Paketquelle"), legit("claudeusercontent.com", added_by="migration")))
+        write(os.path.join(self.feeds, "threat-intelligence"),
+              b"".join(d.encode() + b"\n" for d in sorted(["bad.example", "evil.claudeusercontent.com"])))
+        rep = self.check("evil.claudeusercontent.com")
+        self.assertEqual(([s["signal"] for s in rep["signals"]], rep["strong"]), (["threat"], True))
+        self.assertEqual(self.check("other.claudeusercontent.com")["signals"], [])
+        self.assertEqual([r for r in self.json("legitimate") if r["domain"] == "claudeusercontent.com"],
+                         [{"domain": "claudeusercontent.com", "regex": None, "note": "", "added": None,
+                           "added_by": None, "builtin": True, "refused": None}])
+        self.assertEqual(self.refused("legitimate-remove", "claudeusercontent.com"),
+                         "claudeusercontent.com is built in and stays legitimate")
+        self.ok("legitimate-add", "evil.claudeusercontent.com")     # no --force: it lifts nothing there
+        self.assertEqual([s["signal"] for s in self.check("x.evil.claudeusercontent.com")["signals"]], ["threat"])
+
     def test_without_the_threat_intelligence_list_only_with_force(self):
         # before the first fetch nothing tells which of its entries the domain would lift
         os.remove(os.path.join(self.feeds, "threat-intelligence"))
@@ -715,7 +734,11 @@ class MigrationTest(CliTest):
         domains = [e["domain"] for e in self.stored("watchlist.json")]
         self.assertIn("webhook.site", domains)
         self.assertEqual(len(domains), result["watchlist"]["migrated"])
-        self.assertIn("claudeusercontent.com", [e["domain"] for e in self.stored("legitimate.json")])
+        legitimate = [e["domain"] for e in self.stored("legitimate.json")]
+        self.assertEqual(len(legitimate), result["legitimate"]["migrated"])
+        self.assertIn("huggingface.co", legitimate)
+        # built-in ones in the seed are not taken over, claudeusercontent.com among them
+        self.assertFalse({"github.com", "githubusercontent.com", "github.io", "claudeusercontent.com"} & set(legitimate))
 
 
 # --- Seam C: the proxy with records ---------------------------------------------------
@@ -907,6 +930,8 @@ class SelfTest(unittest.TestCase):
         # a Feed hit on a github.io subdomain counts: the host serves user content
         self.assertIn("ok      evil.github.io: expected threat, got threat", out)
         self.assertIn("ok      user.github.io: expected -, got -", out)
+        # so does one on a claudeusercontent.com subdomain (claude.ai artifacts)
+        self.assertIn("ok      evil.claudeusercontent.com: expected threat, got threat", out)
         # a broken Watchlist closes Open web
         self.assertIn("ok      free-selftest.example: Open web: expected blocked for Watchlist unreadable", out)
 
@@ -918,7 +943,7 @@ class SelfTest(unittest.TestCase):
                 watch("pypx.com", "exfil")))
             write(os.path.join(conf, "legitimate.json"), record(
                 legit("githbu.com"), legit("example.org"),
-                legit("objects.githubusercontent.com"), legit("evil.github.io")))
+                legit("objects.githubusercontent.com"), legit("evil.github.io"), legit("claudeusercontent.com")))
             code, out, err = self.run_self_test(conf)
         self.assertEqual((code, err), (0, ""), out)
         # a Feed hit on a user-content host counts besides the hand Watchlist entry, and a
@@ -926,6 +951,8 @@ class SelfTest(unittest.TestCase):
         # does not lift it
         self.assertIn("ok      objects.githubusercontent.com: expected payload,threat, got payload,threat", out)
         self.assertIn("ok      evil.github.io: expected threat, got threat", out)
+        # claudeusercontent.com as a Host entry, as the list a new Host started with brought it
+        self.assertIn("ok      evil.claudeusercontent.com: expected threat, got threat", out)
         self.assertIn("ok      npmjs.com: expected c2, got c2", out)
 
     def test_needs_no_particular_entry(self):
