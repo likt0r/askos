@@ -445,6 +445,52 @@ class RegenerateTest(RegistryTest):
         self.assertFalse(self.json("regenerate")["storage"])
         self.assertEqual([c for c in self.calls() if c["cmd"].startswith("pool-")], [])
 
+    def socket_calls(self):
+        """What stops or restarts the VMs' own sockets and services."""
+        return [c["argv"] for c in self.calls("systemctl") if c["argv"][0] in ("stop", "restart")
+                and c["argv"][1].startswith(("agentbox-proxy-", "agentbox-ghvm-", "agentbox-gui-"))]
+
+    def test_a_changed_proxy_socket_is_restarted_after_its_proxy_stopped(self):
+        # systemd keeps an active socket where it was, and the proxy keeps the socket it was handed
+        self.write("etc/systemd/system/agentbox-proxy-priv.socket", PROXY_SOCKET.replace(":443", ":3128"))
+        code, out, err = self.run_agentbox("regenerate")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(self.read("etc/systemd/system/agentbox-proxy-priv.socket"), PROXY_SOCKET)
+        # work's sockets are new: enable --now starts them
+        self.assertEqual(self.socket_calls(), [["stop", "agentbox-proxy-priv.service"],
+                                               ["restart", "agentbox-proxy-priv.socket"]])
+        # after systemd read the new unit
+        argv = [c["argv"] for c in self.calls("systemctl")]
+        reloaded = max(i for i, a in enumerate(argv) if a == ["daemon-reload"])
+        self.assertLess(reloaded, argv.index(["stop", "agentbox-proxy-priv.service"]))
+        self.assertIn("priv: changed sockets restarted on their new addresses\n", out)
+        self.assertNotIn("work: changed sockets", out)
+
+    def test_a_changed_socket_of_its_own_connections_is_only_restarted(self):
+        # Accept=yes: every connection has its own process, none holds the listening socket
+        self.run_agentbox("regenerate")
+        gui = "etc/systemd/system/agentbox-gui-priv.socket"
+        self.write(gui, self.read(gui).replace("ListenStream=", "ListenStream=127.0.0.2:"))
+        self.forget_calls()
+        self.run_agentbox("regenerate")
+        self.assertEqual(self.socket_calls(), [["restart", "agentbox-gui-priv.socket"]])
+
+    def test_unchanged_sockets_are_left_alone(self):
+        self.run_agentbox("regenerate")
+        self.forget_calls()
+        self.run_agentbox("regenerate")
+        self.assertEqual(self.socket_calls(), [])
+
+    def test_a_socket_left_to_rebind_by_a_failed_run_is_rebound_by_the_next(self):
+        self.run_agentbox("regenerate")
+        self.write("etc/systemd/system/agentbox-proxy-priv.socket", PROXY_SOCKET.replace(":443", ":3128"))
+        self.scenario(vms={"priv": {"uuid": PRIV_UUID}}, systemctl_fails=["stop"])
+        self.assertEqual(self.run_agentbox("regenerate")[0], 1)
+        self.scenario(vms={"priv": {"uuid": PRIV_UUID}})
+        self.forget_calls()
+        self.run_agentbox("regenerate")
+        self.assertIn(["restart", "agentbox-proxy-priv.socket"], self.socket_calls())
+
     def test_reloads_systemd_and_firewall_and_enables_the_sockets(self):
         self.run_agentbox("regenerate")
         # firewall rules first: they hold before any bridge comes up; then the journal

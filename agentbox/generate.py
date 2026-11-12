@@ -36,6 +36,7 @@ POOL = "agentbox-vms"
 JOURNALD = f"systemd-journald@{activity.NAMESPACE}"     # journald instance of the Activity namespace
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 SAID = {"network": "network created or started", "units": "units written",
+        "sockets": "changed sockets restarted on their new addresses",
         "network-redefined": "network brought to the current definition",
         "network-redefined-running": "network brought to the current definition and restarted; the running "
                                      "VM has no network until its next Restart (libvirt does not reconnect "
@@ -307,6 +308,13 @@ def _pending(what):
     return os.path.join(paths.STATE, "pending", what)
 
 
+def _mark(pending):
+    if not os.path.isdir(os.path.dirname(_pending(pending))):
+        os.makedirs(os.path.dirname(_pending(pending)))
+        os.chmod(os.path.dirname(_pending(pending)), 0o700)
+    open(_pending(pending), "w").close()
+
+
 def _write_if_changed(path, data, mode, pending):
     """Write when different; the pending marker comes first, so a run that dies
     before applying leaves it for the next run."""
@@ -316,10 +324,7 @@ def _write_if_changed(path, data, mode, pending):
                 return False
     except FileNotFoundError:
         pass
-    if not os.path.isdir(os.path.dirname(_pending(pending))):
-        os.makedirs(os.path.dirname(_pending(pending)))
-        os.chmod(os.path.dirname(_pending(pending)), 0o700)
-    open(_pending(pending), "w").close()
+    _mark(pending)
     state_files.write_atomic(path, data, mode)
     return True
 
@@ -461,10 +466,38 @@ def _network(rec):
 
 
 def _units(rec):
+    """The VM's units written. A socket unit that existed with other text is marked, before
+    it is written, to be listened on again (_rebind)."""
     changed = False
     for name, text in units(rec).items():
-        changed |= _write_if_changed(os.path.join(paths.SYSTEMD, name), text.encode(), 0o644, "units")
+        path = os.path.join(paths.SYSTEMD, name)
+        if name.endswith(".socket"):
+            try:
+                with open(path, "rb") as f:
+                    if f.read() != text.encode():
+                        _mark(f"socket-{name}")
+            except FileNotFoundError:
+                pass
+        changed |= _write_if_changed(path, text.encode(), 0o644, "units")
     return changed
+
+
+def _rebind(rec):
+    """Each of the VM's sockets whose unit text changed, listening where it now says, after
+    daemon-reload: systemd keeps an active socket on its old address, and a service that was
+    handed the listening socket (Accept=no, the proxy) keeps serving it, so that service is
+    stopped first and the socket restarted; the next connection starts the service on the
+    new socket. Whether one was restarted."""
+    done = False
+    for name, text in units(rec).items():
+        if not name.endswith(".socket") or not os.path.exists(_pending(f"socket-{name}")):
+            continue
+        if "Accept=yes" not in text:
+            _systemctl("stop", name[:-len(".socket")] + ".service")
+        _systemctl("restart", name)
+        os.remove(_pending(f"socket-{name}"))
+        done = True
+    return done
 
 
 def _storage_pool():
@@ -903,6 +936,9 @@ def apply():
     timers = _rebuild(values) or timers
     timers = _versions(values) or timers
     _apply_pending("units", "daemon-reload")
+    for rec in records:
+        if _rebind(rec):
+            changes[rec["name"]].append("sockets")
     if records:
         _systemctl("enable", "--now", *[s for rec in records for s in sockets(rec)])
     return {"vms": changes, "firewall": firewall, "storage": storage, "retention": retention,

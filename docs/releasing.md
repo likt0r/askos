@@ -108,7 +108,8 @@ and no `agentbox` command runs.
   again (`sudo agentbox regenerate`, or `sudo agentbox setup`, which keeps the Host setup and
   does the Host steps again). It brings each VM network to the current definition; a VM
   running on a network it had to restart has no network until its next Restart, and
-  `regenerate` names it.
+  `regenerate` names it. A socket whose unit changed is restarted on its new address, a VM's
+  proxy stopped first.
 
 `rpm/upgrade-test.sh` checks all of this in CI: it updates an older Release on a Host in use
 to the RPM of the pull request, reinstalls it and removes it.
