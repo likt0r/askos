@@ -204,6 +204,9 @@ export const SENTENCES: Record<string, Sentence> = {
   'update-now': (p, tr) => thenReset(p, tr, say(tr, 'updateNow')),
   'set-image': (p, tr) => (!has(p, 'image') ? null
     : has(p, 'build') ? say(tr, 'setImagePinned', { image: p.image, build: p.build }) : say(tr, 'setImageCurrent', { image: p.image })),
+  'import': (p, tr) => (!has(p, 'folder', 'target') ? say(tr, 'importAny')
+    : has(p, 'files', 'bytes') ? say(tr, 'importDone', { folder: p.folder, target: p.target, files: p.files, bytes: p.bytes })
+      : say(tr, 'importFolder', { folder: p.folder, target: p.target })),
   // the Control Room's sign-ins
   'signin': plain('signin'),
   'signin.failed': plain('signinFailed'),

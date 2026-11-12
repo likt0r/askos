@@ -228,6 +228,8 @@ agentbox legitimate                 # the Legitimate domains, the Host's and the
 agentbox legitimate-add pnpm.io --note "pnpm registry"   # no pattern Signals or Feed hits for it
 agentbox mark-harmless foo.example  # a false positive: no more Alerts (blocking stays)
 agentbox reset priv                 # fresh system disk, data disk kept
+agentbox import priv ~/projects/foo # copy a folder into the VM, unpacked: ~/code/foo there
+agentbox import priv ~/projects/foo clients/foo-new   # ... to ~/code/clients/foo-new
 agentbox images                     # Images, their Builds, which VM uses and is pinned to which, tool versions
 agentbox containerfile rust         # the Containerfile of an Image in the installed Release (its next Build)
 systemctl start agentbox-versions   # check now what a new Build would bring (the daily timer does it too)
@@ -330,6 +332,25 @@ start with a letter and cannot be changed later; words the CLI or the Control Ro
 themselves (`off`, `all`, `status`, `login`, `settings`, `v1`, …) are refused. The VM gets the
 lowest free network number and the Orca port 6800 + that number. It is not started:
 `agentbox pair <name>` starts it and prints the Pairing code.
+
+`agentbox import <vm> <folder> [<target>]` copies a folder of the Host into a VM, unpacked, to
+`~/code/<target>` there (on the Data disk, so it stays after a Reset; default target: the
+folder's name; missing parents are created), for instance a repository with work in progress
+that should go on in the VM ([ADR
+0015](docs/adr/0015-folders-go-into-a-vm-as-a-read-only-tar-disk.md)). Of a Git repository it
+takes the whole `.git` (branches, stashes, unpushed commits) and every file Git does not
+ignore (`git ls-files --cached --others --exclude-standard`), so `node_modules`, `.venv` or an
+ignored `.env` stay on the Host; of a folder without Git everything. A linked worktree (`.git`
+is a file) is refused: import its main repository. Symbolic links stay links; links leading
+out of the folder and special files are skipped and named. Under `sudo` the folder is read
+with your rights, not root's. An existing target is refused and nothing is overwritten; hooks
+in `.git/hooks` (also of nested repositories and submodules) other than the `*.sample` files
+are removed. A VM that is off is started, a paused one is refused. The Host packs the folder
+into a tar file, attaches it to the VM as a read-only disk for as long as the VM unpacks it
+and deletes it afterwards. The source stays on the Host: delete it yourself once the VM has
+it. VMs whose Build predates the command need a new Build and a Reset first (`agentbox build
+base --reset <vm>`). There is no free-space check in the VM and no scan for secrets: what the
+folder holds, the VM gets.
 
 `agentbox set-memory <name> <mib>` changes the memory limit later, within the same bounds
 as `create` (1024 MiB up to the Host's memory). It writes the record and the VM's libvirt

@@ -268,6 +268,31 @@ class ReleaseSourceTest(ImagesTest):
         self.assertEqual(self.current(), f"base-{OLD}.qcow2")
         self.assertEqual(self.podman("run"), [])          # no disk made
 
+    def test_a_release_without_the_inbox_wrapper_or_with_a_weaker_one_is_discarded(self):
+        """#47: agentbox-inbox unpacks `agentbox import` as the agent, with the data filter."""
+        path = os.path.join(self.source, "vm/files", safeguards.INBOX_WRAPPER.lstrip("/"))
+        with open(path) as f:
+            wrapper = f.read()
+        problem = (f"Guest agent: {safeguards.INBOX_WRAPPER} is missing or does not unpack as the agent with "
+                   "the data filter")
+        for what, changed in (("missing", None),
+                              ("no data filter", wrapper.replace('filter="data"', 'filter="fully_trusted"')),
+                              ("stays root", wrapper.replace("        become(USER)\n", ""))):
+            with self.subTest(what):
+                if os.path.exists(path):
+                    os.remove(path)
+                if changed is not None:
+                    self.assertNotEqual(changed, wrapper)
+                    with open(path, "w") as f:
+                        f.write(changed)
+                    os.chmod(path, 0o755)
+                code, out = self.build()
+                self.assertEqual(code, 1, out)
+                new = self.newest()
+                self.assertEqual(new["status"], "rejected")
+                self.assertIn(problem, new["problems"])
+                self.assertEqual(self.current(), f"base-{OLD}.qcow2")
+
     def test_a_release_letting_claude_code_fetch_claudeai_connectors_is_discarded(self):
         """#8: a Base image without ENABLE_CLAUDEAI_MCP_SERVERS=false for services and shells."""
         for rel, line in (("usr/lib/systemd/system.conf.d/agentbox.conf", '  "ENABLE_CLAUDEAI_MCP_SERVERS=false" \\\n'),
@@ -535,6 +560,12 @@ class SafeguardTest(ImagesTest):
                    journal="#!/bin/sh\nexec /bin/sh -c \"$@\"\n")
         self.rejected("weak", "Guest agent: /usr/libexec/qemu-ga/fsfreeze-hook.d/agentbox-journal",
                       "agentbox-journal differs (compared with the Base image)")
+
+    def test_a_changed_inbox_wrapper_is_rejected(self):
+        with open(os.path.join(REPO, "vm/files", safeguards.INBOX_WRAPPER.lstrip("/"))) as f:
+            changed = f.read().replace('CODE = "/var/home/agent/code"', 'CODE = "/var/home/agent"')
+        self.image("weak", DERIVED + f"COPY inbox {safeguards.INBOX_WRAPPER}\n", inbox=changed)
+        self.rejected("weak", "agentbox-inbox differs (compared with the Base image)")
 
     def test_an_image_not_built_on_the_base_build_is_rejected(self):
         self.image("weak", "FROM quay.io/fedora/fedora-bootc:44\nRUN dnf -y install clang\n")

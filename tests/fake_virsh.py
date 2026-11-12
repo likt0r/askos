@@ -19,6 +19,8 @@ scenario.json:
                 pinned_backing  the backing file the VM runs on after `start` (default: the
                               one in its System disk's header then, as libvirt fixes it)
                 defined       the domain exists in libvirt (default true)
+                disks         disks attached before any change, by target:
+                              {"vdc": {"source": "/x.tar", "serial": "agentbox-inbox"}} (default none)
                 uuid          its UUID (default: derived from the name)
   networks    libvirt networks that exist before any change, by name:
               {"agentbox-work": {"active": true, "autostart": true, "xml": "<network>..."}}
@@ -31,6 +33,20 @@ scenario.json:
               {"entries": [...]} or {"stdout": "..."}, plus optional
               "exitcode" (0), "stderr" (""), "truncated" (false),
               "signal" (killed by a signal; replaces exitcode)
+              Without responses, guest-exec of agentbox-inbox runs the real wrapper of
+              vm/files in the VM's own root, FAKE_VIRSH_DIR/guest-<vm> (its ~/code is
+              var/home/agent/code there), with the disk attached with the serial
+              agentbox-inbox as its device.
+  missing_wrappers  paths guest-exec cannot run: the guest agent fails as qemu-ga does
+              for a program the Image lacks
+  attach_fails, detach_fails  attach-disk or detach-disk fails with libvirt's error
+  attach_signals_parent  a successful attach-disk sends SIGTERM to the program that called virsh
+
+`attach-disk <domain> <file> <target> ... --serial S` and `detach-disk <domain> <target>`
+change a running VM's disks (domains.json), recorded with their arguments; a copy of each
+attached file is kept in FAKE_VIRSH_DIR/attached/, so a test sees what the VM got.
+
+`domblklist <domain>` lists the targets and sources of the System disk and the attached disks.
 
 `dumpxml` shows the System disk (under AGENTBOX_ROOT) and, while running, the
 backing file fixed at `start`. `start` adds the VM's QEMU process, started now, with
@@ -43,7 +59,7 @@ changes the VMs, networks and pools (changing), and their files are replaced who
 (save), so no call reads half a file or undoes another's change. A test that changes
 them while virsh may be called does the same (with changing(dir) and save(name, data, dir)).
 
-Recorded: guest-exec, guest-ping and the commands that change a VM (start, shutdown,
+Recorded: guest-exec, guest-ping, attach-disk, detach-disk and the commands that change a VM (start, shutdown,
 destroy, managedsave, managedsave-remove), each with the domain; define,
 net-define and pool-define with the XML they were given; net-autostart,
 net-start, net-destroy, net-undefine, pool-autostart and pool-start; undefine
@@ -55,6 +71,9 @@ import fcntl
 import json
 import os
 import re
+import shutil
+import signal
+import subprocess
 import sys
 import tempfile
 import time
@@ -65,6 +84,9 @@ import fake_proc
 
 DIR = os.environ.get("FAKE_VIRSH_DIR", "")      # unset where a test imports this module
 ROOT = os.environ.get("AGENTBOX_ROOT", "")
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+INBOX = "/usr/libexec/qemu-ga/fsfreeze-hook.d/agentbox-inbox"
+INBOX_DEVICE = "/dev/disk/by-id/virtio-agentbox-inbox"
 
 
 def process_started(domain):
@@ -119,6 +141,7 @@ def domain_state(scenario, domain):
     conf = vm_config(scenario, domain)
     initial = {"state": conf.get("state", scenario.get("state", "running")),
                "managed_save": conf.get("managed_save", False), "defined": conf.get("defined", True),
+               "disks": conf.get("disks") or {},
                "uuid": conf.get("uuid", str(uuid.uuid5(uuid.NAMESPACE_DNS, domain)))}
     return {**initial, **load("domains.json", {}).get(domain, {})}
 
@@ -417,7 +440,84 @@ def libvirt(scenario, cmd, rest):
         return pool(scenario, cmd, rest)
     if cmd in ("start", "shutdown", "destroy", "managedsave", "managedsave-remove", "dominfo", "dommemstat"):
         return lifecycle(scenario, cmd, rest[0])
+    if cmd in ("attach-disk", "detach-disk"):
+        return disks(scenario, cmd, rest)
+    if cmd == "domblklist":
+        st = domain_state(scenario, rest[0])
+        if not st["defined"]:
+            return no_domain(rest[0])
+        print(f" vda      {system_disk(rest[0])}")
+        for target, disk in (st.get("disks") or {}).items():
+            print(f" {target}      {disk['source']}")
+        return 0
     return 1
+
+
+def disks(scenario, cmd, rest):
+    """attach-disk <domain> <source> <target> [options], detach-disk <domain> <target> [options]:
+    only live, on a running VM."""
+    domain = rest[0]
+    st = domain_state(scenario, domain)
+    if not st["defined"]:
+        return no_domain(domain)
+    attached = dict(st.get("disks") or {})
+    if cmd == "attach-disk":
+        source, target, options = rest[1], rest[2], rest[3:]
+        record({"cmd": cmd, "dom": domain, "source": source, "target": target, "options": options})
+        if st["state"] != "running":
+            return not_running("attach disk to", domain)
+        if scenario.get("attach_fails"):
+            print("error: Failed to attach disk\nerror: internal error: unable to execute QEMU command "
+                  "'blockdev-add': Could not open '%s': Permission denied" % source, file=sys.stderr)
+            return 1
+        if target in attached or not os.path.isfile(source):
+            print(f"error: Failed to attach disk\nerror: target {target} already exists" if target in attached
+                  else f"error: Failed to attach disk\nerror: Cannot access storage file '{source}': "
+                       "No such file or directory", file=sys.stderr)
+            return 1
+        serial = options[options.index("--serial") + 1] if "--serial" in options else None
+        os.makedirs(os.path.join(DIR, "attached"), exist_ok=True)
+        shutil.copyfile(source, os.path.join(DIR, "attached", os.path.basename(source)))
+        attached[target] = {"source": source, "serial": serial}
+        save_state(domain, disks=attached)
+        print("Disk attached successfully")
+        sys.stdout.flush()
+        if scenario.get("attach_signals_parent"):
+            os.kill(os.getppid(), signal.SIGTERM)
+            time.sleep(0.5)
+        return 0
+    target, options = rest[1], rest[2:]
+    record({"cmd": cmd, "dom": domain, "target": target, "options": options})
+    if scenario.get("detach_fails") or target not in attached:
+        print(f"error: Failed to detach disk\nerror: No disk found whose source path or target is {target}",
+              file=sys.stderr)
+        return 1
+    del attached[target]
+    save_state(domain, disks=attached)
+    print("Disk detached successfully")
+    return 0
+
+
+def guest_root(domain):
+    return os.path.join(DIR, "guest-" + domain.removeprefix("agentbox-"))
+
+
+def run_inbox(scenario, domain, argv):
+    """The real agentbox-inbox in the VM's own root, its device the disk attached as agentbox-inbox."""
+    root = guest_root(domain)
+    device = root + INBOX_DEVICE
+    os.makedirs(os.path.dirname(device), exist_ok=True)
+    os.makedirs(os.path.join(root, "var/home/agent/code"), exist_ok=True)
+    if os.path.lexists(device):
+        os.remove(device)
+    with changing():
+        attached = domain_state(scenario, domain).get("disks") or {}
+    for disk in attached.values():
+        if disk.get("serial") == "agentbox-inbox":
+            os.symlink(disk["source"], device)
+    r = subprocess.run([sys.executable, "-I", os.path.join(REPO, "vm", "files", INBOX.lstrip("/")), *argv],
+                       capture_output=True, text=True, env=dict(os.environ, AGENTBOX_INBOX_ROOT=root))
+    return {"stdout": r.stdout, "stderr": r.stderr, "exitcode": r.returncode}
 
 
 def guest_agent(scenario, rest):
@@ -434,13 +534,26 @@ def guest_agent(scenario, rest):
         return 0
     if request["execute"] == "guest-exec":
         calls = [c for c in load_calls() if c["cmd"] == "guest-exec"]
-        record({"cmd": "guest-exec", "path": request["arguments"]["path"], "arg": request["arguments"]["arg"]})
-        print(json.dumps({"return": {"pid": 4000 + len(calls)}}))
+        path, argv = request["arguments"]["path"], request["arguments"]["arg"]
+        record({"cmd": "guest-exec", "path": path, "arg": argv})
+        if path in (scenario.get("missing_wrappers") or ()):
+            print("error: internal error: unable to execute QEMU agent command 'guest-exec': Failed to execute "
+                  f"child process \u201c{path}\u201d (No such file or directory)", file=sys.stderr)
+            return 1
+        pid = 4000 + len(calls)
+        if path == INBOX and not scenario.get("responses"):
+            with open(os.path.join(DIR, f"exec-{pid}.json"), "w") as f:
+                json.dump(run_inbox(scenario, rest[0], argv), f)
+        print(json.dumps({"return": {"pid": pid}}))
         return 0
     if request["execute"] == "guest-exec-status":
         n = request["arguments"]["pid"] - 4000
         responses = scenario.get("responses") or [{"entries": []}]
         r = responses[min(n, len(responses) - 1)]
+        ran = os.path.join(DIR, f"exec-{request['arguments']['pid']}.json")
+        if os.path.exists(ran):
+            with open(ran) as f:
+                r = json.load(f)
         out = r["stdout"] if "stdout" in r else "".join(json.dumps(e) + "\n" for e in r.get("entries", []))
         status = {"signal": r["signal"]} if "signal" in r else {"exitcode": r.get("exitcode", 0)}
         print(json.dumps({"return": {

@@ -11,7 +11,7 @@ import re
 import sys
 
 from . import activity, allowlist, credentials, describe, detection, generate, github, guest, images, lifecycle
-from . import lists, network, pairings, paths, settings, setup, version, versions, vms, watch
+from . import lists, network, pairings, paths, settings, setup, transfer, version, versions, vms, watch
 from .errors import Fail
 
 USAGE = """\
@@ -43,6 +43,9 @@ Controls the agent VMs on this Host.
   agentbox unpair <vm> <device> [--json]             remove a single device: Orca does not support it
   agentbox revoke-pairings <vm> --confirm <vm> [--json]
                 revoke all pairings (new Orca identity); the Host pairs again as Observer
+  agentbox import <vm> <folder> [<target>] [--json]
+                copy a folder of the Host into the VM, unpacked, to ~/code/<target> (default: the folder's
+                name); of a Git repository .git and the files Git does not ignore; starts the VM if needed
   agentbox logs <vm> [--unit U] [--priority P] [--since T] [--until T] [--boot current|all]
                 [--grep TEXT] [--lines N] [--after-cursor C] [--json]   the VM's journal
   agentbox set-claude-token <vm> [--no-prompt] [--json]   token from `claude setup-token` (stdin)
@@ -138,7 +141,7 @@ COMMANDS = {**guest.COMMANDS, **lifecycle.COMMANDS, **network.COMMANDS, **creden
             **generate.COMMANDS, **vms.COMMANDS, **activity.COMMANDS, **detection.COMMANDS,
             **pairings.COMMANDS, **settings.COMMANDS, **github.COMMANDS, **allowlist.COMMANDS,
             **images.COMMANDS, **describe.COMMANDS, **watch.COMMANDS, **lists.COMMANDS,
-            **setup.COMMANDS, **version.COMMANDS, **versions.COMMANDS}
+            **setup.COMMANDS, **version.COMMANDS, **versions.COMMANDS, **transfer.COMMANDS}
 
 # The options that take a value, as USAGE shows them ("--note TEXT", "--for 15min|1h|...").
 # Given as --note VALUE, the value is the next argument, whatever it looks like.

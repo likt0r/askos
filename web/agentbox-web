@@ -1526,6 +1526,12 @@ AGENTBOX_ERRORS = {
     "invalid_github_owner": (400, "Invalid GitHub owner name"),
     "github_owner_required": (400, "At least one GitHub owner is needed"),
     "journal_failed": (502, "Reading the journal failed"),
+    "folder_not_found": (404, "No such folder on the Host"),
+    "not_a_folder": (400, "This is not a folder"),
+    "linked_worktree": (400, "This is a linked worktree; import its main repository instead"),
+    "target_exists": (409, "The target exists in the VM already; nothing was changed"),
+    "inbox_missing": (409, "The VM's Build cannot receive folders yet; build its Image and reset the VM first"),
+    "import_failed": (500, "Copying the folder into the VM failed"),
     "invalid_argument": (400, "Invalid value"),
     "action_failed": (500, "The action failed"),
 }

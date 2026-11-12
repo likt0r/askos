@@ -169,7 +169,7 @@ describe('Activity in the UI language', () => {
       domain: 'd.example', scope: 'all', duration: '1h', target: 'priv', image: 'base', build: '20261101', mib: '8192',
       minutes: '30', category: 'paste', list: 'watchlist', legacy: 'old-file', migrated: '2', skipped: '0', owners: 'a',
       app_id: '1', settings: 'reset_time', reason: 'idle', signals: 'young', images: 'base', release: '0.3.0',
-      repository: 'a/b', request: 'a/b',
+      repository: 'a/b', request: 'a/b', folder: '/home/a/foo', files: '3', bytes: '120',
     }
     // a reason the sentence knows, where it is a code of its own
     const reasons: Record<string, string> = { 'wake.not-responding': 'system-not-booted', 'github.refused': 'not-installed' }

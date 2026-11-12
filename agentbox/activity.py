@@ -105,6 +105,7 @@ _actor = None
 _unchanged = False
 _refused = False                     # the namespace did not let this user write (said once)
 _own_entry = False
+_result = {}                         # parameters a command adds once it ran (result())
 
 
 # --- actor -------------------------------------------------------------------
@@ -257,6 +258,12 @@ def unchanged():
     _unchanged = True
 
 
+def result(**params):
+    """Parameters of the command's entry that are known only once it ran (an import's files
+    and bytes); the dispatcher adds them to those DESCRIBE gives."""
+    _result.update(params)
+
+
 def own_entry():
     """For a command that recorded what is due itself, or found that nothing is (a wake
     giving up on a VM that does not answer: one entry per incident, #54): the dispatcher
@@ -404,6 +411,18 @@ def _build(a):
     return _then_reset(a, f"Start a Build of {_arg(a, 0)}", image=_name(_arg(a, 0), settings.IMAGE))
 
 
+def _import(a):
+    """The folder as an absolute path; the target only when it is one."""
+    from . import transfer               # transfer imports this module
+    p = _positional(a)
+    folder = transfer.folder_path(_arg(p, 1)) if _arg(p, 1) else None
+    target = transfer.target_for(_arg(p, 1), _arg(p, 2)) if folder else None
+    target = target if target and transfer.target_problem(target) is None else None
+    if folder and target:
+        return _said(f"Import {folder} into ~/code/{target}", folder=folder, target=target)
+    return _said("Import a folder", folder=folder)
+
+
 def _set_image(a):
     image, build = _arg(a, 1), _opt(a, "--build")
     return _said(f"Image {image}, " + (f"pinned to Build {build}" if build else "always its current Build")
@@ -465,6 +484,7 @@ DESCRIBE = {
     "build": _build,
     "update-now": lambda a: _then_reset(a, "Update now: check the versions, build every Image with an update"),
     "set-image": _set_image,
+    "import": _import,
 }
 
 
@@ -496,6 +516,7 @@ def command(cmd, args):
         yield
         return
     _unchanged = _own_entry = False
+    _result.clear()
     vm_before = _known_vm(args)
     what, params = DESCRIBE[cmd](args) if cmd in DESCRIBE else (None, {})
     kind = COMMAND_KINDS.get(cmd, "action")
@@ -505,8 +526,8 @@ def command(cmd, args):
         text = what
         if text is None:          # new commands: the command line without the VM and --json
             text = " ".join([cmd, *(a for a in (args[1:] if vm else args) if a != "--json")])
-        record(kind, cmd, f"{text}: {message}" if message else text, vm, outcome, params=params, error=error,
-               error_params=error_params, **fields)
+        record(kind, cmd, f"{text}: {message}" if message else text, vm, outcome, params={**params, **_result},
+               error=error, error_params=error_params, **fields)
 
     try:
         yield
