@@ -476,10 +476,22 @@ class LegitimateTest(CliTest):
         self.assertEqual([r for r in self.json("legitimate") if r["domain"] == "claudeusercontent.com"],
                          [{"domain": "claudeusercontent.com", "regex": None, "note": "", "added": None,
                            "added_by": None, "builtin": True, "refused": None}])
-        self.assertEqual(self.refused("legitimate-remove", "claudeusercontent.com"),
-                         "claudeusercontent.com is built in and stays legitimate")
         self.ok("legitimate-add", "evil.claudeusercontent.com")     # no --force: it lifts nothing there
         self.assertEqual([s["signal"] for s in self.check("x.evil.claudeusercontent.com")["signals"]], ["threat"])
+
+    def test_legitimate_remove_drops_the_seeded_record_of_a_built_in_domain(self):
+        # the record cannot be listed (the domain shows once, as built in), so remove must be able
+        # to take it out, else a release that drops the domain from the built-in ones would lift again
+        write(os.path.join(self.conf, "legitimate.json"), record(
+            legit("registry.example", "Paketquelle"), legit("claudeusercontent.com", added_by="migration")))
+        out = self.json("legitimate-remove", "claudeusercontent.com")
+        self.assertEqual((out["removed"], out["domain"]), (True, "claudeusercontent.com"))
+        with open(os.path.join(self.conf, "legitimate.json")) as f:
+            self.assertEqual([e["domain"] for e in json.load(f)["entries"]], ["registry.example"])
+        self.assertIn("claudeusercontent.com", [r["domain"] for r in self.json("legitimate") if r["builtin"]])
+        # without a record it stays refused
+        self.assertEqual(self.refused("legitimate-remove", "claudeusercontent.com"),
+                         "claudeusercontent.com is built in and stays legitimate")
 
     def test_without_the_threat_intelligence_list_only_with_force(self):
         # before the first fetch nothing tells which of its entries the domain would lift

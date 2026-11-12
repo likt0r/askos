@@ -1078,9 +1078,9 @@ SELFTEST_HARMLESS = ["npm-selftest.example"]
 # (host, erwartete Merkmale, genau) - ohne offenes Web, nichts davon wird aufgeloest. Echte
 # Namen nur fuer die eingebauten legitimen Domains und Subdomains davon (github.io,
 # claudeusercontent.com: nur eine echte Subdomain ist User Content), sonst .example, das
-# die Listen des Hosts nicht nennen; deckt ein Eintrag der Verdachtsliste des Hosts einen Fall doch ab, kommt seine
-# Kategorie zu den erwarteten Merkmalen. Dazu kommt ein Eintrag der Verdachtsliste des Hosts
-# (der erste), wenn sie einen hat.
+# die Listen des Hosts nicht nennen; deckt ein Eintrag der Verdachtsliste des Hosts einen
+# Fall doch ab, kommt seine Kategorie zu den erwarteten Merkmalen. Dazu kommt ein Eintrag
+# der Verdachtsliste des Hosts (der erste), wenn sie einen hat.
 SELFTEST_CASES = [
     ("sub.exfil-selftest.example", {"exfil"}, True),     # Verdachtsliste, per Suffix
     ("cdn.evil-selftest.example", {"threat"}, True),     # Threat-Intelligence-Liste, per Suffix

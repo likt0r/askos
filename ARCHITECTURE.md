@@ -407,7 +407,7 @@ cannot stop normal work there. Three of the built-in ones are hosts of arbitrary
 `github.io`, `githubusercontent.com` and `claudeusercontent.com` (anyone's GitHub Pages site,
 GitHub's raw-content hosts, the artifacts anyone shares from claude.ai): they keep the pattern
 Signals off the brand as well, but Feed hits on their subdomains count, so a known phishing or
-payload site there stays blocked in Open web. The domains themselves keep their treatment, as do
+payload site there stays blocked in Open web unless an Allowlist entry covers it (see Known residual risks; #59). The domains themselves keep their treatment, as do
 the brands' own domains such as `github.com`, `claude.ai`, `claude.com` and `anthropic.com`. No
 Legitimate entry lifts those Feed hits again, also not one of the Host at or below a
 user-content host (however specific), so one from before this rule stops suppressing them: the
