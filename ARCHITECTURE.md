@@ -79,7 +79,7 @@ flowchart LR
   options only when the network starts; a VM running on it has no network until its next
   Restart (libvirt does not reconnect a running VM to a restarted network), which
   `regenerate` says. It also opens the ports the VMs reach in the firewalld zone `libvirt`
-  (as setup does, step 5), before any VM network comes up. A socket whose unit text changed is restarted after systemd read it, so
+  (as setup does, step 5), before any VM network comes up, so it needs firewalld running. A socket whose unit text changed is restarted after systemd read it, so
   it listens on its new address (systemd keeps an active socket where it was); the proxy,
   which holds its listening socket, is stopped first and starts again with the next
   connection. Network numbers and names are fixed once a VM exists. A broken record
@@ -1007,14 +1007,19 @@ otherwise in `lib/agentbox` under their own prefix.
   in issues or commits of a repository the VM may write to.
 - **Domain fronting:** the proxy checks the server name of the TLS handshake only; what
   goes on inside the connection it cannot see. An allowed domain served by a shared CDN
-  (e.g. `registry.npmjs.org`) can carry traffic to other sites on that CDN.
+  (e.g. `registry.npmjs.org`) can carry traffic to other sites on that CDN. HTTP/2
+  connection coalescing is the same: every name resolves to the Host's one address, so a
+  browser may send requests for another host its certificate covers over a connection open
+  to an allowed one, without a new server name for the proxy to see or log.
 - **Encrypted Client Hello:** a client that brings its own ECH key (the resolver never
   answers the HTTPS records that carry one) could hide its real destination behind an
   allowed outer name served by the same provider, the way domain fronting does.
 - **Services of the Host on ports 53 and 443:** one that listens on all of the Host's
-  addresses is reachable from every VM through the Host's address on the VM's network,
-  where nftables lets those ports through. No service of Agent Box does; the resolver and
-  the proxy listen only on that address.
+  addresses keeps the resolver or the proxy from binding the Host's address in a VM
+  network, so Agent Box refuses to set up the networks while it runs: `regenerate`, `setup`
+  and every change that brings VM networks up stop before anything changes and name the
+  port. A service bound to other addresses is no obstacle, and nftables keeps the VMs from
+  it.
 - **Only TLS with a server name, on port 443, leaves a VM.** Plain HTTP, other ports and TLS
   without a server name get nowhere, and an IP literal as the name is a raw IP, a strong
   Signal. A VM's UDP reaches only DHCP and the resolver on the Host's address on its

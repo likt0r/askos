@@ -371,6 +371,17 @@ class HostStepsTest(SetupTest):
     def stored(self, name):
         return {e["domain"] for e in json.loads(self.read(f"etc/agentbox/{name}"))["entries"]}
 
+    def test_a_service_on_the_proxy_port_of_all_addresses_stops_setup_before_any_change(self):
+        os.makedirs(self.path("proc/net"))
+        self.write("proc/net/tcp6", "  sl  local_address remote_address st tx_queue rx_queue tr tm->when retrnsmt"
+                                    "   uid  timeout inode\n   0: " + "0" * 32 + ":01BB " + "0" * 32 + ":0000 0A "
+                                    "00000000:00000000 00:00000000 00000000     0        0 4242 1\n")
+        code, out, err = self.setup_run("--password-file", self.password_file)
+        self.assertEqual(code, 1)
+        self.assertIn("another service listens on 443/tcp on all of the Host's addresses", err)
+        self.assertEqual(out, "Self-test of the detection: passed\n")
+        self.assertEqual(self.changing_calls(), [])
+
     def test_a_fresh_host_gets_every_host_step(self):
         out = self.ok("--password-file", self.password_file)
         # the owner controls the VMs, and who controls them may write Activity

@@ -107,7 +107,7 @@ and no `agentbox` command runs.
 - **The units and VM networks `agentbox regenerate` wrote, and the ports of the firewalld
   zone `libvirt`,** stay as they are until it runs again (`sudo agentbox regenerate`, or
   `sudo agentbox setup`, which keeps the Host setup and does the Host steps again); either
-  command opens the ports the VMs reach in that zone. It brings each VM network to the current definition; a VM
+  command opens the ports the VMs reach in that zone, and needs firewalld running. It brings each VM network to the current definition; a VM
   running on a network it had to restart has no network until its next Restart, and
   `regenerate` names it. A socket whose unit changed is restarted on its new address, a VM's
   proxy stopped first.

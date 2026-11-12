@@ -905,6 +905,49 @@ def _timers(values):
     return changed
 
 
+# what each VM reaches on the Host's address in its network besides the token service: the
+# resolver (libvirt's dnsmasq) and the proxy
+VM_SERVICE_PORTS = (("tcp", 53), ("udp", 53), ("tcp", 443))
+
+
+def _wildcard_listeners():
+    """The (protocol, port) of VM_SERVICE_PORTS a socket on all of the Host's addresses
+    (0.0.0.0 or ::) holds, from /proc/net: TCP in LISTEN, UDP bound. Agent Box's own resolver
+    and proxy bind only the Host's address in each VM network, so such a socket is another
+    service's, and the kernel lets neither of them bind its address while it is there."""
+    found = set()
+    for proto in ("tcp", "udp"):
+        for table in (proto, proto + "6"):
+            try:
+                with open(paths.host(f"/proc/net/{table}")) as f:
+                    rows = f.read().splitlines()[1:]
+            except FileNotFoundError:
+                continue
+            for row in rows:
+                fields = row.split()
+                if len(fields) < 4 or (proto == "tcp" and fields[3] != "0A"):     # 0A: LISTEN
+                    continue
+                address, _, port = fields[1].rpartition(":")
+                try:
+                    wildcard, port = int(address, 16) == 0, int(port, 16)
+                except ValueError:
+                    continue
+                if wildcard and (proto, port) in VM_SERVICE_PORTS:
+                    found.add((proto, port))
+    return found
+
+
+def ports_free():
+    """Dies, before anything changes, when another service holds a port of the VMs' resolver
+    or proxy on all of the Host's addresses: libvirt could not start a VM network's dnsmasq,
+    nor systemd the proxy's socket."""
+    taken = ", ".join(f"{port}/{proto}" for proto, port in sorted(_wildcard_listeners(), key=lambda t: (t[1], t[0])))
+    if taken:
+        die(f"another service listens on {taken} on all of the Host's addresses: the VMs' resolver and proxy "
+            "need these ports on the Host's address in each VM network, and could not start. Stop that "
+            "service or bind it only to the addresses it serves.", error="action_failed", ports=taken)
+
+
 def apply():
     """The Host configuration of every VM from the registry; what changed as
     {"vms": {vm: [step, ...]}, "firewall": bool, "storage": bool, "retention": days or None,
@@ -912,6 +955,7 @@ def apply():
     Callers hold state_files.locked(paths.REGISTRY), like create and delete, so runs never overlap."""
     records = registry.all_records()     # a broken registry stops everything before any change
     values = settings.load()             # so do broken settings
+    ports_free()                         # so does a service that would keep resolver or proxy from starting
     days = values["activity_retention_days"]
     # a VM being deleted stays isolated until its network is gone
     isolated = records + [m["record"] for m in being_deleted() if not m.get("network_removed")]
@@ -968,6 +1012,7 @@ def regenerate(args):
     with state_files.locked(paths.REGISTRY):
         registry.all_records()      # a broken registry stops everything before any change
         settings.load()             # so do broken settings
+        ports_free()                # so does a service holding the resolver's or the proxy's ports
         zone = libvirt_zone()       # before any VM network comes up: the zone rejects what it does not list
         result = apply()
     result["zone"] = zone

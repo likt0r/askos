@@ -293,10 +293,13 @@ class BlockReasonsTest(unittest.TestCase):
             return f.read()
 
     def test_the_ui_offers_nothing_to_allow_for_the_reasons_that_name_the_client(self):
+        codes = {network.BLOCK_REASONS[r] for r in network.CLIENT_REASONS}
         code = self.ui("app", "utils", "access.ts")
         listed = re.search(r"^export const CLIENT_REASONS = \[([^\]]*)\]$", code, re.M).group(1)
-        self.assertEqual(set(re.findall(r"'([a-z-]+)'", listed)),
-                         {network.BLOCK_REASONS[r] for r in network.CLIENT_REASONS})
+        self.assertEqual(set(re.findall(r"'([a-z-]+)'", listed)), codes)
+        with open(os.path.join(REPO, "web", "static", "app.js")) as f:
+            legacy = re.search(r"^const CLIENT_REASONS = \[([^\]]*)\];$", f.read(), re.M).group(1)
+        self.assertEqual(set(re.findall(r'"([a-z-]+)"', legacy)), codes)
 
     def test_every_code_of_a_block_reason_is_worded(self):
         for language in ("en", "de"):

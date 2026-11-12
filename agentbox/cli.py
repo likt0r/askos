@@ -98,7 +98,8 @@ Controls the agent VMs on this Host.
                                                      repositories the VM got tokens for, and refusals
   agentbox observe <vm> [--json]                     pair the Host with Orca in the VM (for agent status)
   agentbox migrate [--json]                          take over work and priv into the VM registry once
-  agentbox regenerate [--json]                       networks, units, disks and VM definitions from the registry
+  agentbox regenerate [--json]                       networks, units, disks and VM definitions from the registry,
+                                                     and the VMs' ports in the firewalld zone libvirt
   agentbox weekly-check [--json]                     (timer, daily) Reset old VMs when idle; with auto_update
                                                      also VMs whose Image has a newer Build
   agentbox images [--json]                           Images and their Builds, which VM uses which, the versions

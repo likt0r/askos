@@ -316,6 +316,7 @@ def setup(args):
     steps.written = again
     # before anything changes: the detection of this Release with the lists that will apply
     steps.run("Self-test of the detection", hoststeps.self_test)
+    generate.ports_free()           # a service on the VMs' resolver or proxy ports stops setup here
     # a password there stays, unless --force replaces the Host setup
     keep_password = again or (not opts["force"] and os.path.exists(os.path.join(paths.WEB_CONF, "password")))
     password_hash = None if keep_password else _hash(_password(opts["password"]))

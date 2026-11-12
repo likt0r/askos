@@ -237,6 +237,9 @@ table inet agentbox_vm {
 }
 """
 # a VM network without a resolver, as libvirt dumps it
+# the first line of /proc/net/{tcp,tcp6,udp,udp6}
+PROC_NET_HEADER = ("  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout "
+                   "inode\n")
 OLD_NETWORK = """<network>
   <name>agentbox-priv</name>
   <uuid>0b9f5a52-2b7f-4c55-9d0e-6f5c2b1c9a11</uuid>
@@ -420,6 +423,41 @@ class RegenerateTest(RegistryTest):
                       networks={"agentbox-priv": {"active": True, "autostart": True, "xml": NETWORK}})
         self.assertEqual(self.run_agentbox("regenerate")[0], 0)
         self.assertEqual(self.network_calls(), [])
+
+    def listening(self, **tables):
+        """/proc/net/<table> of the Host with these rows (local address, state) after the header."""
+        os.makedirs(self.path("proc/net"), exist_ok=True)
+        for table, rows in tables.items():
+            self.write(f"proc/net/{table}", PROC_NET_HEADER + "".join(
+                f"   {i}: {local} {'0' * len(local.split(':')[0])}:0000 {state} 00000000:00000000 00:00000000 "
+                f"00000000     0        0 {1000 + i} 1 0000000000000000 100 0 0 10 0\n"
+                for i, (local, state) in enumerate(rows)))
+
+    def test_a_service_on_all_addresses_on_the_resolver_or_proxy_port_stops_it_before_any_change(self):
+        for tables, said in (({"tcp": [("00000000:01BB", "0A")]}, "443/tcp"),
+                             ({"udp6": [("0" * 32 + ":0035", "07")]}, "53/udp"),
+                             ({"tcp6": [("0" * 32 + ":0035", "0A")], "udp": [("00000000:0035", "07")]},
+                              "53/tcp, 53/udp")):
+            with self.subTest(said=said):
+                self.forget_calls()
+                for table in ("tcp", "tcp6", "udp", "udp6"):
+                    if os.path.exists(self.path(f"proc/net/{table}")):
+                        os.remove(self.path(f"proc/net/{table}"))
+                self.listening(**tables)
+                code, out, err = self.run_agentbox("regenerate")
+                self.assertEqual((code, out), (1, ""))
+                self.assertTrue(err.startswith(f"agentbox: another service listens on {said} on all of the Host's "
+                                               "addresses"), err)
+                self.assertEqual([c for c in self.calls() if c["cmd"] != "net-info"], [])
+                self.assertFalse(os.path.exists(self.path("etc/agentbox/vm-input.nft")))
+
+    def test_services_on_other_addresses_or_ports_are_no_obstacle(self):
+        # systemd-resolved's stub, a connection from port 443, a wildcard on another port, and the
+        # VM network's own resolver and proxy
+        self.listening(tcp=[("3500007F:0035", "0A"), ("00000000:01BB", "01"), ("00000000:2260", "0A"),
+                            ("0102000A:01BB", "0A")],
+                       udp=[("3500007F:0035", "07"), ("0102000A:0035", "07")])
+        self.assertEqual(self.run_agentbox("regenerate")[0], 0)
 
     def test_the_zone_of_the_vm_networks_gets_the_ports_the_vms_reach(self):
         # firewalld's zone libvirt rejects what it does not list: regenerate opens them as setup does
