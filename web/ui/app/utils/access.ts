@@ -168,7 +168,6 @@ export interface FeedState {
 /** `GET /watchlist/check?domain=` */
 export interface DomainCheck {
   domain: string
-  port: number
   signals: SignalReport[]
   alert: boolean
   strong: boolean
@@ -255,7 +254,6 @@ const paramsOf = (p: unknown): Params => (p && typeof p === 'object' ? p as Para
 
 /** The parameters each code of a Signal's reason needs (proxy/agentbox-suspicious explain). */
 export const SIGNAL_REASONS: Record<string, string[]> = {
-  'port': ['port'],
   'metadata': [],
   'raw-ip': [],
   'watchlist': ['domain'],
@@ -284,6 +282,15 @@ export function signalReason(s: SignalReport, tr: Translator): string {
   const key = s.code === 'watchlist' && filled(p, ['source']) ? 'watchlistSource'
     : s.code === 'watchlist-regex' && filled(p, ['source']) ? 'watchlistRegexSource' : s.code!
   return tr.t(`signals.reasons.${key}`, p)
+}
+
+/** The reasons of a blocked row that names the VM's own address, not a destination: the proxy
+ * took no destination from the connection, so there is nothing to allow. */
+export const CLIENT_REASONS = ['not-tls', 'no-server-name']
+
+/** Whether a blocked row is a destination an Allowlist entry could allow. */
+export function allowable(r: BlockedDestination): boolean {
+  return !r.code || !CLIENT_REASONS.includes(r.code)
 }
 
 /** Why the proxy blocked a destination, in the UI language; else its English reason. */

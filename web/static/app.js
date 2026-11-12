@@ -131,6 +131,9 @@ function li(text, btnText, onClick) {
   return el;
 }
 
+// reasons of a blocked row that names the VM's own address (as web/ui/app/utils/access.ts)
+const CLIENT_REASONS = ["not-tls", "no-server-name"];
+
 async function loadLists(ctx) {
   const card = cards[ctx];
   try {
@@ -148,6 +151,10 @@ async function loadLists(ctx) {
         tag.textContent = "verdächtig: " + b.suspicious.join(", ");
         el.append(tag);
         return el;
+      }
+      // the VM's own address (a connection without a destination): nothing to allow
+      if (CLIENT_REASONS.includes(b.code)) {
+        return li(`${b.domain} · ${b.count}× · ${fmtTime(b.last)} · ${b.reason}`);
       }
       return li(`${b.domain} · ${b.count}× · ${fmtTime(b.last)}`, "freigeben", async () => {
         await act(ctx, "allow", { domain: b.domain }); loadLists(ctx);

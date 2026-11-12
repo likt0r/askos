@@ -197,7 +197,7 @@ DOC = """# Architecture
 ```
 
 ### Network
-- The proxy accepts only `CONNECT` to port 443 and
+- The proxy takes the destination from the `ClientHello` and
   refuses addresses that are not public (a | b).
 
 ## Setting a Host up
@@ -209,7 +209,7 @@ ADR = """# The VM is the unit of separation
 One VM per unit of separation.
 """
 KERNEL = '"Each VM is one KVM VM with its own kernel, so a kernel exploit does not reach the Host."'
-PROXY = '"The proxy accepts only `CONNECT` to port 443 and refuses addresses that are not public (a \\| b)."'
+PROXY = '"The proxy takes the destination from the `ClientHello` and refuses addresses that are not public (a \\| b)."'
 VMS = "[VMs](../ARCHITECTURE.md#vms)"
 NETWORK = "[Network](../ARCHITECTURE.md#network)"
 OK = "`test_claims.FixtureTest.test_a_table_that_holds_passes`"

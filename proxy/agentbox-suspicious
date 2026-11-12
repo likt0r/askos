@@ -2,11 +2,11 @@
 """Einstufung verdaechtiger Ziele fuer den Allowlist-Proxy.
 
 Wird vom Proxy als Modul geladen und von agentbox als Befehl genutzt:
-  agentbox-suspicious <host> [port]          gibt die Merkmale aus (leer = unauffaellig);
+  agentbox-suspicious <host>                 gibt die Merkmale aus (leer = unauffaellig);
                                              Exit 2 bei starkem Verdacht, Exit 3 (Grund auf
                                              stderr), solange die Verdachtsliste von Hand
                                              unlesbar ist: was stark ist, ist dann unbekannt
-  agentbox-suspicious --json <host> [port]   Merkmale mit Begruendung (agentbox check-domain)
+  agentbox-suspicious --json <host>          Merkmale mit Begruendung (agentbox check-domain)
   agentbox-suspicious --watchlist            Verdachtsliste von Hand und Stand der HaGeZi-Listen
                                              als JSON (agentbox watchlist)
   agentbox-suspicious --constants            Kategorien der Verdachtsliste (stark oder nicht) und
@@ -88,7 +88,7 @@ FEEDS = ("threat-intelligence", "newly-registered")
 FEED_STATUS = os.path.join(FEEDS_DIR, "status.json")
 
 # Bei diesen Merkmalen sperrt der Proxy auch im offenen Web
-STRONG = {"exfil", "c2", "tunnel", "paste", "phishing", "blockchain", "lookalike", "raw-ip", "metadata", "port",
+STRONG = {"exfil", "c2", "tunnel", "paste", "phishing", "blockchain", "lookalike", "raw-ip", "metadata",
           "threat"}
 # Kategorien der Verdachtsliste von Hand (zugleich das Merkmal eines Treffers); payload ist schwach
 CATEGORIES = ("exfil", "c2", "tunnel", "paste", "phishing", "blockchain", "payload")
@@ -103,7 +103,7 @@ DOMAIN = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9
 LIFTS_SHOWN = 5
 # Haengen nicht am Namen: gelten auch fuer legitime Domains und loesen auch fuer
 # harmlose Domains Alerts aus
-STRUCTURAL = {"port", "raw-ip", "metadata"}
+STRUCTURAL = {"raw-ip", "metadata"}
 
 # Echte Domains der Marken, die gern nachgeahmt werden; zugleich die Vorlagen
 # fuer die Tippfehler-Pruefung (Namen ab MIN_TYPO Zeichen)
@@ -127,7 +127,7 @@ METADATA = {"169.254.169.254", "metadata.google.internal", "fd00:ec2::254", "100
 # TLD aus Buchstaben oder Punycode (keine IP-Adressen)
 FEED_ENTRY = re.compile(rb"(?=.{4,253}\Z)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+([a-z]{2,63}|xn--[a-z0-9-]{1,59})")
 
-USAGE = ("agentbox-suspicious <host> [port] | --json <host> [port] | --watchlist | --constants | "
+USAGE = ("agentbox-suspicious <host> | --json <host> | --watchlist | --constants | "
          "--lifts <domain> | --signals <host>... | --self-test")
 
 
@@ -849,21 +849,37 @@ def _reason(signal, code, text, **params):
     return {"signal": signal, "code": code, "params": {k: str(v) for k, v in params.items()}, "reason": text}
 
 
-def explain(host, port=443):
+# a last label no top-level domain has, which resolvers take for part of an address
+NUMERIC_LABEL = re.compile(r"[0-9]+|0x[0-9a-f]*")
+
+
+def is_address(host):
+    """Whether a resolver takes host for an IP address: one ipaddress reads, an IPv4 address
+    in any form inet_aton takes (16909060, 0x01020304, 1.2.3), or a name whose last label is
+    all digits or 0x and hex digits."""
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        pass
+    try:
+        socket.inet_aton(host)
+        return True
+    except (OSError, ValueError):
+        pass
+    return bool(NUMERIC_LABEL.fullmatch(host.rsplit(".", 1)[-1]))
+
+
+def explain(host):
     """Every Signal with why it applies, as a list of _reason(), regardless of the
     Harmless marks."""
     host = normalise(host)
     found = []
-    if port != 443:
-        found.append(_reason("port", "port", f"port {port} instead of 443", port=port))
     if host in METADATA:
         found.append(_reason("metadata", "metadata", "address of a cloud metadata service"))
-    try:
-        ipaddress.ip_address(host)
+    if is_address(host):
         found.append(_reason("raw-ip", "raw-ip", "IP address instead of a domain"))
         return found
-    except ValueError:
-        pass
 
     for entry, (category, source), regex in hand_watchlist().hits(host):
         more = {"source": source} if source else {}
@@ -929,9 +945,9 @@ def _name_signals(host):
     return found
 
 
-def classify(host, port=443):
+def classify(host):
     """Liefert eine sortierte Liste von Merkmalen; leer = unauffaellig."""
-    return sorted({r["signal"] for r in explain(host, port)})
+    return sorted({r["signal"] for r in explain(host)})
 
 
 def alerting(host, tags):
@@ -945,18 +961,18 @@ def is_strong(tags):
     return bool(STRONG & set(tags))
 
 
-def report(host, port=443):
+def report(host):
     """For agentbox check-domain: every Signal with why it applies (its English text, and
     the code and parameters the Control Room words it from)."""
     host = normalise(host)
     quiet = harmless_hit(host)
     signals = [{"signal": r["signal"], "strong": r["signal"] in STRONG, "reason": r["reason"], "code": r["code"],
                 "params": r["params"], "suppressed": bool(quiet) and r["signal"] not in STRUCTURAL}
-               for r in explain(host, port)]
+               for r in explain(host)]
     legit = legitimate(host)
     legit_pattern = None if legit else legitimate_pattern(host)
     # harmless and legitimate: the entry that covers it, a domain or (*_regex) a pattern
-    return {"domain": host, "port": port, "signals": signals,
+    return {"domain": host, "signals": signals,
             "alert": any(not s["suppressed"] for s in signals),
             "strong": is_strong(s["signal"] for s in signals),
             "harmless": quiet[0] if quiet else None, "harmless_regex": bool(quiet and quiet[1]),
@@ -1072,15 +1088,36 @@ LOG_ALERT = re.compile(r"\] ALERT (\S+) \[(.*)\]$")
 LOG_BLOCKED = re.compile(r"\] BLOCKED (\S+) \((.*)\)$")
 
 
+def _client_hello(host):
+    """The least a TLS ClientHello naming host needs (RFC 8446, 4.1.2; RFC 6066, 3): one
+    cipher suite, no compression, the server_name extension."""
+    name = host.encode()
+    names = b"\x00" + len(name).to_bytes(2, "big") + name
+    sni = len(names).to_bytes(2, "big") + names
+    extensions = b"\x00\x00" + len(sni).to_bytes(2, "big") + sni
+    body = (b"\x03\x03" + bytes(32) + b"\x00" + b"\x00\x02\x13\x01" + b"\x01\x00"
+            + len(extensions).to_bytes(2, "big") + extensions)
+    handshake = b"\x01" + len(body).to_bytes(3, "big") + body
+    return b"\x16\x03\x01" + len(handshake).to_bytes(2, "big") + handshake
+
+
 def _connect(path, host):
+    """The proxy's answer to a ClientHello for host: "alert <code>" for a TLS alert, else
+    "closed" (nothing came back) or "data"."""
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
         s.settimeout(10)
         s.connect(path)
-        s.sendall(f"CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n".encode())
+        s.sendall(_client_hello(host))
         data = b""
         while chunk := s.recv(4096):
             data += chunk
-    return data.split(b"\r\n", 1)[0].decode("latin-1")
+    if len(data) == 7 and data[:6] == b"\x15\x03\x03\x00\x02\x02":
+        return f"alert {data[6]}"
+    return "data" if data else "closed"
+
+
+# the proxy's answer to a destination it refuses: the TLS alert access_denied
+REFUSED = "alert 49"
 
 
 def _selftest_list(conf, record, legacy, add, parse):
@@ -1131,9 +1168,9 @@ def _selftest_regex_lists(conf):
 
 
 def self_test():
-    """Startet den Proxy neben dieser Datei mit der Verdachtsliste und den legitimen
-    Domains des Hosts (aus CONF_DIR) plus Testeintraegen und Testlisten, schickt
-    CONNECT-Anfragen und prueft dessen Log. Exit 0, wenn alles stimmt."""
+    """Starts the proxy next to this file with the Host's Watchlist and Legitimate domains
+    (from CONF_DIR) plus test entries and test lists, sends it TLS ClientHellos and checks
+    its log. Exit 0 when everything holds."""
     here = os.path.dirname(os.path.realpath(__file__))
     proxy = os.path.join(here, "agentbox-proxy")
     tmp = tempfile.mkdtemp(prefix="agentbox-selftest-")
@@ -1217,17 +1254,17 @@ def self_test():
                     blocks[m.group(1)] = m.group(2)
         for host, want, exact in cases:
             got = alerts.get(host, set())
-            ok = (got == want if exact else want <= got) and answers[host].split()[1:2] == ["403"]
+            ok = (got == want if exact else want <= got) and answers[host] == REFUSED
             results.append((ok, host, f"expected {','.join(sorted(want)) or '-'}, got "
                                       f"{','.join(sorted(got)) or '-'} ({answers[host]})"))
         for host, signal in SELFTEST_OPEN + [SELFTEST_UNREADABLE]:
             why = blocks.get(host, "")
-            ok = signal in why and answers[host].split()[1:2] == ["403"]
+            ok = signal in why and answers[host] == REFUSED
             results.append((ok, host, f"Open web: expected blocked for {signal}, got "
                                       f"{why or '-'} ({answers[host]})"))
         for host, reason in SELFTEST_REGEX_BLOCKED + [SELFTEST_REGEX_UNREADABLE]:
             why = blocks.get(host, "")
-            ok = why == reason and answers[host].split()[1:2] == ["403"]
+            ok = why == reason and answers[host] == REFUSED
             results.append((ok, host, f"Allowlist pattern: expected blocked ({reason}), got "
                                       f"{why or '-'} ({answers[host]})"))
     except (OSError, subprocess.SubprocessError, IndexError) as e:
@@ -1265,14 +1302,13 @@ def main(args):
         return 0
     as_json = args[:1] == ["--json"]
     args = args[1:] if as_json else args
-    if len(args) not in (1, 2) or len(args) == 2 and not args[1].isdigit():
+    if len(args) != 1:
         print(USAGE, file=sys.stderr)
         return 1
-    port = int(args[1]) if len(args) == 2 else 443
     if as_json:
-        print(json.dumps(report(args[0], port)))
+        print(json.dumps(report(args[0])))
         return 0
-    found = classify(args[0], port)
+    found = classify(args[0])
     print(",".join(found))
     why = watchlist_unreadable()
     if why:

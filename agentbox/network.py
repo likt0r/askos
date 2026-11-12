@@ -29,7 +29,11 @@ LOG_WINDOW = 86400
 BLOCK_REASONS = {"not on the Allowlist": "not-allowed", "Watchlist unreadable, Open web closed": "watchlist-unreadable",
                  # a Regex entry matched, but allows nothing while the Watchlist cannot be read
                  "Watchlist unreadable, regex entries closed": "watchlist-unreadable",
-                 "does not resolve to a public address": "not-public"}
+                 "does not resolve to a public address": "not-public",
+                 # a connection the proxy took no destination from: the line names the client
+                 "not a TLS handshake": "not-tls", "no server name": "no-server-name"}
+# the reasons of BLOCKED lines that name the client's address, not a destination
+CLIENT_REASONS = ("not a TLS handshake", "no server name")
 BLOCK_SUSPICIOUS = re.compile(r"suspicious: ([a-z0-9-]+(?:,[a-z0-9-]+)*)")
 
 
@@ -91,13 +95,15 @@ def blocked_rows(log):
         if not m:
             continue
         host, why = m.group(1), m.group(2)
-        # the reason stays the one of the first block
-        e = seen.setdefault(host, {"domain": host, "count": 0, "last": 0, "reason": why, **block_reason(why)})
+        # the reason stays the one of the first block; a line naming the client's address is a
+        # row apart from a destination of the same text
+        e = seen.setdefault((host, why in CLIENT_REASONS),
+                            {"domain": host, "count": 0, "last": 0, "reason": why, **block_reason(why)})
         e["count"] += 1
         e["last"] = max(e["last"], t)
     rows = sorted(seen.values(), key=lambda e: -e["last"])
     for e in rows:
-        e["suspicious"] = signals.get(e["domain"], [])
+        e["suspicious"] = [] if e["reason"] in CLIENT_REASONS else signals.get(e["domain"], [])
     return rows
 
 

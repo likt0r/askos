@@ -18,7 +18,10 @@ import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO)
 import vm_records  # noqa: E402
+from agentbox import network  # noqa: E402
 from journal_writers import CLI, FORGED, PROXY, proxy, write_passwd, writer  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -84,8 +87,8 @@ JOURNAL = """\
 1793700000.223456 titan agentbox-proxy-work[812]: [work] BLOCKED evil.example (not on the Allowlist)
 1793700001.000000 titan agentbox-proxy-work[812]: [work] ready
 1793700300.000001 titan agentbox-proxy-work[812]: [work] BLOCKED pypi.org (not on the Allowlist)
-1793700400.000001 titan agentbox-proxy-work[812]: [work] BLOCKED github.com:22 (port)
-1793700500.000001 titan agentbox-proxy-work[812]: [work] BLOCKED 'GET http://x/ HTTP/1.1' (only HTTPS/CONNECT)
+1793700400.000001 titan agentbox-proxy-work[812]: [work] BLOCKED 10.77.1.2 (not a TLS handshake)
+1793700500.000001 titan agentbox-proxy-work[812]: [work] BLOCKED 10.77.1.2 (no server name)
 1793700550.000001 titan agentbox-proxy-work[812]: [work] ALLOWED example.org (allowlist example.org all)
 1793700600.000001 titan agentbox-proxy-work[812]: [work] ALERT evil.example [exfil,young]
 1793700600.000002 titan agentbox-proxy-work[812]: [work] BLOCKED evil.example (suspicious: exfil,young)
@@ -199,7 +202,8 @@ class BlockedTest(NetworkTest):
         self.assertEqual(out,
                          "pypi.org                                    2x  last 2026-11-03 11:20  (not on the Allowlist)\n"
                          "ten.internal                                1x  last 2026-11-03 11:18  (does not resolve to a public address)\n"
-                         "evil.example                                2x  last 2026-11-03 11:10  (not on the Allowlist)  ALERT: exfil,young\n")
+                         "evil.example                                2x  last 2026-11-03 11:10  (not on the Allowlist)  ALERT: exfil,young\n"
+                         "10.77.1.2                                   2x  last 2026-11-03 11:08  (not a TLS handshake)\n")
 
     def test_json_for_the_control_room(self):
         self.journal(JOURNAL)
@@ -211,7 +215,20 @@ class BlockedTest(NetworkTest):
                          '"last": 1793701100, "reason": "does not resolve to a public address", "code": "not-public", '
                          '"params": {}, "suspicious": []}, {"domain": "evil.example", "count": 2, "last": 1793700600, '
                          '"reason": "not on the Allowlist", "code": "not-allowed", "params": {}, '
-                         '"suspicious": ["exfil", "young"]}]\n')
+                         '"suspicious": ["exfil", "young"]}, {"domain": "10.77.1.2", "count": 2, "last": 1793700500, '
+                         '"reason": "not a TLS handshake", "code": "not-tls", "params": {}, "suspicious": []}]\n')
+
+    def test_a_client_address_and_a_destination_of_the_same_text_are_two_rows(self):
+        # a VM may also name an address as the server: that is a destination, not the client
+        self.journal("1793701300.000001 titan agentbox-proxy-work[812]: [work] ALERT 10.77.1.2 [raw-ip]\n"
+                     "1793701300.000002 titan agentbox-proxy-work[812]: [work] BLOCKED 10.77.1.2 "
+                     "(not on the Allowlist)\n"
+                     "1793701300.000003 titan agentbox-proxy-work[812]: [work] BLOCKED 10.77.1.2 (no server name)\n"
+                     "1793701300.000004 titan agentbox-proxy-work[812]: [work] BLOCKED 10.77.1.2 "
+                     "(not a TLS handshake)\n")
+        rows = json.loads(self.run_agentbox("blocked", "work", "--json")[1])
+        self.assertEqual(sorted((r["domain"], r["code"], r["count"], r["suspicious"]) for r in rows),
+                         [("10.77.1.2", "no-server-name", 2, []), ("10.77.1.2", "not-allowed", 1, ["raw-ip"])])
 
     def test_the_reason_of_a_block_has_a_code(self):
         # the proxy's reasons are part of its log format; one this does not know has no code
@@ -239,7 +256,7 @@ class BlockedTest(NetworkTest):
         self.assertEqual((code, err), (0, UNTRUSTED.format(2)))
         rows = json.loads(out)
         self.assertEqual([(r["domain"], r["suspicious"]) for r in rows],
-                         [("pypi.org", []), ("ten.internal", []), ("evil.example", ["exfil", "young"])])
+                         [("pypi.org", []), ("ten.internal", []), ("evil.example", ["exfil", "young"]), ("10.77.1.2", [])])
 
     def test_older_german_keywords_are_ignored(self):
         self.journal("1793701300.000001 titan agentbox-proxy-work[812]: [work] BLOCKIERT old.example "
@@ -266,6 +283,32 @@ class BlockedTest(NetworkTest):
         failure = json.loads(err)
         self.assertEqual(failure["error"], "journal_failed")
         self.assertTrue(failure["message"].startswith("journalctl failed"), err)
+
+
+class BlockReasonsTest(unittest.TestCase):
+    """The codes of the proxy's reasons as the Control Room knows them (web/ui)."""
+
+    def ui(self, *parts):
+        with open(os.path.join(REPO, "web", "ui", *parts)) as f:
+            return f.read()
+
+    def test_the_ui_offers_nothing_to_allow_for_the_reasons_that_name_the_client(self):
+        codes = {network.BLOCK_REASONS[r] for r in network.CLIENT_REASONS}
+        code = self.ui("app", "utils", "access.ts")
+        listed = re.search(r"^export const CLIENT_REASONS = \[([^\]]*)\]$", code, re.M).group(1)
+        self.assertEqual(set(re.findall(r"'([a-z-]+)'", listed)), codes)
+        with open(os.path.join(REPO, "web", "static", "app.js")) as f:
+            legacy = re.search(r"^const CLIENT_REASONS = \[([^\]]*)\];$", f.read(), re.M).group(1)
+        self.assertEqual(set(re.findall(r'"([a-z-]+)"', legacy)), codes)
+
+    def test_every_code_of_a_block_reason_is_worded(self):
+        for language in ("en", "de"):
+            text = self.ui("i18n", "locales", language, "access.ts")
+            block = text[text.index("    blocked: {"):]
+            block = block[block.index("      reasons: {"):]
+            worded = set(re.findall(r"^        '([a-z-]+)': ", block[:block.index("\n      },")], re.M))
+            with self.subTest(language=language):
+                self.assertEqual(set(network.BLOCK_REASONS.values()) | {"suspicious"}, worded)
 
 
 class AlertsTest(NetworkTest):

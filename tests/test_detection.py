@@ -2,7 +2,7 @@
 marked as seen, and the self-test.
 
 Seam C: the real proxy (`proxy/agentbox-proxy`, which loads `proxy/agentbox-suspicious`)
-on a Unix socket with a temporary configuration; the tests send CONNECT requests and
+on a Unix socket with a temporary configuration; the tests send TLS ClientHellos and
 read what the proxy answers and logs. Nothing is allowlisted and the web is only opened
 for strongly suspicious destinations, so the proxy never resolves a name.
 
@@ -31,6 +31,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vm_records  # noqa: E402
+from client_hello import ACCESS_DENIED, client_hello  # noqa: E402
 from journal_writers import proxy, write_passwd  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -106,21 +107,21 @@ class ProxyTest(unittest.TestCase):
         with open(self.log_path, encoding="utf-8", errors="replace") as f:
             return f.read()
 
-    def connect(self, host, port=443):
-        """Status line of the proxy's answer to CONNECT host:port."""
+    def connect(self, host):
+        """The proxy's answer to a ClientHello for host (nothing is allowed here: an alert)."""
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
             s.settimeout(10)
             s.connect(self.sock)
-            s.sendall(f"CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n".encode())
+            s.sendall(client_hello(host))
             data = b""
             while chunk := s.recv(4096):
                 data += chunk
-        return data.split(b"\r\n", 1)[0].decode()
+        return data
 
-    def alert(self, host, port=443):
-        """CONNECT, then the Signals of the Alert the proxy logged for it (None: no Alert)."""
+    def alert(self, host):
+        """A ClientHello, then the Signals of the Alert the proxy logged for it (None: no Alert)."""
         before = len(self.log_text().splitlines())
-        self.assertEqual(self.connect(host, port), "HTTP/1.1 403 Forbidden")
+        self.assertEqual(self.connect(host), ACCESS_DENIED)
         tags = None
         for line in self.log_text().splitlines()[before:]:
             if f"] ALERT {host} [" in line:
@@ -167,7 +168,7 @@ class FeedSignalsTest(ProxyTest):
     def test_threat_list_hit_stays_blocked_in_open_web(self):
         self.open_web()
         self.start()
-        self.assertEqual(self.connect("x.bad.example"), "HTTP/1.1 403 Forbidden")
+        self.assertEqual(self.connect("x.bad.example"), ACCESS_DENIED)
         self.assertEqual(self.blocked_reason("x.bad.example"), "suspicious: threat")
 
     def test_replaced_list_is_used_without_restart(self):
@@ -229,7 +230,7 @@ class HarmlessTest(ProxyTest):
         self.harmless("bad.example")
         self.open_web()
         self.start()
-        self.assertEqual(self.connect("bad.example"), "HTTP/1.1 403 Forbidden")
+        self.assertEqual(self.connect("bad.example"), ACCESS_DENIED)
         self.assertEqual(self.blocked_reason("bad.example"), "suspicious: threat")
         self.assertNotIn("ALERT bad.example", self.log_text())
 
@@ -237,16 +238,18 @@ class HarmlessTest(ProxyTest):
         # strong Signals: Open web lets them nowhere, without resolving anything
         self.open_web()
         self.start()
+        # an address in any form a resolver reads as one: 1.2.3.4 as one number, in hex, in three parts
         for host, why in (("10.0.0.1", "suspicious: raw-ip"), ("169.254.169.254", "suspicious: metadata,raw-ip"),
-                          ("metadata.google.internal", "suspicious: metadata")):
+                          ("metadata.google.internal", "suspicious: metadata"), ("16909060", "suspicious: raw-ip"),
+                          ("0x01020304", "suspicious: raw-ip"), ("1.2.3", "suspicious: raw-ip"),
+                          ("cdn.example.0x1f", "suspicious: raw-ip"), ("cdn.example.123", "suspicious: raw-ip")):
             with self.subTest(host=host):
-                self.assertEqual(self.connect(host), "HTTP/1.1 403 Forbidden")
+                self.assertEqual(self.connect(host), ACCESS_DENIED)
                 self.assertEqual(self.blocked_reason(host), why)
 
     def test_signals_that_do_not_depend_on_the_name_still_raise_alerts(self):
         self.harmless("githbu.com", "metadata.google.internal")
         self.start()
-        self.assertEqual(self.alert("githbu.com", 22), ["port"])
         self.assertEqual(self.alert("metadata.google.internal"), ["metadata"])
         self.assertEqual(self.alert("169.254.169.254"), ["metadata", "raw-ip"])
 
@@ -275,7 +278,7 @@ class ReasonTest(unittest.TestCase):
 
     def test_every_reason_has_a_code_parameters_and_english_text(self):
         cases = [
-            (["evil.example", "22"], [("port", "port", {"port": "22"}, "port 22 instead of 443")]),
+            (["16909060"], [("raw-ip", "raw-ip", {}, "IP address instead of a domain")]),
             (["169.254.169.254"], [("metadata", "metadata", {}, "address of a cloud metadata service"),
                                    ("raw-ip", "raw-ip", {}, "IP address instead of a domain")]),
             (["upload.exfil.example"], [("exfil", "watchlist", {"domain": "exfil.example", "source": "Testvorfall 2026"},
@@ -619,10 +622,20 @@ class SeenTest(CliTest):
         # the marks belong to this VM only
         self.assertEqual(self.seen_files(), ["alerts-seen-work.json"])
 
+    def test_an_address_in_a_form_only_a_resolver_reads_can_be_marked(self):
+        # the classifier raises raw-ip for them (is_address); garbage of the same characters stays refused
+        self.journal((-600, "16909060", "raw-ip"), (-500, "0x01020304", "raw-ip"), (-400, "b.example", "young"))
+        for host in ("16909060", "0x01020304"):
+            self.assertEqual(self.run_agentbox("mark-seen", "work", host)[0], 0, host)
+        self.assertEqual(self.alerts(), {"16909060": True, "0x01020304": True, "b.example": False})
+        for bad in ("0xg1", "abc", "..", "1" * 254):
+            with self.subTest(bad=bad):
+                self.assertEqual(self.run_agentbox("mark-seen", "work", bad)[:2], (1, ""))
+
     def test_alerts_of_harmless_destinations_are_left_out(self):
-        # a Signal that does not depend on the name (port) keeps its Alert
+        # a Signal that does not depend on the name (metadata) keeps its Alert
         self.journal((-600, "githbu.com", "lookalike"), (-500, "www.githbu.com", "lookalike"),
-                     (-400, "x.githbu.com", "port"), (-300, "b.example", "young"))
+                     (-400, "x.githbu.com", "metadata"), (-300, "b.example", "young"))
         self.run_agentbox("mark-harmless", "githbu.com")
         self.assertEqual(self.alerts(), {"x.githbu.com": False, "b.example": False})
 

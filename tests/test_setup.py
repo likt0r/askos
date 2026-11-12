@@ -315,12 +315,12 @@ class ExistingHostTest(SetupTest):
 
     def test_force_replaces_it_and_rebinds_the_orca_ports_of_existing_vms(self):
         vm_records.write(self.root)
-        self.scenario(vms={"priv": {"uuid": PRIV_UUID}})
+        accept, reject = rich_rules()
+        # the firewall as Network mode left it (regenerate changes only the zone of the VM networks)
+        self.scenario(vms={"priv": {"uuid": PRIV_UUID}}, firewall_rules=accept + reject)
         vm_records.write_host_setup(self.root)
         self.assertEqual(self.run_agentbox("regenerate")[0], 0)
         self.assertIn("ListenStream=6802\n", self.read("etc/systemd/system/agentbox-gui-priv.socket"))
-        accept, reject = rich_rules()
-        self.scenario(vms={"priv": {"uuid": PRIV_UUID}}, firewall_rules=accept + reject)
         self.ok("--password-file", self.password_file, "--force")
         self.assertEqual(self.host_setup(), LOCAL_RECORD)
         self.assertIn("ListenStream=127.0.0.1:6802\n", self.read("etc/systemd/system/agentbox-gui-priv.socket"))
@@ -371,6 +371,17 @@ class HostStepsTest(SetupTest):
     def stored(self, name):
         return {e["domain"] for e in json.loads(self.read(f"etc/agentbox/{name}"))["entries"]}
 
+    def test_a_service_on_the_proxy_port_of_all_addresses_stops_setup_before_any_change(self):
+        os.makedirs(self.path("proc/net"))
+        self.write("proc/net/tcp6", "  sl  local_address remote_address st tx_queue rx_queue tr tm->when retrnsmt"
+                                    "   uid  timeout inode\n   0: " + "0" * 32 + ":01BB " + "0" * 32 + ":0000 0A "
+                                    "00000000:00000000 00:00000000 00000000     0        0 4242 1\n")
+        code, out, err = self.setup_run("--password-file", self.password_file)
+        self.assertEqual(code, 1)
+        self.assertIn("another service listens on 443/tcp on all of the Host's addresses", err)
+        self.assertEqual(out, "Self-test of the detection: passed\n")
+        self.assertEqual(self.changing_calls(), [])
+
     def test_a_fresh_host_gets_every_host_step(self):
         out = self.ok("--password-file", self.password_file)
         # the owner controls the VMs, and who controls them may write Activity
@@ -393,7 +404,7 @@ class HostStepsTest(SetupTest):
         self.assertFalse(os.path.lexists(self.path("etc/agentbox/build.conf")))
         # VM networks: proxy and token service open, ssh closed, also in the running firewall
         for side in ("permanent", "runtime"):
-            self.assertEqual(sorted(self.zone("libvirt", side)["ports"]), ["3128/tcp", "9100/tcp"])
+            self.assertEqual(sorted(self.zone("libvirt", side)["ports"]), ["443/tcp", "53/tcp", "53/udp", "9100/tcp"])
             self.assertNotIn("ssh", self.zone("libvirt", side)["services"])
         # units enabled at boot and running now
         self.assertLessEqual(set(ENABLED), set(self.enabled()))
@@ -416,7 +427,7 @@ class HostStepsTest(SetupTest):
         self.assertEqual([c["argv"] for c in self.calls("chattr")], [["+C", self.path("var/lib/agentbox/images")]])
         # each step says what it did
         for step in ("Self-test of the detection: passed", "Groups: alice in the group libvirt",
-                     "Lists: suspicious-domains from", "Firewall zone libvirt: port 3128/tcp open",
+                     "Lists: suspicious-domains from", "Firewall zone libvirt: port 53/udp open",
                      "Network rules of the VMs: agentbox-vmnet.service enabled", "migrate: up to date",
                      "migrate-allowlist: Allowlist:", "regenerate: Host setup written", "migrate-lists: ",
                      "Control Room: agentbox-web.service enabled and restarted"):
@@ -647,7 +658,7 @@ class HostStepsTest(SetupTest):
         def first(match):
             return next(i for i, call in enumerate(calls) if match(*call))
 
-        zone = first(lambda cmd, argv: cmd == "firewall-cmd" and "--add-port=3128/tcp" in argv)
+        zone = first(lambda cmd, argv: cmd == "firewall-cmd" and "--add-port=443/tcp" in argv)
         boot = first(lambda cmd, argv: cmd == "systemctl" and argv == ["enable", "agentbox-vmnet.service"])
         loaded = first(lambda cmd, argv: cmd == "systemctl" and argv == ["restart", "agentbox-vmnet.service"])
         # fake_virsh records its commands by name: a VM network, a domain, a start

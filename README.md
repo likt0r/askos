@@ -32,6 +32,8 @@ person running it.
   status (the Images take Orca from its GitHub release, not from the Host)
 - A GitHub App you own (see below) and a Claude subscription or API account
 - In Network mode, the Host reachable from your laptops (home network or VPN)
+- Ports 53 (TCP and UDP) and 443 (TCP) not held on all of the Host's addresses by another
+  service: the VMs' resolver and proxy listen on the Host's address in each VM network
 
 ## Installing
 

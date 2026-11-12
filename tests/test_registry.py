@@ -43,6 +43,7 @@ class RegistryTest(unittest.TestCase):
         fake(os.path.join(self.dir, "bin", "qemu-img"), "fake_qemu_img.py")
         fake(os.path.join(self.dir, "bin", "systemctl"), "fake_systemctl.py")
         fake(os.path.join(self.dir, "bin", "virt-install"), "fake_virt_install.py")
+        fake(os.path.join(self.dir, "bin", "firewall-cmd"), "fake_firewall_cmd.py")
         self.scenario()
 
     def tearDown(self):
@@ -54,6 +55,15 @@ class RegistryTest(unittest.TestCase):
     def scenario(self, **s):
         with open(os.path.join(self.dir, "scenario.json"), "w") as f:
             json.dump(s, f)
+
+    def listening(self, **tables):
+        """/proc/net/<table> of the Host with these rows (local address, state) after the header."""
+        os.makedirs(self.path("proc/net"), exist_ok=True)
+        for table, rows in tables.items():
+            self.write(f"proc/net/{table}", PROC_NET_HEADER + "".join(
+                f"   {i}: {local} {'0' * len(local.split(':')[0])}:0000 {state} 00000000:00000000 00:00000000 "
+                f"00000000     0        0 {1000 + i} 1 0000000000000000 100 0 0 10 0\n"
+                for i, (local, state) in enumerate(rows)))
 
     def write(self, rel, content, mode=0o644):
         with open(self.path(rel), "w") as f:
@@ -182,7 +192,7 @@ PROXY_SOCKET = """[Unit]
 Description=Allowlist proxy for VM priv
 
 [Socket]
-ListenStream=10.77.2.1:3128
+ListenStream=10.77.2.1:443
 FreeBind=yes
 
 [Install]
@@ -199,16 +209,21 @@ StandardOutput=socket
 StandardError=journal
 TimeoutStartSec=180
 """
-NETWORK = """<network>
+NETWORK = """<network xmlns:dnsmasq='http://libvirt.org/schemas/network/dnsmasq/1.0'>
   <name>agentbox-priv</name>
   <bridge name='abox-priv' stp='on' delay='0'/>
-  <dns enable='no'/>
   <ip address='10.77.2.1' netmask='255.255.255.0'>
     <dhcp>
       <range start='10.77.2.2' end='10.77.2.2'/>
       <host mac='52:54:00:77:02:02' ip='10.77.2.2'/>
     </dhcp>
   </ip>
+  <dnsmasq:options>
+    <dnsmasq:option value='address=/#/10.77.2.1'/>
+    <dnsmasq:option value='local=/#/'/>
+    <dnsmasq:option value='no-hosts'/>
+    <dnsmasq:option value='no-resolv'/>
+  </dnsmasq:options>
 </network>
 """
 NFT = """table inet agentbox_vm
@@ -224,10 +239,29 @@ table inet agentbox_vm {
     iifname "abox-work" ip daddr != 10.77.1.1 drop
     iifname "abox-priv" ip daddr != 10.77.2.1 drop
     ct state established,related accept
-    tcp dport { 3128, 9100 } accept
+    udp dport 53 accept
+    tcp dport { 53, 443, 9100 } accept
     drop
   }
 }
+"""
+# the first line of /proc/net/{tcp,tcp6,udp,udp6}
+PROC_NET_HEADER = ("  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout "
+                   "inode\n")
+# a VM network without a resolver, as libvirt dumps it
+OLD_NETWORK = """<network>
+  <name>agentbox-priv</name>
+  <uuid>0b9f5a52-2b7f-4c55-9d0e-6f5c2b1c9a11</uuid>
+  <bridge name='abox-priv' stp='on' delay='0'/>
+  <mac address='52:54:00:3c:1d:aa'/>
+  <dns enable='no'/>
+  <ip address='10.77.2.1' netmask='255.255.255.0'>
+    <dhcp>
+      <range start='10.77.2.2' end='10.77.2.2'/>
+      <host mac='52:54:00:77:02:02' ip='10.77.2.2'/>
+    </dhcp>
+  </ip>
+</network>
 """
 WORK_NETWORK = (NETWORK.replace("priv", "work").replace("10.77.2.", "10.77.1.")
                 .replace("52:54:00:77:02:02", "52:54:00:77:01:02"))
@@ -265,6 +299,36 @@ class RegenerateTest(RegistryTest):
                       self.read("etc/systemd/system/agentbox-ghvm-priv@.service"))
         self.assertIn("ListenStream=6802\n", self.read("etc/systemd/system/agentbox-gui-priv.socket"))
         self.assertEqual(self.read("etc/agentbox/vm-input.nft"), NFT)
+
+    def test_no_explicit_proxy_port_and_dns_switched_on(self):
+        self.assertEqual(self.run_agentbox("regenerate")[0], 0)
+        self.assertNotIn("3128", self.read("etc/agentbox/vm-input.nft"))
+        for name in os.listdir(self.path("etc/systemd/system")):
+            with self.subTest(unit=name):
+                self.assertNotIn("3128", self.read(f"etc/systemd/system/{name}"))
+        for c in self.calls("net-define"):
+            with self.subTest(net=c["net"]):
+                self.assertNotIn("3128", c["xml"])
+                self.assertNotRegex(c["xml"], r"<dns\b[^>]*enable=")
+        sys.path.insert(0, REPO)
+        from agentbox import hoststeps
+        self.assertFalse([p for p in hoststeps.VM_PORTS if p.startswith("3128/")])
+
+    def test_only_dhcp_passes_before_the_address_check(self):
+        # a port accepted before it would reach every address of the Host: a resolver on its
+        # LAN address, or the .1 of another VM's network
+        self.assertEqual(self.run_agentbox("regenerate")[0], 0)
+        rules = self.read("etc/agentbox/vm-input.nft").splitlines()
+        start = rules.index("  chain from_vm {") + 1
+        chain = rules[start:rules.index("  }", start) + 1]
+        checks = [i for i, line in enumerate(chain) if " ip daddr != " in line]
+        self.assertTrue(checks)
+        before = [line for line in chain[:min(checks)] if "accept" in line]
+        self.assertEqual(before, ["    udp dport 67 accept"])
+        after = chain[max(checks) + 1:]
+        self.assertIn("    udp dport 53 accept", after)
+        self.assertIn("    tcp dport { 53, 443, 9100 } accept", after)
+        self.assertEqual(after[-2:], ["    drop", "  }"])
 
     def test_defines_networks_that_are_missing(self):
         self.scenario(vms={"priv": {"uuid": PRIV_UUID}},
@@ -327,6 +391,111 @@ class RegenerateTest(RegistryTest):
         self.assertIn("priv: network agentbox-priv does not match the record", err)
         self.assertEqual([c["net"] for c in self.calls("net-define")], ["agentbox-work"])
 
+    def old_network(self, state="running", active=True):
+        """priv's network as libvirt dumps one without a resolver, its VM in the given state."""
+        self.scenario(vms={"priv": {"uuid": PRIV_UUID, "state": state}},
+                      networks={"agentbox-priv": {"active": active, "autostart": True, "xml": OLD_NETWORK}})
+
+    def network_calls(self):
+        return [(c["cmd"], c["net"]) for c in self.calls() if c["cmd"].startswith("net-") and c["net"] == "agentbox-priv"]
+
+    def test_a_network_without_the_resolver_is_redefined_and_restarted(self):
+        self.old_network()
+        code, out, err = self.run_agentbox("regenerate")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual([(c["net"], c["xml"]) for c in self.calls("net-define") if c["net"] == "agentbox-priv"],
+                         [("agentbox-priv", NETWORK)])
+        # dnsmasq reads its options when the network starts
+        self.assertEqual(self.network_calls(), [("net-define", "agentbox-priv"), ("net-destroy", "agentbox-priv"),
+                                                ("net-start", "agentbox-priv")])
+        self.assertIn("priv: network brought to the current definition and restarted; the running VM has no "
+                      "network until its next Restart (libvirt does not reconnect a running VM to a restarted "
+                      "network)\n", out)
+        # once current, it is left alone
+        self.forget_calls()
+        self.assertNotIn("network", " ".join(self.json("regenerate")["vms"]["priv"]))
+        self.assertEqual(self.network_calls(), [])
+
+    def test_with_its_vm_off_the_network_is_restarted_without_a_word_about_the_vm(self):
+        self.old_network(state="shut off")
+        self.assertEqual(self.json("regenerate")["vms"]["priv"][:1], ["network-redefined"])
+        self.assertEqual(self.network_calls(), [("net-define", "agentbox-priv"), ("net-destroy", "agentbox-priv"),
+                                                ("net-start", "agentbox-priv")])
+
+    def test_an_inactive_network_without_the_resolver_is_redefined_and_started(self):
+        self.old_network(state="shut off", active=False)
+        self.assertEqual(self.json("regenerate")["vms"]["priv"][:1], ["network-redefined"])
+        self.assertEqual(self.network_calls(), [("net-define", "agentbox-priv"), ("net-start", "agentbox-priv")])
+
+    def test_a_current_network_is_left_alone(self):
+        self.scenario(vms={"priv": {"uuid": PRIV_UUID}},
+                      networks={"agentbox-priv": {"active": True, "autostart": True, "xml": NETWORK}})
+        self.assertEqual(self.run_agentbox("regenerate")[0], 0)
+        self.assertEqual(self.network_calls(), [])
+
+    def test_a_network_that_forwards_anything_is_brought_to_the_current_definition(self):
+        options = "  <dnsmasq:options>\n"
+        for extra in ("    <dnsmasq:option value='server=1.1.1.1'/>\n", "    <dnsmasq:option value=\"server=/x/9.9.9.9\"/>\n"):
+            with self.subTest(extra=extra):
+                self.forwarding(NETWORK.replace(options, options + extra))
+        dns = "  <dns>\n    <forwarder addr='1.1.1.1'/>\n  </dns>\n"
+        self.forwarding(NETWORK.replace("  <ip address", dns + "  <ip address"))
+        self.forwarding(NETWORK.replace("  <ip address", "  <forward mode='nat'/>\n  <ip address"))
+
+    def forwarding(self, xml):
+        self.scenario(vms={"priv": {"uuid": PRIV_UUID, "state": "shut off"}},
+                      networks={"agentbox-priv": {"active": True, "autostart": True, "xml": xml}})
+        self.forget_calls()
+        self.assertEqual(self.json("regenerate")["vms"]["priv"][:1], ["network-redefined"])
+        self.assertEqual([(c["net"], c["xml"]) for c in self.calls("net-define") if c["net"] == "agentbox-priv"],
+                         [("agentbox-priv", NETWORK)])
+        os.remove(os.path.join(self.dir, "networks.json"))
+
+    def test_a_service_on_all_addresses_on_the_resolver_or_proxy_port_stops_it_before_any_change(self):
+        for tables, said in (({"tcp": [("00000000:01BB", "0A")]}, "443/tcp"),
+                             ({"udp6": [("0" * 32 + ":0035", "07")]}, "53/udp"),
+                             ({"tcp6": [("0" * 32 + ":0035", "0A")], "udp": [("00000000:0035", "07")]},
+                              "53/tcp, 53/udp")):
+            with self.subTest(said=said):
+                self.forget_calls()
+                for table in ("tcp", "tcp6", "udp", "udp6"):
+                    if os.path.exists(self.path(f"proc/net/{table}")):
+                        os.remove(self.path(f"proc/net/{table}"))
+                self.listening(**tables)
+                code, out, err = self.run_agentbox("regenerate")
+                self.assertEqual((code, out), (1, ""))
+                self.assertTrue(err.startswith(f"agentbox: another service listens on {said} on all of the Host's "
+                                               "addresses"), err)
+                self.assertEqual([c for c in self.calls() if c["cmd"] != "net-info"], [])
+                self.assertFalse(os.path.exists(self.path("etc/agentbox/vm-input.nft")))
+
+    def test_services_on_other_addresses_or_ports_are_no_obstacle(self):
+        # systemd-resolved's stub, a connection from port 443, a wildcard on another port, and the
+        # VM network's own resolver and proxy
+        self.listening(tcp=[("3500007F:0035", "0A"), ("00000000:01BB", "01"), ("00000000:2260", "0A"),
+                            ("0102000A:01BB", "0A")],
+                       udp=[("3500007F:0035", "07"), ("0102000A:0035", "07")])
+        self.assertEqual(self.run_agentbox("regenerate")[0], 0)
+
+    def test_the_zone_of_the_vm_networks_gets_the_ports_the_vms_reach(self):
+        # firewalld's zone libvirt rejects what it does not list: regenerate opens them as setup does
+        self.scenario(vms={"priv": {"uuid": PRIV_UUID}}, firewall_zones={"libvirt": {"ports": ["9100/tcp"]}})
+        code, out, err = self.run_agentbox("regenerate")
+        self.assertEqual((code, err), (0, ""))
+        self.assertTrue(out.startswith("firewall zone libvirt: port 53/udp open; port 53/tcp open; "
+                                       "port 443/tcp open\n"), out)
+        with open(os.path.join(self.dir, "firewall.json")) as f:
+            zones = json.load(f)
+        for side in ("permanent", "runtime"):
+            self.assertEqual(sorted(zones[side]["libvirt"]["ports"]), ["443/tcp", "53/tcp", "53/udp", "9100/tcp"])
+        # the zone opened before any VM network comes up
+        cmds = [(c["cmd"], c.get("argv", [])) for c in self.calls()]
+        opened = max(i for i, (cmd, argv) in enumerate(cmds) if cmd == "firewall-cmd" and "--reload" in argv)
+        started = min(i for i, (cmd, _) in enumerate(cmds) if cmd in ("net-define", "net-start"))
+        self.assertLess(opened, started)
+        self.forget_calls()
+        self.assertEqual(self.json("regenerate")["zone"], [])
+
     def test_firewall_rules_written_but_not_loaded_are_loaded_next_time(self):
         self.scenario(vms={"priv": {"uuid": PRIV_UUID}}, systemctl_fails=["restart"])
         self.assertEqual(self.run_agentbox("regenerate")[0], 1)
@@ -366,6 +535,52 @@ class RegenerateTest(RegistryTest):
         self.assertFalse(self.json("regenerate")["storage"])
         self.assertEqual([c for c in self.calls() if c["cmd"].startswith("pool-")], [])
 
+    def socket_calls(self):
+        """What stops or restarts the VMs' own sockets and services."""
+        return [c["argv"] for c in self.calls("systemctl") if c["argv"][0] in ("stop", "restart")
+                and c["argv"][1].startswith(("agentbox-proxy-", "agentbox-ghvm-", "agentbox-gui-"))]
+
+    def test_a_changed_proxy_socket_is_restarted_after_its_proxy_stopped(self):
+        # systemd keeps an active socket where it was, and the proxy keeps the socket it was handed
+        self.write("etc/systemd/system/agentbox-proxy-priv.socket", PROXY_SOCKET.replace(":443", ":8443"))
+        code, out, err = self.run_agentbox("regenerate")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(self.read("etc/systemd/system/agentbox-proxy-priv.socket"), PROXY_SOCKET)
+        # work's sockets are new: enable --now starts them
+        self.assertEqual(self.socket_calls(), [["stop", "agentbox-proxy-priv.service"],
+                                               ["restart", "agentbox-proxy-priv.socket"]])
+        # after systemd read the new unit
+        argv = [c["argv"] for c in self.calls("systemctl")]
+        reloaded = max(i for i, a in enumerate(argv) if a == ["daemon-reload"])
+        self.assertLess(reloaded, argv.index(["stop", "agentbox-proxy-priv.service"]))
+        self.assertIn("priv: changed sockets restarted on their new addresses\n", out)
+        self.assertNotIn("work: changed sockets", out)
+
+    def test_a_changed_socket_of_its_own_connections_is_only_restarted(self):
+        # Accept=yes: every connection has its own process, none holds the listening socket
+        self.run_agentbox("regenerate")
+        gui = "etc/systemd/system/agentbox-gui-priv.socket"
+        self.write(gui, self.read(gui).replace("ListenStream=", "ListenStream=127.0.0.2:"))
+        self.forget_calls()
+        self.run_agentbox("regenerate")
+        self.assertEqual(self.socket_calls(), [["restart", "agentbox-gui-priv.socket"]])
+
+    def test_unchanged_sockets_are_left_alone(self):
+        self.run_agentbox("regenerate")
+        self.forget_calls()
+        self.run_agentbox("regenerate")
+        self.assertEqual(self.socket_calls(), [])
+
+    def test_a_socket_left_to_rebind_by_a_failed_run_is_rebound_by_the_next(self):
+        self.run_agentbox("regenerate")
+        self.write("etc/systemd/system/agentbox-proxy-priv.socket", PROXY_SOCKET.replace(":443", ":8443"))
+        self.scenario(vms={"priv": {"uuid": PRIV_UUID}}, systemctl_fails=["stop"])
+        self.assertEqual(self.run_agentbox("regenerate")[0], 1)
+        self.scenario(vms={"priv": {"uuid": PRIV_UUID}})
+        self.forget_calls()
+        self.run_agentbox("regenerate")
+        self.assertIn(["restart", "agentbox-proxy-priv.socket"], self.socket_calls())
+
     def test_reloads_systemd_and_firewall_and_enables_the_sockets(self):
         self.run_agentbox("regenerate")
         # firewall rules first: they hold before any bridge comes up; then the journal
@@ -392,7 +607,7 @@ class RegenerateTest(RegistryTest):
         self.forget_calls()
         result = self.json("regenerate")
         self.assertEqual(result, {"vms": {"work": [], "priv": []}, "firewall": False, "storage": False,
-                                  "retention": None, "timers": False})
+                                  "retention": None, "timers": False, "zone": []})
         self.assertEqual(self.snapshot(), before)
         changing = [c for c in self.calls() if c["cmd"] in ("define", "net-define", "net-autostart", "net-start")
                     or c["cmd"] == "qemu-img" and c["argv"][0] == "create"
@@ -404,7 +619,9 @@ class RegenerateTest(RegistryTest):
         result = self.json("regenerate")
         self.assertEqual(result, {"vms": {vm: ["network", "units", "data-disk", "claude-token", "observer", "domain"]
                                           for vm in ("work", "priv")}, "firewall": True, "storage": True,
-                                  "retention": 90, "timers": True})
+                                  "retention": 90, "timers": True,
+                                  "zone": ["port 53/udp open", "port 53/tcp open", "port 443/tcp open", "port 9100/tcp open",
+                                           "service ssh removed"]})
 
     def test_new_vm_keeps_the_uuid_from_its_first_definition(self):
         vm_records.write(self.root, record("lab", 3))
@@ -424,7 +641,7 @@ class RegenerateTest(RegistryTest):
         vm_records.write(self.root, record("priv", 2, memory_mib=16384))
         self.assertEqual(self.json("regenerate"), {"vms": {"work": [], "priv": ["domain"]}, "firewall": False,
                                                    "storage": False, "retention": None,
-                                                   "timers": False})
+                                                   "timers": False, "zone": []})
         self.assertEqual([c["dom"] for c in self.calls("define")], ["agentbox-priv"])
         self.assertIn("16384", self.virt_install("priv"))
 

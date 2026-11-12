@@ -1,17 +1,24 @@
 #!/usr/bin/python3 -I
-"""HTTPS-Proxy (CONNECT) mit Allowlist fuer eine VM.
+"""Transparent TLS proxy with the Allowlist for one VM (ADR 0014).
 
-Laeuft als eigener System-User an einem Socket, den systemd uebergibt
-(Socket-Aktivierung): TCP im isolierten Netz der VM oder ein Unix-Socket. Nur CONNECT auf Port 443 zu Domains der Allowlist;
-Ziele im LAN oder auf localhost werden auch dann abgelehnt, wenn eine
-erlaubte Domain dorthin aufloest. Jede Verbindung wird protokolliert (englisch,
-agentbox liest diese Zeilen):
-  [<vm>] ALLOWED <host> (allowlist <domain> <scope>)   oder (open web)
+Runs as its own system user on a socket systemd hands over (socket activation):
+port 443 on the Host's address in the VM's isolated network, where the VM's resolver
+sends every name, or a Unix socket for tests. Each connection starts with a TLS
+ClientHello, whose server name (SNI) is the destination; the proxy resolves that name
+itself and connects to it on port 443. What is not a TLS handshake, or names no
+server, is refused. Destinations in the LAN or on localhost are refused even when an
+allowed domain resolves there. Every connection is logged (English, agentbox reads
+these lines):
+  [<vm>] ALLOWED <host> (allowlist <domain> <scope>)   or (open web)
   [<vm>] ALLOWED <host> (allowlist regex <pattern> <scope>)   a Regex entry
-  [<vm>] BLOCKED <host> (<grund>)
-  [<vm>] ALERT <host> [<merkmal>,...]
-  [<vm>] CLOSED <host> (<grund>)        Tunnel vom Proxy geschlossen (ADR 0005)
-  [<vm>] ERROR <host> (<fehler>)        Ziel nicht erreichbar
+  [<vm>] BLOCKED <host> (<reason>)
+  [<vm>] BLOCKED <client address> (not a TLS handshake)   or (no server name)
+  [<vm>] ALERT <host> [<signal>,...]
+  [<vm>] CLOSED <host> (<reason>)       tunnel closed by the proxy (ADR 0005)
+  [<vm>] ERROR <host> (<error>)         destination unreachable
+A refused connection gets a fatal TLS alert (access_denied for a blocked destination,
+unrecognized_name without a server name, internal_error for an unreachable
+destination), so the client reports why; bytes that are no TLS get nothing.
 
 Allowlist: /etc/agentbox/allowlist.json (agentbox allow/disallow/...), Eintraege
 mit Domain (gilt auch fuer alle Subdomains), Geltungsbereich (scope: "all" oder
@@ -46,6 +53,7 @@ import importlib.util
 import ipaddress
 import json
 import os
+import re
 import socket
 import sys
 import time
@@ -86,15 +94,151 @@ def _test_upstream():
 
 suspicious = _load_suspicious()
 PORT = 443
-HEADER_LIMIT = 16 * 1024
+RECORD_LIMIT = 2 ** 14          # the longest record TLS allows
+# a ClientHello in more bytes than one record of the longest length (header included) is not
+# taken as TLS: 16,389 bytes
+HELLO_LIMIT = 5 + RECORD_LIMIT
+# how long a client has to send its ClientHello
+HELLO_SECONDS = _seconds(os.environ.get("AGENTBOX_PROXY_HELLO_SECONDS"), 10.0)
+LINGER_SECONDS = 2              # how long a refused client's further bytes are read after the alert
 # so oft prueft der Proxy, ob Tunnel geschlossen werden muessen
 CHECK_SECONDS = _seconds(os.environ.get("AGENTBOX_PROXY_CHECK_SECONDS"), 1.0)
 TEST_UPSTREAM = _test_upstream()
 OPEN = "open"            # Tunnel, den nur das offene Web erlaubt
+# TLS alerts (RFC 8446, 6.2) the proxy answers a refused connection with
+ACCESS_DENIED, UNRECOGNIZED_NAME, INTERNAL_ERROR = 49, 112, 80
 
 
 def log(ctx, msg):
     print(f"[{ctx}] {msg}", file=sys.stderr, flush=True)
+
+
+# --- ClientHello -----------------------------------------------------------------
+
+# TLS record types, the handshake type and the extension of the server name (RFC 8446, 6066)
+HANDSHAKE, ALERT_RECORD, FATAL, CLIENT_HELLO, SERVER_NAME, HOST_NAME = 22, 21, 2, 1, 0, 0
+HOST = re.compile(r"[a-z0-9.-]{1,253}")
+# a label as domain entries have them: letters, digits and inner hyphens, at most 63
+LABEL = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")
+NOT_TLS = "not a TLS handshake"
+
+
+class Refused(Exception):
+    """A connection the proxy takes no destination from: the reason for the log and the
+    TLS alert to answer with, none for bytes that are no TLS."""
+
+    def __init__(self, reason, alert=None):
+        super().__init__(reason)
+        self.reason, self.alert = reason, alert
+
+
+class Reader:
+    """Reads a TLS structure front to back; running past its end is Refused."""
+
+    def __init__(self, data):
+        self.data, self.pos = data, 0
+
+    def take(self, n):
+        if self.pos + n > len(self.data):
+            raise Refused(NOT_TLS)
+        self.pos += n
+        return self.data[self.pos - n:self.pos]
+
+    def number(self, n):
+        return int.from_bytes(self.take(n), "big")
+
+    def vector(self, n):
+        """A length-prefixed field, its length in n bytes."""
+        return self.take(self.number(n))
+
+    def done(self):
+        return self.pos == len(self.data)
+
+
+def _host_name(name):
+    name = name.decode("ascii", "replace").lower().rstrip(".")
+    if not HOST.fullmatch(name) or not all(LABEL.fullmatch(label) for label in name.split(".")):
+        raise Refused("no server name", UNRECOGNIZED_NAME)
+    return name
+
+
+def _server_name(body):
+    """The host name of the server_name extension in a ClientHello body (what follows the
+    handshake header): lowercased, without its trailing dot. With an Encrypted Client Hello
+    extension this is the outer name, as for any ClientHello (ADR 0014)."""
+    r = Reader(body)
+    r.take(2 + 32)                  # version, random
+    r.vector(1)                     # session id
+    r.vector(2)                     # cipher suites
+    r.vector(1)                     # compression methods
+    if r.done():
+        raise Refused("no server name", UNRECOGNIZED_NAME)
+    extensions = Reader(r.vector(2))
+    if not r.done():
+        raise Refused(NOT_TLS)
+    found = {}
+    while not extensions.done():
+        kind, data = extensions.number(2), extensions.vector(2)
+        if kind in found:           # RFC 8446, 4.2: never twice; which one would the server read?
+            raise Refused(NOT_TLS)
+        found[kind] = data
+    if SERVER_NAME in found:
+        extension = Reader(found[SERVER_NAME])
+        names = Reader(extension.vector(2))
+        if not extension.done():        # bytes after the list of names
+            raise Refused(NOT_TLS)
+        hosts = []
+        while not names.done():
+            name_type, name = names.number(1), names.vector(2)
+            if name_type == HOST_NAME:
+                hosts.append(name)
+        # RFC 6066, 3: one name of a type; with several the destination might pick another one
+        if len(hosts) == 1:
+            return _host_name(hosts[0])
+    raise Refused("no server name", UNRECOGNIZED_NAME)
+
+
+class Hello:
+    """A ClientHello as its bytes arrive (it may span several records and TCP segments): each
+    record is taken apart once, when it is whole, so a client sending it in many small
+    pieces costs no more than one sending it at once."""
+
+    def __init__(self):
+        self.buf = bytearray()      # every byte read, to be passed on as it came
+        self.hello = bytearray()    # the handshake bytes of the records taken apart so far
+        self.pos = 0                # where the next record starts in buf
+        self.records = 0            # records taken apart
+
+    def feed(self, data):
+        """The server name once the ClientHello is whole, else None. Refused when the bytes
+        are no TLS handshake, or when the ClientHello names no server."""
+        self.buf += data
+        buf = self.buf
+        while len(buf) >= self.pos + 5:
+            pos = self.pos
+            kind, major, length = buf[pos], buf[pos + 1], int.from_bytes(buf[pos + 3:pos + 5], "big")
+            if kind != HANDSHAKE or major != 3 or not 0 < length <= RECORD_LIMIT:
+                raise Refused(NOT_TLS)
+            if len(buf) < pos + 5 + length:
+                return None
+            self.hello += buf[pos + 5:pos + 5 + length]
+            self.pos = pos + 5 + length
+            self.records += 1
+            hello = self.hello
+            if len(hello) < 4:
+                continue
+            if hello[0] != CLIENT_HELLO:
+                raise Refused(NOT_TLS)
+            size = int.from_bytes(hello[1:4], "big")
+            if len(hello) >= 4 + size:
+                return _server_name(bytes(hello[4:4 + size]))
+        return None
+
+
+def client_hello(buf):
+    """The server name of the TLS ClientHello that buf starts with; None while buf does not
+    hold the whole ClientHello yet. Refused as Hello.feed."""
+    return Hello().feed(buf)
 
 
 # --- Allowlist -----------------------------------------------------------------
@@ -186,14 +330,14 @@ class Allowlist:
         return bool(compiled and suspicious.pattern_matches(compiled, host))
 
 
-def regex_refusal(host, tags):
-    """Why Regex entries cannot allow host, as (reason for the log, answer to the VM), else
-    None: it has strong Signals, or the Watchlist cannot be read (which Signals are strong is
-    unknown then), checked on every connection the way Open web does it."""
+def regex_refusal(tags):
+    """Why Regex entries cannot allow a host, as the reason for the log, else None: it has
+    strong Signals, or the Watchlist cannot be read (which Signals are strong is unknown
+    then), checked on every connection the way Open web does it."""
     if not suspicious or suspicious.watchlist_unreadable():
-        return "Watchlist unreadable, regex entries closed", "regex entries closed: the Watchlist cannot be read"
+        return "Watchlist unreadable, regex entries closed"
     if strong(tags):
-        return f"suspicious: {','.join(tags)}", f"{host} is suspicious ({','.join(tags)})"
+        return f"suspicious: {','.join(tags)}"
     return None
 
 
@@ -209,7 +353,7 @@ def granting(host, tags, lists, now):
                 keys.append(k)
         elif lists.matches(k.value, host):
             patterns.append(k)
-    refused = regex_refusal(host, tags) if patterns else None
+    refused = regex_refusal(tags) if patterns else None
     return frozenset(keys if refused else keys + patterns), refused
 
 
@@ -228,24 +372,23 @@ def strong(tags):
 
 
 def decide(ctx, lists, host, tags, now):
-    """(Freigabe, Grund fuer das Log, Antwort an die VM). Freigabe: die Eintraege,
-    die host erlauben, OPEN (nur das offene Web) oder None (gesperrt)."""
+    """(grant, reason for the log). Grant: the entries that allow host, OPEN (only Open web)
+    or None (blocked, with the reason)."""
     keys, refused = granting(host, tags, lists, now)
     if keys:
-        return keys, None, None
+        return keys, None
     if open_until(ctx):
-        # ohne lesbare Verdachtsliste ist unbekannt, was gesperrt bleiben muesste: nichts
+        # without a readable Watchlist it is unknown what would have to stay blocked: nothing passes
         if suspicious and suspicious.watchlist_unreadable():
-            return (None, "Watchlist unreadable, Open web closed",
-                    "Open web closed: the Watchlist cannot be read")
-        # im offenen Web bleiben stark verdaechtige Ziele gesperrt (ausser freigegeben)
+            return None, "Watchlist unreadable, Open web closed"
+        # in Open web destinations with strong Signals stay blocked (unless allowed)
         if strong(tags):
-            return None, f"suspicious: {','.join(tags)}", f"{host} is suspicious ({','.join(tags)})"
-        return OPEN, None, None
+            return None, f"suspicious: {','.join(tags)}"
+        return OPEN, None
     # a Regex entry matches, but does not allow it (strong Signals, or no Watchlist)
     if refused:
-        return None, *refused
-    return None, "not on the Allowlist", f"{host} is not on the Allowlist"
+        return None, refused
+    return None, "not on the Allowlist"
 
 
 def logged(ctx, grant):
@@ -316,15 +459,25 @@ async def watch(ctx, lists):
 
 # --- Verbindungen ---------------------------------------------------------------
 
+def _address(a):
+    """The address getaddrinfo gave, or None for one ipaddress cannot read (which counts as
+    not public)."""
+    try:
+        return ipaddress.ip_address(a)
+    except ValueError:
+        return None
+
+
 async def resolve_public(host):
+    """The addresses of host, IPv4 first, or None unless every one of them is public."""
     if TEST_UPSTREAM:
         return [TEST_UPSTREAM[0]]
     infos = await asyncio.get_running_loop().getaddrinfo(host, PORT, type=socket.SOCK_STREAM)
-    addrs = list(dict.fromkeys(info[4][0] for info in infos))
-    if not addrs or not all(ipaddress.ip_address(a).is_global for a in addrs):
+    addrs = {a: _address(a) for a in dict.fromkeys(info[4][0] for info in infos)}
+    if not addrs or not all(ip is not None and ip.is_global for ip in addrs.values()):
         return None
-    # IPv4 zuerst: titan hat nicht immer eine funktionierende IPv6-Route
-    return sorted(addrs, key=lambda a: ipaddress.ip_address(a).version)
+    # IPv4 first: a Host does not always have a working IPv6 route
+    return sorted(addrs, key=lambda a: addrs[a].version)
 
 
 async def connect_any(addrs):
@@ -349,65 +502,93 @@ async def pipe(reader, writer):
         writer.close()
 
 
-async def refuse(writer, status, reason):
-    writer.write(f"HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nagentbox: {reason}\n".encode())
-    await writer.drain()
+async def refuse(reader, writer, alert=None):
+    """Closes the connection, after a fatal TLS alert when there is one the client can use.
+    After the alert the proxy stops sending and reads what the client still sends for a
+    moment, since closing with bytes unread resets the connection and loses the alert."""
+    if alert is not None:
+        writer.write(bytes((ALERT_RECORD, 3, 3, 0, 2, FATAL, alert)))
+        try:
+            writer.write_eof()
+            await writer.drain()
+            async with asyncio.timeout(LINGER_SECONDS):
+                while await reader.read(65536):
+                    pass
+        except (ConnectionError, TimeoutError):
+            pass
     writer.close()
 
 
+async def read_hello(reader, hello):
+    """(the bytes read, the server name of the ClientHello they start with), read into hello
+    (a Hello). Refused when they are no ClientHello within HELLO_LIMIT bytes, or name no
+    server; EOFError when the client leaves before sending anything."""
+    while True:
+        if len(hello.buf) >= HELLO_LIMIT:
+            raise Refused(NOT_TLS)
+        chunk = await reader.read(HELLO_LIMIT - len(hello.buf))
+        if not chunk:
+            if hello.buf:
+                raise Refused(NOT_TLS)
+            raise EOFError
+        host = hello.feed(chunk)
+        if host is not None:
+            return bytes(hello.buf), host
+
+
 async def handle(ctx, lists, reader, writer):
+    peer = writer.get_extra_info("peername")
+    client = peer[0] if isinstance(peer, tuple) else "unix"
+    hello = Hello()
     try:
-        head = await reader.readuntil(b"\r\n\r\n")
-    except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, ConnectionError):
+        head, host = await asyncio.wait_for(read_hello(reader, hello), HELLO_SECONDS)
+    except Refused as e:
+        log(ctx, f"BLOCKED {client} ({e.reason})")
+        await refuse(reader, writer, e.alert)
+        return
+    except asyncio.TimeoutError:
+        # a ClientHello begun and not finished in time; a client that sent nothing leaves no line
+        if hello.buf:
+            log(ctx, f"BLOCKED {client} ({NOT_TLS})")
         writer.close()
         return
-    request = head.split(b"\r\n", 1)[0].decode("latin-1")
-    parts = request.split()
-    if len(parts) != 3 or parts[0] != "CONNECT":
-        log(ctx, f"BLOCKED {request!r} (only HTTPS/CONNECT)")
-        await refuse(writer, "405 Method Not Allowed", "only HTTPS (CONNECT) is let through")
+    except (EOFError, ConnectionError):
+        writer.close()
         return
 
-    host, _, port = parts[1].rpartition(":")
-    host = host.strip("[]").lower().rstrip(".")
-    tags = suspicious.classify(host, int(port) if port.isdigit() else 0) if suspicious else []
-    alert = suspicious.alerting(host, tags) if tags else []     # ohne harmlos markierte
+    tags = suspicious.classify(host) if suspicious else []
+    alert = suspicious.alerting(host, tags) if tags else []     # without the harmless ones
     if alert:
-        # eigene Zeile, damit agentbox und der Leitstand Alerts sammeln koennen
+        # a line of its own, so agentbox and the Control Room can collect Alerts
         log(ctx, f"ALERT {host} [{','.join(alert)}]")
-    if port != str(PORT):
-        log(ctx, f"BLOCKED {parts[1]} (port)")
-        await refuse(writer, "403 Forbidden", f"only port {PORT}")
-        return
     now = time.time()
-    grant, why, answer = decide(ctx, lists, host, tags, now)
+    grant, why = decide(ctx, lists, host, tags, now)
     if grant is None:
         log(ctx, f"BLOCKED {host} ({why})")
-        await refuse(writer, "403 Forbidden", answer)
+        await refuse(reader, writer, ACCESS_DENIED)
         return
     try:
         addrs = await resolve_public(host)
-    except OSError:
+    except (OSError, UnicodeError):     # UnicodeError: a name the IDNA codec refuses
         addrs = None
     if not addrs:
         log(ctx, f"BLOCKED {host} (does not resolve to a public address)")
-        await refuse(writer, "403 Forbidden", f"{host} has no public address")
+        await refuse(reader, writer, ACCESS_DENIED)
         return
 
     try:
         up_reader, up_writer = await connect_any(addrs)
     except (OSError, asyncio.TimeoutError) as e:
         log(ctx, f"ERROR {host} ({e})")
-        await refuse(writer, "502 Bad Gateway", f"{host} cannot be reached")
+        await refuse(reader, writer, INTERNAL_ERROR)
         return
-    # Waehrend Aufloesung und Verbindungsaufbau kann der Zugang geendet haben:
-    # noch einmal entscheiden und den Tunnel ohne await dazwischen eintragen,
-    # damit watch ihn ab jetzt sieht
-    grant, why, answer = decide(ctx, lists, host, tags, now)
+    # access may have ended while the name was resolved and the connection made: decide
+    # again and register the tunnel without an await in between, so watch sees it from now on
+    grant, why = decide(ctx, lists, host, tags, now)
     if grant is None:
         up_writer.close()
         log(ctx, f"BLOCKED {host} ({why})")
-        await refuse(writer, "403 Forbidden", answer)
+        await refuse(reader, writer, ACCESS_DENIED)
         return
     if grant == OPEN:
         log(ctx, f"ALLOWED {host} (open web)")
@@ -416,8 +597,8 @@ async def handle(ctx, lists, reader, writer):
     tunnel = Tunnel(host, tags, grant, (writer, up_writer))
     tunnels.add(tunnel)
     try:
-        writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
-        await writer.drain()
+        up_writer.write(head)       # the ClientHello goes to the destination first
+        await up_writer.drain()
         await asyncio.gather(pipe(reader, up_writer), pipe(up_reader, writer))
     except ConnectionError:
         up_writer.close()
@@ -436,7 +617,7 @@ async def main():
         sock.bind(sys.argv[2])
         sock.listen(64)
     start = asyncio.start_unix_server if sock.family == socket.AF_UNIX else asyncio.start_server
-    server = await start(lambda r, w: handle(ctx, lists, r, w), sock=sock, limit=HEADER_LIMIT)
+    server = await start(lambda r, w: handle(ctx, lists, r, w), sock=sock)
     watcher = asyncio.create_task(watch(ctx, lists))   # Referenz halten, sonst raeumt Python ihn ab
     log(ctx, "ready")
     async with server:

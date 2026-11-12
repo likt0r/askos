@@ -25,7 +25,7 @@ flowchart LR
     gui["Orca port per VM<br/>wakes the VM on connect"]
     cr["Control Room<br/>HTTPS :8800, password"]
     cli["agentbox CLI (root)"]
-    proxy["Allowlist proxy per VM<br/>:3128 on the VM network"]
+    proxy["Resolver and Allowlist proxy per VM<br/>:53 and :443 on the VM network"]
     gh["GitHub token service per VM<br/>:9100 on the VM network"]
     key[("GitHub App keys<br/>readable only by agentbox-gh")]
     subgraph vmnet["Isolated network per VM (10.77.N.0/24)"]
@@ -37,7 +37,7 @@ flowchart LR
 
   orca --> gui --> vm
   browser --> cr --> cli
-  vm -- "HTTPS via CONNECT" --> proxy -- "allowlisted domains only" --> internet
+  vm -- "every name resolves to the Host;<br/>TLS, destination from the handshake" --> proxy -- "allowlisted domains only" --> internet
   vm -- "owner/repo" --> gh --> key
   gh -- "1-hour token, one repo" --> github
 ```
@@ -74,7 +74,15 @@ flowchart LR
   (through virt-install), the proxy, token-service and Orca-port units, the nftables rules,
   the storage pool of the disks, the Data disk and the Claude-token placeholder. Running it
   again changes nothing; a changed definition applies at the VM's next start, and not while
-  the VM is paused. Network numbers and names are fixed once a VM exists. A broken record
+  the VM is paused. A VM network whose resolver differs from the current definition is
+  defined again and, when active, stopped and started, since libvirt's dnsmasq reads its
+  options only when the network starts; a VM running on it has no network until its next
+  Restart (libvirt does not reconnect a running VM to a restarted network), which
+  `regenerate` says. It also opens the ports the VMs reach in the firewalld zone `libvirt`
+  (as setup does, step 5), before any VM network comes up, so it needs firewalld running. A socket whose unit text changed is restarted after systemd read it, so
+  it listens on its new address (systemd keeps an active socket where it was); the proxy,
+  which holds its listening socket, is stopped first and starts again with the next
+  connection. Network numbers and names are fixed once a VM exists. A broken record
   stops `regenerate`; `status` and the daily Reset check carry on with the other VMs.
 - `agentbox create` adds a record with the lowest free network number (Orca port 6800 + N),
   no Allowlist entries of its own (optionally a one-time copy of another VM's own entries,
@@ -201,9 +209,14 @@ flowchart LR
   its last start until it starts again.
 
 ### Network
-- A VM's network reaches only the Host's proxy and token service on that network. It has no
-  route to the internet, no DNS resolver, no IPv6, and cannot reach the home network or
-  other VMs (nftables on the Host).
+- A VM's network reaches only the Host's resolver, proxy and token service on that network
+  ([ADR 0014](docs/adr/0014-the-proxy-is-transparent.md)). It has no route to the internet,
+  no IPv6, and cannot reach the home network or other VMs (nftables on the Host). The
+  resolver is libvirt's dnsmasq on that network: it answers every name with the Host's
+  address on it and forwards nothing (the dnsmasq options `address=/#/<host>`, `local=/#/`,
+  `no-hosts` and `no-resolv` in the network's definition); any other record type (AAAA,
+  HTTPS) gets an empty answer. So whatever a VM connects to, it connects to the Host, and
+  the proxy there takes the real destination from the TLS handshake.
 - Containers in a VM are behind the same limits. They run on rootless Podman: `docker` is
   Podman under that name, and `podman compose` and `docker compose` run Docker Compose, which
   builds and starts containers through the agent's Podman socket. The VM forwards nothing for
@@ -226,9 +239,22 @@ flowchart LR
   in Orca's code): older clients route a tab through the VM only when the VM's Orca offers
   browser streaming, which a headless `orca serve` never does, so they show it as a page of
   the laptop.
-- The proxy accepts only HTTPS `CONNECT` to port 443, checks the destination against the
-  **Allowlist**, resolves names itself and refuses destinations that resolve to non-public
-  addresses.
+- The proxy listens on port 443 of the Host's address in the VM's network, where the
+  resolver sends every connection. It reads the TLS ClientHello a connection starts with
+  and takes the destination from its server name (SNI; a ClientHello may span several
+  records and TCP segments, in at most 16,389 bytes, one record of the longest length
+  TLS allows), checks it against the **Allowlist**, resolves
+  the name itself, refuses destinations that resolve to non-public addresses, and connects
+  to port 443 there, passing the ClientHello on first; the client's own destination is
+  always the Host and is ignored. What is no TLS handshake, or a ClientHello without a
+  server name, is refused and logged with the client's address (`BLOCKED <address> (not a
+  TLS handshake)`, `(no server name)`). A ClientHello with an Encrypted Client Hello
+  extension is decided by its outer server name like any other: browsers send that
+  extension in every handshake (GREASE) with the real destination outside it. A refused connection gets a fatal TLS alert
+  (`access_denied` for a blocked destination, `unrecognized_name` without a server name,
+  `internal_error` when the destination cannot be reached), so the client reports why;
+  bytes that are no TLS get nothing. The proxy speaks no TLS itself: of a connection it
+  sees the server name and nothing else.
 - The Allowlist is one root-owned file, `/etc/agentbox/allowlist.json`, that the proxy reads
   directly and re-reads when it changes. Each **Allowlist entry** has a domain (covering its
   subdomains) or a pattern (a **Regex entry**, below), a scope (`all` or one VM), an optional
@@ -287,9 +313,10 @@ flowchart LR
   `(open web)` (of several entries the most specific domain, else a pattern),
   `BLOCKED <host> (<reason>)` (for a destination only Open web or a regex entry would let
   through, `suspicious: <signals>` or `Watchlist unreadable, ... closed`),
-  `ALERT <host> [<signals>]`, and `CLOSED <host> (<reason>)` for a tunnel the proxy closed.
-  `agentbox allowlist` counts each entry's uses of the last 24 hours from the `ALLOWED`
-  lines. Lines with the earlier German keywords are ignored entirely.
+  `ALERT <host> [<signals>]`, `CLOSED <host> (<reason>)` for a tunnel the proxy closed, and
+  `BLOCKED <client address> (not a TLS handshake)` or `(no server name)` for a connection
+  it took no destination from. `agentbox allowlist` counts each entry's uses of the last 24
+  hours from the `ALLOWED` lines. Lines with the earlier German keywords are ignored entirely.
 
 ### Detection
 `proxy/agentbox-suspicious` classifies each destination by:
@@ -302,7 +329,8 @@ flowchart LR
 - lookalikes of registry and vendor names (`npm-cache.com`, `pypi-get.com`, `npmjs.help`)
   and typos within edit distance 2 for names of at least five characters (`npnjs.com`;
   shorter names such as `pypa` are too often real words),
-- raw IPs, ports other than 443, cloud metadata addresses,
+- raw IPs, in every form a resolver reads as an address (`16909060`, `0x01020304`, `1.2.3`,
+  a name whose last label is all digits or `0x` and hex digits), cloud metadata addresses,
 - blockchain RPC endpoints (used as command channels by GlassWorm and keyv), also below
   Legitimate domains,
 - random-looking labels and unusual TLDs (weak signals).
@@ -375,19 +403,19 @@ Hits raise an **Alert**, shown in the Control Room; Alerts can be marked as seen
 (`agentbox mark-seen`) so that only new ones stand out. `agentbox check-domain` shows a
 domain's Signals and the reason for each: an English text, and for the Control Room a stable
 code with its parameters (the Watchlist entry or pattern and its source, the Feed entry, the
-imitated brand or name, the port, ...), which it words in its language
+imitated brand or name, ...), which it words in its language
 (`docs/control-room-api.md`), and the Harmless mark and Legitimate domain that cover it,
 domain or pattern.
 A **Harmless mark** (`agentbox mark-harmless`,
 root-owned `/etc/agentbox/harmless`, a domain per line or `regex <pattern>`) stops Alerts for
 a false positive and its subdomains (or the hosts its pattern matches), but nothing else: a destination with strong Signals stays blocked in Open web and can only
 be allowed with `--force`, so marking a domain harmless never opens a way out. Signals
-that do not depend on the name (port, raw IP, metadata address) still raise Alerts.
+that do not depend on the name (raw IP, metadata address) still raise Alerts.
 
 `agentbox setup` runs a self-test of the detection before it changes anything
 (`agentbox-suspicious --self-test`): it starts the proxy of the installed Release on a socket
 with the Host's lists plus test entries and small test lists (for each list its record,
-before the migration its text file, on a fresh Host the Release's), sends `CONNECT` requests and checks the Alerts and blocks it logs, without
+before the migration its text file, on a fresh Host the Release's), sends TLS ClientHellos and checks the Alerts and blocks it logs, without
 resolving any name. Besides its own test entries it checks one real Watchlist entry of the
 Host, so a list that does not load is noticed, and that a broken Watchlist closes Open web.
 Its cases use names under `.example` besides the built-in Legitimate domains, and a Host
@@ -887,11 +915,11 @@ certificate name, owner user) and does the Host steps, in this order
 4. **Lists**, on a new Host only: the Allowlist, Watchlist and Legitimate domains of the
    Release, only where there is neither the record nor its text file nor that file moved aside
    (`*.migrated`); an empty list of Harmless marks.
-5. **Firewall zone `libvirt`**, which holds the bridges of the VM networks: ports 3128 (proxy)
-   and 9100 (token service) open, the service `ssh` removed.
+5. **Firewall zone `libvirt`**, which holds the bridges of the VM networks: ports 53
+   (resolver), 443 (proxy) and 9100 (token service) open, the service `ssh` removed.
 6. **VM network rules**: `agentbox-vmnet.service` enabled, so the rules that let a VM reach
-   only the proxy and the token service on its network load at every boot; started when its
-   rules exist (on a new Host `regenerate` writes and loads them).
+   only the resolver, the proxy and the token service on its network load at every boot;
+   started when its rules exist (on a new Host `regenerate` writes and loads them).
 7. **`libvirt-guests`**: `/etc/sysconfig/libvirt-guests` written, the service enabled and
    started, never restarted (see VMs).
 8. **Expiry of Temporary allowlist entries**: `agentbox-allowlist-expire.timer` enabled and
@@ -977,9 +1005,27 @@ otherwise in `lib/agentbox` under their own prefix.
   per-VM revocation limit the damage; they do not prevent it.
 - **GitHub is on the allowlist** and so is a possible channel to send data out, for example
   in issues or commits of a repository the VM may write to.
-- **Domain fronting:** the proxy checks the host name in `CONNECT` only. An allowed domain
-  served by a shared CDN (e.g. `registry.npmjs.org`) can carry traffic to other sites on
-  that CDN.
+- **Domain fronting:** the proxy checks the server name of the TLS handshake only; what
+  goes on inside the connection it cannot see. An allowed domain served by a shared CDN
+  (e.g. `registry.npmjs.org`) can carry traffic to other sites on that CDN. HTTP/2
+  connection coalescing is the same: every name resolves to the Host's one address, so a
+  browser may send requests for another host its certificate covers over a connection open
+  to an allowed one, without a new server name for the proxy to see or log.
+- **Encrypted Client Hello:** a client that brings its own ECH key (the resolver never
+  answers the HTTPS records that carry one) could hide its real destination behind an
+  allowed outer name served by the same provider, the way domain fronting does.
+- **Services of the Host on ports 53 and 443:** one that listens on all of the Host's
+  addresses keeps the resolver or the proxy from binding the Host's address in a VM
+  network, so Agent Box refuses to set up the networks while it runs: `regenerate`, `setup`,
+  `create`, `delete` and a change of the Settings stop before anything changes and name the
+  port. A service bound to other addresses is no obstacle, and nftables keeps the VMs from
+  it.
+- **Only TLS with a server name, on port 443, leaves a VM.** Plain HTTP, other ports and TLS
+  without a server name get nowhere, and an IP literal as the name is a raw IP, a strong
+  Signal. A VM's UDP reaches only DHCP and the resolver on the Host's address on its
+  network, so there is no HTTP/3 (QUIC); clients fall back to TCP. A tool that needs any of
+  this has no way out, which is the intent; what reaches the proxy shows up as a blocked
+  connection of the VM's address.
 - **Repositories inside one VM are not isolated from each other.** Put sensitive projects in
   their own VM.
 - **Private repositories without branch protection** (GitHub Free) can be overwritten by an

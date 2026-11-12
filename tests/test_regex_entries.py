@@ -32,6 +32,7 @@ import test_allowlist as allowlist_tests  # noqa: E402
 import test_detection as detection_tests  # noqa: E402
 import test_lists as lists_tests  # noqa: E402
 import test_vms as vms_tests  # noqa: E402
+from client_hello import ACCESS_DENIED  # noqa: E402
 from journal_writers import proxy  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -335,6 +336,14 @@ class AllowlistCliTest(allowlist_tests.CliTest):
         self.assertTrue(first.startswith("WARNING: the proxy log of these 7 days has more lines than the newest 3 "
                                          "read, which reach back only to "), first)
         self.assertTrue(first.endswith(": hosts seen only before then are missing below."), first)
+
+    def test_lines_that_name_the_vms_own_address_are_no_hosts_of_the_preview(self):
+        address = r"^10\.77\.1\.[0-9]+$"
+        self.journal([proxy_line("work", "BLOCKED 10.77.1.2 (not a TLS handshake)", 300),
+                      proxy_line("work", "BLOCKED 10.77.1.2 (no server name)", 200),
+                      proxy_line("work", "BLOCKED 10.77.1.3 (not on the Allowlist)", 100)])
+        hosts = self.json("check-regex", "allowlist", "--regex", address, "--scope", "work")["preview"]["hosts"]
+        self.assertEqual([h["host"] for h in hosts], ["10.77.1.3"])
 
     def test_without_confirmation_it_shows_what_it_would_allow_and_changes_nothing(self):
         said = self.refused("allow", "work", "--regex", PATTERN)
@@ -648,26 +657,28 @@ class ListsProxyTest(detection_tests.ProxyTest):
         self.assertEqual(self.alert("drop7.example"), ["c2"])
         self.assertIsNone(self.alert("www.drop7.example"))
         self.open_web()
-        self.assertEqual(self.connect("drop8.example"), "HTTP/1.1 403 Forbidden")
+        self.assertEqual(self.connect("drop8.example"), ACCESS_DENIED)
         self.assertEqual(self.blocked_reason("drop8.example"), "suspicious: c2")
 
     def test_a_legitimate_pattern_lifts_weak_signals_only(self):
         write(os.path.join(self.conf, "watchlist.json"), lists_tests.record())
         write(os.path.join(self.conf, "legitimate.json"),
-              lists_tests.record(legit_rx(r"^(fresh|bad)\.example$"), legit_rx(r"^npm-[a-z]+\.example$")))
+              lists_tests.record(legit_rx(r"^(fresh|bad)\.example$"), legit_rx(r"^npm-[a-z]+\.example$"),
+                                 legit_rx(r"^metadata\.google\.internal$")))
         self.start()
         self.assertIsNone(self.alert("fresh.example"))                     # young, lifted
         self.assertEqual(self.alert("bad.example"), ["threat"])            # strong: stays
         self.assertEqual(self.alert("npm-cache.example"), ["lookalike"])
+        self.assertEqual(self.alert("metadata.google.internal"), ["metadata"])     # not by its name
 
     def test_a_harmless_pattern_stops_alerts_but_not_the_block_in_open_web(self):
-        self.harmless("npm-other.example", r"regex ^npm-[a-z]+-mirror\.example$")
+        self.harmless("npm-other.example", r"regex ^npm-[a-z]+-mirror\.example$", r"regex ^metadata\.google\.internal$")
         self.start()
         self.assertIsNone(self.alert("npm-cache-mirror.example"))
         self.assertEqual(self.alert("npm-cache.example"), ["lookalike"])
-        self.assertEqual(self.alert("npm-cache-mirror.example", 22), ["port"])     # not by its name
+        self.assertEqual(self.alert("metadata.google.internal"), ["metadata"])     # not by its name
         self.open_web()
-        self.assertEqual(self.connect("npm-x-mirror.example"), "HTTP/1.1 403 Forbidden")
+        self.assertEqual(self.connect("npm-x-mirror.example"), ACCESS_DENIED)
         self.assertEqual(self.blocked_reason("npm-x-mirror.example"), "suspicious: lookalike")
 
     def test_a_stored_watchlist_pattern_the_rules_refuse_closes_open_web_the_others_count(self):
@@ -677,7 +688,7 @@ class ListsProxyTest(detection_tests.ProxyTest):
         self.assertEqual(self.alert("x.exfil.example"), ["exfil"])
         self.assertIsNone(self.alert("aaa.example"))
         self.open_web()
-        self.assertEqual(self.connect("plain.example"), "HTTP/1.1 403 Forbidden")
+        self.assertEqual(self.connect("plain.example"), ACCESS_DENIED)
         self.assertEqual(self.blocked_reason("plain.example"), "Watchlist unreadable, Open web closed")
 
     def test_a_stored_legitimate_pattern_the_rules_refuse_lifts_nothing_the_others_count(self):
@@ -749,7 +760,7 @@ class HarmlessCliTest(detection_tests.CliTest):
         now = time.time()
         with open(os.path.join(self.dir, "journal.txt"), "w") as f:
             for host, tags, age in (("npm-a-mirror.example", "lookalike", 60), ("npm-b.example", "lookalike", 50),
-                                    ("npm-c-mirror.example", "lookalike,port", 40)):
+                                    ("npm-c-mirror.example", "lookalike,metadata", 40)):
                 f.write(json.dumps({"__REALTIME_TIMESTAMP": str(int((now - age) * 10**6)),
                                     "SYSLOG_IDENTIFIER": "agentbox-proxy-work",
                                     "MESSAGE": f"[work] ALERT {host} [{tags}]", **proxy("work")}) + "\n")
@@ -792,10 +803,9 @@ class SelfTestTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             with open(PROXY) as f:
                 source = f.read()
-            old = "    if strong(tags):\n        return f\"suspicious: {','.join(tags)}\", f\"{host} is suspicious"
+            old = "    if strong(tags):\n        return f\"suspicious: {','.join(tags)}\""
             self.assertIn(old, source)
-            write(os.path.join(d, "agentbox-proxy"), source.replace(old, "    if False:\n        return f\"\", f\""
-                                                                         "{host} is suspicious"), 0o755)
+            write(os.path.join(d, "agentbox-proxy"), source.replace(old, "    if False:\n        return \"\""), 0o755)
             shutil.copy(SUSPICIOUS, d)
             code, out = self.run_self_test(os.path.join(d, "agentbox-suspicious"))
         self.assertEqual(code, 1)

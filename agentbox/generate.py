@@ -36,6 +36,11 @@ POOL = "agentbox-vms"
 JOURNALD = f"systemd-journald@{activity.NAMESPACE}"     # journald instance of the Activity namespace
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 SAID = {"network": "network created or started", "units": "units written",
+        "sockets": "changed sockets restarted on their new addresses",
+        "network-redefined": "network brought to the current definition",
+        "network-redefined-running": "network brought to the current definition and restarted; the running "
+                                     "VM has no network until its next Restart (libvirt does not reconnect "
+                                     "a running VM to a restarted network)",
         "data-disk": "Data disk created", "claude-token": "placeholder for the Claude token created",
         "observer": "directory for the Observer created",
         "domain": "VM defined again (applies from the next start)",
@@ -123,7 +128,10 @@ def migrate(args):
 # --- regenerate --------------------------------------------------------------
 
 def nft_rules(records):
-    """A VM network reaches only the Host's proxy and token service on it."""
+    """A VM network reaches only the Host's resolver, proxy and token service on it. Only DHCP
+    is accepted before the address check (the VM asks before it has an address); everything
+    else, the resolver's port 53 included, only to the Host's address on the VM's own network,
+    so no other resolver on the Host (one on its LAN address) can be reached."""
     return "".join(line + "\n" for line in [
         "table inet agentbox_vm",
         "delete table inet agentbox_vm",
@@ -137,25 +145,36 @@ def nft_rules(records):
         "    udp dport 67 accept",
         *(f'    iifname "{bridge(r)}" ip daddr != {host_ip(r)} drop' for r in records),
         "    ct state established,related accept",
-        "    tcp dport { 3128, 9100 } accept",
+        "    udp dport 53 accept",
+        "    tcp dport { 53, 443, 9100 } accept",
         "    drop",
         "  }",
         "}",
     ])
 
 
+def _dnsmasq_options(rec):
+    return (f"address=/#/{host_ip(rec)}", "local=/#/", "no-hosts", "no-resolv")
+
+
 def network_xml(rec):
-    """Isolated: no forwarding, no DNS, DHCP for the one VM only."""
-    return f"""<network>
+    """Isolated: no forwarding, DHCP for the one VM only, and libvirt's dnsmasq as the VM's
+    resolver, answering every name with the Host's address on this network (ADR 0014): the
+    proxy there takes the real destination from the TLS handshake. Every other record type
+    gets an empty answer (`local=/#/`), nothing comes from the Host's hosts file, and nothing
+    is forwarded (`no-resolv`, which libvirt sets for an isolated network as well)."""
+    options = "".join(f"    <dnsmasq:option value='{o}'/>\n" for o in _dnsmasq_options(rec))
+    return f"""<network xmlns:dnsmasq='http://libvirt.org/schemas/network/dnsmasq/1.0'>
   <name>{dom(rec['name'])}</name>
   <bridge name='{bridge(rec)}' stp='on' delay='0'/>
-  <dns enable='no'/>
   <ip address='{host_ip(rec)}' netmask='255.255.255.0'>
     <dhcp>
       <range start='{guest_ip(rec)}' end='{guest_ip(rec)}'/>
       <host mac='{mac(rec)}' ip='{guest_ip(rec)}'/>
     </dhcp>
   </ip>
+  <dnsmasq:options>
+{options}  </dnsmasq:options>
 </network>
 """
 
@@ -185,7 +204,7 @@ def units(rec):
 Description=Allowlist proxy for VM {vm}
 
 [Socket]
-ListenStream={host}:3128
+ListenStream={host}:443
 FreeBind=yes
 
 [Install]
@@ -289,6 +308,13 @@ def _pending(what):
     return os.path.join(paths.STATE, "pending", what)
 
 
+def _mark(pending):
+    if not os.path.isdir(os.path.dirname(_pending(pending))):
+        os.makedirs(os.path.dirname(_pending(pending)))
+        os.chmod(os.path.dirname(_pending(pending)), 0o700)
+    open(_pending(pending), "w").close()
+
+
 def _write_if_changed(path, data, mode, pending):
     """Write when different; the pending marker comes first, so a run that dies
     before applying leaves it for the next run."""
@@ -298,10 +324,7 @@ def _write_if_changed(path, data, mode, pending):
                 return False
     except FileNotFoundError:
         pass
-    if not os.path.isdir(os.path.dirname(_pending(pending))):
-        os.makedirs(os.path.dirname(_pending(pending)))
-        os.chmod(os.path.dirname(_pending(pending)), 0o700)
-    open(_pending(pending), "w").close()
+    _mark(pending)
     state_files.write_atomic(path, data, mode)
     return True
 
@@ -378,8 +401,8 @@ def _qemu():
 
 
 def _network_matches(rec):
-    """An existing network is left alone, so it must be the one the record
-    describes: network numbers are fixed once a VM exists."""
+    """An existing network must be the one the record describes: network numbers are fixed
+    once a VM exists. Its XML as libvirt dumps it."""
     net = dom(rec["name"])
     r = virsh.run("net-dumpxml", net)
     found = {k: re.search(rf"<{tag}\b[^>]*\b{attr}=['\"]([^'\"]+)", r.stdout)
@@ -391,33 +414,92 @@ def _network_matches(rec):
         die(f"{rec['name']}: network {net} does not match the record "
             f"({', '.join(f'{k} {found[k]} instead of {wanted[k]}' for k in wanted if found[k] != wanted[k])})",
             error="action_failed", vm=rec["name"])
+    return r.stdout
+
+
+def _resolver_current(rec, xml):
+    """Whether a network's dumped XML has the resolver network_xml() gives it: every dnsmasq
+    option, DNS not switched off, and nothing that sends names or packets on (a `server=`
+    option, a `<forwarder>`, a `<forward>`)."""
+    return (not re.search(r"<dns\b[^>]*\benable=['\"]no['\"]", xml)
+            and not re.search(r"<dnsmasq:option\s+value=['\"]server=|<forwarder\b|<forward\b", xml)
+            and all(re.search(rf"<dnsmasq:option\s+value=['\"]{re.escape(o)}['\"]", xml)
+                    for o in _dnsmasq_options(rec)))
+
+
+def _vm_live(rec):
+    """Whether the VM has a QEMU process (running or paused in memory): its network interface
+    stays with it until the process ends."""
+    r = virsh.run("domstate", dom(rec["name"]))
+    return r.returncode == 0 and r.stdout.strip() not in ("shut off", "crashed", "")
 
 
 def _network(rec):
+    """The VM's network created, brought to the current definition, autostarted and started:
+    True or the key of what it said, else False. libvirt's dnsmasq reads its options only when
+    the network starts, so an active network whose resolver is not the current one is
+    stopped and started again."""
     net = dom(rec["name"])
     r = virsh.run("net-info", net)
+    changed = False
     if r.returncode == 0:
-        _network_matches(rec)
+        xml = _network_matches(rec)
         info = dict(line.split(":", 1) for line in r.stdout.splitlines() if ":" in line)
         info = {k.strip(): v.strip() for k, v in info.items()}
+        if not _resolver_current(rec, xml):
+            _virsh_define("net-define", network_xml(rec), f"{rec['name']}: define network")
+            changed = "network-redefined"
+            if info.get("Active") == "yes":
+                live = _vm_live(rec)
+                _virsh(f"{rec['name']}: stop network", "net-destroy", net)
+                _virsh(f"{rec['name']}: start network", "net-start", net)
+                changed = "network-redefined-running" if live else changed
     else:
         _virsh_define("net-define", network_xml(rec), f"{rec['name']}: create network")
         info = {}
-    changed = not info
+        changed = True
     if info.get("Autostart") != "yes":
         _virsh(f"{rec['name']}: autostart network", "net-autostart", net)
-        changed = True
+        changed = changed or True
     if info.get("Active") != "yes":
         _virsh(f"{rec['name']}: start network", "net-start", net)
-        changed = True
+        changed = changed or True
     return changed
 
 
 def _units(rec):
+    """The VM's units written. A socket unit that existed with other text is marked, before
+    it is written, to be listened on again (_rebind)."""
     changed = False
     for name, text in units(rec).items():
-        changed |= _write_if_changed(os.path.join(paths.SYSTEMD, name), text.encode(), 0o644, "units")
+        path = os.path.join(paths.SYSTEMD, name)
+        if name.endswith(".socket"):
+            try:
+                with open(path, "rb") as f:
+                    if f.read() != text.encode():
+                        _mark(f"socket-{name}")
+            except FileNotFoundError:
+                pass
+        changed |= _write_if_changed(path, text.encode(), 0o644, "units")
     return changed
+
+
+def _rebind(rec):
+    """Each of the VM's sockets whose unit text changed, listening where it now says, after
+    daemon-reload: systemd keeps an active socket on its old address, and a service that was
+    handed the listening socket (Accept=no, the proxy) keeps serving it, so that service is
+    stopped first and the socket restarted; the next connection starts the service on the
+    new socket. Whether one was restarted."""
+    done = False
+    for name, text in units(rec).items():
+        if not name.endswith(".socket") or not os.path.exists(_pending(f"socket-{name}")):
+            continue
+        if "Accept=yes" not in text:
+            _systemctl("stop", name[:-len(".socket")] + ".service")
+        _systemctl("restart", name)
+        os.remove(_pending(f"socket-{name}"))
+        done = True
+    return done
 
 
 def _storage_pool():
@@ -825,6 +907,49 @@ def _timers(values):
     return changed
 
 
+# what each VM reaches on the Host's address in its network besides the token service: the
+# resolver (libvirt's dnsmasq) and the proxy
+VM_SERVICE_PORTS = (("tcp", 53), ("udp", 53), ("tcp", 443))
+
+
+def _wildcard_listeners():
+    """The (protocol, port) of VM_SERVICE_PORTS a socket on all of the Host's addresses
+    (0.0.0.0 or ::) holds, from /proc/net: TCP in LISTEN, UDP bound. Agent Box's own resolver
+    and proxy bind only the Host's address in each VM network, so such a socket is another
+    service's, and the kernel lets neither of them bind its address while it is there."""
+    found = set()
+    for proto in ("tcp", "udp"):
+        for table in (proto, proto + "6"):
+            try:
+                with open(paths.host(f"/proc/net/{table}")) as f:
+                    rows = f.read().splitlines()[1:]
+            except FileNotFoundError:
+                continue
+            for row in rows:
+                fields = row.split()
+                if len(fields) < 4 or (proto == "tcp" and fields[3] != "0A"):     # 0A: LISTEN
+                    continue
+                address, _, port = fields[1].rpartition(":")
+                try:
+                    wildcard, port = int(address, 16) == 0, int(port, 16)
+                except ValueError:
+                    continue
+                if wildcard and (proto, port) in VM_SERVICE_PORTS:
+                    found.add((proto, port))
+    return found
+
+
+def ports_free():
+    """Dies, before anything changes, when another service holds a port of the VMs' resolver
+    or proxy on all of the Host's addresses: libvirt could not start a VM network's dnsmasq,
+    nor systemd the proxy's socket."""
+    taken = ", ".join(f"{port}/{proto}" for proto, port in sorted(_wildcard_listeners(), key=lambda t: (t[1], t[0])))
+    if taken:
+        die(f"another service listens on {taken} on all of the Host's addresses: the VMs' resolver and proxy "
+            "need these ports on the Host's address in each VM network, and could not start. Stop that "
+            "service or bind it only to the addresses it serves.", error="action_failed", ports=taken)
+
+
 def apply():
     """The Host configuration of every VM from the registry; what changed as
     {"vms": {vm: [step, ...]}, "firewall": bool, "storage": bool, "retention": days or None,
@@ -832,6 +957,7 @@ def apply():
     Callers hold state_files.locked(paths.REGISTRY), like create and delete, so runs never overlap."""
     records = registry.all_records()     # a broken registry stops everything before any change
     values = settings.load()             # so do broken settings
+    ports_free()                         # so does a service that would keep resolver or proxy from starting
     days = values["activity_retention_days"]
     # a VM being deleted stays isolated until its network is gone
     isolated = records + [m["record"] for m in being_deleted() if not m.get("network_removed")]
@@ -845,8 +971,9 @@ def apply():
         done = []
         for key, step in (("network", _network), ("units", _units), ("data-disk", _data_disk),
                           ("claude-token", _claude_token), ("observer", _observer)):
-            if step(rec):
-                done.append(key)
+            got = step(rec)
+            if got:
+                done.append(got if isinstance(got, str) else key)
         defined = domain(rec)
         if defined:
             done.append(defined)
@@ -855,6 +982,9 @@ def apply():
     timers = _rebuild(values) or timers
     timers = _versions(values) or timers
     _apply_pending("units", "daemon-reload")
+    for rec in records:
+        if _rebind(rec):
+            changes[rec["name"]].append("sockets")
     if records:
         _systemctl("enable", "--now", *[s for rec in records for s in sockets(rec)])
     return {"vms": changes, "firewall": firewall, "storage": storage, "retention": retention,
@@ -876,14 +1006,23 @@ def report(result):
 
 
 def regenerate(args):
-    """agentbox regenerate [--json]: the Host configuration of every VM from the registry."""
+    """agentbox regenerate [--json]: the Host configuration of every VM from the registry, and
+    the ports of the firewalld zone libvirt the VMs reach (as setup opens them), so this
+    command alone brings a Host's VMs up to date with an installed Release."""
+    from .hoststeps import libvirt_zone
     hostsetup.load()    # a Host setup that makes no sense stops us before anything is written
     with state_files.locked(paths.REGISTRY):
+        registry.all_records()      # a broken registry stops everything before any change
+        settings.load()             # so do broken settings
+        ports_free()                # so does a service holding the resolver's or the proxy's ports
+        zone = libvirt_zone()       # before any VM network comes up: the zone rejects what it does not list
         result = apply()
+    result["zone"] = zone
     if "--json" in args:
         print(json.dumps(result))
         return
-    print("\n".join(report(result)) or "everything up to date")
+    lines = ([f"firewall zone libvirt: {'; '.join(zone)}"] if zone else []) + report(result)
+    print("\n".join(lines) or "everything up to date")
 
 
 COMMANDS = {"migrate": migrate, "regenerate": regenerate}

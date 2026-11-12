@@ -26,6 +26,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vm_records  # noqa: E402
+from client_hello import client_hello  # noqa: E402
 from fake_journald import Journald  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -745,12 +746,12 @@ class ProxyTest(unittest.TestCase):
             return f.read()
 
     def alert(self, host):
-        """CONNECT, then the Signals of the Alert the proxy logged for it (None: no Alert)."""
+        """A ClientHello, then the Signals of the Alert the proxy logged for it (None: no Alert)."""
         before = len(self.log_text().splitlines())
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
             s.settimeout(10)
             s.connect(self.sock)
-            s.sendall(f"CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n".encode())
+            s.sendall(client_hello(host))
             while s.recv(4096):
                 pass
         alerts = [line for line in self.log_text().splitlines()[before:] if f"] ALERT {host} [" in line]

@@ -1,0 +1,67 @@
+"""What a client sends the proxy first: a TLS ClientHello as Python's ssl (OpenSSL)
+writes it into a memory BIO, and the alerts the proxy answers a refused one with."""
+import ipaddress
+import ssl
+
+# fatal TLS alerts (RFC 8446, 6.2): access_denied, unrecognized_name, internal_error
+ACCESS_DENIED = bytes((21, 3, 3, 0, 2, 2, 49))
+UNRECOGNIZED_NAME = bytes((21, 3, 3, 0, 2, 2, 112))
+INTERNAL_ERROR = bytes((21, 3, 3, 0, 2, 2, 80))
+
+
+def server_name(*names):
+    """The data of a server_name extension listing these host names (RFC 6066, 3)."""
+    listed = b"".join(b"\x00" + len(n.encode("utf-8")).to_bytes(2, "big") + n.encode("utf-8") for n in names)
+    return len(listed).to_bytes(2, "big") + listed
+
+
+def raw_client_hello(name, padding=0, before=(), after=(), sni=None):
+    """The least a ClientHello naming name needs (RFC 8446, 4.1.2; RFC 6066, 3), with no
+    checks on the name (a tuple: several host names in the one extension); padding bytes
+    after the extensions that their length does not cover. before and after: further
+    extensions (type, data) around the server_name extension; sni: its data instead."""
+    if sni is None:
+        sni = server_name(*(name if isinstance(name, tuple) else (name,)))
+    exts = [*before, (0, sni), *after]
+    ext = b"".join(t.to_bytes(2, "big") + len(d).to_bytes(2, "big") + d for t, d in exts)
+    body = (b"\x03\x03" + bytes(32) + b"\x00" + b"\x00\x02\x13\x01" + b"\x01\x00"
+            + len(ext).to_bytes(2, "big") + ext + bytes(padding))
+    handshake = b"\x01" + len(body).to_bytes(3, "big") + body
+    return b"\x16\x03\x01" + len(handshake).to_bytes(2, "big") + handshake
+
+
+def client_hello(host=None, tls12=False):
+    """The ClientHello a real client sends for host (None: without a server name), for
+    TLS 1.3 or, with tls12, at most TLS 1.2. OpenSSL names no server for an address (RFC
+    6066 forbids it), so for one this is the raw ClientHello that names it anyway."""
+    if host is not None:
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            pass
+        else:
+            return raw_client_hello(host)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    if tls12:
+        ctx.maximum_version = ssl.TLSVersion.TLSv1_2
+    incoming, outgoing = ssl.MemoryBIO(), ssl.MemoryBIO()
+    tls = ctx.wrap_bio(incoming, outgoing, server_side=False, server_hostname=host)
+    try:
+        tls.do_handshake()
+    except ssl.SSLWantReadError:
+        pass
+    return outgoing.read()
+
+
+def answer(sock, hello):
+    """What the proxy answered a ClientHello on sock: "open" when the tunnel carries the
+    ClientHello to the echo server and back, else the bytes before it closed."""
+    data = b""
+    while len(data) < len(hello):
+        chunk = sock.recv(len(hello) - len(data))
+        if not chunk:
+            break
+        data += chunk
+    return "open" if data == hello else data

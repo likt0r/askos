@@ -26,6 +26,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vm_records  # noqa: E402
+from client_hello import ACCESS_DENIED, answer, client_hello  # noqa: E402
 from fake_journald import Journald  # noqa: E402
 from journal_writers import FORGED, proxy, write_passwd, written_by  # noqa: E402
 
@@ -34,6 +35,7 @@ PROXY = os.path.join(REPO, "proxy", "agentbox-proxy")
 AGENTBOX = os.path.join(REPO, "bin", "agentbox")
 TESTS = os.path.join(REPO, "tests")
 CHECK = 0.1                     # the proxy's check interval in these tests
+HELLO = 2.0                     # how long the proxy waits for a ClientHello in these tests
 SETTLE = 6 * CHECK              # long enough for the proxy to have acted on a change
 FIREFOX = "Firefox/Linux (192.0.2.23)"
 
@@ -98,10 +100,14 @@ class ProxyTest(unittest.TestCase):
     def close_web(self):
         os.remove(os.path.join(self.conf, "open-work"))
 
-    def start(self):
+    def start(self, upstream=None):
+        """The proxy, every allowed destination going to upstream (port on 127.0.0.1; the echo
+        server by default; False: the proxy resolves names and connects itself)."""
+        port = self.echo.server_address[1] if upstream is None else upstream
         env = {"PATH": os.environ["PATH"], "LANG": "C.UTF-8", "AGENTBOX_CONF_DIR": self.conf,
                "AGENTBOX_FEEDS_DIR": os.path.join(self.dir, "feeds"), "AGENTBOX_PROXY_CHECK_SECONDS": str(CHECK),
-               "AGENTBOX_PROXY_TEST_UPSTREAM": "127.0.0.1:%d" % self.echo.server_address[1]}
+               "AGENTBOX_PROXY_HELLO_SECONDS": str(HELLO),
+               **({"AGENTBOX_PROXY_TEST_UPSTREAM": "127.0.0.1:%d" % port} if port is not False else {})}
         with open(self.log_path, "wb") as err:
             self.proxy = subprocess.Popen([sys.executable, "-I", PROXY, "work", self.sock], env=env,
                                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err)
@@ -122,30 +128,25 @@ class ProxyTest(unittest.TestCase):
             return f.read()
 
     def request(self, host):
-        """A socket after CONNECT host:443 and the status line of the answer."""
+        """A socket after the ClientHello for host, and the proxy's answer (client_hello.answer)."""
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.addCleanup(s.close)
         s.settimeout(10)
         s.connect(self.sock)
-        s.sendall(f"CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n".encode())
-        head = b""
-        while b"\r\n\r\n" not in head:
-            chunk = s.recv(1)
-            if not chunk:
-                break
-            head += chunk
-        return s, head.split(b"\r\n", 1)[0].decode()
+        hello = client_hello(host)
+        s.sendall(hello)
+        return s, answer(s, hello)
 
     def tunnel(self, host):
-        s, status = self.request(host)
-        self.assertEqual(status, "HTTP/1.1 200 Connection established", self.log())
+        s, answered = self.request(host)
+        self.assertEqual(answered, "open", self.log())
         self.assertTrue(self.alive(s))
         return s
 
     def refused(self, host):
-        s, status = self.request(host)
+        s, answered = self.request(host)
         s.close()
-        return status == "HTTP/1.1 403 Forbidden"
+        return answered == ACCESS_DENIED
 
     def alive(self, s):
         """The tunnel still carries data both ways."""

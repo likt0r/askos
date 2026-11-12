@@ -182,6 +182,7 @@ def create(args):
     say, lines = lifecycle._reporter("json" in opts)
     with state_files.locked(paths.REGISTRY):
         records = registry.all_records()         # a broken registry stops create, as it stops regenerate
+        generate.ports_free()                    # so does a service holding the resolver's or the proxy's ports
         if source is not None and source not in [r["name"] for r in records]:
             die("No such VM: " + clean(source, False)[:40], error="vm_not_found", vm=clean(source, False)[:40])
         if os.path.exists(registry.record_file(name)):
@@ -366,6 +367,7 @@ def delete(args):
     say, lines = lifecycle._reporter("json" in opts)
     with state_files.locked(paths.REGISTRY):
         registry.all_records()           # a broken registry stops delete before any change
+        generate.ports_free()            # so does a service holding the resolver's or the proxy's ports
         marker, resumed = _begin(name, say)
         _units_off(marker["record"], say)
         _domain_off(name, say)
