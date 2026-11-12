@@ -72,11 +72,11 @@ SOCKETS = (f"{JOURNAL_RUN}/socket", paths.host("/run/systemd/journal/socket"))
 READ_ONLY = {"status", "logs", "blocked", "alerts", "allowlist", "owners", "activity", "check-domain", "check-regex",
              "watchlist", "legitimate", "harmless", "pairings", "settings", "github-app", "github-tokens", "images", "build-log",
              "containerfile", "describe", "watch", "version", "env"}
-# Commands that record their own entries (one per VM or entry) instead of one for the call;
-# fetch-versions records none, and check-versions only the start of an automatic update
+# Commands that record their own entries (one per VM, entry or step) instead of one for the
+# call; fetch-versions records none, and check-versions only the start of an automatic update
 # (build.automatic); otherwise they change only their records of what is available
-# (versions.py).
-OWN_ENTRIES = {"weekly-check", "expire-allowlist", "build-run", "check-versions", "fetch-versions"}
+# (versions.py). maintenance records each step of the Maintenance window (maintenance.<step>).
+OWN_ENTRIES = {"weekly-check", "expire-allowlist", "build-run", "check-versions", "fetch-versions", "maintenance"}
 # Kind of a command's entry; every other command is an "action".
 COMMAND_KINDS = {"allow": "allowlist", "disallow": "allowlist", "open-web": "allowlist", "close-web": "allowlist",
                  "extend": "allowlist", "make-permanent": "allowlist", "set-note": "allowlist",

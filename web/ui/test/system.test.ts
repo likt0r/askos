@@ -655,8 +655,8 @@ describe('System page: services', () => {
         unit('agentbox-proxy-priv.socket', 'active', { triggered_by: [] }),
         unit('agentbox-proxy-work.service', 'inactive', { sub: 'dead', triggered_by: ['agentbox-proxy-work.socket'] }),
         unit('agentbox-proxy-work.socket', 'active', { sub: 'listening', triggered_by: [] }),
-        unit('agentbox-rebuild.service', 'failed', { sub: 'failed', triggered_by: ['agentbox-rebuild.timer'] }),
-        unit('agentbox-rebuild.timer', 'active', { sub: 'waiting', triggered_by: [] }),
+        unit('agentbox-maintenance.service', 'failed', { sub: 'failed', triggered_by: ['agentbox-maintenance.timer'] }),
+        unit('agentbox-maintenance.timer', 'active', { sub: 'waiting', triggered_by: [] }),
         unit('agentbox-versions-fetch.service', 'inactive', { sub: 'dead', triggered_by: null }),
         unit('agentbox-web.service', 'active', { triggered_by: [] }),
       ],
@@ -665,8 +665,8 @@ describe('System page: services', () => {
     const r = wrapper.findAll('[data-testid="service-row"]')
     expect(r.map(x => [x.attributes('data-unit'), x.attributes('data-trigger')])).toEqual([
       // the group with the failed service first
-      ['agentbox-rebuild.timer', undefined],
-      ['agentbox-rebuild.service', 'agentbox-rebuild.timer'],
+      ['agentbox-maintenance.timer', undefined],
+      ['agentbox-maintenance.service', 'agentbox-maintenance.timer'],
       ['agentbox-feeds.timer', undefined],
       ['agentbox-feeds.service', 'agentbox-feeds.timer'],
       ['agentbox-proxy-priv.socket', undefined],
@@ -685,9 +685,9 @@ describe('System page: services', () => {
     expect(row('agentbox-proxy-priv.service').text()).toContain('active (running)')
     expect(row('agentbox-proxy-priv.service').attributes('data-color')).toBe('success')
     // failed stays failed, red and counted
-    expect(row('agentbox-rebuild.service').text()).toContain('failed')
-    expect(row('agentbox-rebuild.service').text()).not.toContain('waits')
-    expect(row('agentbox-rebuild.service').attributes('data-color')).toBe('error')
+    expect(row('agentbox-maintenance.service').text()).toContain('failed')
+    expect(row('agentbox-maintenance.service').text()).not.toContain('waits')
+    expect(row('agentbox-maintenance.service').attributes('data-color')).toBe('error')
     expect(wrapper.find('[data-testid="services-failed"]').text()).toBe('1 not running')
     // no trigger known: systemd's state as before
     expect(row('agentbox-versions-fetch.service').text()).toContain('inactive (dead)')

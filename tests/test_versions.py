@@ -1053,18 +1053,13 @@ class TimerTest(VersionsTest):
         # the fetch first; when it fails, the root part still runs
         self.assertIn("Wants=network-online.target agentbox-versions-fetch.service\n", service)
         self.assertIn("After=network-online.target agentbox-versions-fetch.service\n", service)
-        # daily at a fixed time, two hours before the Reset check (reset_time 04:00), so the
-        # Build of an automatic update is done by then (#114); a missed run is caught up
-        timer = self.unit("agentbox-versions.timer")
-        self.assertIn("OnCalendar=*-*-* 02:00\n", timer)
-        self.assertIn("Persistent=true\n", timer)
-        self.assertNotIn("RandomizedDelaySec", timer)
-        self.assertNotIn("OnBootSec", timer)
-        # new units: the timer waits for its time, and the check runs once at once
+        # no timer of its own: the Maintenance window starts it daily, after the Feeds, and waits
+        # for the Builds of an automatic update before its Reset check (test_maintenance)
+        self.assertFalse(self.exists("etc/systemd/system/agentbox-versions.timer"))
+        self.assertNotRegex(service, r"(?m)^\[Install\]")
+        # new units: the check runs once at once
         calls = self.systemctl()
-        self.assertLess(calls.index(["stop", "agentbox-versions.timer"]), calls.index(["start", "agentbox-versions.timer"]))
         self.assertLess(calls.index(["daemon-reload"]), calls.index(["start", "--no-block", "agentbox-versions.service"]))
-        self.assertIn(["enable", "--now", "agentbox-versions.timer"], calls)
 
     def test_a_new_package_minimum_age_reaches_the_fetch_and_checks_at_once(self):
         self.ok("regenerate")
@@ -1073,22 +1068,13 @@ class TimerTest(VersionsTest):
         self.assertIn("Environment=AGENTBOX_VERSIONS_MIN_AGE_DAYS=5\n", self.unit("agentbox-versions-fetch.service"))
         calls = self.systemctl()
         self.assertLess(calls.index(["daemon-reload"]), calls.index(["start", "--no-block", "agentbox-versions.service"]))
-        self.assertNotIn(["stop", "agentbox-versions.timer"], calls)
 
     def test_an_unchanged_regenerate_leaves_it_alone(self):
         self.ok("regenerate")
         self.forget_calls()
         self.ok("regenerate")
         self.assertNotIn(["start", "--no-block", "agentbox-versions.service"], self.systemctl())
-        self.assertNotIn(["stop", "agentbox-versions.timer"], self.systemctl())
-        self.assertIn(["enable", "--now", "agentbox-versions.timer"], self.systemctl())
-
-    def test_the_time_follows_the_reset_time_across_midnight(self):
-        self.ok("regenerate")
-        for reset, check in (("01:15", "23:15"), ("00:00", "22:00"), ("23:59", "21:59"), ("04:00", "02:00")):
-            with self.subTest(reset=reset):
-                self.ok("set-settings", f"reset_time={reset}")
-                self.assertIn(f"OnCalendar=*-*-* {check}\n", self.unit("agentbox-versions.timer"))
+        self.assertNotIn(["daemon-reload"], self.systemctl())
 
 
 if __name__ == "__main__":

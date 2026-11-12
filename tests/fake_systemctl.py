@@ -13,11 +13,16 @@ scenario.json:
                     prints (plain, without legend) when they match one of its patterns
   systemctl_triggered_by  {unit: [timers and sockets]}: the TriggeredBy that `systemctl show`
                     prints for a unit (all others: none)
+  systemctl_run     {unit: argv}: what `systemctl start <unit>` runs, as systemd runs a unit's
+                    ExecStart: to its end, exiting with its exit code (a oneshot service), or
+                    with --no-block in the background, while `systemctl is-active` reports the
+                    unit active (running/<unit>.pid in FAKE_DIR)
 """
 import fcntl
 import fnmatch
 import json
 import os
+import subprocess
 import sys
 import tempfile
 
@@ -48,8 +53,34 @@ if sys.argv[1] in ("enable", "disable", "is-enabled"):
         with os.fdopen(fd, "w") as f:
             json.dump({"enabled": sorted(enabled)}, f)
         os.replace(tmp, os.path.join(DIR, "systemctl.json"))
+
+
+def running(unit):
+    """Whether what `start --no-block` started for the unit still runs (not ended, no zombie)."""
+    try:
+        with open(os.path.join(DIR, "running", unit + ".pid")) as f:
+            pid = int(f.read())
+        with open(f"/proc/{pid}/stat") as f:
+            return f.read().rsplit(")", 1)[1].split()[0] != "Z"
+    except (OSError, ValueError, IndexError):
+        return False
+
+
+if sys.argv[1] == "start":
+    runs = scenario.get("systemctl_run", {})
+    for unit in (a for a in sys.argv[2:] if not a.startswith("-") and a in runs):
+        if "--no-block" in sys.argv:
+            os.makedirs(os.path.join(DIR, "running"), exist_ok=True)
+            p = subprocess.Popen(runs[unit], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, start_new_session=True)
+            with open(os.path.join(DIR, "running", unit + ".pid"), "w") as f:
+                f.write(str(p.pid))
+        else:
+            code = subprocess.run(runs[unit], stdin=subprocess.DEVNULL).returncode
+            if code:
+                sys.exit(f"Job for {unit} failed because the control process exited with error code.")
 if sys.argv[1] == "is-active":
-    active = sys.argv[-1] in scenario.get("systemctl_active", [])
+    active = sys.argv[-1] in scenario.get("systemctl_active", []) or running(sys.argv[-1])
     print("active" if active else "inactive")
     sys.exit(0 if active else 3)
 if sys.argv[1] == "list-units":

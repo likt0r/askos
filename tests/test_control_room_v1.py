@@ -818,16 +818,17 @@ class ErrorTest(V1Test):
     def test_an_invalid_setting_names_its_field(self):
         # the UI shows the message next to that input: the setting comes from the parameters,
         # and only a known key is a field
-        settings = dict(method="PATCH", path="/api/v1/settings", body={"reset_time": "99:99"})
-        answer = self.fails(failure("invalid_setting", "reset_time: invalid value 99:99", setting="reset_time",
-                                    value="99:99"), **settings)
+        settings = dict(method="PATCH", path="/api/v1/settings", body={"maintenance_time": "99:99"})
+        answer = self.fails(failure("invalid_setting", "maintenance_time: invalid value 99:99",
+                                    setting="maintenance_time", value="99:99"), **settings)
         self.assertError(answer, 400, "invalid_setting")
-        self.assertEqual(answer[1]["error"]["field"], "reset_time")
-        answer = self.fails(failure("invalid_setting", "reset_time: invalid value", setting="nokey"), **settings)
+        self.assertEqual(answer[1]["error"]["field"], "maintenance_time")
+        answer = self.fails(failure("invalid_setting", "maintenance_time: invalid value", setting="nokey"),
+                            **settings)
         self.assertNotIn("field", answer[1]["error"])
-        answer = self.fails(failure("invalid_setting", "reset_time: invalid value"), **settings)
+        answer = self.fails(failure("invalid_setting", "maintenance_time: invalid value"), **settings)
         self.assertNotIn("field", answer[1]["error"])
-        answer = self.fails(failure("invalid_setting", "x", setting=["reset_time"]), **settings)
+        answer = self.fails(failure("invalid_setting", "x", setting=["maintenance_time"]), **settings)
         self.assertNotIn("field", answer[1]["error"])
 
     def test_memory_limit_refusals(self):

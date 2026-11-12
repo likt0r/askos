@@ -12,8 +12,9 @@ from the same mounted filesystem, by reading files; nothing from the Image runs 
 Builds made before have only the versions of the npm tools (their `agents`); the others
 are unknown.
 
-What is available is determined once a day on the Host (agentbox-versions.timer, written by
-`agentbox regenerate`), in two parts, so that nothing from the internet is parsed as root:
+What is available is determined once a day on the Host, in the Maintenance window
+(maintenance.py, which starts agentbox-versions.service, written by `agentbox regenerate`), in
+two parts, so that nothing from the internet is parsed as root:
 
   `agentbox fetch-versions` (agentbox-versions-fetch.service) runs as the service user
   agentbox-feeds, with no access to /etc/agentbox, the VMs or the Builds, and asks the npm
@@ -42,8 +43,8 @@ What is available is determined once a day on the Host (agentbox-versions.timer,
 
 With auto_update on (#114), `agentbox check-versions` then starts an update of every Image
 a new Build would update (images.start_automatic: agentbox-build@update, never while a Build
-runs). The timer runs it CHECK_BEFORE_RESET_HOURS before reset_time (generate.py), so the
-Build is done when the daily Reset check moves idle VMs onto it.
+runs). The Maintenance window waits for those Builds before its Reset check moves idle VMs
+onto them.
 
 Whatever cannot be determined is null, "unknown"; a failed check never blocks a Build or
 a Reset. The fetch needs HTTPS to registry.npmjs.org and api.github.com, the count's
@@ -666,7 +667,7 @@ def _check(say):
 
 
 def check_versions(args):
-    """agentbox check-versions [--json] (daily timer, root, after fetch-versions): what a new
+    """agentbox check-versions [--json] (Maintenance window, root, after fetch-versions): what a new
     Build would bring and the package updates of each Image's current Build; with auto_update
     on, then an update of the Images a new Build would update (images.start_automatic)."""
     if any(a != "--json" for a in args):

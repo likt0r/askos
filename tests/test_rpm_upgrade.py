@@ -80,7 +80,7 @@ class GeneratedUnitsTest(unittest.TestCase):
             written = sorted(os.listdir(os.path.join(root, "etc", "systemd", "system")))
         patterns = generated_patterns()
         self.assertIn("agentbox-proxy-work.service", written)
-        self.assertIn("agentbox-rebuild.timer", written)
+        self.assertIn("agentbox-maintenance.timer", written)
         self.assertEqual([n for n in written if not any(fnmatch.fnmatchcase(n, p) for p in patterns)], [])
         # never the Control Room, the VM network rules (agentbox-vmnet) or the expiry timer
         self.assertEqual([n for n in PACKAGE_UNITS if any(fnmatch.fnmatchcase(n, p) for p in patterns)], [])
@@ -263,7 +263,7 @@ class RemovedTest(StepTest):
         names = {os.path.basename(p) for p in generated} | RESTARTED
         links = {p for p, e in self.before.items() if p.startswith(SYSTEMD + "/") and e[0] == "l"
                  and os.path.basename(p) in names}
-        self.assertIn(SYSTEMD + "/system/timers.target.wants/agentbox-rebuild.timer", links)
+        self.assertIn(SYSTEMD + "/system/timers.target.wants/agentbox-maintenance.timer", links)
         self.assertEqual(self.changed(self.under((SYSTEMD,))), sorted(generated | links))
         self.assertEqual({p for p in self.after if p.startswith(SYSTEMD + "/")} - self.before.keys(), set())
         self.assertIn(SYSTEMD + "/system/multi-user.target.wants/agentbox-vmnet.service", self.after)

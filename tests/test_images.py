@@ -1129,39 +1129,24 @@ class UpdateTest(ImagesTest):
 
 
 class TimerTest(ImagesTest):
-    STAMP = "var/lib/systemd/timers/stamp-agentbox-rebuild.timer"
-
     def unit(self, name):
         return self.read("etc/systemd/system/" + name)
 
-    def test_regenerate_writes_the_build_unit_and_the_weekly_rebuild(self):
+    def test_regenerate_writes_the_build_unit_and_no_timer_of_its_own(self):
         self.ok("regenerate")
         service = self.unit("agentbox-build@.service")
         self.assertIn("ExecStart=/usr/bin/agentbox build-run %i\n", service)
         self.assertIn("Type=exec\n", service)
-        self.assertIn("OnCalendar=Sun *-*-* 03:00\n", self.unit("agentbox-rebuild.timer"))
-        self.assertIn("Persistent=true\n", self.unit("agentbox-rebuild.timer"))
-        self.assertIn("ExecStart=/usr/bin/agentbox --actor=timer build --all\n",
-                      self.unit("agentbox-rebuild.service"))
-        self.assertIn(["enable", "--now", "agentbox-rebuild.timer"], self.systemctl())
+        # the weekly rebuild is a step of the Maintenance window (test_maintenance)
+        for name in ("agentbox-rebuild.timer", "agentbox-rebuild.service"):
+            self.assertFalse(self.exists("etc/systemd/system/" + name))
 
-    def test_a_new_rebuild_day_and_time_apply_at_once_without_catching_up(self):
+    def test_a_new_rebuild_day_changes_no_unit(self):
         self.ok("regenerate")
-        os.utime(self.path(self.STAMP), (0, 0))
         self.forget_calls()
-        out = self.ok("set-settings", "rebuild_day=fri", "rebuild_time=02:30")
-        self.assertNotIn("gilt", out)
-        self.assertIn("OnCalendar=Fri *-*-* 02:30\n", self.unit("agentbox-rebuild.timer"))
-        calls = self.systemctl()
-        stop, reload, start = (calls.index(["stop", "agentbox-rebuild.timer"]), calls.index(["daemon-reload"]),
-                               calls.index(["start", "agentbox-rebuild.timer"]))
-        self.assertLess(stop, reload)
-        self.assertLess(reload, start)
-        self.assertNotIn(["restart", "agentbox-rebuild.timer"], calls)
-        self.assertGreater(os.path.getmtime(self.path(self.STAMP)), time.time() - 60)
-        # the other timers stay as they are
-        self.assertNotIn(["stop", "agentbox-weekly.timer"], calls)
-        self.assertNotIn(["restart", "agentbox-feeds.timer"], calls)
+        out = self.ok("set-settings", "rebuild_day=fri")
+        self.assertEqual(out, "rebuild_day: sun -> fri\n")
+        self.assertEqual([c for c in self.systemctl() if c[0] != "enable"], [])
 
     def test_an_unchanged_regenerate_leaves_it_alone(self):
         self.ok("regenerate")

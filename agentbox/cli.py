@@ -11,7 +11,8 @@ import re
 import sys
 
 from . import activity, allowlist, credentials, describe, detection, generate, github, guest, images, lifecycle
-from . import lists, network, pairings, paths, settings, setup, transfer, version, versions, vms, watch
+from . import lists, maintenance, network, pairings, paths, settings, setup, transfer, version, versions, vms
+from . import watch
 from .errors import Fail
 
 USAGE = """\
@@ -109,8 +110,14 @@ Controls the agent VMs on this Host.
   agentbox migrate [--json]                          take over work and priv into the VM registry once
   agentbox regenerate [--json]                       networks, units, disks and VM definitions from the registry,
                                                      and the VMs' ports in the firewalld zone libvirt
-  agentbox weekly-check [--json]                     (timer, daily) Reset old VMs when idle; with auto_update
-                                                     also VMs whose Image has a newer Build
+  agentbox maintenance [--json]                      (timer, daily at maintenance_time) the Maintenance window:
+                                                     fetch the Feeds, check versions (with auto_update the
+                                                     Builds of each Image with an update), the weekly rebuild
+                                                     on rebuild_day, then the Reset check, each step after the
+                                                     one before and its Builds have finished
+  agentbox weekly-check [--json]                     the Reset check of the Maintenance window on its own: Reset
+                                                     old VMs when idle; with auto_update also VMs whose Image
+                                                     has a newer Build
   agentbox images [--json]                           Images and their Builds, which VM uses which, the versions
                                                      of Orca, Claude Code, codex, opencode and Fedora in them
                                                      and what a new Build would bring
@@ -127,9 +134,9 @@ Controls the agent VMs on this Host.
   agentbox set-image <vm> <image> [--build B] [--json]
                 a VM's Image, pinned to an earlier Build or not; applies from the next Reset
   agentbox build-run <image>|all                     (unit agentbox-build@) run a Build
-  agentbox fetch-versions [--json]                   (timer, daily, as agentbox-feeds) ask npm and GitHub for
+  agentbox fetch-versions [--json]                   (Maintenance window, as agentbox-feeds) ask npm and GitHub for
                                                      the versions available
-  agentbox check-versions [--json]                   (timer, then as root) check and take over the answers,
+  agentbox check-versions [--json]                   (Maintenance window, then as root) check and take over the answers,
                                                      package updates of the current Builds; with auto_update
                                                      then an Update of the Images with an update; everything
                                                      again: systemctl start agentbox-versions.service
@@ -147,7 +154,8 @@ COMMANDS = {**guest.COMMANDS, **lifecycle.COMMANDS, **network.COMMANDS, **creden
             **generate.COMMANDS, **vms.COMMANDS, **activity.COMMANDS, **detection.COMMANDS,
             **pairings.COMMANDS, **settings.COMMANDS, **github.COMMANDS, **allowlist.COMMANDS,
             **images.COMMANDS, **describe.COMMANDS, **watch.COMMANDS, **lists.COMMANDS,
-            **setup.COMMANDS, **version.COMMANDS, **versions.COMMANDS, **transfer.COMMANDS}
+            **setup.COMMANDS, **version.COMMANDS, **versions.COMMANDS, **transfer.COMMANDS,
+            **maintenance.COMMANDS}
 
 # The options that take a value, as USAGE shows them ("--note TEXT", "--for 15min|1h|...").
 # Given as --note VALUE, the value is the next argument, whatever it looks like.

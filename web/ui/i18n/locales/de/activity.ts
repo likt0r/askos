@@ -125,6 +125,14 @@ export default {
       buildSkipped: 'Automatisches Update von {images} nicht gestartet: ein Build läuft; die nächste Prüfung versucht es wieder',
       buildAutomatic: 'Automatisches Update gestartet: Build von {images}',
       buildAutomaticFailed: 'Automatisches Update von {images} nicht gestartet',
+      maintenanceFeeds: 'Wartungsfenster: Feeds abgerufen',
+      maintenanceFeedsFailed: 'Wartungsfenster: Abruf der Feeds gescheitert',
+      maintenanceVersions: 'Wartungsfenster: Versionsprüfung fertig',
+      maintenanceVersionsFailed: 'Wartungsfenster: Versionsprüfung gescheitert',
+      maintenanceRebuild: 'Wartungsfenster: wöchentlicher Neubau aller Images fertig',
+      maintenanceRebuildFailed: 'Wartungsfenster: wöchentlicher Neubau gescheitert',
+      maintenanceResetCheck: 'Wartungsfenster: Reset-Prüfung fertig',
+      maintenanceResetCheckFailed: 'Wartungsfenster: Reset-Prüfung gescheitert',
     },
     // Teile der Sätze oben
     parts: {

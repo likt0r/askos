@@ -35,7 +35,7 @@ Every error has the same shape and an HTTP status that fits:
 
 ```json
 {"error": {"code": "invalid_setting", "message": "Invalid value for a setting",
-           "field": "reset_time", "detail": "reset_time: invalid value 99:99 (allowed: ...)"}}
+           "field": "maintenance_time", "detail": "maintenance_time: invalid value 99:99 (allowed: ...)"}}
 ```
 
 - `code`: stable, snake_case; the UI translates it. New codes may be added.
@@ -259,7 +259,7 @@ Sign-ins, failures, refusals by the brake and sign-outs are Activity entries (co
   `next_build`: what the next Reset uses (the pin, else the current Build).
 - `system_disk`: when the System disk was created (its last Reset) and from which Build;
   all `null` without a disk. `reset_changes_build`: the next Reset brings a different
-  Build or Image. `reset_due`: the daily Reset check would reset the VM: its System disk
+  Build or Image. `reset_due`: the Reset check of the Maintenance window would reset the VM: its System disk
   is at least `reset_age_days` old, or, with `auto_update` on, its Image has a newer current
   Build than the one its System disk came from and the VM has no Build pin (the automatic
   Reset happens when the VM is idle).
@@ -467,6 +467,7 @@ first:
 | `build.rejected` | `image`, `build`, `reason`, `message` (the first Safeguard problem) |
 | `build.unneeded` | `reason` |
 | `build.skipped`, `build.automatic` | `images`, `reason` |
+| `maintenance.feeds`, `maintenance.versions`, `maintenance.rebuild`, `maintenance.reset-check` | none: one entry per step of the Maintenance window (kind `action`, actor `timer`), in that order, outcome `ok` or `failed` with the error code (`action_failed`, its message in `description`); a rebuild that is not due records none |
 
 `reason` (also in `params`) is a stable code where one was
 recorded, e.g. why an automatic Reset was postponed (`reset.postponed`: `gui-connected`,
@@ -560,16 +561,22 @@ Progress arrives live as `build` and `build-log` events; the log endpoint fills 
 | `GET /settings` | | `settings`: `{"settings": {"<key>": {"value", "default", "is_default", "applies_later", "allowed"}}}` |
 | `PATCH /settings` | `{"<key>": <value>, ...}` | `set-settings`: `{"changed": {"<key>": {"from", "to"}}, "applies_later": {"<key>": "<text>"}, "regenerated": ...}`; all or nothing; `"default"` restores the default and removes the key from settings.json; an `invalid_setting` error has `field`, the key whose value is wrong |
 
-Settings keys the Control Room may change: `reset_age_days`, `reset_time`, `rebuild_day`,
-`rebuild_time`, `builds_kept`, `default_memory_mib`, `default_data_disk_gib`,
+Settings keys the Control Room may change: `reset_age_days`, `maintenance_time`, `rebuild_day`,
+`builds_kept`, `default_memory_mib`, `default_data_disk_gib`,
 `default_image`, `open_web_max_minutes`, `temporary_entry_default`, `young_domain_days`,
 `feed_interval_hours`, `package_min_age_days`, `orca_version`, `activity_retention_days`,
 `session_hours`, `default_language`, `auto_update`. The password, home network and ports are
 not among them.
+`maintenance_time` (`HH:MM`, default `"02:00"`) is when the daily **Maintenance window** starts:
+it fetches the Feeds, checks the versions (with `auto_update` it builds every Image with an
+update and waits for those Builds), on `rebuild_day` rebuilds every Image, and then runs the
+Reset check, each step once the one before it has finished. It replaced `reset_time` and
+`rebuild_time`: `PATCH` refuses them as `unknown_setting`, and a Host whose
+`settings.json` still holds `reset_time` shows `maintenance_time` two hours earlier.
 `auto_update` is `true` (the default) or `false` (JSON booleans; the text `"true"`/`"false"` is
-taken too): with it on, the daily version check (two hours before `reset_time`) starts an
-update of every Image with an update at once, and the daily Reset check also moves idle VMs
-onto a newer Build of their Image.
+taken too): with it on, the version check of the Maintenance window starts an update of every
+Image with an update at once, and its Reset check also moves idle VMs onto a newer Build of
+their Image once those Builds have finished.
 `orca_version` is text: `""` (the default) lets every Build take the newest Orca release at
 least `package_min_age_days` old, a version such as `"1.4.250"` pins that release.
 

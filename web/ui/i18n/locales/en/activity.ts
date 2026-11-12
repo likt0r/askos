@@ -125,6 +125,14 @@ export default {
       buildSkipped: 'Automatic update of {images} not started: a Build is running; the next check tries again',
       buildAutomatic: 'Automatic update started: Build of {images}',
       buildAutomaticFailed: 'Automatic update of {images} not started',
+      maintenanceFeeds: 'Maintenance window: Feeds fetched',
+      maintenanceFeedsFailed: 'Maintenance window: fetching the Feeds failed',
+      maintenanceVersions: 'Maintenance window: version check done',
+      maintenanceVersionsFailed: 'Maintenance window: version check failed',
+      maintenanceRebuild: 'Maintenance window: weekly rebuild of every Image done',
+      maintenanceRebuildFailed: 'Maintenance window: weekly rebuild failed',
+      maintenanceResetCheck: 'Maintenance window: Reset check done',
+      maintenanceResetCheckFailed: 'Maintenance window: Reset check failed',
     },
     // parts of the sentences above
     parts: {

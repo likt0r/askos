@@ -374,7 +374,7 @@ def activity(query):
 
 # Einstellungen, die der Leitstand aendern darf (agentbox prueft die Werte; ein Test haelt
 # die Liste mit `agentbox settings` gleich). Passwort, Heimnetz und Ports gehoeren nicht dazu.
-SETTING_KEYS = ("reset_age_days", "reset_time", "rebuild_day", "rebuild_time", "builds_kept",
+SETTING_KEYS = ("reset_age_days", "maintenance_time", "rebuild_day", "builds_kept",
                 "default_memory_mib", "default_data_disk_gib", "default_image", "open_web_max_minutes",
                 "temporary_entry_default", "young_domain_days", "feed_interval_hours", "package_min_age_days",
                 "auto_update", "orca_version", "activity_retention_days", "session_hours", "default_language")

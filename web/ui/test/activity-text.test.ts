@@ -168,7 +168,7 @@ describe('Activity in the UI language', () => {
     const params: Record<string, string> = {
       domain: 'd.example', scope: 'all', duration: '1h', target: 'priv', image: 'base', build: '20261101', mib: '8192',
       minutes: '30', category: 'paste', list: 'watchlist', legacy: 'old-file', migrated: '2', skipped: '0', owners: 'a',
-      app_id: '1', settings: 'reset_time', reason: 'idle', signals: 'young', images: 'base', release: '0.3.0',
+      app_id: '1', settings: 'maintenance_time', reason: 'idle', signals: 'young', images: 'base', release: '0.3.0',
       repository: 'a/b', request: 'a/b', folder: '/home/a/foo', files: '3', bytes: '120', env: 'A=1', names: 'A',
     }
     // a reason the sentence knows, where it is a code of its own
@@ -222,6 +222,17 @@ describe('Activity text (unit)', () => {
     const refused = coded(0, 'set-env', { env: 'NODE_OPTIONS=' }, 'stored',
       { outcome: 'failed', error: 'env_name_reserved', error_params: { name: 'NODE_OPTIONS' } })
     expect(activityText(refused, tr)).toBe(`${say('setEnv', { env: 'NODE_OPTIONS=' })}: errors.env_name_reserved {"field":"","name":"NODE_OPTIONS"}`)
+  })
+
+  it('words each step of the Maintenance window, done or failed', () => {
+    for (const [action, key] of [['maintenance.feeds', 'maintenanceFeeds'], ['maintenance.versions', 'maintenanceVersions'],
+      ['maintenance.rebuild', 'maintenanceRebuild'], ['maintenance.reset-check', 'maintenanceResetCheck']]) {
+      expect(activityText(coded(0, action!, {}, 'stored'), tr)).toBe(`activity.actions.${key}`)
+      const failed = coded(0, action!, {}, 'Maintenance window: x failed: disk full', { outcome: 'failed', error: 'unexpected_error' })
+      expect(activityText(failed, tr)).toBe(`activity.actions.${key}Failed: errors.unexpected_error {"field":""}`)
+      // what failed, in agentbox's words (the generic code)
+      expect(activityText({ ...failed, error: 'action_failed' }, tr)).toBe('Maintenance window: x failed: disk full')
+    }
   })
 
   it('keeps it when a parameter the sentence needs is missing or not text', () => {
