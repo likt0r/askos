@@ -24,10 +24,11 @@ others, and the command fails only when the VM registry cannot be read.
 """
 import base64
 import json
+import os
 import sys
 import time
 
-from . import activity, guest, paths, registry, state_files, virsh
+from . import activity, generate, guest, paths, registry, state_files, virsh
 from .errors import Fail, die
 from .registry import dom
 from .sanitize import clean
@@ -132,6 +133,9 @@ def _one(rec, say):
         try:
             removed, freed = _answer(ctx, _run(ctx, days))
         except Fail as f:
+            if os.path.exists(generate.delete_marker(ctx)) or not os.path.exists(registry.record_file(ctx)):
+                say(f"{ctx}: skipped, the VM is being deleted")     # delete does not take the lock
+                return _result(ctx, "skipped", "not_running")
             print(f"agentbox: {f.message}", file=sys.stderr, flush=True)
             activity.record("action", "container-image-cleanup.failed",
                             f"Container image cleanup failed: {f.message}", ctx, "failed", params={"days": days},
@@ -163,7 +167,14 @@ def cleanup(args):
         if not as_json:
             print(line, flush=True)
 
-    results = [_one(rec, say) for rec in records]
+    results = []
+    for rec in records:
+        try:
+            results.append(_one(rec, say))
+        except (Fail, OSError) as e:          # this VM only: the others go on
+            error = e.error if isinstance(e, Fail) else "action_failed"
+            print(f"agentbox: {e.message if isinstance(e, Fail) else e}", file=sys.stderr, flush=True)
+            results.append(_result(rec["name"], "failed", error=error))
     if as_json:
         print(json.dumps({"vms": results}))
 

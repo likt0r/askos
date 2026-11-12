@@ -193,13 +193,22 @@ class Podman:
 
     def remove(self, image):
         """Remove a Container image, never by force: by its id, or with more than one name by
-        all its names (Podman refuses an id with several names without force); whether it is gone."""
+        all its names (Podman refuses an id with several names without force); whether it is gone.
+        When that fails with several names, Podman may have untagged some of them already (it
+        refuses the last one when a container took the image meanwhile): every name is given back."""
         names = [n for n in image["names"] if NAME.fullmatch(n)]
-        refs = names if len(image["names"]) > 1 and len(names) == len(image["names"]) else [image["id"]]
+        several = len(image["names"]) > 1 and len(names) == len(image["names"])
+        refs = names if several else [image["id"]]
         try:
-            return self.run("rmi", *refs).returncode == 0
+            if self.run("rmi", *refs).returncode == 0:
+                return True
         except subprocess.TimeoutExpired:
-            return False
+            pass
+        if several:
+            for name in names:
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    self.run("tag", image["id"], name)
+        return False
 
 
 # --- prune ------------------------------------------------------------------------

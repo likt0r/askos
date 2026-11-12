@@ -198,6 +198,19 @@ class WhatIsRemovedTest(CleanupTest):
         results, _ = self.cleanup()
         self.assertEqual((results["work"]["removed"], self.work.images()), (1, [iid(1)]))
 
+    def test_an_image_with_several_names_a_container_took_meanwhile_keeps_all_its_names(self):
+        names = ["localhost/a:1", "localhost/a:2", "localhost/a:3"]
+        self.work.podman(images=[image(1, names=names)], containers_at_rmi=[container(1, 1)])
+        self.work.usage({iid(1): at(30)})
+        results, _ = self.cleanup()
+        self.assertEqual(results["work"]["removed"], 0)
+        [kept] = self.work.state()["images"]
+        self.assertEqual(sorted(kept["Names"]), names)
+        calls = [c["argv"] for c in self.work.calls()]
+        self.assertIn(["rmi", *names], calls)
+        self.assertEqual(sorted(c[2] for c in calls if c[:1] == ["tag"]), names)
+        self.assertFalse(any("--force" in c or "-f" in c for c in calls))
+
     def test_podman_failing_removes_nothing(self):
         for failing in ("images", "ps"):
             with self.subTest(failing=failing):
@@ -304,6 +317,31 @@ class FailureTest(CleanupTest):
         results, _ = self.cleanup()
         self.assertEqual((results["work"]["outcome"], results["priv"]["outcome"]), ("failed", "removed"))
         self.assertEqual(self.priv.images(), [])
+
+    def test_a_vm_being_deleted_when_the_run_fails_is_skipped_without_an_entry(self):
+        self.scenario(agent_down=True)
+        pending = self.path("var/lib/agentbox/pending")
+        os.makedirs(pending)
+        with open(os.path.join(pending, "delete-work.json"), "w") as f:
+            json.dump({"record": vm_records.record("work", 1)}, f)
+        results, err = self.cleanup()
+        self.assertEqual((results["work"]["outcome"], results["work"]["reason"], results["work"]["error"]),
+                         ("skipped", "not_running", None))
+        self.assertEqual(results["priv"]["outcome"], "failed")
+        self.assertEqual([e["AGENTBOX_VM"] for e in self.cleaned()], ["priv"])
+
+    def test_a_failure_outside_the_wrapper_run_does_not_stop_the_others(self):
+        self.priv.podman(images=[image(1)])
+        self.priv.usage({iid(1): at(30)})
+        locks = self.path("var/lib/agentbox/locks")
+        os.makedirs(os.path.join(locks, "lifecycle-work.lock"))     # a lock file that cannot be opened
+        code, out, err = self.run_agentbox("--actor=timer", "cleanup-container-images", "--json")
+        self.assertEqual(code, 0, err)
+        results = {r["vm"]: r for r in json.loads(out)["vms"]}
+        self.assertEqual((results["work"]["outcome"], results["work"]["error"], results["work"]["removed"]),
+                         ("failed", "action_failed", None))
+        self.assertIn("lifecycle-work.lock", err)
+        self.assertEqual((results["priv"]["outcome"], self.priv.images()), ("removed", []))
 
     def test_a_guest_agent_not_answering(self):
         self.scenario(agent_down=True)

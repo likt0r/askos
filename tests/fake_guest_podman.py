@@ -12,13 +12,18 @@ podman.json:
   external     containers of a build (podman ps --external), as containers
   volumes      ["<name>", ...]: only there to see they stay
   events       lines `podman events --format json` prints before it ends
+  containers_at_rmi  containers that appear when `podman rmi` is first called (taken meanwhile)
   rmi_refuses  ids `podman rmi` refuses (as for an image a newer one is built on)
   fails        commands that fail with exit 125: "images", "ps", "rmi"
   answer       {"images": "<stdout>"}: printed instead of the real listing
 
   podman images --format json                 the images, with Containers counted
   podman ps --all --external --format json    containers and build containers
-  podman rmi <ref>...                         by id: removes it, refused with more than one name;
+  podman tag <image> <name>                   gives the image another name
+  podman rmi <ref>...                         by several names: untags them one by one, refuses the
+                                              last while a container uses the image (the earlier
+                                              names stay untagged, as in real Podman);
+                                              by id: removes it, refused with more than one name;
                                               by name: untags it, the image goes with its last name;
                                               refused while a container uses it; --force is refused
                                               outright (a test would notice)
@@ -64,6 +69,7 @@ def rmi(state, refs):
         print(f"Error: options are not expected here: {refs}", file=sys.stderr)
         return 125
     code = 0
+    state.setdefault("containers", []).extend(state.pop("containers_at_rmi", []))
     for ref in refs:
         image = find(state, ref)
         if image is None:
@@ -129,6 +135,15 @@ def main(argv):
                 return 0
         print(f"Error: {argv[4]}: no such container", file=sys.stderr)
         return 125
+    if argv[:1] == ["tag"] and len(argv) == 3:
+        image = find(state, argv[1])
+        if image is None:
+            print(f"Error: {argv[1]}: image not known", file=sys.stderr)
+            return 125
+        if argv[2] not in image.setdefault("Names", []):
+            image["Names"].append(argv[2])
+        save(state)
+        return 0
     if argv == ["events", "--format", "json"]:
         for line in state.get("events", []):
             print(line if isinstance(line, str) else json.dumps(line), flush=True)
