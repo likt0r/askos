@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // What a VM tried to reach in the last 24 hours and was refused, newest first, with the
-// Signals of its last Alert; "Allow…" adds an Allowlist entry for a chosen time. Marks
-// destinations an active entry covers by now.
+// Signals of its last Alert; "Allow…" adds an Allowlist entry for a chosen time, except on a
+// row that names the VM's own address (a connection with no destination). Marks destinations
+// an active entry covers by now.
 import type { AllowlistEntry, BlockedDestination } from '~/utils/access'
 
 const props = defineProps<{ vm: string, entries: AllowlistEntry[] }>()
@@ -90,7 +91,7 @@ useLiveEvent('alert', (a) => {
           </p>
         </div>
         <UButton
-          v-if="!allowedBy(r.domain)"
+          v-if="allowable(r) && !allowedBy(r.domain)"
           class="self-start sm:self-center"
           color="neutral"
           variant="outline"

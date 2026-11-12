@@ -15,6 +15,8 @@ function blocked() {
     { domain: 'paste.example', count: 3, last: now() - 120, reason: 'suspicious: paste,young', code: 'suspicious', params: { signals: 'paste, young' }, suspicious: ['paste', 'young'] },
     { domain: 'static.docs.rs', count: 1, last: now() - 3600, reason: 'not on the Allowlist', code: 'not-allowed', params: {}, suspicious: [] },
     { domain: 'pypi.org', count: 7, last: now() - 7200, reason: 'something new', code: null, params: {}, suspicious: [] },
+    // a connection the proxy took no destination from: the VM's own address
+    { domain: '10.77.1.2', count: 2, last: now() - 9000, reason: 'not a TLS handshake', code: 'not-tls', params: {}, suspicious: [] },
   ]
 }
 
@@ -49,7 +51,7 @@ const ROUTES = {
 describe('Web tab', () => {
   it('lists blocked destinations with Signals, marks those allowed by now, and the VM\'s entries', async () => {
     await openApp('/vms/work/web', ROUTES)
-    expect($$('[data-testid="blocked-row"]').map(r => r.dataset.domain)).toEqual(['paste.example', 'static.docs.rs', 'pypi.org'])
+    expect($$('[data-testid="blocked-row"]').map(r => r.dataset.domain)).toEqual(['paste.example', 'static.docs.rs', 'pypi.org', '10.77.1.2'])
     const paste = blockedRow('paste.example')
     expect([...paste.querySelectorAll('[data-signal]')].map(b => b.textContent)).toEqual(['Paste service', 'Young domain'])
     expect(paste.textContent).toContain('3 times')
@@ -63,6 +65,9 @@ describe('Web tab', () => {
     // docs.rs covers static.docs.rs: allowed by now, no allow button
     expect(blockedRow('static.docs.rs').querySelector('[data-testid="blocked-allowed"]')).not.toBeNull()
     expect(blockedRow('static.docs.rs').querySelector('[data-testid="blocked-allow"]')).toBeNull()
+    // the VM's own address is nothing to allow
+    expect(blockedRow('10.77.1.2').querySelector('[data-testid="blocked-allow"]')).toBeNull()
+    expect(blockedRow('pypi.org').querySelector('[data-testid="blocked-allow"]')).not.toBeNull()
     expect($$('[data-testid="vm-entries"] [data-testid="allowlist-entry"]').map(r => r.dataset.domain)).toEqual(['docs.rs'])
   })
 

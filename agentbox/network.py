@@ -32,6 +32,8 @@ BLOCK_REASONS = {"not on the Allowlist": "not-allowed", "Watchlist unreadable, O
                  "does not resolve to a public address": "not-public",
                  # a connection the proxy took no destination from: the line names the client
                  "not a TLS handshake": "not-tls", "no server name": "no-server-name"}
+# the reasons of BLOCKED lines that name the client's address, not a destination
+CLIENT_REASONS = ("not a TLS handshake", "no server name")
 BLOCK_SUSPICIOUS = re.compile(r"suspicious: ([a-z0-9-]+(?:,[a-z0-9-]+)*)")
 
 

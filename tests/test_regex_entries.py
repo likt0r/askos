@@ -337,6 +337,14 @@ class AllowlistCliTest(allowlist_tests.CliTest):
                                          "read, which reach back only to "), first)
         self.assertTrue(first.endswith(": hosts seen only before then are missing below."), first)
 
+    def test_lines_that_name_the_vms_own_address_are_no_hosts_of_the_preview(self):
+        address = r"^10\.77\.1\.[0-9]+$"
+        self.journal([proxy_line("work", "BLOCKED 10.77.1.2 (not a TLS handshake)", 300),
+                      proxy_line("work", "BLOCKED 10.77.1.2 (no server name)", 200),
+                      proxy_line("work", "BLOCKED 10.77.1.3 (not on the Allowlist)", 100)])
+        hosts = self.json("check-regex", "allowlist", "--regex", address, "--scope", "work")["preview"]["hosts"]
+        self.assertEqual([h["host"] for h in hosts], ["10.77.1.3"])
+
     def test_without_confirmation_it_shows_what_it_would_allow_and_changes_nothing(self):
         said = self.refused("allow", "work", "--regex", PATTERN)
         self.assertEqual(said.splitlines(), [

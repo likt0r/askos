@@ -47,6 +47,7 @@ import time
 from collections import Counter
 
 from . import activity, paths, patterns, registry, settings, state_files
+from .network import CLIENT_REASONS
 from .errors import Fail, die
 from .network import DOMAIN, done, valid_domain, when
 from .sanitize import clean, field
@@ -67,7 +68,8 @@ FIELDS = {"scope": str, "expires": (int, type(None)), "note": str, "added": int,
 PREVIEW_DAYS = 7
 PREVIEW_LINES = paths.tunable("AGENTBOX_PREVIEW_LINES", 200_000)
 PREVIEW_SHOWN = 100
-LOGGED = re.compile(r"\[[a-z0-9-]+\] (ALLOWED|BLOCKED) ([a-z0-9.-]+) \(")
+# proxy lines with a host; a BLOCKED line for a client reason names the VM's address instead
+LOGGED = re.compile(r"\[[a-z0-9-]+\] (ALLOWED|BLOCKED) ([a-z0-9.-]+) \((.*)\)")
 
 
 def store_file():
@@ -442,7 +444,9 @@ def preview(scope, pattern):
     compiled = patterns.compiled(pattern)
     counts = {}
     for e in log:
-        m = LOGGED.match(field(e, "MESSAGE", limit=1024) or "")
+        m = LOGGED.fullmatch(field(e, "MESSAGE", limit=1024) or "")
+        if m and m.group(3) in CLIENT_REASONS:
+            continue
         if m and compiled is not None and patterns.matches(compiled, m.group(2)):
             c = counts.setdefault(m.group(2), {"allowed": 0, "blocked": 0})
             c["allowed" if m.group(1) == "ALLOWED" else "blocked"] += 1

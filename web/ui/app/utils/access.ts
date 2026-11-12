@@ -284,6 +284,15 @@ export function signalReason(s: SignalReport, tr: Translator): string {
   return tr.t(`signals.reasons.${key}`, p)
 }
 
+/** The reasons of a blocked row that names the VM's own address, not a destination: the proxy
+ * took no destination from the connection, so there is nothing to allow. */
+export const CLIENT_REASONS = ['not-tls', 'no-server-name']
+
+/** Whether a blocked row is a destination an Allowlist entry could allow. */
+export function allowable(r: BlockedDestination): boolean {
+  return !r.code || !CLIENT_REASONS.includes(r.code)
+}
+
 /** Why the proxy blocked a destination, in the UI language; else its English reason. */
 export function blockedReason(r: BlockedDestination, tr: Translator): string {
   const key = `webTab.blocked.reasons.${r.code}`
