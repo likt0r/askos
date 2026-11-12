@@ -593,7 +593,7 @@ describe('Settings page', () => {
       'PATCH /settings': ok(changedBody),
     })
     const rows = wrapper.findAll('[data-testid="setting"]')
-    expect(rows).toHaveLength(19)
+    expect(rows).toHaveLength(18)
     expect(rows.at(-1)!.attributes('data-key')).toBe('future_key')
     expect(rows.at(-1)!.text()).toContain('future_key')
     expect(rows.at(-1)!.find('[data-testid="setting-later"]').text()).toBe('beim naechsten Mal')
