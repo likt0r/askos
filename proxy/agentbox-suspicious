@@ -674,7 +674,8 @@ def _legitimate_lists():
 def legitimate_domains():
     """Bekannte legitime Domains: die eingebauten und die des Hosts (legitimate.json, bis
     es sie gibt die Textdatei davor). Treffer der HaGeZi-Listen fuer sie und ihre
-    Subdomains zaehlen nicht (explain); die Listen liegen ungefiltert."""
+    Subdomains zaehlen nicht (explain), ausser auf Subdomains der User-Content-Domains
+    (USER_CONTENT); die Listen liegen ungefiltert."""
     return _legitimate_lists()[0]
 
 
