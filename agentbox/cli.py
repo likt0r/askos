@@ -89,7 +89,8 @@ Controls the agent VMs on this Host.
   agentbox legitimate [--json]                       Legitimate domains (added and built-in)
   agentbox legitimate-add <domain> [--note TEXT] [--force] [--json]
                 no more pattern Signals (except blockchain) and HaGeZi hits for it and its
-                subdomains; lifting strong Signals only with --force
+                subdomains (HaGeZi hits below github.io and githubusercontent.com still
+                count); lifting strong Signals only with --force
   agentbox legitimate-remove <domain> [--json]       remove an added one (built-in ones stay)
   agentbox legitimate-set-note <domain> --note TEXT [--json]
   agentbox migrate-lists [--json]                    take over the Watchlist and Legitimate domains from

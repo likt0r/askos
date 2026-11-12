@@ -165,6 +165,39 @@ class FeedSignalsTest(ProxyTest):
             with self.subTest(host=host):
                 self.assertEqual(self.alert(host), ["threat"])
 
+    def test_feed_hits_on_user_content_hosts_count(self):
+        # github.io and githubusercontent.com are built-in Legitimate domains whose subdomains
+        # serve what anyone publishes: a Feed hit on one counts (also in Open web), while the
+        # pattern Signals stay off the brand and the domains themselves keep their treatment
+        self.feed("threat-intelligence", ["bad.example", "registry.example", "cdn.registry.example",
+                                          "vendor.example", "evil.github.io", "raw.githubusercontent.com"])
+        self.start()
+        self.assertEqual(self.alert("evil.github.io"), ["threat"])
+        self.assertEqual(self.alert("x.evil.github.io"), ["threat"])
+        self.assertEqual(self.alert("raw.githubusercontent.com"), ["threat"])
+        self.assertIsNone(self.alert("user.github.io"))       # no pattern Signal under github.io
+        self.assertIsNone(self.alert("github.io"))            # the domain itself is the brand's own
+        self.assertIsNone(self.alert("githubusercontent.com"))
+        self.assertIsNone(self.alert("github.com"))
+        self.open_web()
+        self.assertEqual(self.connect("x.evil.github.io"), ACCESS_DENIED)
+        self.assertEqual(self.blocked_reason("x.evil.github.io"), "suspicious: threat")
+
+    def test_a_legitimate_entry_of_the_host_does_not_lift_feed_hits_on_user_content(self):
+        # an entry like raw.githubusercontent.com, added before this rule (possible without
+        # --force then, because it lifted nothing), must not suppress Feed hits now: on a
+        # proper subdomain of a user-content host they always count, also in Open web
+        write(os.path.join(self.conf, "legitimate-domains"), LEGITIMATE + "raw.githubusercontent.com\n")
+        self.feed("threat-intelligence", ["bad.example", "registry.example", "cdn.registry.example",
+                                          "vendor.example", "raw.githubusercontent.com"])
+        self.start()
+        self.assertEqual(self.alert("raw.githubusercontent.com"), ["threat"])
+        self.assertEqual(self.alert("x.raw.githubusercontent.com"), ["threat"])
+        self.assertIsNone(self.alert("user.githubusercontent.com"))   # no hit, no pattern Signal
+        self.open_web()
+        self.assertEqual(self.connect("raw.githubusercontent.com"), ACCESS_DENIED)
+        self.assertEqual(self.blocked_reason("raw.githubusercontent.com"), "suspicious: threat")
+
     def test_threat_list_hit_stays_blocked_in_open_web(self):
         self.open_web()
         self.start()
