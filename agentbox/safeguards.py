@@ -17,7 +17,8 @@ module expects, not the ones the repository happens to contain:
   (NetworkManager keeps out of /etc/resolv.conf, dns=none; systemd-resolved's configuration
   names no DNS or FallbackDNS servers), and no service carries a proxy variable or option:
   every connection goes to the Host, where the proxy reads its destination.
-- Guest agent: the two wrappers the Host runs through it (agentbox-journal, agentbox-devices).
+- Guest agent: the three wrappers the Host runs through it (agentbox-journal, agentbox-devices,
+  agentbox-inbox, which unpacks `agentbox import` as the agent with tarfile's "data" filter).
 - Claude Code: fetches none of the owner's claude.ai connectors (#8). ENABLE_CLAUDEAI_MCP_SERVERS
   is false in the environment of every service, and /etc/profile.d/agentbox.sh exports it
   for shells. The Claude token cannot fetch connectors; this holds after a /login in the VM.
@@ -48,6 +49,9 @@ NPM_DEFAULT = "/usr/etc/npmrc"        # npm with prefix /usr reads this unless i
 QGA = "/usr/libexec/qemu-ga/fsfreeze-hook.d"
 JOURNAL_WRAPPER = f"{QGA}/agentbox-journal"
 DEVICES_WRAPPER = f"{QGA}/agentbox-devices"
+INBOX_WRAPPER = f"{QGA}/agentbox-inbox"
+# what agentbox-inbox must do: drop root before reading the tar file, unpack with the "data" filter
+INBOX_MUST = ("become(USER)", 'filter="data"', "os.setuid(pw.pw_uid)")
 NM_CONF = "/etc/NetworkManager/conf.d/agentbox.conf"
 RESOLVER = 'echo "nameserver $gw" > /etc/resolv.conf'   # guest-setup: the Host on the VM's network
 PROFILE = "/etc/profile.d/agentbox.sh"
@@ -406,6 +410,11 @@ def _guest_agent(root):
     devices = text(root, DEVICES_WRAPPER) or ""
     if not executable(root, DEVICES_WRAPPER) or not devices.startswith("#!/usr/bin/python3"):
         problems.append(f"Guest agent: {DEVICES_WRAPPER} is missing")
+    inbox = text(root, INBOX_WRAPPER) or ""
+    if not executable(root, INBOX_WRAPPER) or not inbox.startswith("#!/usr/bin/python3") or \
+            not all(m in inbox for m in INBOX_MUST):
+        problems.append(f"Guest agent: {INBOX_WRAPPER} is missing or does not unpack as the agent with the "
+                        f"data filter")
     return problems
 
 

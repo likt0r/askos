@@ -1,0 +1,189 @@
+#!/usr/bin/python3 -I
+"""Run by the Host through the guest agent (agentbox import): unpacks a folder the Host
+attached to the VM as a read-only raw disk, a tar file, under the agent's ~/code. Lies in
+this directory for the same reason as agentbox-journal (SELinux, see there). No fsfreeze
+hook: freeze and thaw are ignored.
+
+  receive <device> <target>
+      <device>  /dev/disk/by-id/virtio-agentbox-inbox, nothing else
+      <target>  a relative path under /var/home/agent/code (the Data disk), without . or ..
+                parts; missing parents are created, an existing target is refused and
+                nothing is overwritten
+
+Runs as root only until the device is open; from there on it reads the tar file and writes
+as the user agent, so whatever links it meets in ~/code, it can do nothing the agent cannot.
+tarfile's filter "data" refuses links leading out of the target, device files and
+names leading out of it, and drops setuid bits and the owner. Afterwards everything in
+.git/hooks except the *.sample files is removed. Prints {"files": N, "bytes": N}: the
+regular files unpacked and their size.
+
+Exit codes: 2 invalid arguments, a target leading out of ~/code; 3 the target exists;
+4 ~/code is not on the Data disk (yet); 5 the archive is refused or unreadable; 124 time
+limit; 1 anything else. A failed run removes what it unpacked.
+
+Without root (tests, or the agent starting it itself) AGENTBOX_INBOX_ROOT puts the device
+and ~/code under that directory, and the Data disk is not looked for.
+"""
+import json
+import os
+import pwd
+import shutil
+import signal
+import stat
+import sys
+import tarfile
+import time
+
+CODE = "/var/home/agent/code"
+DEVICE = "/dev/disk/by-id/virtio-agentbox-inbox"
+USER = "agent"
+LIMIT = 1800                 # seconds for the whole run; the Host waits a little longer
+DATA_DISK_WAIT = 120         # right after a start, guest-setup may not have bound ~/code yet
+MAX_TARGET = 1024
+
+
+class Refused(Exception):
+    def __init__(self, message, code):
+        super().__init__(message)
+        self.code = code
+
+
+def target_problem(target):
+    """Why `target` cannot be a path under ~/code, or None."""
+    if not target or len(target.encode("utf-8", "surrogateescape")) > MAX_TARGET:
+        return "empty or too long"
+    if target.startswith("/"):
+        return "an absolute path"
+    parts = target.split("/")
+    if any(p in ("", ".", "..") for p in parts):
+        return "empty, . or .. parts"
+    if any(len(p.encode("utf-8", "surrogateescape")) > 255 for p in parts):
+        return "a part longer than 255 bytes"
+    if any(ord(c) < 32 or ord(c) == 127 for c in target):
+        return "control characters"
+    return None
+
+
+def wait_for_data_disk(code):
+    deadline = time.monotonic() + DATA_DISK_WAIT
+    while not os.path.ismount(code):
+        if time.monotonic() > deadline:
+            raise Refused(f"{CODE} is not on the Data disk (yet); try again once the VM has started", 4)
+        time.sleep(1)
+
+
+def become(user):
+    pw = pwd.getpwnam(user)
+    os.setgroups([])
+    os.setgid(pw.pw_gid)
+    os.setuid(pw.pw_uid)
+    os.environ["HOME"] = pw.pw_dir
+    os.umask(0o022)
+
+
+def make_target(code, target):
+    """Create the target (with missing parents) as an empty directory; its path."""
+    parent_rel, name = os.path.split(target)
+    parent = os.path.join(code, parent_rel)
+    try:
+        os.makedirs(parent, 0o755, exist_ok=True)
+    except (FileExistsError, NotADirectoryError):
+        raise Refused(f"~/code/{parent_rel} exists and is not a folder; nothing was changed", 3)
+    real_code, real_parent = os.path.realpath(code), os.path.realpath(parent)
+    if real_parent != real_code and not real_parent.startswith(real_code + os.sep):
+        raise Refused(f"~/code/{target} leads out of {CODE}", 2)
+    dest = os.path.join(real_parent, name)
+    try:
+        os.mkdir(dest, 0o755)
+    except FileExistsError:
+        raise Refused(f"~/code/{target} exists already; nothing was changed", 3)
+    return dest
+
+
+def unpack(disk, dest):
+    files = size = 0
+    try:
+        with tarfile.open(fileobj=disk, mode="r|", errorlevel=1) as tar:
+            for member in tar:
+                tar.extract(member, dest, filter="data")
+                if member.isreg():
+                    files, size = files + 1, size + member.size
+    except tarfile.TarError as e:
+        raise Refused(f"archive refused: {e}", 5)
+    return files, size
+
+
+def remove_hooks(dest):
+    """Everything in .git/hooks but the *.sample files (core.hooksPath ignores them anyway)."""
+    hooks = os.path.join(dest, ".git", "hooks")
+    try:
+        st = os.lstat(hooks)
+    except (FileNotFoundError, NotADirectoryError):
+        return
+    if not stat.S_ISDIR(st.st_mode):
+        os.unlink(hooks)
+        return
+    for name in os.listdir(hooks):
+        path = os.path.join(hooks, name)
+        mode = os.lstat(path).st_mode
+        if name.endswith(".sample") and stat.S_ISREG(mode):
+            continue
+        if stat.S_ISDIR(mode):
+            shutil.rmtree(path)
+        else:
+            os.unlink(path)
+
+
+def receive(device, target):
+    seam = os.environ.get("AGENTBOX_INBOX_ROOT", "") if os.geteuid() != 0 else ""
+    if device != DEVICE:
+        raise Refused(f"the device must be {DEVICE}", 2)
+    why = target_problem(target)
+    if why:
+        raise Refused(f"invalid target ({why})", 2)
+    code = seam + CODE
+    if not seam:
+        wait_for_data_disk(code)
+    fd = os.open(seam + device, os.O_RDONLY | os.O_CLOEXEC)
+    if not seam and not stat.S_ISBLK(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise Refused(f"{device} is not a block device", 5)
+    if os.geteuid() == 0:
+        become(USER)
+    with os.fdopen(fd, "rb") as disk:
+        dest = make_target(code, target)
+        try:
+            files, size = unpack(disk, dest)
+            remove_hooks(dest)
+        except BaseException:
+            shutil.rmtree(dest, ignore_errors=True)
+            raise
+    return files, size
+
+
+def too_long(signum, frame):
+    raise Refused(f"stopped after {LIMIT} s", 124)
+
+
+def main(argv):
+    if argv[:1] in (["freeze"], ["thaw"]):
+        return 0
+    if len(argv) != 3 or argv[0] != "receive":
+        print("agentbox-inbox: receive <device> <target>", file=sys.stderr)
+        return 2
+    signal.signal(signal.SIGALRM, too_long)
+    signal.alarm(LIMIT)
+    try:
+        files, size = receive(argv[1], argv[2])
+    except Refused as e:
+        print(f"agentbox-inbox: {e}", file=sys.stderr)
+        return e.code
+    except (OSError, ValueError, LookupError) as e:
+        print(f"agentbox-inbox: {e}", file=sys.stderr)
+        return 1
+    print(json.dumps({"files": files, "bytes": size}))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

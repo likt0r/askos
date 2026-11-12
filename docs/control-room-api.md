@@ -132,6 +132,12 @@ else `500 action_failed`, with the message in `detail`:
 | 404 | `github_app_not_found` | no GitHub App with this App ID set up (`DELETE /github-app/<id>`; parameter `app_id`) |
 | 400 | `invalid_github_owner`, `github_owner_required` | GitHub owners |
 | 502 | `journal_failed` | reading the Host's journal failed |
+| 404 | `folder_not_found` | `agentbox import` (CLI only): no such folder on the Host |
+| 400 | `not_a_folder` | `agentbox import`: the path is not a folder |
+| 400 | `linked_worktree` | `agentbox import`: the folder is a linked worktree (`.git` is a file); its main repository can be imported |
+| 409 | `target_exists` | `agentbox import`: the target under `~/code` exists in the VM; nothing was changed |
+| 409 | `inbox_missing` | `agentbox import`: the VM's Build lacks the wrapper that unpacks it; a new Build and a Reset bring it |
+| 500 | `import_failed` | `agentbox import`: packing, attaching or unpacking failed; the disk is detached and the tar file deleted |
 | 400 | `invalid_argument` | any other value or option agentbox refused |
 | 500 | `sudo_failed` | the backend may not run agentbox (sudo rule missing, or agentbox did not run as root) |
 | 500 | `action_failed` | anything else agentbox reported (e.g. libvirt failing, a broken file on the Host); also the code of every failure only the Host can cause (setup, regenerate, timers) |
@@ -431,6 +437,7 @@ first:
 | `build` | `image` or `all`, `reset` (the VMs of an Update) |
 | `update-now` | `reset` |
 | `set-image` | `image`, `build` (a Build pin) |
+| `import` | `folder` (absolute, on the Host), `target` (under `~/code` in the VM, when valid); once it succeeded `files` and `bytes` (what the VM reports) |
 | `signin`, `signin.failed`, `signin.locked`, `signout` | none (address and device are no parameters) |
 | `alert` | `domain`, `signals` |
 | `github.token` | `repository`, `expires` (GitHub's expiry, ISO 8601), `app_id` (the App that issued it; not in lines from before there were several Apps) |
