@@ -7,7 +7,9 @@
 # - keine Muster-Merkmale (lookalike, tld, random-label, ...) fuer diese Domains, ausser
 #   dem Blockchain-Muster (rpc., mainnet, infura, ...): das bleibt ein starkes Merkmal;
 # - Treffer der HaGeZi-Listen fuer eine davon oder eine Subdomain zaehlen nicht, damit
-#   eine fehlerhafte Liste die normale Arbeit nicht stoert.
+#   eine fehlerhafte Liste die normale Arbeit nicht stoert; nicht aber fuer die
+#   eingebauten User-Content-Domains (unten markiert): Treffer auf deren Subdomains
+#   zaehlen, dort kann jeder veroeffentlichen.
 # Die Verdachtsliste von Hand (suspicious-domains) gilt trotzdem. Die Liste gibt
 # nichts frei; das tut nur die Allowlist.
 #
@@ -15,7 +17,8 @@
 # Nutzerinhalte (amazonaws.com, pages.dev, vercel.app, jsdelivr.net, ...): dort
 # liegen echte Bedrohungen, die die Listen kennen.
 
-# GitHub und andere Code-Hoster
+# GitHub und andere Code-Hoster; githubusercontent.com und github.io sind eingebaute
+# User-Content-Domains, ihre Subdomains zaehlen darum wie Hoster fuer Nutzerinhalte
 github.com
 githubusercontent.com
 githubassets.com
@@ -31,8 +34,10 @@ sourceforge.net
 anthropic.com
 claude.ai
 claude.com
-# Artifacts von claude.ai: Nutzerinhalte, aber wie githubusercontent.com vom Betreiber
-# selbst kontrolliert (Registrar und Nameserver wie anthropic.com)
+# Artifacts von claude.ai: Nutzerinhalte, vom Betreiber selbst kontrolliert (Registrar
+# und Nameserver wie anthropic.com); Treffer der Listen auf Subdomains zaehlen hier
+# trotzdem nicht, anders als bei den eingebauten User-Content-Domains (eine Grenze,
+# ARCHITECTURE.md: Known residual risks)
 claudeusercontent.com
 openai.com
 chatgpt.com
