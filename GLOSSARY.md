@@ -145,7 +145,7 @@ An external list fetched by a timer on the Host and looked up locally: HaGeZi's 
 _Avoid_: blocklist, IOC source
 
 **Legitimate domain**:
-A well-known domain of a registry, vendor or distribution, kept on the Host or built into the classifier; it gets no pattern Signals except the blockchain pattern, and Feed hits for it and its subdomains do not count — except the built-in user-content hosts (`github.io`, `githubusercontent.com`), whose subdomains serve what anyone publishes: Feed hits on those count. It allows nothing by itself.
+A well-known domain of a registry, vendor or distribution, kept on the Host or built into the classifier; it gets no pattern Signals except the blockchain pattern, and Feed hits for it and its subdomains do not count — except the built-in user-content hosts (`github.io`, `githubusercontent.com`, `claudeusercontent.com`), whose subdomains serve what anyone publishes: Feed hits on those count. It allows nothing by itself.
 _Avoid_: trusted domain, safelist, whitelist
 
 **Harmless mark**:

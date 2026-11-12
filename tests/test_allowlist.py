@@ -182,6 +182,19 @@ class ScopeTest(ProxyTest):
         self.assertIn("[work] ALLOWED work.example (allowlist work.example work)\n", log)
         self.assertIn("[work] BLOCKED priv.example (not on the Allowlist)\n", log)
 
+    def test_an_allowlist_entry_of_a_user_content_host_lets_a_feed_hit_through_with_an_alert(self):
+        # Known residual risk, to change with #59 (the Allowlist no longer passing before the Open
+        # web check): claudeusercontent.com is on the starting Allowlist, and decide() lets an
+        # Allowlist domain entry pass before the Open web check, so a threat-intelligence Feed hit
+        # below it is allowed with an Alert, not blocked as it is when the web is open.
+        self.store(entry("claudeusercontent.com", "all", added_by="migration"))
+        write(os.path.join(self.dir, "feeds", "threat-intelligence"), "evil.claudeusercontent.com\n")
+        self.start()
+        self.tunnel("evil.claudeusercontent.com")
+        log = self.log()
+        self.assertIn("[work] ALERT evil.claudeusercontent.com [threat]\n", log)
+        self.assertIn("[work] ALLOWED evil.claudeusercontent.com (allowlist claudeusercontent.com all)\n", log)
+
     def test_the_most_specific_entry_is_logged_the_vms_own_on_a_tie(self):
         self.store(entry("example.org", "all"), entry("example.org", "work"), entry("api.example.org", "all"))
         self.start()

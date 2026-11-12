@@ -19,6 +19,7 @@
 
 # GitHub und andere Code-Hoster; githubusercontent.com und github.io sind eingebaute
 # User-Content-Domains, ihre Subdomains zaehlen darum wie Hoster fuer Nutzerinhalte
+# (eingebaute Domains uebernimmt migrate-lists nicht, sie stehen hier nur der Uebersicht halber)
 github.com
 githubusercontent.com
 githubassets.com
@@ -34,10 +35,9 @@ sourceforge.net
 anthropic.com
 claude.ai
 claude.com
-# Artifacts von claude.ai: Nutzerinhalte, vom Betreiber selbst kontrolliert (Registrar
-# und Nameserver wie anthropic.com); Treffer der Listen auf Subdomains zaehlen hier
-# trotzdem nicht, anders als bei den eingebauten User-Content-Domains (eine Grenze,
-# ARCHITECTURE.md: Known residual risks)
+# Artifacts von claude.ai (<id>.claudeusercontent.com): eine eingebaute User-Content-Domain
+# wie github.io, Treffer der Listen auf ihren Subdomains zaehlen, auch wo ein Host sie
+# aus dieser Liste noch als eigenen Eintrag hat
 claudeusercontent.com
 openai.com
 chatgpt.com

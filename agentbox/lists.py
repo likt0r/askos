@@ -595,15 +595,22 @@ def legitimate_add(args):
 
 def legitimate_remove(args):
     """agentbox legitimate-remove <domain>|--regex PATTERN [--json]: the Host's entry goes;
-    built-in ones stay"""
+    built-in domains stay (a Host's leftover entry for one goes)"""
     positional, opts = _parse(args, {"regex": True, "json": False})
     ref = _target(positional, opts)
-    if ref[0] == "domain" and ref[1] in genuine():
-        die(f"{ref[1]} is built in and stays legitimate", error="builtin_entry", domain=ref[1])
+    builtin = ref[0] == "domain" and ref[1] in genuine()
     with changing(LEGITIMATE) as entries:
         e = find(entries, ref)
         if e is not None:
             entries.remove(e)
+    if builtin:
+        # a record of the Host for a built-in domain (the list a new Host started with brought
+        # claudeusercontent.com) can go; the domain stays built in
+        if e is None:
+            die(f"{ref[1]} is built in and stays legitimate", error="builtin_entry", domain=ref[1])
+        done("json" in opts, f"{ref[1]}: the Host's entry is removed, the domain stays built in and legitimate",
+             **_given(ref), removed=True)
+        return
     if e is None:
         activity.unchanged()
         done("json" in opts, f"{label(ref)} is not an added Legitimate domain", **_given(ref), removed=False)
