@@ -175,25 +175,33 @@ if [ $1 -eq 1 ]; then
 fi
 # the Activity journal's runtime directory, owned as journald owns it (agentbox.tmpfiles)
 %tmpfiles_create agentbox.conf
-# update only: the timers of the Reset check, the weekly rebuild and the version check that
-# agentbox regenerate wrote before the Maintenance window (#49), with the services only they
-# started, are disabled, stopped and deleted, and systemd forgets them; a run under way
-# finishes. `agentbox regenerate` (or `agentbox setup`) writes the Maintenance window's timer,
-# which runs all of them one after another; until then none of them runs, so the package says so.
+# update only: the timers of the weekly rebuild and the version check that agentbox regenerate
+# wrote before the Maintenance window (#49), and the service only the rebuild timer started, are
+# disabled, stopped and deleted, and systemd forgets them; a run under way finishes. A timer whose
+# disabling fails stays, with its service, for agentbox regenerate to take away. The old Reset
+# check's timer, agentbox-weekly.timer, stays: until `agentbox regenerate` (or `agentbox setup`)
+# writes the Maintenance window's timer and takes it away, its `agentbox weekly-check` runs the
+# whole window (agentbox/maintenance.py), at the old Reset time; the package says so.
 if [ $1 -gt 1 ]; then
-    retired="agentbox-weekly.timer agentbox-rebuild.timer agentbox-versions.timer"
     found=
-    for unit in $retired; do
+    for unit in agentbox-rebuild.timer agentbox-versions.timer; do
         if [ -f "%{_sysconfdir}/systemd/system/$unit" ]; then found="$found $unit"; fi
     done
     if [ -n "$found" ]; then
-        /usr/lib/systemd/systemd-update-helper remove-system-units $found || :
-        for unit in $retired agentbox-weekly.service agentbox-rebuild.service; do
-            rm -f "%{_sysconfdir}/systemd/system/$unit"
+        for unit in $found; do
+            if /usr/lib/systemd/systemd-update-helper remove-system-units $unit; then
+                rm -f "%{_sysconfdir}/systemd/system/$unit"
+                if [ $unit = agentbox-rebuild.timer ]; then
+                    rm -f "%{_sysconfdir}/systemd/system/agentbox-rebuild.service"
+                fi
+            else
+                echo "agentbox: $unit could not be disabled; sudo agentbox regenerate takes it away" >&2
+            fi
         done
         systemctl daemon-reload || :
-        echo "agentbox: the Reset check, the weekly rebuild and the version check now run in one" \
-             "Maintenance window; run sudo agentbox regenerate to write its timer" >&2
+        echo "agentbox: the Feeds, the version check, the weekly rebuild and the Reset check now run one" \
+             "after another in one Maintenance window; until sudo agentbox regenerate writes its timer" \
+             "(once), the Reset check's timer runs the whole window at the old Reset time" >&2
     fi
 fi
 # No %%systemd_post: its preset would leave the units disabled on a new Host anyway, and

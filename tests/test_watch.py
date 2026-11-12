@@ -288,7 +288,9 @@ class SnapshotTest(WatchTest):
         self.assertEqual(priv["devices"], [])
         self.assertEqual(priv["agents"], {})
         self.assertEqual(snap["problems"], [])
-        services = self.event("services")["units"]
+        event = self.event("services")
+        self.assertEqual(event["warnings"], [])
+        services = event["units"]
         self.assertEqual([s["unit"] for s in services],
                          ["agentbox-feeds.timer", "agentbox-proxy-work.service", "ollama.service"])
         self.assertEqual(services[2], {"unit": "ollama.service", "load": "loaded", "active": "failed",
@@ -319,6 +321,19 @@ class SnapshotTest(WatchTest):
         units = self.event("services", lambda d: any(s["triggered_by"] for s in d["units"]
                                                      if s["unit"] == "agentbox-maintenance.service"))["units"]
         self.assertEqual([s["triggered_by"] for s in units if s["unit"] == "agentbox-maintenance.timer"], [[]])
+
+    def test_services_say_when_the_maintenance_window_s_timer_is_missing(self):
+        # an update from before the Maintenance window, before regenerate: the old Reset timer is
+        # there, the window's is not
+        for name in ("agentbox-weekly.timer", "agentbox-feeds.timer"):
+            open(self.path("etc/systemd/system/" + name), "w").close()
+        self.start()
+        [warning] = self.event("services")["warnings"]
+        self.assertEqual(warning["code"], "maintenance_timer_missing")
+        self.assertIn("sudo agentbox regenerate creates it", warning["message"])
+        # regenerate wrote it: the warning goes, though no unit listed changed
+        open(self.path("etc/systemd/system/agentbox-maintenance.timer"), "w").close()
+        self.assertEqual(self.event("services", lambda d: not d["warnings"])["warnings"], [])
 
     def test_triggers_unknown_when_systemctl_show_fails(self):
         self.scenario(vms={"priv": {"state": "shut off", "managed_save": True}}, systemctl_units=UNITS,

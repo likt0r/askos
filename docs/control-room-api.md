@@ -467,7 +467,7 @@ first:
 | `build.rejected` | `image`, `build`, `reason`, `message` (the first Safeguard problem) |
 | `build.unneeded` | `reason` |
 | `build.skipped`, `build.automatic` | `images`, `reason` |
-| `maintenance.feeds`, `maintenance.versions`, `maintenance.rebuild`, `maintenance.reset-check` | none: one entry per step of the Maintenance window (kind `action`, actor `timer`), in that order, outcome `ok` or `failed` with the error code (`action_failed`, its message in `description`); a rebuild that is not due records none |
+| `maintenance.feeds`, `maintenance.versions`, `maintenance.rebuild`, `maintenance.reset-check` | none: one entry per step of the Maintenance window (kind `action`, actor `timer`), in that order, outcome `ok` or `failed` with the error code, its message in `description`: `action_failed` for a failure the step reports (a unit that did not start or failed, a failed Build, a VM the Reset check could not handle; a weekly rebuild that cannot start carries the code of `agentbox build --all` instead, e.g. `build_running` or `not_set_up`), `unexpected_error` for a fault of the step itself (`params.type`: the kind of fault); a rebuild that is not due records none. A window the timer starts on a day a window already ran records nothing |
 
 `reason` (also in `params`) is a stable code where one was
 recorded, e.g. why an automatic Reset was postponed (`reset.postponed`: `gui-connected`,
@@ -518,7 +518,7 @@ reason and an error by its `message`.
 | Method and path | Response |
 |---|---|
 | `GET /host` | readings, thresholds and 30 minutes of history: `{"interval", "history_seconds", "thresholds", "time", "readings": [{"id", "kind", "device", "source", "unit", "value", "threshold", "over", ...}], "vms": {"<vm>": {"memory_bytes"}}, "history": [{"time", "values", "vms"}]}` |
-| `GET /system` | `{"watch": <watch event>, "host_reboot": <host-reboot event>\|null, "services": [<unit>]\|null, "ui": <version event>}` |
+| `GET /system` | `{"watch": <watch event>, "host_reboot": <host-reboot event>\|null, "services": [<unit>]\|null, "warnings": [<warning>]\|null, "ui": <version event>}`; `services` and `warnings` as in the last `services` event (`null` before the first) |
 
 ## Images and Builds
 
@@ -612,7 +612,7 @@ and, after a drop, `Last-Event-ID`.
 | `build` | `{"image", "build", "status": "running"\|"ok"\|"failed"\|"rejected", "step", "started", "finished", "release", "commit", "base_build", "error", "problems", "actor", "unit"}` (`release` and `commit` as in `GET /images`) | a Build started, moved to its next step (`build`, `check`, `disk`, `done`) or ended |
 | `build-log` | `{"unit", "target", "image", "build", "entries": [{"time", "priority", "message", "cursor"}], "cursor", "truncated"}` | new lines of a running Build, gathered for half a second; `truncated`: lines were skipped (fetch them with the log endpoint and `after_cursor`) |
 | `host-reboot` | `{"needed": true\|false\|null, "packages": [..], "checked": "<time>"}` | on connect and when it changes (checked every six hours with `dnf needs-restarting`; `null`: unknown) |
-| `services` | `{"units": [{"unit", "load", "active", "sub", "description", "triggered_by": ["<unit>", ...]\|null}]}` | on connect and when one changes: the Host's agentbox units (proxies, token services, Orca ports, timers, Builds) and `ollama.service`. `triggered_by`: the timers and sockets that start the unit (systemd's `TriggeredBy`, e.g. `agentbox-feeds.timer` for `agentbox-feeds.service`, `agentbox-proxy-<vm>.socket` for the proxy); `[]` for none, `null` when unknown. Such a unit is `inactive` between its runs, which is no fault |
+| `services` | `{"units": [{"unit", "load", "active", "sub", "description", "triggered_by": ["<unit>", ...]\|null}], "warnings": [{"code", "message"}]}` | on connect and when one changes: the Host's agentbox units (proxies, token services, Orca ports, timers, Builds) and `ollama.service`. `triggered_by`: the timers and sockets that start the unit (systemd's `TriggeredBy`, e.g. `agentbox-feeds.timer` for `agentbox-feeds.service`, `agentbox-proxy-<vm>.socket` for the proxy); `[]` for none, `null` when unknown. Such a unit is `inactive` between its runs, which is no fault. `warnings`: what the Host lacks for its maintenance, `[]` for nothing, each with a stable `code` and the English `message` (the UI shows the message for a code it does not know); the same list as `host_warnings` of `agentbox status --json`. Codes: `maintenance_timer_missing`, the Maintenance window's timer `agentbox-maintenance.timer` is missing on a Host whose timers `agentbox regenerate` wrote before (after an update from a Release before the Maintenance window; until then the old Reset timer runs the window at the old Reset time), and `sudo agentbox regenerate` creates it |
 | `notification` | see below | something worth a browser notification |
 
 ### Notifications

@@ -97,7 +97,7 @@ A new Build of an Image followed, once it succeeded, by a Reset of the VMs the o
 _Avoid_: upgrade, refresh
 
 **Maintenance window**:
-The Host's daily maintenance at one time of day (a Setting), one step after another, each once the one before it has finished: fetching the Feeds, the version check with the Builds of an automatic Update, the weekly Build of every Image on the rebuild day, and the Reset check, which resets idle VMs that are due. A step that fails is in Activity and the next one still runs; a window missed while the Host was off runs once after it starts. Agent Box never wakes a sleeping Host for it (German UI: Wartungsfenster).
+The Host's daily maintenance at one time of day (a Setting), one step after another, each once the one before it has finished: fetching the Feeds, the version check with the Builds of an automatic Update, the weekly Build of every Image on the rebuild day (or, when that day's window did not start it, in the next window, once), and the Reset check, which resets idle VMs that are due. A step that fails is in Activity and the next one still runs; a window missed while the Host was off runs once after it starts, and its timer starts at most one a day. Agent Box never wakes a sleeping Host for it (German UI: Wartungsfenster).
 _Avoid_: maintenance timer, nightly job, cron
 
 **Focus**:

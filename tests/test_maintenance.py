@@ -61,10 +61,17 @@ class MaintenanceTest(LifecycleTest):
         self.scenario(vms=vms or {"work": {"state": "shut off"}},
                       systemctl_run={u: UNIT + [u.split(".")[0], *args] for u, args in run.items()})
 
-    def window(self, code=0):
-        got, out, err = self.run_agentbox("--actor=timer", "maintenance")
+    def window(self, code=0, *args, by_hand=False):
+        got, out, err = self.run_agentbox(*([] if by_hand else ["--actor=timer"]), "maintenance", *args)
         self.assertEqual(got, code, out + err)
         return out, err
+
+    def record(self):
+        try:
+            with open(self.path("var/lib/agentbox/maintenance.json")) as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return {}
 
     def entries(self):
         return [(e["AGENTBOX_ACTION"], e["AGENTBOX_OUTCOME"]) for e in self.journald.entries()]
@@ -112,14 +119,22 @@ class StepTest(MaintenanceTest):
         self.assertIn("== Maintenance window: Reset check\nwork: fresh System disk", out)
 
     def test_json(self):
-        self.units(**{FEEDS: ["--exit", "1"]})
+        # the update the version check starts makes a new Build, so the Reset check resets work,
+        # which in text says so on stdout: with --json, stdout is the JSON result alone
+        self.units(**{FEEDS: ["--exit", "1"], VERSIONS: ["--start", UPDATE],
+                      UPDATE: ["--hold", "0.2", "--build", "base", NEW]})
         code, out, _ = self.run_agentbox("--actor=timer", "maintenance", "--json")
         self.assertEqual(code, 1)
-        result = json.loads(out)["steps"]
-        self.assertEqual([(r["step"], r["outcome"]) for r in result],
+        self.assertIn(RESET, self.order())
+        self.assertEqual(self.backing("work"), f"base-{NEW}.qcow2")
+        self.assertEqual(out.count("\n"), 1, out)
+        result = json.loads(out)
+        self.assertFalse(result["ran_today"])
+        steps = result["steps"]
+        self.assertEqual([(r["step"], r["outcome"]) for r in steps],
                          [("feeds", "failed"), ("versions", "ok"), ("rebuild", "skipped"), ("reset-check", "ok")])
-        self.assertIn(f"systemctl start {FEEDS} failed", result[0]["message"])
-        self.assertIsNone(result[1]["message"])
+        self.assertIn(f"systemctl start {FEEDS} failed", steps[0]["message"])
+        self.assertIsNone(steps[1]["message"])
 
 
 class WaitTest(MaintenanceTest):
@@ -164,6 +179,31 @@ class WaitTest(MaintenanceTest):
                          f"Maintenance window: version check failed: the Build of base-{NEW} failed")
         self.assertEqual(failed["AGENTBOX_ERROR"], "action_failed")
 
+    def test_a_failed_build_of_the_weekly_rebuild_moves_no_vm_and_fails_its_step(self):
+        self.settings(maintenance_time="00:00", rebuild_day=today())
+        self.units(**{ALL: ["--take-request", "all", "--hold", "0.5", "--fail-build", "base", NEW, "--target", "all"]})
+        self.window(1)
+        self.assertIn(("agentbox-build@all", "end"), self.order())
+        self.assertEqual(self.backing("work"), os.path.basename(CURRENT_BASE))
+        self.assertEqual(self.vm_calls(), [])
+        self.assertEqual(self.entries(), [("maintenance.feeds", "ok"), ("maintenance.versions", "ok"),
+                                          ("maintenance.rebuild", "failed"), ("maintenance.reset-check", "ok")])
+        [failed] = [e for e in self.journald.entries() if e["AGENTBOX_OUTCOME"] == "failed"]
+        self.assertEqual(failed["AGENTBOX_DESCRIPTION"],
+                         f"Maintenance window: weekly rebuild of every Image failed: the Build of base-{NEW} failed")
+
+    def test_it_waits_also_when_the_version_check_fails_after_starting_a_build(self):
+        # the version check starts the update's Build and then fails: the Reset check still waits
+        # for that Build, and moves work onto it once it is current
+        self.units(**{VERSIONS: ["--start", UPDATE, "--exit", "1"], UPDATE: ["--hold", "1", "--build", "base", NEW]})
+        self.window(1)
+        order = self.order()
+        self.assertLess(order.index(("agentbox-versions", "end")), order.index(("agentbox-build@update", "end")))
+        self.assertLess(order.index(("agentbox-build@update", "end")), order.index(RESET))
+        self.assertEqual(self.backing("work"), f"base-{NEW}.qcow2")
+        self.assertEqual(self.entries(), [("maintenance.feeds", "ok"), ("maintenance.versions", "failed"),
+                                          ("reset.automatic", "ok"), ("maintenance.reset-check", "ok")])
+
 
 class FailingStepTest(MaintenanceTest):
     def test_a_failing_step_is_recorded_and_the_next_one_runs(self):
@@ -205,7 +245,7 @@ class RebuildDayTest(MaintenanceTest):
         self.window()
         self.assertNotIn(("start", ALL), self.order())
         self.assertNotIn("maintenance.rebuild", [a for a, _ in self.entries()])
-        self.assertFalse(os.path.exists(self.path("var/lib/agentbox/maintenance.json")))
+        self.assertNotIn("rebuild", self.record())
 
     def test_a_missed_rebuild_day_is_caught_up_once(self):
         # the last window on yesterday's rebuild day did not run (the Host was off)
@@ -215,10 +255,12 @@ class RebuildDayTest(MaintenanceTest):
         self.units(**{ALL: ["--take-request", "all", "--hold", "0.1", "--target", "all"]})
         self.window()
         self.assertIn(("start", ALL), self.order())
-        with open(self.path("var/lib/agentbox/maintenance.json")) as f:
-            self.assertEqual(json.load(f), {"rebuild": time.strftime("%Y-%m-%d", time.gmtime())})
+        date = time.strftime("%Y-%m-%d", time.gmtime())
+        self.assertEqual(self.record(), {"rebuild": date, "window": date})
+        # another window the same day (by hand: the timer starts one a day) does not rebuild again
         self.forget()
-        self.window()
+        self.window(by_hand=True)
+        self.assertIn(("start", VERSIONS), self.order())
         self.assertNotIn(("start", ALL), self.order())
 
     def test_a_rebuild_that_does_not_start_is_tried_again_by_the_next_window(self):
@@ -229,10 +271,136 @@ class RebuildDayTest(MaintenanceTest):
         self.assertEqual(self.entries(), [("maintenance.feeds", "failed"), ("maintenance.versions", "failed"),
                                           ("maintenance.rebuild", "failed"), ("maintenance.reset-check", "ok")])
         # not started: the next window tries again
-        self.assertFalse(os.path.exists(self.path("var/lib/agentbox/maintenance.json")))
+        self.assertNotIn("rebuild", self.record())
 
     def forget(self):
         os.remove(os.path.join(self.dir, "calls.jsonl"))
+
+
+class OnceADayTest(MaintenanceTest):
+    def test_the_timer_starts_one_window_a_day(self):
+        self.units()
+        self.window()
+        self.assertEqual(self.record(), {"window": time.strftime("%Y-%m-%d", time.gmtime())})
+        os.remove(os.path.join(self.dir, "calls.jsonl"))
+        out, _ = self.window()
+        self.assertIn("ran today already", out)
+        self.assertEqual(self.order(), [])
+        code, out, _ = self.run_agentbox("--actor=timer", "maintenance", "--json")
+        self.assertEqual((code, json.loads(out)), (0, {"steps": [], "ran_today": True}))
+        self.assertEqual(len(self.entries()), 3)
+        # by hand it runs all the same
+        self.window(by_hand=True)
+        self.assertIn(("start", FEEDS), self.order())
+
+    def test_a_window_of_yesterday_does_not_count(self):
+        self.units()
+        yesterday = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)).date().isoformat()
+        self.write("var/lib/agentbox/maintenance.json", json.dumps({"window": yesterday, "rebuild": yesterday}))
+        self.window()
+        self.assertIn(("start", FEEDS), self.order())
+        today_ = time.strftime("%Y-%m-%d", time.gmtime())
+        self.assertEqual(self.record(), {"window": today_, "rebuild": yesterday})
+
+
+class TransitionTest(MaintenanceTest):
+    """A Host updated from before the Maintenance window: its old Reset timer (agentbox-weekly.timer,
+    `agentbox --actor=timer weekly-check`) runs the whole window until regenerate writes the
+    window's timer."""
+
+    def setUp(self):
+        super().setUp()
+        for name in ("agentbox-weekly.timer", "agentbox-weekly.service", "agentbox-feeds.timer"):
+            open(self.path("etc/systemd/system/" + name), "w").close()
+
+    def weekly_check(self, *args, actor="timer"):
+        code, out, err = self.run_agentbox(f"--actor={actor}", "weekly-check", *args)
+        self.assertEqual(code, 0, out + err)
+        return out
+
+    def test_the_old_reset_timer_runs_the_whole_window_until_regenerate(self):
+        self.units()
+        out = self.weekly_check()
+        self.assertIn("agentbox-maintenance.timer is missing", out)
+        self.assertEqual(self.order(), [
+            ("start", FEEDS), ("agentbox-feeds", "start"), ("agentbox-feeds", "end"),
+            ("start", VERSIONS), ("agentbox-versions", "start"), ("agentbox-versions", "end")])
+        self.assertEqual(self.entries(), [("maintenance.feeds", "ok"), ("maintenance.versions", "ok"),
+                                          ("maintenance.reset-check", "ok")])
+        self.assertEqual({e["AGENTBOX_ACTOR"] for e in self.journald.entries()}, {"timer"})
+
+    def test_with_json_it_is_the_window_s_result(self):
+        self.units()
+        self.assertEqual([r["step"] for r in json.loads(self.weekly_check("--json"))["steps"]],
+                         ["feeds", "versions", "rebuild", "reset-check"])
+
+    def test_never_twice_a_day(self):
+        self.units()
+        self.weekly_check()
+        os.remove(os.path.join(self.dir, "calls.jsonl"))
+        self.assertIn("ran today already", self.weekly_check())
+        self.assertEqual(self.order(), [])
+        # nor once regenerate wrote the window's timer, the same day
+        open(self.path("etc/systemd/system/agentbox-maintenance.timer"), "w").close()
+        self.window()
+        self.assertEqual(self.order(), [])
+        self.assertEqual(len(self.entries()), 3)
+
+    def test_after_regenerate_it_is_the_reset_check_alone(self):
+        open(self.path("etc/systemd/system/agentbox-maintenance.timer"), "w").close()
+        self.units()
+        self.assertEqual(self.weekly_check(), "")
+        self.assertEqual(self.order(), [])
+        self.assertEqual(self.entries(), [])
+        self.assertEqual(self.record(), {})
+
+    def test_by_hand_it_is_the_reset_check_alone(self):
+        self.units()
+        self.disk("work", days=200, backing=CURRENT_BASE)
+        self.assertIn("work: ", self.weekly_check(actor="owner"))
+        self.assertEqual(self.order(), [RESET])
+        self.assertEqual(self.entries(), [("reset.automatic", "ok")])
+
+
+class WarningTest(MaintenanceTest):
+    """`agentbox status` says when the Maintenance window's timer is missing on a Host regenerate
+    set up (after an update from before the window, until regenerate runs)."""
+
+    def unit(self, *names):
+        for name in names:
+            open(self.path("etc/systemd/system/" + name), "w").close()
+
+    def status(self, *args):
+        self.scenario(vms={"work": {"state": "shut off"}})
+        code, out, err = self.run_agentbox("status", *args)
+        self.assertEqual(code, 0, err)
+        return out
+
+    def test_missing_after_an_update_from_before_the_window(self):
+        self.unit("agentbox-weekly.timer", "agentbox-feeds.timer")
+        out = self.status()
+        self.assertTrue(out.endswith(
+            "\nWarning: The timer of the Maintenance window (agentbox-maintenance.timer) is missing: sudo agentbox "
+            "regenerate creates it; until then the old Reset check's timer runs the window at the old Reset time\n"),
+            out)
+        data = json.loads(self.status("--json"))
+        self.assertEqual(list(data), ["work", "priv", "host_warnings"])
+        [warning] = data["host_warnings"]
+        self.assertEqual(warning["code"], "maintenance_timer_missing")
+        self.assertIn("sudo agentbox regenerate", warning["message"])
+
+    def test_missing_without_the_old_timer_either(self):
+        self.unit("agentbox-feeds.timer")
+        [warning] = json.loads(self.status("--json"))["host_warnings"]
+        self.assertEqual(warning["message"], "The timer of the Maintenance window (agentbox-maintenance.timer) is "
+                                             "missing: sudo agentbox regenerate creates it")
+
+    def test_none_once_regenerate_wrote_it_or_before_setup(self):
+        self.assertNotIn("Warning", self.status())
+        self.assertEqual(list(json.loads(self.status("--json"))), ["work", "priv"])
+        self.unit("agentbox-weekly.timer", "agentbox-maintenance.timer")
+        self.assertNotIn("Warning", self.status())
+        self.assertNotIn("host_warnings", json.loads(self.status("--json")))
 
 
 class RebuildDueTest(unittest.TestCase):

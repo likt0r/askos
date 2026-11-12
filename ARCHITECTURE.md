@@ -892,16 +892,32 @@ to: the run lock is free, no unit of a Build is active and no request file waits
 has finished, and a failed Build, which never becomes the current one, moves no VM. A step that
 fails is recorded in Activity (`maintenance.<step>`, actor `timer`, outcome `failed`) and the
 window goes on with the next step; a step whose Builds failed counts as failed, and every step
-that ran is recorded, so the timeline shows the window's order. The timer is `Persistent`: a
-window missed while the Host was off runs once after boot, not once per missed day, and a
-rebuild day missed that way is caught up by the next window, once (the date of the last weekly
-rebuild it started is in `/var/lib/agentbox/maintenance.json`). It has no `WakeSystem=`:
-waking a sleeping Host is the Host's business. Two windows never run at once (a lock). The
-Feeds keep their own timer (boot plus 10 minutes, then every `feed_interval_hours`) for a Host
-that is awake for long. `maintenance_time` replaced `reset_time` and `rebuild_time` and the
-three timers of before (`agentbox-weekly`, `agentbox-rebuild`, `agentbox-versions.timer`): an
-RPM update disables and deletes them on a Host that has them and says that `regenerate`
-writes the window's timer; `regenerate` deletes any that are left.
+that ran is recorded, so the timeline shows the window's order. The wait after the version
+check and after the rebuild comes also when that step failed, since it may have started a Build
+before it failed. The timer is `Persistent`: a window missed while the Host was off runs once
+after boot, not once per missed day. The weekly rebuild is caught up: when the window of a
+`rebuild_day` did not start it (the Host was off, or the Build could not start), the next
+window starts it, once, whatever day that is, and the one after that waits for the next
+`rebuild_day` (the dates of the last window and of the last weekly rebuild a window started are
+in `/var/lib/agentbox/maintenance.json`). It has no `WakeSystem=`: waking a sleeping Host is the
+Host's business. Two windows never run at once (a lock), and the timer starts at most one a
+day: a window it starts on a day a window already began on does nothing (`agentbox maintenance`
+by hand always runs). The Feeds keep their own timer (boot plus 10 minutes, then every
+`feed_interval_hours`) for a Host that is awake for long. `maintenance_time` replaced
+`reset_time` and `rebuild_time` and the three timers of before (`agentbox-weekly`,
+`agentbox-rebuild`, `agentbox-versions.timer`). An RPM update disables and deletes
+`agentbox-rebuild.timer` and `agentbox-versions.timer` on a Host that has them, with
+`agentbox-rebuild.service`, each only when disabling it worked, and says that `regenerate`
+writes the window's timer once; it runs no `agentbox` command and enables nothing (ADR 0009).
+It leaves the old Reset check's `agentbox-weekly.timer`, which runs `agentbox --actor=timer
+weekly-check` at the old `reset_time`: as long as the window's timer is missing,
+`weekly-check` called by the timer runs the whole window instead of the Reset check alone, so
+maintenance goes on without a gap, at the old Reset time, until `regenerate`. `regenerate`
+writes the window's timer and deletes whatever is left of the old ones; after that, and by hand
+at any time, `weekly-check` is the Reset check alone. While the window's timer is missing on a
+Host whose timers `regenerate` wrote before, `agentbox status` (text, and `host_warnings` with
+`--json`) and the Control Room's System page (the `services` event's `warnings`) say so, with
+the code `maintenance_timer_missing`, and that `sudo agentbox regenerate` creates it.
 
 ### Settings
 One root-owned, world-readable record, `/etc/agentbox/settings.json`, with every default built
@@ -958,7 +974,8 @@ One timeline of what happened on the Host and who caused it, kept in journald
 - Other events are recorded where they happen: sign-ins by the Control Room, each step of the
   Maintenance window (`maintenance.<step>`) and the automatic
   Resets and postponed ones (with the reason) of its Reset check by `maintenance` (`weekly-check`
-  runs that check on its own), the start of an automatic
+  runs that check on its own, except as the old Reset timer's call before `regenerate`, see
+  Maintenance window), the start of an automatic
   update (`build.automatic`) by `check-versions`, the outcome of each Build and the Resets of
   an Update (`reset.update`, with the actor who asked) by the Build's unit,
   expired Temporary allowlist
@@ -1119,8 +1136,9 @@ The Host's records and state stay where they are: `/etc/agentbox` (`CONF`) and
 `/var/lib/agentbox` (`STATE`); `agentbox import` keeps its tar file in
 `/var/lib/agentbox/transfers` (`TRANSFERS`) while it is attached to the VM. An update of the RPM replaces only the package's files: it
 restarts the Control Room, the expiry timer and, when their code changed, the VMs' proxies,
-and never a VM; on a Host from before the Maintenance window it disables and deletes the three
-timers that window replaced; removing it also disables and deletes the units `agentbox regenerate` wrote,
+and never a VM; on a Host from before the Maintenance window it disables and deletes the timers
+of the version check and the weekly rebuild, and leaves the old Reset timer, which runs the
+whole window until `agentbox regenerate`; removing it also disables and deletes the units `agentbox regenerate` wrote,
 and leaves the records, the state and the VMs ([docs/releasing.md](docs/releasing.md)).
 
 Files `agentbox` opens or runs itself are moved under `AGENTBOX_ROOT` in tests; paths it

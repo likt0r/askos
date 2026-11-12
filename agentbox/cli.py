@@ -118,7 +118,8 @@ Controls the agent VMs on this Host.
                                                      one before and its Builds have finished
   agentbox weekly-check [--json]                     the Reset check of the Maintenance window on its own: Reset
                                                      old VMs when idle; with auto_update also VMs whose Image
-                                                     has a newer Build
+                                                     has a newer Build. Run by the old Reset timer while the
+                                                     window's timer is missing: the whole window
   agentbox images [--json]                           Images and their Builds, which VM uses which, the versions
                                                      of Orca, Claude Code, codex, opencode and Fedora in them
                                                      and what a new Build would bring

@@ -203,7 +203,7 @@ Observer automatically when it was one (otherwise `agentbox observe <vm>`).
 ## Day to day
 
 ```sh
-agentbox status                     # VMs, memory, agents
+agentbox status                     # VMs, memory, agents; warns when the Maintenance window's timer is missing
 agentbox create lab --owner likt0r --copy-allowlist-from priv   # a new VM
 agentbox delete lab --confirm lab   # delete a VM, its Data disk is archived
 agentbox set-memory lab 32768       # memory limit in MiB, from the VM's next start or Restart
@@ -620,10 +620,22 @@ So the Reset check never moves a VM onto a Build that is still being made, and a
 which never becomes the current one, moves no VM. A step that fails is in Activity (actor
 `timer`) and the window goes on with the next one; each step that ran leaves an entry, so
 Activity shows the window's order. A window missed while the Host was off runs once after it
-starts (`Persistent=true`); a rebuild day missed that way is caught up by the next window, once.
+starts (`Persistent=true`), and the timer starts at most one window a day (`sudo agentbox
+maintenance` by hand always runs one). The weekly rebuild is caught up: when the window of
+`rebuild_day` did not start it (the Host was off, or the Build could not start), the next window
+starts it, once, whatever day that is; the one after that waits for the next `rebuild_day`.
 Agent Box never wakes a sleeping Host for it: that is the Host's business (an autosuspend that
 reads the timer, for instance). The Feeds also keep their own timer, ten minutes after boot
 and then every `feed_interval_hours`, for a Host that is awake for long.
+
+**After updating from a Release before the Maintenance window, run `sudo agentbox regenerate`
+once.** The update cannot write the window's timer (the package runs no `agentbox` command), so
+it takes away only the old timers of the version check and the weekly rebuild. The old Reset
+check's timer stays and runs the whole window at the old Reset time (two hours after the
+`maintenance_time` the Settings show), so maintenance goes on until then. `regenerate` writes
+`agentbox-maintenance.timer` and takes the old timer away; from then on the window runs at
+`maintenance_time`. Until it runs, `agentbox status` and the Control Room's System page say
+that the window's timer is missing.
 
 ### Activity
 `agentbox activity` shows the newest entries first; filters: `--kind` (`signin`, `action`,
@@ -655,7 +667,7 @@ no longer counts; the next change writes the file without both.
 | `maintenance_time` | 02:00 | HH:MM, when the daily [Maintenance window](#maintenance-window) starts |
 | `reset_age_days` | 7 | 1–365, age of the System disk for the automatic Reset |
 | `auto_update` | true | true, false: Images with an update are built after the version check of the Maintenance window, and once they are done its Reset check moves idle VMs onto the new Build (see [Tool versions](#tool-versions)) |
-| `rebuild_day` | sun | mon…sun, the day the Maintenance window builds every Image |
+| `rebuild_day` | sun | mon…sun, the day the Maintenance window builds every Image; when that day's window did not, the next window does, once |
 | `builds_kept` | 3 | 1–20, Builds kept per Image (from the next Build) |
 | `default_memory_mib`, `default_data_disk_gib`, `default_image` | 26624, 300, base | defaults of `create` |
 | `open_web_max_minutes` | 240 | 1–1440, longest Open web |

@@ -393,7 +393,11 @@ def _result(ctx, as_json, lines):
 
 
 def status(args):
-    """agentbox status [--json]"""
+    """agentbox status [--json]: the VMs, and what the Host lacks for its maintenance
+    (maintenance.warnings): with --json under "host_warnings", only when there is something
+    (no VM name has an underscore), in text after the table."""
+    from . import maintenance           # maintenance imports this module
+    warnings = maintenance.warnings()
     if "--json" in args:
         out = {}
         for ctx in registry.names():
@@ -412,6 +416,8 @@ def status(args):
                         "open_until": state_files.open_until(ctx),
                         "claude_token_since": state_files.claude_token_since(ctx),
                         "gui_connections": gui_connections(ctx)}
+        if warnings:
+            out["host_warnings"] = warnings
         print(json.dumps(out))
         return
     vms = registry.names()
@@ -429,6 +435,8 @@ def status(args):
         agents = agents_text(agent_states(ctx)) if st == "running" else "-"
         print(row.format(ctx, st, mem or "-", "-" if base is None else base, f"{age} days", agents or "none"),
               flush=True)
+    for w in warnings:
+        print(f"\nWarning: {w['message']}", flush=True)
 
 
 def start_cmd(args):
@@ -647,4 +655,4 @@ def observe(args):
 
 
 COMMANDS = {"status": status, "start": start_cmd, "wake": wake_cmd, "pause": pause_cmd, "reset": reset_cmd,
-            "restart": restart_cmd, "focus": focus_cmd, "weekly-check": weekly_check, "observe": observe}
+            "restart": restart_cmd, "focus": focus_cmd, "observe": observe}

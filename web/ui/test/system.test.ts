@@ -638,6 +638,27 @@ describe('System page: services', () => {
     expect(wrapper.find('[data-testid="service-row"]').attributes('data-color')).toBe('success')
   })
 
+  it('warns while the timer of the Maintenance window is missing, in the user\'s language', async () => {
+    const { wrapper, es } = await openSystem()
+    const message = 'The timer of the Maintenance window (agentbox-maintenance.timer) is missing: sudo agentbox regenerate creates it'
+    es.emit('services', { units: [unit('agentbox-weekly.timer', 'active')], warnings: [{ code: 'maintenance_timer_missing', message }] })
+    await flushPromises()
+    const warning = wrapper.find('[data-testid="services-warning"]')
+    expect(warning.attributes('data-code')).toBe('maintenance_timer_missing')
+    expect(warning.text()).toContain('The timer of the Maintenance window is missing')
+    expect(warning.text()).toContain('sudo agentbox regenerate')
+    await useNuxtApp().$i18n.setLocale('de')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="services-warning"]').text()).toContain('Der Timer des Wartungsfensters fehlt')
+    // one this UI does not know yet: the server's English; none once regenerate created the timer
+    es.emit('services', { units: [], warnings: [{ code: 'something_new', message: 'Something is missing' }] })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="services-warning"]').text()).toContain('Something is missing')
+    es.emit('services', { units: [unit('agentbox-maintenance.timer', 'active')], warnings: [] })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="services-warning"]').exists()).toBe(false)
+  })
+
   it('treats a malformed services event as not known', async () => {
     const { wrapper, es } = await openSystem()
     es.emit('services', { units: 'nope' })

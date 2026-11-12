@@ -1007,7 +1007,8 @@ STATE = {"vms": [vm("work"), vm("priv", "paused")], "problems": []}
 
 
 class EventsTest(V1Test):
-    WATCH = [("vms", STATE), ("services", {"units": [{"unit": "ollama.service", "active": "active"}]}),
+    WATCH = [("vms", STATE), ("services", {"units": [{"unit": "ollama.service", "active": "active"}],
+                                           "warnings": [{"code": "maintenance_timer_missing", "message": "m"}]}),
              ("host-reboot", {"needed": False, "packages": [], "checked": "2026-11-03T12:00:00Z"})]
 
     def setUp(self):
@@ -1110,6 +1111,7 @@ class EventsTest(V1Test):
         self.assertEqual(obj["watch"]["running"], True)
         self.assertEqual(obj["host_reboot"]["needed"], False)
         self.assertEqual(obj["services"], [{"unit": "ollama.service", "active": "active"}])
+        self.assertEqual(obj["warnings"], [{"code": "maintenance_timer_missing", "message": "m"}])
         self.assertEqual(obj["ui"]["ui"], "nuxt")
 
     def test_one_watch_for_every_client_and_never_a_call(self):
