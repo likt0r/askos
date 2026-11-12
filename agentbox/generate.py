@@ -132,10 +132,10 @@ def nft_rules(records):
     is accepted before the address check (the VM asks before it has an address); everything
     else, the resolver's port 53 included, only to the Host's address on the VM's own network,
     so no other resolver on the Host (one on its LAN address) can be reached. What reaches the
-    Host's address on another port is rejected (a TCP reset, ICMP port unreachable for UDP), so a
-    program fails at once instead of waiting for its connect timeout: every name resolves to that
-    address. Other addresses and IPv6 stay dropped, and so does anything but TCP and UDP. A
-    reject ends the packet like a drop, so firewalld's zone libvirt (a later hook) never sees it."""
+    Host's address on another port is refused at once (a TCP reset, ICMP port unreachable for
+    UDP), so a program fails without waiting for a timeout: every name resolves to that address.
+    Other addresses, IPv6 and anything but TCP and UDP are dropped. A reject ends the packet like
+    a drop, so firewalld's zone libvirt (a later hook) never sees it."""
     return "".join(line + "\n" for line in [
         "table inet agentbox_vm",
         "delete table inet agentbox_vm",

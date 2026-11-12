@@ -425,11 +425,11 @@ anywhere else, and Compose builds, `podman build` and image builds through the D
 
 Only TLS to port 443 gets through, so a Dockerfile must fetch packages over HTTPS from
 allowlisted mirrors. A blocked destination shows as a refused TLS handshake (`curl` reports
-`tlsv1 alert access denied`) and in `agentbox blocked <vm>`. Plain HTTP and every other port
-are refused at once (`Connection refused`), which hits Debian's and Ubuntu's default `http://`
-apt sources. Switch them before the first
-`apt-get`, in a base image that already has `ca-certificates` (`node`, `python` and
-`buildpack-deps` do, `debian` does not):
+`tlsv1 alert access denied`) and in `agentbox blocked <vm>`. A connection to any other port
+of the Host is refused at once (`Connection refused`), and so is plain HTTP to any destination,
+since every name resolves to the Host. That hits Debian's and Ubuntu's default `http://` apt
+sources. Switch them before the first `apt-get`, in a base image that already has
+`ca-certificates` (`node`, `python` and `buildpack-deps` do, `debian` does not):
 
 ```Dockerfile
 RUN sed -i 's|http://|https://|g' /etc/apt/sources.list.d/* /etc/apt/sources.list 2>/dev/null; \
