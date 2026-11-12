@@ -3,7 +3,9 @@
 
 Laeuft als System-User agentbox-web (nicht root). Jede Aktion ist genau ein
 Aufruf von `sudo -n agentbox ...` mit festen Argumenten;
-agentbox prueft Kontext und Werte selbst. Jeder Aufruf nennt mit --actor das
+agentbox prueft Kontext und Werte selbst und fuehrt fuer agentbox-web nur die
+Befehle aus, die dieser Dienst aufruft (CONTROL_ROOM_COMMANDS in agentbox/cli.py,
+tests/test_control_room_sudo.py haelt beide gleich), nie mit --force. Jeder Aufruf nennt mit --actor das
 Geraet (aus dem User-Agent) und die Adresse des Browsers; agentbox vermerkt
 damit jede Aktion in der Aktivitaet. Anmeldungen vermerkt dieser Dienst selbst
 dort (Journal-Namensraum agentbox, Kennung agentbox-activity), nie mit Passwort.

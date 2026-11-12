@@ -846,9 +846,15 @@ Host after every Build
 ### Control Room
 A small Python standard-library service running as an unprivileged user; every action is one
 call of `sudo agentbox …` with fixed arguments, naming the browser's device (from its
-User-Agent) and address as the actor. HTTPS with a self-signed certificate, a
-password with scrypt, sessions in memory, a login brake after five failures, CSRF protection
-via a custom header and `SameSite=Strict`. Sign-ins (successful, failed, refused by the
+User-Agent) and address as the actor. Its sudoers rule names `agentbox` with any arguments;
+called through `sudo` by `agentbox-web`, agentbox itself runs only the commands the Control
+Room uses (`CONTROL_ROOM_COMMANDS` in `agentbox/cli.py`, which a test holds equal to the
+commands the backend runs) and refuses every other command and `--force` before anything
+runs, so even a taken-over backend cannot run `setup`, `import` or `regenerate`, or lift
+strong Signals. sudoers itself cannot pin the command: it matches the arguments joined with
+spaces, and the actor, which holds spaces, comes before the command. HTTPS with a
+self-signed certificate, a password with scrypt, sessions in memory, a login brake after five
+failures, CSRF protection via a custom header and `SameSite=Strict`. Sign-ins (successful, failed, refused by the
 brake) and sign-outs are Activity entries with address and device. Pairing codes, tokens
 and passwords never appear in logs.
 
@@ -1172,8 +1178,7 @@ a Host setup, `agentbox setup` without options keeps it and the password and doe
 again (after an update, or to finish a run that stopped); any other option needs `--force`,
 which replaces the Host setup and the password; a password there already stays without it,
 also on a first run. Setup is the owner's command at the Host: run through `sudo` by a service
-or system user (the Control Room's sudoers rule allows `agentbox` with any arguments) it
-refuses before anything runs. A step that fails stops setup with a message
+or system user it refuses before anything runs. A step that fails stops setup with a message
 naming it (`setup stopped at <step>`). Every file is replaced whole, and the Host setup is
 written only after the steps before it succeeded, so running setup again goes on from there.
 
@@ -1267,7 +1272,8 @@ otherwise in `lib/agentbox` under their own prefix.
   tampered output.
 - **The Control Room** can reveal pairing codes and open the web; it relies on a strong
   password and, in Network mode, on the home network boundary (in Local-only, on who can use
-  the Host itself).
+  the Host itself). A taken-over backend can do through `sudo` whatever the Control Room's
+  commands can, without `--force`.
 - **Activity is only as trustworthy as its writers.** Root and members of
   `agentbox-journal` (the members of `libvirt`, Host admins in effect) can write any
   command entry. A compromised proxy or token service can still write false lines for

@@ -864,10 +864,11 @@ class HostStepsTest(SetupTest):
         self.assertEqual(self.snapshot(), before)
         self.assertEqual(self.changing_calls(), [])
 
-    def test_the_control_room_cannot_run_setup_through_its_sudo_rule(self):
-        """Its rule lets agentbox-web run agentbox with any arguments: setup would put it into
-        libvirt, which controls every VM, or change how the Host is exposed."""
-        refused = "setup is for the owner at the Host, not for agentbox-web"
+    def test_neither_the_control_room_nor_a_system_user_can_run_setup_through_sudo(self):
+        """setup would put the caller into libvirt, which controls every VM, or change how the
+        Host is exposed. agentbox-web is refused as the Control Room (test_control_room_sudo),
+        any other service or system user here."""
+        refused = "setup is not for the Control Room"
         for args in (["--password-file", self.password_file],
                      ["--owner-user", "alice", "--password-file", self.password_file]):
             code, _, err = self.setup_run(*args, sudo_user="agentbox-web", sudo_uid=990)

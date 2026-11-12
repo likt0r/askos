@@ -181,7 +181,7 @@ export default {
     container_image_cleanup_missing: 'The VM\'s Build has no Container image cleanup yet. Build its Image and reset the VM first.',
     container_image_cleanup_failed: 'The Container image cleanup in the VM failed.',
     invalid_argument: 'agentbox refused a value.',
-    sudo_failed: 'The Control Room may not run agentbox (sudo rule missing).',
+    sudo_failed: 'The Control Room may not run agentbox for this (sudo).',
     action_failed: 'agentbox reported an error.',
     // only in Activity: a command that was interrupted, or ended on an error of agentbox itself
     interrupted: 'Interrupted.',

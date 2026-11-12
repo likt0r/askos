@@ -158,8 +158,8 @@ class PackageTest(unittest.TestCase):
 
     def test_the_sudoers_rule_lets_the_control_room_run_only_the_packages_cli(self):
         rule = meaningful(read("rpm", "agentbox-web.sudoers"))
-        self.assertEqual(rule, [f"agentbox-web ALL=(root) NOPASSWD: {paths.CLI}",
-                                f"agentbox-web ALL=(root) NOPASSWD: {paths.CLI} watch"])
+        # agentbox itself limits the commands and refuses --force (test_control_room_sudo)
+        self.assertEqual(rule, [f"agentbox-web ALL=(root) NOPASSWD: {paths.CLI}"])
         # checked when built and again when installed
         self.assertIn("visudo -cqf rpm/agentbox-web.sudoers", spec_sections(self.spec, ("check",)))
         self.assertIn("visudo -cqf %{_sysconfdir}/sudoers.d/agentbox-web", spec_sections(self.spec, ("post",)))

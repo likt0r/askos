@@ -1,5 +1,5 @@
-# The Control Room may only call agentbox; agentbox checks context and arguments.
+# The Control Room may only call agentbox. agentbox, called through sudo by agentbox-web, runs
+# only the commands the Control Room uses and never --force (agentbox/cli.py,
+# CONTROL_ROOM_COMMANDS); sudoers cannot pin them, as it joins the arguments, and the
+# Control Room's --actor, which holds spaces, comes before the command.
 agentbox-web ALL=(root) NOPASSWD: /usr/bin/agentbox
-# agentbox watch: the one event helper the service keeps running (read only). The line
-# above allows it already; this one keeps it allowed should that one get narrower.
-agentbox-web ALL=(root) NOPASSWD: /usr/bin/agentbox watch

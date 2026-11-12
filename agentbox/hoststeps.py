@@ -132,9 +132,9 @@ def _login_user(user):
 
 def check_caller():
     """setup is the owner's, at the Host. Through sudo, the user who called it (SUDO_USER and
-    SUDO_UID, which sudo sets itself) must be root or a person: the Control Room's sudo rule
-    lets agentbox-web run agentbox with any arguments, and setup would put it into libvirt
-    (control of every VM) or change how the Host is exposed. Reads only."""
+    SUDO_UID, which sudo sets itself) must be root or a person: setup would put a service or
+    system user into libvirt (control of every VM) or let it change how the Host is exposed.
+    The Control Room's agentbox-web never gets here (cli.check_control_room). Reads only."""
     name = os.environ.get("SUDO_USER")
     if not name:
         return

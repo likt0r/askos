@@ -148,7 +148,7 @@ else `500 action_failed`, with the message in `detail`:
 | 409 | `container_image_cleanup_missing` | the Container image cleanup (hourly, `agentbox cleanup-container-images`, in Activity only): the VM's Build lacks its wrapper; a new Build and a Reset bring it |
 | 502 | `container_image_cleanup_failed` | the Container image cleanup in the VM failed or answered something other than its two numbers (in Activity only) |
 | 400 | `invalid_argument` | any other value or option agentbox refused |
-| 500 | `sudo_failed` | the backend may not run agentbox (sudo rule missing, or agentbox did not run as root) |
+| 500 | `sudo_failed` | the backend may not run agentbox: the sudo rule is missing, agentbox did not run as root, or it refused a command or `--force` that is not the Control Room's |
 | 500 | `action_failed` | anything else agentbox reported (e.g. libvirt failing, a broken file on the Host); also the code of every failure only the Host can cause (setup, regenerate, timers) |
 
 ### agentbox's failures

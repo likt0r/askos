@@ -3,7 +3,8 @@
 The dispatcher takes the global option --actor before the command and records
 every command in Activity (activity.py), except the read-only ones listed in
 activity.READ_ONLY: a new command is recorded without doing anything, and a
-new read-only command belongs in that list.
+new read-only command belongs in that list. Called through sudo by the Control Room
+(agentbox-web), it runs only CONTROL_ROOM_COMMANDS and never --force.
 """
 import json
 import os
@@ -172,6 +173,43 @@ COMMANDS = {**guest.COMMANDS, **lifecycle.COMMANDS, **network.COMMANDS, **creden
 VALUED = frozenset(re.findall(r"(--[a-z][a-z-]*) (?:[A-Z<]|[a-z0-9]+\|)", USAGE))
 
 
+# The Control Room's backend (web/agentbox-web) runs agentbox through sudo as this user; its
+# sudoers rule names agentbox with any arguments, so agentbox itself limits what it may run.
+CONTROL_ROOM_USER = "agentbox-web"
+# The commands the backend runs, and no others (tests/test_control_room_sudo.py checks that it
+# calls exactly these). Never --force: what lifts strong Signals, allows a destination while the
+# Watchlist cannot be read or replaces a Host setup is the CLI's at the Host (ADR 0009).
+CONTROL_ROOM_COMMANDS = frozenset({
+    # VMs
+    "status", "describe", "create", "delete", "start", "pause", "restart", "reset", "focus", "set-memory",
+    "set-env", "set-image", "set-owners", "owners", "logs", "blocked", "alerts", "mark-seen",
+    "open-web", "close-web", "pair", "pairings", "unpair", "revoke-pairings", "set-claude-token",
+    "github-tokens",
+    # Allowlist, Watchlist, Legitimate domains, Harmless marks
+    "allowlist", "allow", "disallow", "extend", "make-permanent", "set-note", "check-regex",
+    "check-domain", "watchlist", "watch-add", "watch-remove", "watch-set-note", "legitimate",
+    "legitimate-add", "legitimate-remove", "legitimate-set-note", "harmless", "mark-harmless",
+    "unmark-harmless",
+    # Images and Builds
+    "images", "containerfile", "build", "build-log", "update-now",
+    # GitHub App, Settings, Activity, the event helper
+    "github-app", "set-github-app", "remove-github-app", "settings", "set-settings", "activity", "watch",
+})
+
+
+def check_control_room(cmd, args):
+    """Called through sudo by the Control Room (SUDO_USER, which sudo sets itself, not its
+    caller): only its commands, never --force. Before anything runs, nothing recorded."""
+    if os.environ.get("SUDO_USER") != CONTROL_ROOM_USER:
+        return
+    if cmd not in CONTROL_ROOM_COMMANDS:
+        raise Fail(f"{cmd} is not for the Control Room: only the CLI at the Host runs it", error="sudo_failed",
+                   command=cmd)
+    if any(a == "--force" or a.startswith("--force=") for a in args):
+        raise Fail("--force is not for the Control Room: only the CLI at the Host passes it", error="sudo_failed",
+                   command=cmd, option="--force")
+
+
 def wants_json(args):
     """--json is among the arguments, and not as the value of an option (`--note --json`)."""
     value = False
@@ -197,6 +235,7 @@ def main(argv=None):
         if cmd not in COMMANDS:
             print(USAGE, file=sys.stderr)
             return 1
+        check_control_room(cmd, args)
         # Everything except logs and pair needs the files under /etc/agentbox and
         # /var/lib/agentbox, which belong to root. AGENTBOX_ROOT (tests) redirects them.
         if os.geteuid() != 0 and cmd not in guest.NO_ROOT | versions.NO_ROOT and not paths.ROOT:
