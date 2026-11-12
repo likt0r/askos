@@ -13,9 +13,10 @@ The values are not secret. What matters is that no VM variable switches a Safegu
 a variable set at runtime never passes through the safeguard check of the Builds (ADR
 0008), and /run/agentbox/env overrides systemd's DefaultEnvironment for `orca serve`. So
 the Host refuses every name a Safeguard or Agent Box itself reads: the patterns of the
-safeguard check (safeguards.OVERRIDES, safeguards.MENTIONS), the names Agent Box sets
-for the VM (RESERVED, RESERVED_PREFIXES) and every variable the Image's systemd
-DefaultEnvironment sets (DEFAULT_ENVIRONMENT; a test holds it to the files of the Image).
+safeguard check (safeguards.OVERRIDES, safeguards.MENTIONS) except its proxy names, the
+names Agent Box sets for the VM (RESERVED, RESERVED_PREFIXES) and every variable the
+Image's systemd DefaultEnvironment sets (DEFAULT_ENVIRONMENT; a test holds it to the files
+of the Image).
 Broad prefixes such as npm_config_* or UV_* stay allowed. A record keeps a variable whose
 name a later release refuses (a broken record would stop regenerate and create for every VM):
 it is never passed on (fw_cfg leaves it out, refused() names it), and only unset-env can
@@ -43,9 +44,13 @@ RESERVED = frozenset({"PATH", "HOME", "XDG_RUNTIME_DIR", "NODE_OPTIONS", "BASH_E
                       "CLAUDE_CODE_OAUTH_TOKEN", "ENABLE_CLAUDEAI_MCP_SERVERS", "ORCA_PORT", "PAIRING_ADDRESS"})
 RESERVED_PREFIXES = ("LD_", "AGENTBOX_", "GIT_CONFIG_")
 # What the patterns of the safeguard check miss, in either case (npm reads its variables so):
-# npm going around the proxy (noproxy) or the minimum release age (before), and the JVM
-# options that override the proxy of JAVA_TOOL_OPTIONS (DEFAULT_ENVIRONMENT)
-RESERVED_ANY_CASE = frozenset({"npm_config_noproxy", "npm_config_before", "_java_options", "jdk_java_options"})
+# npm going around the minimum release age (before)
+RESERVED_ANY_CASE = frozenset({"npm_config_before"})
+# The proxy names of safeguards.MENTIONS (HTTPS_PROXY, no_proxy, ...). The Build check refuses
+# them in an Image, which carries no proxy variables; a VM variable may have one: the proxy is
+# transparent and the VM reaches nothing but the Host, so no proxy variable switches a
+# Safeguard off. reserved() blanks them out of a name and checks the rest with MENTIONS.
+PROXY_MENTIONS = re.compile(r"_proxy\b|proxy=|" + safeguards.PROXY_VALUE.pattern, re.IGNORECASE)
 # Set by bash itself: its readonly variables (`readonly -p` of a bare bash; export fails on
 # them in every login shell that sources agent-env) and GROUPS, which ignores assignments.
 # Not a Safeguard: a variable that never arrives.
@@ -53,9 +58,8 @@ SHELL = frozenset({"SHELLOPTS", "BASHOPTS", "UID", "EUID", "PPID", "GROUPS", "BA
 # Every variable of a DefaultEnvironment in the Image: vm/files/usr/lib/systemd/system.conf.d/agentbox.conf
 # and the agentbox-packages.conf that package-safeguards writes (tests/test_vm_env.py checks both).
 DEFAULT_ENVIRONMENT = frozenset({
-    "PATH", "HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "NO_PROXY", "no_proxy",
-    "AGENTBOX_GH_ADDR", "NODE_USE_ENV_PROXY", "DO_NOT_TRACK", "ORCA_TELEMETRY_DISABLED", "DISABLE_AUTOUPDATER",
-    "ENABLE_CLAUDEAI_MCP_SERVERS", "DOCKER_HOST", "RUSTUP_HOME", "JAVA_HOME", "JAVA_TOOL_OPTIONS",
+    "PATH", "AGENTBOX_GH_ADDR", "DO_NOT_TRACK", "ORCA_TELEMETRY_DISABLED", "DISABLE_AUTOUPDATER",
+    "ENABLE_CLAUDEAI_MCP_SERVERS", "DOCKER_HOST", "RUSTUP_HOME", "JAVA_HOME",
     "UV_EXCLUDE_NEWER", "pnpm_config_minimum_release_age"})
 
 
@@ -65,10 +69,11 @@ def _shown(name):
 
 def reserved(name):
     """Whether a variable of this name could switch a Safeguard off or change what Agent Box
-    or bash itself sets: the patterns of the safeguard check, the reserved names and prefixes,
-    the Image's DefaultEnvironment and the variables of bash. The patterns and RESERVED_ANY_CASE
-    ignore case (every name ending in _PROXY counts, https_proxy as HTTPS_PROXY)."""
-    return bool(safeguards.OVERRIDES.fullmatch(name) or safeguards.MENTIONS.search(name)
+    or bash itself sets: the patterns of the safeguard check without its proxy names, the
+    reserved names and prefixes, the Image's DefaultEnvironment and the variables of bash. The
+    patterns and RESERVED_ANY_CASE ignore case (npm_config_ignore_scripts counts as
+    NPM_CONFIG_IGNORE_SCRIPTS)."""
+    return bool(safeguards.OVERRIDES.fullmatch(name) or safeguards.MENTIONS.search(PROXY_MENTIONS.sub(" ", name))
                 or name in RESERVED or name.startswith(RESERVED_PREFIXES) or name.lower() in RESERVED_ANY_CASE
                 or name in DEFAULT_ENVIRONMENT or name in SHELL)
 

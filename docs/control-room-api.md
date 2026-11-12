@@ -91,7 +91,7 @@ else `500 action_failed`, with the message in `detail`:
 | 500 | `memory_not_applied` | the new memory limit is saved, but the VM could not be defined again; `agentbox regenerate` finishes it |
 | 500 | `env_not_applied` | the VM variables are saved, but the VM could not be defined again (a domain from before VM variables lacks their fw_cfg entry); `agentbox regenerate` finishes it |
 | 400 | `invalid_env_name` | the name of a VM variable is not `^[A-Za-z_][A-Za-z0-9_]*$` of at most 64 characters (`field`: `env`); the backend refuses such a name itself, before agentbox |
-| 400 | `env_name_reserved` | a Safeguard or Agent Box itself sets or reads this variable, so it cannot be a VM variable (parameter `name`, `field`: `env`): the patterns of the safeguard check, the names Agent Box sets for the VM and every variable of the Image's `DefaultEnvironment` |
+| 400 | `env_name_reserved` | a Safeguard or Agent Box itself sets or reads this variable, so it cannot be a VM variable (parameter `name`, `field`: `env`): the patterns of the safeguard check apart from proxy names, the names Agent Box sets for the VM, every variable of the Image's `DefaultEnvironment` and the variables bash sets itself. Proxy variables (`HTTPS_PROXY`, ...) are accepted |
 | 400 | `invalid_env_value` | the value of a VM variable has a control character other than tab (a line break, NUL, ...) or is not UTF-8, such as a lone UTF-16 surrogate (`"\ud800"`), which the backend refuses itself, before agentbox (parameter `name`, `field`: `env`) |
 | 400 | `env_too_large` | more than 64 VM variables, or a value over 4 KiB in UTF-8 (parameter `name` for a value, `field`: `env`) |
 | 503 | `guest_agent_unavailable` | the VM's guest agent does not answer |

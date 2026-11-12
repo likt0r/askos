@@ -104,7 +104,7 @@ flowchart LR
   is refused, since its saved memory belongs to the old definition; started again, it can be
   changed. The command says which applies (next start or next Restart) and is recorded in
   Activity like every change.
-- **VM variables** ([ADR 0014](docs/adr/0014-vm-variables-are-checked-on-the-host-and-passed-as-an-fw-cfg-file.md))
+- **VM variables** ([ADR 0016](docs/adr/0016-vm-variables-are-checked-on-the-host-and-passed-as-an-fw-cfg-file.md))
   are environment variables of one VM (`"env"` in its record), for what a
   project needs in the VM and that is not secret (a `DATABASE_URL`, a tool's mode): `agentbox
   env`, `set-env <vm> NAME=VALUE... [--replace]`, `unset-env`, and a table on the VM's page
@@ -647,20 +647,22 @@ Host after every Build
   discards the Build.
 - A VM variable (see VMs) is set at runtime and never passes through this check, and
   `/run/agentbox/env` overrides systemd's `DefaultEnvironment` for `orca serve`. So the Host
-  checks every name when it is set: it refuses names the check's own patterns know (the
-  variables that switch a Safeguard off and anything mentioning one: every name ending in
-  `_PROXY` in either case, `GIT_CONFIG*`, `UV_NO_CONFIG`, `*IGNORE_SCRIPTS`, `*RELEASE_AGE`,
-  `UV_EXCLUDE_NEWER`, `*HOOKS_PATH`, `*CLAUDEAI*`), what those patterns miss, also in either
-  case (`npm_config_noproxy` and `npm_config_before`, which take npm around the proxy and the
-  minimum release age, `_JAVA_OPTIONS` and `JDK_JAVA_OPTIONS`, which override the proxy of
-  `JAVA_TOOL_OPTIONS`), what Agent Box sets for the VM or every
-  process reads first (`PATH`, `HOME`, `XDG_RUNTIME_DIR`, `LD_*`, `NODE_OPTIONS`, `BASH_ENV`,
+  checks every name when it is set: it refuses names the check's own patterns know apart from
+  proxy names (the variables that switch a Safeguard off and anything mentioning one, in
+  either case:
+  `GIT_CONFIG*`, `UV_NO_CONFIG`, `*IGNORE_SCRIPTS`, `*RELEASE_AGE`, `UV_EXCLUDE_NEWER`,
+  `*HOOKS_PATH`, `*CLAUDEAI*`), what those patterns miss, also in either case
+  (`npm_config_before`, which takes npm around the minimum release age), what Agent Box sets
+  for the VM or every process reads first (`PATH`, `HOME`, `XDG_RUNTIME_DIR`, `LD_*`, `NODE_OPTIONS`, `BASH_ENV`,
   `ENV`, `CLAUDE_CODE_OAUTH_TOKEN`, `AGENTBOX_*`, `ORCA_PORT`, `PAIRING_ADDRESS`) and every
   variable of the Image's `DefaultEnvironment`, held to those files by a test. Neither may a
   VM variable be one bash sets itself (its readonly variables `SHELLOPTS`, `BASHOPTS`, `UID`,
   `EUID`, `PPID`, `BASH_VERSINFO`, on which `export` fails in every login shell, and `GROUPS`). Broad prefixes
   such as `npm_config_*` or `UV_*` stay allowed: only what a Safeguard or Agent Box itself
-  reads is blocked.
+  reads is blocked. Proxy variables and options (`HTTPS_PROXY`, `NO_PROXY`,
+  `npm_config_proxy`, Java's proxy properties in `JAVA_TOOL_OPTIONS`, ...) stay allowed too,
+  although the check refuses them in an Image: the VM reaches nothing but the Host (see
+  Network), so a proxy variable switches no Safeguard off.
 - Anything failing (the Release's files, podman, the check, the disk) leaves the previous
   Build current, deletes what the Build made and records `build.failed` or `build.rejected` in
   Activity with the reason; `build.ok` records a new current Build. The Build's log stays in

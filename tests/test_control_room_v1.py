@@ -852,11 +852,11 @@ class ErrorTest(V1Test):
 
     def test_vm_variable_refusals_name_the_variable(self):
         # the UI says which variable a Safeguard or Agent Box needs, or which is too long
-        env = dict(method="PUT", path="/api/v1/vms/work/env", body={"env": {"HTTPS_PROXY": ""}})
-        answer = self.fails(failure("env_name_reserved", "HTTPS_PROXY cannot be a VM variable", name="HTTPS_PROXY"),
+        env = dict(method="PUT", path="/api/v1/vms/work/env", body={"env": {"NODE_OPTIONS": ""}})
+        answer = self.fails(failure("env_name_reserved", "NODE_OPTIONS cannot be a VM variable", name="NODE_OPTIONS"),
                             **env)
         self.assertError(answer, 400, "env_name_reserved")
-        self.assertEqual((answer[1]["error"]["field"], answer[1]["error"]["params"]), ("env", {"name": "HTTPS_PROXY"}))
+        self.assertEqual((answer[1]["error"]["field"], answer[1]["error"]["params"]), ("env", {"name": "NODE_OPTIONS"}))
         answer = self.fails(failure("env_too_large", "the value of BIG is 5000 bytes long", name="BIG",
                                     max_bytes=4096), **env)
         self.assertEqual((answer[0], answer[1]["error"]["params"]), (400, {"name": "BIG"}))

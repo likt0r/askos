@@ -2,8 +2,8 @@
 
 `agentbox env`, `set-env` and `unset-env` change the record and the file QEMU passes into the
 VM as fw_cfg opt/agentbox/env; `regenerate` writes that file too. No VM variable may switch a
-Safeguard off: names the safeguard check knows, names Agent Box sets and every variable of the
-Image's DefaultEnvironment are refused. The real CLI runs with AGENTBOX_ROOT pointing at a
+Safeguard off: names the safeguard check knows (apart from proxy names), names Agent Box sets
+and every variable of the Image's DefaultEnvironment are refused. The real CLI runs with AGENTBOX_ROOT pointing at a
 temporary root and the fakes of test_registry.py; the guest side
 (vm/files/usr/lib/agentbox/fwcfg-env) runs against an fw_cfg file in a temporary directory.
 
@@ -38,22 +38,23 @@ REFUSED = [
     "npm_config_ignore_scripts", "NPM_CONFIG_IGNORE_SCRIPTS", "npm_config_min_release_age",
     "pnpm_config_minimum_release_age_exclude", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_COUNT",
     "GIT_CONFIG_PARAMETERS", "UV_NO_CONFIG", "UV_CONFIG_FILE",
-    # safeguards.MENTIONS
-    "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy", "ALL_PROXY", "all_proxy",
-    "GIT_CONFIG", "UV_EXCLUDE_NEWER", "BUN_CONFIG_MINIMUM_RELEASE_AGE", "pnpm_config_minimum_release_age",
+    # safeguards.MENTIONS, also next to a proxy name
+    "GIT_CONFIG", "IGNORE_SCRIPTS_PROXY", "CLAUDEAI_PROXY", "UV_EXCLUDE_NEWER", "BUN_CONFIG_MINIMUM_RELEASE_AGE", "pnpm_config_minimum_release_age",
     "YARN_IGNORE_SCRIPTS", "CORE_HOOKS_PATH", "ENABLE_CLAUDEAI_MCP_SERVERS",
     # reserved: the unit of orca serve, guest-setup, what every process or shell reads first
     "PATH", "HOME", "XDG_RUNTIME_DIR", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "NODE_OPTIONS", "BASH_ENV",
     "ENV", "CLAUDE_CODE_OAUTH_TOKEN", "AGENTBOX_CONTEXT", "AGENTBOX_GH_ADDR", "AGENTBOX_ANYTHING", "ORCA_PORT",
     "PAIRING_ADDRESS",
     # the rest of the Image's DefaultEnvironment
-    "NODE_USE_ENV_PROXY", "DO_NOT_TRACK", "ORCA_TELEMETRY_DISABLED", "DISABLE_AUTOUPDATER", "RUSTUP_HOME",
-    "JAVA_HOME", "JAVA_TOOL_OPTIONS",
-    # what the patterns miss: npm going around the proxy or the minimum release age, the JVM
-    # overriding the proxy of JAVA_TOOL_OPTIONS; in either case, as npm reads them
-    "npm_config_noproxy", "NPM_CONFIG_NOPROXY", "npm_config_before", "NPM_CONFIG_BEFORE", "_JAVA_OPTIONS",
-    "_java_options", "JDK_JAVA_OPTIONS", "jdk_java_options",
+    "DO_NOT_TRACK", "ORCA_TELEMETRY_DISABLED", "DISABLE_AUTOUPDATER", "DOCKER_HOST", "RUSTUP_HOME", "JAVA_HOME",
+    # what the patterns miss: npm going around the minimum release age, in either case as npm reads it
+    "npm_config_before", "NPM_CONFIG_BEFORE",
 ]
+# proxy variables: the VM carries none and its proxy is transparent, so none switches a
+# Safeguard off, although the Build check refuses them in an Image (safeguards.MENTIONS)
+PROXY = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy", "ALL_PROXY", "all_proxy",
+         "NODE_USE_ENV_PROXY", "npm_config_proxy", "npm_config_https_proxy", "npm_config_noproxy", "NPM_CONFIG_NOPROXY",
+         "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS"]
 # variables bash sets itself: export fails on its readonly ones in every login shell, and an
 # assignment to GROUPS has no effect
 SHELL = ["SHELLOPTS", "BASHOPTS", "UID", "EUID", "PPID", "GROUPS", "BASH_VERSINFO"]
@@ -189,9 +190,10 @@ class SetEnvTest(EnvTest):
 
 
 class SafeguardNamesTest(EnvTest):
-    """No VM variable may switch a Safeguard off (ADR 0008): what the safeguard check knows, what
-    Agent Box sets and every variable of the Image's DefaultEnvironment is refused, and nothing
-    changes; broad prefixes stay allowed."""
+    """No VM variable may switch a Safeguard off (ADR 0008): what the safeguard check knows
+    (apart from proxy names), what Agent Box sets and every variable of the Image's
+    DefaultEnvironment is refused, and nothing changes; broad prefixes and proxy names stay
+    allowed."""
 
     def test_names_of_safeguards_and_agent_box_are_refused_and_nothing_changes(self):
         self.ok("set-env", "work", "KEEP=1")
@@ -232,7 +234,16 @@ class SafeguardNamesTest(EnvTest):
             with self.subTest(name=name):
                 self.assertTrue(vmenv.reserved(name))
         self.assertTrue(safeguards.OVERRIDES.fullmatch("npm_config_ignore_scripts"))
+        self.assertTrue(safeguards.MENTIONS.search("NPM_CONFIG_IGNORE_SCRIPTS"))
+
+    def test_proxy_names_are_accepted(self):
+        """The Build check still refuses a proxy variable in an Image, but a VM variable may be
+        one: the VM gets it like any other."""
         self.assertTrue(safeguards.MENTIONS.search("HTTPS_PROXY"))
+        result = self.json("set-env", "work", *(f"{n}=http://proxy.example:8080" for n in PROXY))
+        self.assertEqual((list(result["env"]), self.json("env", "work")["refused"]), (PROXY, []))
+        self.assertEqual(self.env_file().splitlines(),
+                         [fw_cfg_line(n, "http://proxy.example:8080") for n in PROXY])
 
     def test_broad_prefixes_are_accepted(self):
         result = self.json("set-env", "work", *(f"{n}=1" for n in ALLOWED))
@@ -249,8 +260,8 @@ class SafeguardNamesTest(EnvTest):
                            check=True, capture_output=True)
             self.assertEqual(sorted(os.listdir(dropins)), ["agentbox-packages.conf", "agentbox.conf"])
             names = set(safeguards.systemd_environment(tmp))
-        self.assertGreaterEqual(names, {"HTTPS_PROXY", "ENABLE_CLAUDEAI_MCP_SERVERS", "UV_EXCLUDE_NEWER",
-                                        "pnpm_config_minimum_release_age", "JAVA_TOOL_OPTIONS"})
+        self.assertGreaterEqual(names, {"PATH", "ENABLE_CLAUDEAI_MCP_SERVERS", "UV_EXCLUDE_NEWER",
+                                        "pnpm_config_minimum_release_age", "DOCKER_HOST"})
         self.assertEqual({n for n in names if not vmenv.reserved(n)}, set())
         self.assertEqual(names - vmenv.DEFAULT_ENVIRONMENT, set())
 
@@ -282,15 +293,15 @@ class SafeguardNamesTest(EnvTest):
         """A later release may reserve a name a VM has already: its record stays valid (a broken
         record would stop regenerate and create for every VM), the VM never gets that variable,
         and agentbox env and describe say so. Setting it stays refused, removing it works."""
-        vm_records.write(self.root, vm_records.record("work", 1, env={"HTTPS_PROXY": "x", "A": "1"}))
+        vm_records.write(self.root, vm_records.record("work", 1, env={"NODE_OPTIONS": "x", "A": "1"}))
         self.assertEqual(self.json("env", "work"),
-                         {"vm": "work", "env": {"HTTPS_PROXY": "x", "A": "1"}, "refused": ["HTTPS_PROXY"]})
+                         {"vm": "work", "env": {"NODE_OPTIONS": "x", "A": "1"}, "refused": ["NODE_OPTIONS"]})
         self.assertEqual(self.ok("env", "work"),
-                         "HTTPS_PROXY=x\nA=1\nwork: HTTPS_PROXY is not passed on to the VM: a Safeguard or Agent "
-                         "Box itself sets or reads it (agentbox unset-env work HTTPS_PROXY removes it)\n")
+                         "NODE_OPTIONS=x\nA=1\nwork: NODE_OPTIONS is not passed on to the VM: a Safeguard or Agent "
+                         "Box itself sets or reads it (agentbox unset-env work NODE_OPTIONS removes it)\n")
         described = {v["name"]: v for v in self.json("describe")["vms"]}
-        self.assertEqual((described["work"]["env_refused"], described["priv"]["env_refused"]), (["HTTPS_PROXY"], []))
-        self.assertIn("  VM variables: HTTPS_PROXY, A (agentbox env work); HTTPS_PROXY not passed on\n",
+        self.assertEqual((described["work"]["env_refused"], described["priv"]["env_refused"]), (["NODE_OPTIONS"], []))
+        self.assertIn("  VM variables: NODE_OPTIONS, A (agentbox env work); NODE_OPTIONS not passed on\n",
                       self.ok("describe", "work"))
         # regenerate and create go on; the file QEMU passes in never carries the name
         self.assertEqual(self.json("regenerate")["vms"]["work"], ["vm-env"])
@@ -298,11 +309,11 @@ class SafeguardNamesTest(EnvTest):
         self.ok("create", "lab")
         # other variables can still be set, the refused one stays in the record only
         self.ok("set-env", "work", "B=2")
-        self.assertEqual(self.record_env(), {"HTTPS_PROXY": "x", "A": "1", "B": "2"})
+        self.assertEqual(self.record_env(), {"NODE_OPTIONS": "x", "A": "1", "B": "2"})
         self.assertEqual(self.env_file(), "A=MQ==\nB=Mg==\n")
-        said = self.failure("set-env", "work", "HTTPS_PROXY=y")
-        self.assertEqual((said["error"], said["params"]), ("env_name_reserved", {"name": "HTTPS_PROXY"}))
-        self.ok("unset-env", "work", "HTTPS_PROXY")
+        said = self.failure("set-env", "work", "NODE_OPTIONS=y")
+        self.assertEqual((said["error"], said["params"]), ("env_name_reserved", {"name": "NODE_OPTIONS"}))
+        self.ok("unset-env", "work", "NODE_OPTIONS")
         self.assertEqual(self.json("env", "work"), {"vm": "work", "env": {"A": "1", "B": "2"}, "refused": []})
 
     def test_a_record_with_malformed_variables_is_broken(self):
@@ -318,7 +329,7 @@ class SafeguardNamesTest(EnvTest):
         self.assertEqual(self.json("env", "work"), {"vm": "work", "env": {}, "refused": []})
 
     def test_the_file_never_carries_a_refused_name(self):
-        self.assertEqual(vmenv.fw_cfg({"HTTPS_PROXY": "x", "A": "1", "PATH": "/tmp"}), b"A=MQ==\n")
+        self.assertEqual(vmenv.fw_cfg({"NODE_OPTIONS": "x", "A": "1", "PATH": "/tmp"}), b"A=MQ==\n")
         self.assertEqual(vmenv.fw_cfg({"LD_PRELOAD": "/x.so"}), b"none\n")
 
 

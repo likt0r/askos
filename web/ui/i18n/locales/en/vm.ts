@@ -148,7 +148,7 @@ export default {
     value: 'Value',
     add: 'Add variable',
     remove: 'Remove variable',
-    safeguards: 'Names a Safeguard or Agent Box itself reads (proxy variables, PATH, npm_config_ignore_scripts and the like) are refused.',
+    safeguards: 'Names a Safeguard or Agent Box itself reads (PATH, NODE_OPTIONS, npm_config_ignore_scripts and the like) are refused.',
     tooMany: 'At most {max} VM variables.',
     tooBig: 'Too much for the Control Room, which takes at most 8 KiB at once. Set long or many variables on the Host with agentbox set-env {name} NAME=VALUE ...',
     problem: {

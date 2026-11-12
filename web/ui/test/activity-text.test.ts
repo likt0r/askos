@@ -219,9 +219,9 @@ describe('Activity text (unit)', () => {
     expect(activityText(coded(0, 'set-env', {}, 'Set VM variables'), tr)).toBe('Set VM variables')
     expect(activityText(coded(0, 'unset-env', { names: 'A, B' }, 'stored'), tr)).toBe(say('unsetEnv', { names: 'A, B' }))
     // a refusal adds its translated error
-    const refused = coded(0, 'set-env', { env: 'HTTPS_PROXY=' }, 'stored',
-      { outcome: 'failed', error: 'env_name_reserved', error_params: { name: 'HTTPS_PROXY' } })
-    expect(activityText(refused, tr)).toBe(`${say('setEnv', { env: 'HTTPS_PROXY=' })}: errors.env_name_reserved {"field":"","name":"HTTPS_PROXY"}`)
+    const refused = coded(0, 'set-env', { env: 'NODE_OPTIONS=' }, 'stored',
+      { outcome: 'failed', error: 'env_name_reserved', error_params: { name: 'NODE_OPTIONS' } })
+    expect(activityText(refused, tr)).toBe(`${say('setEnv', { env: 'NODE_OPTIONS=' })}: errors.env_name_reserved {"field":"","name":"NODE_OPTIONS"}`)
   })
 
   it('keeps it when a parameter the sentence needs is missing or not text', () => {

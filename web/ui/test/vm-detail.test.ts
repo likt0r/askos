@@ -478,14 +478,14 @@ describe('VM variables', () => {
   it('names the variable agentbox refuses and stays open', async () => {
     fakeApi({
       'GET /session': SIGNED_IN,
-      'PUT /vms/work/env': { status: 400, body: { error: { code: 'env_name_reserved', message: 'x', field: 'env', params: { name: 'HTTPS_PROXY' } } } },
+      'PUT /vms/work/env': { status: 400, body: { error: { code: 'env_name_reserved', message: 'x', field: 'env', params: { name: 'NODE_OPTIONS' } } } },
     })
     await openApp('/vms/work/web', [WITH])
     await click('env-change')
     await click('env-add')
-    await type('env-name-2', 'HTTPS_PROXY')
+    await type('env-name-2', 'NODE_OPTIONS')
     await submit('env-dialog')
-    expect(text('env-error')).toBe('HTTPS_PROXY: a Safeguard or Agent Box itself sets or reads this variable, it cannot be a VM variable.')
+    expect(text('env-error')).toBe('NODE_OPTIONS: a Safeguard or Agent Box itself sets or reads this variable, it cannot be a VM variable.')
     expect(exists('env-dialog')).toBe(true)
   })
 })

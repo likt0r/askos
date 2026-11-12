@@ -370,9 +370,10 @@ removes some, `agentbox env <name>` shows them. They are not secret: `describe`,
 Room and Activity show them. Like the memory limit they apply when the VM starts next; a
 running or paused VM keeps the variables it started with until its next Restart or Reset (a
 reboot inside the VM is not enough). Names a Safeguard or Agent Box itself reads are refused
-(`HTTPS_PROXY`, `npm_config_ignore_scripts`, `PATH`, `LD_*`, `AGENTBOX_*`, everything in the
+(`npm_config_ignore_scripts`, `PATH`, `NODE_OPTIONS`, `LD_*`, `AGENTBOX_*`, everything in the
 Image's `DefaultEnvironment`, ...), so a VM variable never switches a Safeguard off; other
-names, `npm_config_registry` or `UV_INDEX_URL` among them, are fine. At most 64 variables,
+names, `npm_config_registry`, `UV_INDEX_URL` or proxy variables such as `HTTPS_PROXY` among
+them, are fine. At most 64 variables,
 names of `A-Z`, `a-z`, `0-9` and `_` up to 64 characters, values up to 4 KiB without line
 breaks. The Control Room edits them as a table on the VM's overview
 (`PUT /api/v1/vms/<name>/env`, which replaces the whole list; requests there are limited to
