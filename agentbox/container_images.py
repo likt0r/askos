@@ -34,21 +34,8 @@ from .sanitize import clean
 
 WRAPPER = "/usr/libexec/qemu-ga/fsfreeze-hook.d/agentbox-container-images"
 LIMIT = 300                   # seconds for the wrapper in one VM (it stops itself a little before)
-DEFAULT_ENABLED = True
-DEFAULT_DAYS = 7
 MAX_ANSWER = 1024             # characters of the wrapper's answer taken at all
 MAX_NUMBER = 1 << 63
-
-
-def cleanup_values(rec):
-    """(on, days) of a VM's record; a record without them means on and 7 days."""
-    enabled = rec.get("container_image_cleanup", DEFAULT_ENABLED)
-    days = rec.get("container_image_cleanup_days", DEFAULT_DAYS)
-    if not isinstance(enabled, bool):
-        enabled = DEFAULT_ENABLED
-    if type(days) is not int or not 1 <= days <= 365:
-        days = DEFAULT_DAYS
-    return enabled, days
 
 
 def _size(n):
@@ -128,7 +115,7 @@ def _result(ctx, outcome, reason=None, removed=None, freed=None, error=None):
 def _one(rec, say):
     """Clean up one VM: its line of the JSON output."""
     ctx = rec["name"]
-    enabled, days = cleanup_values(rec)
+    enabled, days = registry.cleanup(rec)
     if not enabled:
         say(f"{ctx}: skipped, the Container image cleanup is off")
         return _result(ctx, "skipped", "off")
