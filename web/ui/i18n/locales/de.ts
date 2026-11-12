@@ -181,7 +181,8 @@ export default {
     container_image_cleanup_missing: 'Der Build der VM kann noch keine Container-Images aufräumen. Baue erst ihr Image und setze die VM zurück.',
     container_image_cleanup_failed: 'Das Aufräumen der Container-Images in der VM ist fehlgeschlagen.',
     invalid_argument: 'agentbox hat einen Wert abgelehnt.',
-    sudo_failed: 'Der Control Room darf agentbox nicht ausführen (sudo-Regel fehlt).',
+    sudo_failed: 'sudo hat agentbox für den Control Room nicht ausgeführt (seine sudo-Regel fehlt oder erlaubt diesen Aufruf nicht).',
+    control_room_refused: 'Das darf nur die CLI auf dem Host, nicht der Control Room.',
     action_failed: 'agentbox hat einen Fehler gemeldet.',
     // nur in der Aktivität: ein Befehl, der abgebrochen wurde oder an einem Fehler von agentbox selbst endete
     interrupted: 'Abgebrochen.',
