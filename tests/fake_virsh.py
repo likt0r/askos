@@ -147,6 +147,11 @@ def networks(scenario):
     return current if current is not None else dict(scenario.get("networks") or {})
 
 
+def net_uuid(net, name):
+    m = re.search(r"<uuid>([^<]+)</uuid>", net.get("xml", ""))
+    return net.get("uuid") or (m.group(1) if m else str(uuid.uuid5(uuid.NAMESPACE_DNS, name)))
+
+
 def network(scenario, cmd, arg):
     """net-info, net-dumpxml, net-define, net-autostart, net-start."""
     nets = networks(scenario)
@@ -155,19 +160,31 @@ def network(scenario, cmd, arg):
             xml = f.read()
         name = re.search(r"<name>([^<]+)</name>", xml).group(1)
         record({"cmd": cmd, "net": name, "xml": xml})
-        nets[name] = {"active": False, "autostart": False, **nets.get(name, {}), "xml": xml}
+        given = re.search(r"<uuid>([^<]+)</uuid>", xml)
+        if name in nets:  # like libvirt: an existing name keeps its UUID
+            have = net_uuid(nets[name], name)
+            if not given or given.group(1) != have:
+                print(f"error: Failed to define network from {arg}", file=sys.stderr)
+                print(f"error: operation failed: network '{name}' already exists with uuid {have}",
+                      file=sys.stderr)
+                return 1
+        nets[name] = {"active": False, "autostart": False, **nets.get(name, {}), "xml": xml,
+                      "uuid": given.group(1) if given else net_uuid(nets.get(name, {}), name)}
         print(f"Network {name} defined from {arg}")
     elif arg not in nets:
         print(f"error: failed to get network '{arg}'", file=sys.stderr)
         print(f"error: Network not found: no network with matching name '{arg}'", file=sys.stderr)
         return 1
     elif cmd == "net-dumpxml":
-        print(nets[arg].get("xml", f"<network>\n  <name>{arg}</name>\n</network>"), end="")
+        xml = nets[arg].get("xml", f"<network>\n  <name>{arg}</name>\n</network>")
+        if "<uuid>" not in xml:  # libvirt always dumps the UUID
+            xml = xml.replace("</name>", f"</name>\n  <uuid>{net_uuid(nets[arg], arg)}</uuid>", 1)
+        print(xml, end="")
         return 0
     elif cmd == "net-info":
         n = nets[arg]
         yes = lambda v: "yes" if v else "no"
-        print(f"Name:           {arg}\nUUID:           {uuid.uuid5(uuid.NAMESPACE_DNS, arg)}\n"
+        print(f"Name:           {arg}\nUUID:           {net_uuid(n, arg)}\n"
               f"Active:         {yes(n['active'])}\nPersistent:     yes\nAutostart:      {yes(n['autostart'])}\n"
               f"Bridge:         abox")
         return 0

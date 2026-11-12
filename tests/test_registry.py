@@ -226,6 +226,14 @@ NETWORK = """<network xmlns:dnsmasq='http://libvirt.org/schemas/network/dnsmasq/
   </dnsmasq:options>
 </network>
 """
+OLD_NETWORK_UUID = "0b9f5a52-2b7f-4c55-9d0e-6f5c2b1c9a11"
+
+
+def with_uuid(xml, uuid=OLD_NETWORK_UUID):
+    """The XML of an existing network: libvirt keeps its UUID in it."""
+    return xml.replace("</name>\n", f"</name>\n  <uuid>{uuid}</uuid>\n", 1)
+
+
 NFT = """table inet agentbox_vm
 delete table inet agentbox_vm
 table inet agentbox_vm {
@@ -423,7 +431,7 @@ class RegenerateTest(RegistryTest):
         code, out, err = self.run_agentbox("regenerate")
         self.assertEqual((code, err), (0, ""))
         self.assertEqual([(c["net"], c["xml"]) for c in self.calls("net-define") if c["net"] == "agentbox-priv"],
-                         [("agentbox-priv", NETWORK)])
+                         [("agentbox-priv", with_uuid(NETWORK))])
         # dnsmasq reads its options when the network starts
         self.assertEqual(self.network_calls(), [("net-define", "agentbox-priv"), ("net-destroy", "agentbox-priv"),
                                                 ("net-start", "agentbox-priv")])
@@ -456,10 +464,10 @@ class RegenerateTest(RegistryTest):
         options = "  <dnsmasq:options>\n"
         for extra in ("    <dnsmasq:option value='server=1.1.1.1'/>\n", "    <dnsmasq:option value=\"server=/x/9.9.9.9\"/>\n"):
             with self.subTest(extra=extra):
-                self.forwarding(NETWORK.replace(options, options + extra))
+                self.forwarding(with_uuid(NETWORK).replace(options, options + extra))
         dns = "  <dns>\n    <forwarder addr='1.1.1.1'/>\n  </dns>\n"
-        self.forwarding(NETWORK.replace("  <ip address", dns + "  <ip address"))
-        self.forwarding(NETWORK.replace("  <ip address", "  <forward mode='nat'/>\n  <ip address"))
+        self.forwarding(with_uuid(NETWORK).replace("  <ip address", dns + "  <ip address"))
+        self.forwarding(with_uuid(NETWORK).replace("  <ip address", "  <forward mode='nat'/>\n  <ip address"))
 
     def forwarding(self, xml):
         self.scenario(vms={"priv": {"uuid": PRIV_UUID, "state": "shut off"}},
@@ -467,7 +475,7 @@ class RegenerateTest(RegistryTest):
         self.forget_calls()
         self.assertEqual(self.json("regenerate")["vms"]["priv"][:1], ["network-redefined"])
         self.assertEqual([(c["net"], c["xml"]) for c in self.calls("net-define") if c["net"] == "agentbox-priv"],
-                         [("agentbox-priv", NETWORK)])
+                         [("agentbox-priv", with_uuid(NETWORK))])
         os.remove(os.path.join(self.dir, "networks.json"))
 
     def test_a_service_on_all_addresses_on_the_resolver_or_proxy_port_stops_it_before_any_change(self):
