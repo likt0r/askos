@@ -254,6 +254,10 @@ export const SENTENCES: Record<string, Sentence> = {
   'build.unneeded': plain('buildUnneeded'),
   'build.skipped': (p, tr) => (has(p, 'images') ? say(tr, 'buildSkipped', { images: p.images }) : null),
   'build.automatic': (p, tr, e) => (has(p, 'images') ? say(tr, e.outcome === 'failed' ? 'buildAutomaticFailed' : 'buildAutomatic', { images: p.images }) : null),
+  // the hourly Container image cleanup (agentbox/container_images.py)
+  'container-image-cleanup.removed': (p, tr) => (has(p, 'removed', 'freed_bytes', 'days')
+    ? say(tr, 'containerImageCleanupRemoved', { n: p.removed, bytes: p.freed_bytes, days: p.days }) : null),
+  'container-image-cleanup.failed': plain('containerImageCleanupFailed'),
 }
 
 /** The generic error code: agentbox's own message says more than its translation would. */

@@ -95,7 +95,8 @@ and no `agentbox` command runs.
   build`, or the weekly rebuild) uses the new Release's Containerfiles, and a VM gets that
   Build at its next Reset. A Build that runs during the update copied the Containerfiles it
   builds from when it started.
-- **The Control Room and the expiry timer** of temporary Allowlist entries restart if they run.
+- **The Control Room, the expiry timer** of temporary Allowlist entries **and the timer of the
+  Container image cleanup** restart if they run.
 - **The proxies of the VMs restart only when the update changes their code** (`agentbox-proxy`
   or the classifier `agentbox-suspicious` it loads). Their sockets
   stay open, so a VM loses only its open connections; new ones wait for the restart. A proxy
@@ -131,7 +132,8 @@ the owner's choice (ADR 0009): the package runs as root on the Host.
 sudo dnf remove agentbox
 ```
 
-Removal stops and disables the Control Room and the expiry timer, and stops, disables and
+Removal stops and disables the Control Room, the expiry timer and the timer of the Container
+image cleanup, and stops, disables and
 deletes the units `agentbox regenerate` wrote to `/etc/systemd/system`: each VM's proxy, token
 service and Orca port, the Reset check, the Feeds and the Builds. So nothing is left enabled
 that would run a removed program, and the VMs lose their way out with their proxies. Then
@@ -154,8 +156,8 @@ What stays:
 
 After installing a Release again, `sudo agentbox setup` keeps the Host setup and the password
 and does the Host steps again: it writes and enables the units of the VMs, the Reset check,
-the Feeds and the Builds from the Host's records as they were, and starts the Control Room and
-the expiry timer.
+the Feeds and the Builds from the Host's records as they were, and starts the Control Room, the
+expiry timer and the timer of the Container image cleanup.
 
 ## On a maintainer's machine
 

@@ -35,7 +35,8 @@ STEP = os.environ.get("AGENTBOX_RPM_STEP", "")
 RECORDS = ("/etc/agentbox", "/var/lib/agentbox")      # the Host's records and state
 SYSTEMD = "/etc/systemd"
 PACKAGE_UNITS = sorted(n for n in os.listdir(os.path.join(REPO, "rpm", "units")) if n.endswith((".service", ".timer")))
-RESTARTED = {"agentbox-web.service", "agentbox-allowlist-expire.timer"}     # on every update (%postun)
+# on every update (%postun)
+RESTARTED = {"agentbox-web.service", "agentbox-allowlist-expire.timer", "agentbox-container-image-cleanup.timer"}
 # on an update that changes the proxy code (%posttrans): the proxies that run, at once
 PROXY_RESTART = ["systemctl", "try-restart", "agentbox-proxy-*.service"]
 PENDING = "/run/agentbox-proxy-restart"      # a restart of the proxies that failed, for the next update

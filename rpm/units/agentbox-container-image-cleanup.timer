@@ -1,0 +1,11 @@
+# Every hour, and once at boot for an hour the Host slept or was off through (rpm/agentbox.spec);
+# not enabled by installing.
+[Unit]
+Description=Remove unused Container images in the running VMs every hour
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target

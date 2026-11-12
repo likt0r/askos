@@ -172,6 +172,8 @@ export default {
     target_exists: 'Das Ziel gibt es in der VM schon. Nichts wurde geändert.',
     inbox_missing: 'Der Build der VM kann noch keine Ordner empfangen. Baue erst ihr Image und setze die VM zurück.',
     import_failed: 'Der Ordner konnte nicht in die VM kopiert werden.',
+    container_image_cleanup_missing: 'Der Build der VM kann noch keine Container-Images aufräumen. Baue erst ihr Image und setze die VM zurück.',
+    container_image_cleanup_failed: 'Das Aufräumen der Container-Images in der VM ist fehlgeschlagen.',
     invalid_argument: 'agentbox hat einen Wert abgelehnt.',
     sudo_failed: 'Der Control Room darf agentbox nicht ausführen (sudo-Regel fehlt).',
     action_failed: 'agentbox hat einen Fehler gemeldet.',

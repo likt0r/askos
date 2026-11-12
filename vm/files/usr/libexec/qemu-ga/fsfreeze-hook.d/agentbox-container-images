@@ -1,0 +1,352 @@
+#!/usr/bin/python3 -I
+"""The Container image cleanup in the VM (ADR 0016), and the usage recorder it reads.
+
+Lies in this directory for the same reason as agentbox-journal (SELinux, see there). No
+fsfreeze hook: freeze and thaw are ignored.
+
+  prune <days>
+      Run by the Host through the guest agent (agentbox cleanup-container-images), as root.
+      Drops to the user agent before it does anything, then removes, through the agent's
+      rootless Podman, the Container images that no container uses (running or stopped,
+      also a build's) and whose last use is more than <days> (1 to 365) calendar days ago.
+      A Container image without a recorded use counts as used when this command first sees
+      it. Removes nothing but Container images: never a container or a volume, and never by
+      force, so Podman itself refuses a Container image a container took meanwhile. Prints
+      only {"removed": N, "freed_bytes": N}: the Container images removed and the sizes
+      Podman gives for them (layers shared with others count in full).
+
+  record
+      The usage recorder: the agent's user service agentbox-container-image-usage.service
+      runs it in the VM whether the cleanup is on or off. It follows `podman events` and
+      keeps, per Container image, the time of its last use: pulled, built, or a container
+      created or started from it. Refused as root.
+
+The last uses are kept in the agent's Podman storage (~/.local/share/containers, on the
+Data disk), in agentbox-container-image-usage.json ({"images": {"<image id>": <epoch
+seconds>}}), written whole under a lock both commands take. A file that cannot be read
+counts as empty: every Container image is then seen for the first time, so nothing goes.
+
+Exit codes: 2 invalid arguments; 124 time limit; 1 anything else (Podman failing).
+
+Without root (tests, or the agent starting it itself) AGENTBOX_CONTAINER_IMAGES_ROOT puts
+the agent's home and podman under that directory.
+"""
+import contextlib
+import datetime
+import fcntl
+import json
+import os
+import pwd
+import re
+import signal
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+
+HOME = "/var/home/agent"
+STORAGE = ".local/share/containers"          # the agent's Podman storage, on the Data disk
+USAGE = "agentbox-container-image-usage.json"
+LOCK = ".agentbox-container-image-usage.lock"
+PODMAN = "/usr/bin/podman"
+USER = "agent"
+LIMIT = 280                  # seconds for the whole prune; the Host waits 300 s
+PODMAN_LIMIT = 120           # one podman call
+MAX_DAYS = 365
+MAX_USAGE = 4 << 20          # bytes of the usage file read
+MAX_TIME = 1 << 37           # epoch seconds, about the year 6300
+ID = re.compile(r"(?:sha256:)?([0-9a-f]{64})")
+# printable names Podman gives a Container image, never read as an option
+NAME = re.compile(r"[A-Za-z0-9][\x21-\x7e]{0,511}")
+# what counts as a use: (type, status) of an event of `podman events`
+USES = {("image", "pull"), ("image", "build"), ("container", "create"), ("container", "start")}
+
+
+class Failed(Exception):
+    def __init__(self, message, code=1):
+        super().__init__(message)
+        self.code = code
+
+
+def become(user):
+    pw = pwd.getpwnam(user)
+    os.setgroups([])
+    os.setgid(pw.pw_gid)
+    os.setuid(pw.pw_uid)
+    os.environ.clear()
+    os.environ.update({"HOME": pw.pw_dir, "XDG_RUNTIME_DIR": f"/run/user/{pw.pw_uid}"})
+    os.umask(0o077)
+
+
+def image_id(v):
+    """The 64 hex digits of an image id Podman gave, or None."""
+    m = ID.fullmatch(v) if isinstance(v, str) else None
+    return m.group(1) if m else None
+
+
+def number(v):
+    return v if type(v) is int and v >= 0 else 0
+
+
+# --- the usage file ---------------------------------------------------------------
+
+class Usage:
+    def __init__(self, home):
+        self.dir = os.path.join(home, STORAGE)
+        self.path = os.path.join(self.dir, USAGE)
+
+    @contextlib.contextmanager
+    def held(self):
+        os.makedirs(self.dir, 0o700, exist_ok=True)
+        fd = os.open(os.path.join(self.dir, LOCK), os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            os.close(fd)
+
+    def read(self):
+        """{image id: epoch seconds} of the last uses; {} when there is no readable file."""
+        try:
+            fd = os.open(self.path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except OSError:
+            return {}
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return {}
+            with os.fdopen(fd, "rb", closefd=False) as f:
+                data = f.read(MAX_USAGE + 1)
+        except OSError:
+            return {}
+        finally:
+            os.close(fd)
+        if len(data) > MAX_USAGE:
+            return {}
+        try:
+            images = json.loads(data).get("images")
+        except (ValueError, AttributeError, RecursionError):
+            return {}
+        if not isinstance(images, dict):
+            return {}
+        return {k: v for k, v in images.items() if image_id(k) == k and type(v) is int and 0 <= v < MAX_TIME}
+
+    def write(self, images):
+        fd, tmp = tempfile.mkstemp(dir=self.dir, prefix=f".{USAGE}.")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump({"images": images}, f, sort_keys=True)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self.path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
+
+    def used(self, ids, when):
+        with self.held():
+            images = self.read()
+            images.update({i: when for i in ids})
+            self.write(images)
+
+
+# --- podman ---------------------------------------------------------------------
+
+class Podman:
+    def __init__(self, program):
+        self.program = program
+        self.env = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8",
+                    **{k: os.environ[k] for k in ("HOME", "XDG_RUNTIME_DIR") if k in os.environ}}
+
+    def run(self, *args):
+        return subprocess.run([self.program, *args], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                              errors="replace", env=self.env, timeout=PODMAN_LIMIT)
+
+    def listing(self, *args):
+        """The JSON list a podman command prints (images, ps)."""
+        try:
+            r = self.run(*args, "--format", "json")
+        except subprocess.TimeoutExpired:
+            raise Failed(f"podman {args[0]} takes longer than {PODMAN_LIMIT} s")
+        if r.returncode != 0:
+            raise Failed(f"podman {args[0]} fails: " + " ".join(r.stderr.split())[:300])
+        try:
+            rows = json.loads(r.stdout or "[]")
+        except (ValueError, RecursionError):
+            raise Failed(f"podman {args[0]} answers something other than JSON")
+        if rows is None:
+            return []
+        if not isinstance(rows, list):
+            raise Failed(f"podman {args[0]} answers something other than a list")
+        return [row for row in rows if isinstance(row, dict)]
+
+    def inspect(self, kind, ref, field):
+        """One field of `podman <kind> inspect` of ref, or None."""
+        if not isinstance(ref, str) or not NAME.fullmatch(ref):
+            return None
+        try:
+            r = self.run(kind, "inspect", "--format", "{{." + field + "}}", ref)
+        except subprocess.TimeoutExpired:
+            return None
+        return r.stdout.strip() if r.returncode == 0 else None
+
+    def remove(self, image):
+        """Remove a Container image, never by force: by its id, or with more than one name by
+        all its names (Podman refuses an id with several names without force); whether it is gone."""
+        names = [n for n in image["names"] if NAME.fullmatch(n)]
+        refs = names if len(image["names"]) > 1 and len(names) == len(image["names"]) else [image["id"]]
+        try:
+            return self.run("rmi", *refs).returncode == 0
+        except subprocess.TimeoutExpired:
+            return False
+
+
+# --- prune ------------------------------------------------------------------------
+
+def calendar_days(since, today):
+    return (today - datetime.date.fromtimestamp(since)).days
+
+
+def images_of(podman):
+    """The Container images: {id: {"id", "names", "size", "created", "containers", "read_only"}}."""
+    found = {}
+    for row in podman.listing("images"):
+        i = image_id(row.get("Id"))
+        if not i:
+            continue
+        names = row.get("Names")
+        names = [n for n in names if isinstance(n, str)] if isinstance(names, list) else []
+        found[i] = {"id": i, "names": names, "size": number(row.get("Size")), "created": number(row.get("Created")),
+                    "containers": number(row.get("Containers")), "read_only": row.get("ReadOnly") is True}
+    return found
+
+
+def in_use(podman, images):
+    """The ids of the Container images a container uses: any container, running or stopped,
+    also one of a build (--external). A container whose image cannot be told keeps every
+    image; one without an image (built from scratch) keeps none."""
+    used = {i for i, image in images.items() if image["containers"]}
+    for row in podman.listing("ps", "--all", "--external"):
+        if row.get("ImageID") in (None, ""):
+            continue
+        i = image_id(row.get("ImageID"))
+        if i is None:
+            raise Failed("podman ps names a container whose image cannot be told")
+        used.add(i)
+    return used
+
+
+def prune(days, home, podman):
+    usage = Usage(home)
+    images = images_of(podman)
+    used = in_use(podman, images)
+    now = int(time.time())
+    today = datetime.date.fromtimestamp(now)
+    with usage.held():
+        last = usage.read()
+        # first seen now; images that are gone are forgotten
+        last = {i: last.get(i, now) for i in images}
+        usage.write(last)
+    due = [image for i, image in images.items()
+           if i not in used and not image["read_only"] and calendar_days(last[i], today) > days]
+    # the newest first: an image built on another goes before it
+    due.sort(key=lambda image: image["created"], reverse=True)
+    removed, freed, gone = 0, 0, []
+    for image in due:
+        with usage.held():
+            seen = usage.read().get(image["id"])
+        if seen is not None and calendar_days(seen, today) <= days:
+            continue                     # used while this ran
+        if podman.remove(image):
+            removed, freed = removed + 1, freed + image["size"]
+            gone.append(image["id"])
+    if gone:
+        with usage.held():
+            last = usage.read()
+            usage.write({i: t for i, t in last.items() if i not in gone})
+    return removed, freed
+
+
+# --- record ---------------------------------------------------------------------
+
+def used_image(podman, event):
+    """The id of the Container image an event of `podman events` uses, or None."""
+    kind = event.get("Type")
+    if kind == "image":
+        return image_id(event.get("ID")) or image_id(podman.inspect("image", event.get("Name"), "Id"))
+    # a container: the image it was made from, by its id (a name may have moved on since)
+    return image_id(podman.inspect("container", event.get("ID"), "Image")) or \
+        image_id(podman.inspect("image", event.get("Image"), "Id"))
+
+
+def handle(podman, usage, line):
+    try:
+        event = json.loads(line)
+    except (ValueError, RecursionError):
+        return
+    if not isinstance(event, dict):
+        return
+    what = (event.get("Type"), event.get("Status"))
+    if what in USES:
+        i = used_image(podman, event)
+        if i:
+            usage.used([i], int(time.time()))
+    elif what == ("image", "remove"):
+        i = image_id(event.get("ID"))
+        if i:
+            with usage.held():
+                last = usage.read()
+                if last.pop(i, None) is not None:
+                    usage.write(last)
+
+
+def record(home, podman):
+    """Follow `podman events` until it ends (the service starts it again)."""
+    usage = Usage(home)
+    p = subprocess.Popen([podman.program, "events", "--format", "json"], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.PIPE, text=True, errors="replace", env=podman.env)
+    with p:
+        for line in p.stdout:
+            handle(podman, usage, line)
+    return 0 if p.returncode == 0 else 1
+
+
+def too_long(signum, frame):
+    raise Failed(f"stopped after {LIMIT} s", 124)
+
+
+def main(argv):
+    if argv[:1] in (["freeze"], ["thaw"]):
+        return 0
+    root = os.geteuid() == 0
+    if root:
+        become(USER)
+    seam = "" if root else os.environ.get("AGENTBOX_CONTAINER_IMAGES_ROOT", "")
+    podman = Podman(seam + PODMAN)
+    try:
+        if argv == ["record"]:
+            if root:
+                print("agentbox-container-images: record runs as the agent's user service", file=sys.stderr)
+                return 2
+            return record(seam + HOME, podman)
+        if len(argv) != 2 or argv[0] != "prune" or not re.fullmatch(r"[0-9]{1,3}", argv[1]) or \
+                not 1 <= int(argv[1]) <= MAX_DAYS:
+            print(f"agentbox-container-images: prune <days> (1 to {MAX_DAYS}) | record", file=sys.stderr)
+            return 2
+        signal.signal(signal.SIGALRM, too_long)
+        signal.alarm(LIMIT)
+        removed, freed = prune(int(argv[1]), seam + HOME, podman)
+        signal.alarm(0)
+    except Failed as e:
+        print(f"agentbox-container-images: {e}", file=sys.stderr)
+        return e.code
+    except (OSError, ValueError, LookupError) as e:
+        print(f"agentbox-container-images: {e}", file=sys.stderr)
+        return 1
+    print(json.dumps({"removed": removed, "freed_bytes": freed}))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -138,6 +138,8 @@ else `500 action_failed`, with the message in `detail`:
 | 409 | `target_exists` | `agentbox import`: the target under `~/code` exists in the VM; nothing was changed |
 | 409 | `inbox_missing` | `agentbox import`: the VM's Build lacks the wrapper that unpacks it; a new Build and a Reset bring it |
 | 500 | `import_failed` | `agentbox import`: packing, attaching or unpacking failed; the disk is detached and the tar file deleted |
+| 409 | `container_image_cleanup_missing` | the Container image cleanup (hourly, `agentbox cleanup-container-images`, in Activity only): the VM's Build lacks its wrapper; a new Build and a Reset bring it |
+| 502 | `container_image_cleanup_failed` | the Container image cleanup in the VM failed or answered something other than its two numbers (in Activity only) |
 | 400 | `invalid_argument` | any other value or option agentbox refused |
 | 500 | `sudo_failed` | the backend may not run agentbox (sudo rule missing, or agentbox did not run as root) |
 | 500 | `action_failed` | anything else agentbox reported (e.g. libvirt failing, a broken file on the Host); also the code of every failure only the Host can cause (setup, regenerate, timers) |
@@ -451,6 +453,8 @@ first:
 | `build.rejected` | `image`, `build`, `reason`, `message` (the first Safeguard problem) |
 | `build.unneeded` | `reason` |
 | `build.skipped`, `build.automatic` | `images`, `reason` |
+| `container-image-cleanup.removed` | `removed`, `freed_bytes` (the VM's two numbers), `days` |
+| `container-image-cleanup.failed` | `days` |
 
 `reason` (also in `params`) is a stable code where one was
 recorded, e.g. why an automatic Reset was postponed (`reset.postponed`: `gui-connected`,

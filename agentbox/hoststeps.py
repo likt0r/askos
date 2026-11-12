@@ -41,6 +41,7 @@ JOURNAL_WRITERS = "agentbox-web.service"
 # token service
 VM_PORTS = ("53/udp", "53/tcp", "443/tcp", "9100/tcp")
 EXPIRY_TIMER = "agentbox-allowlist-expire.timer"
+CONTAINER_IMAGE_CLEANUP_TIMER = "agentbox-container-image-cleanup.timer"
 # the VMs' proxies (agentbox regenerate writes one unit per VM)
 PROXIES = "agentbox-proxy-*.service"
 LIBVIRT_GUESTS_UNIT = "libvirt-guests.service"
@@ -422,6 +423,11 @@ def libvirt_guests():
 def expiry_timer():
     """The timer that removes expired Temporary allowlist entries, every minute."""
     return enable(EXPIRY_TIMER)
+
+
+def container_image_cleanup_timer():
+    """The timer of the Container image cleanup in the running VMs, every hour."""
+    return enable(CONTAINER_IMAGE_CLEANUP_TIMER)
 
 
 def proxies_before_lists():

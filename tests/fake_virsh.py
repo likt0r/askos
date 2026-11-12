@@ -36,7 +36,10 @@ scenario.json:
               Without responses, guest-exec of agentbox-inbox runs the real wrapper of
               vm/files in the VM's own root, FAKE_VIRSH_DIR/guest-<vm> (its ~/code is
               var/home/agent/code there), with the disk attached with the serial
-              agentbox-inbox as its device.
+              agentbox-inbox as its device; guest-exec of agentbox-container-images runs
+              the real wrapper there too, with the agent's Podman a fake one
+              (fake_guest_podman.py, its Container images in podman.json of that root).
+  still_running  guest-exec-status never says the program ended (default false)
   missing_wrappers  paths guest-exec cannot run: the guest agent fails as qemu-ga does
               for a program the Image lacks
   attach_fails, detach_fails  attach-disk or detach-disk fails with libvirt's error
@@ -87,6 +90,7 @@ ROOT = os.environ.get("AGENTBOX_ROOT", "")
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 INBOX = "/usr/libexec/qemu-ga/fsfreeze-hook.d/agentbox-inbox"
 INBOX_DEVICE = "/dev/disk/by-id/virtio-agentbox-inbox"
+CONTAINER_IMAGES = "/usr/libexec/qemu-ga/fsfreeze-hook.d/agentbox-container-images"
 
 
 def process_started(domain):
@@ -520,6 +524,22 @@ def run_inbox(scenario, domain, argv):
     return {"stdout": r.stdout, "stderr": r.stderr, "exitcode": r.returncode}
 
 
+def run_container_images(domain, argv):
+    """The real agentbox-container-images in the VM's own root, with the fake podman there."""
+    root = guest_root(domain)
+    podman = os.path.join(root, "usr", "bin", "podman")
+    os.makedirs(os.path.dirname(podman), exist_ok=True)
+    with open(podman, "w") as f:
+        f.write(f'#!/bin/sh\nFAKE_GUEST_ROOT="{root}" exec python3 "{os.path.join(REPO, "tests", "fake_guest_podman.py")}" '
+                '"$@"\n')
+    os.chmod(podman, 0o755)
+    r = subprocess.run([sys.executable, "-I", os.path.join(REPO, "vm", "files", CONTAINER_IMAGES.lstrip("/")), *argv],
+                       capture_output=True, text=True,
+                       env={"PATH": "/usr/bin:/bin", "TZ": os.environ.get("TZ", "UTC"),
+                            "AGENTBOX_CONTAINER_IMAGES_ROOT": root})
+    return {"stdout": r.stdout, "stderr": r.stderr, "exitcode": r.returncode}
+
+
 def guest_agent(scenario, rest):
     request = json.loads(rest[1])
     if request["execute"] == "guest-ping":
@@ -544,9 +564,15 @@ def guest_agent(scenario, rest):
         if path == INBOX and not scenario.get("responses"):
             with open(os.path.join(DIR, f"exec-{pid}.json"), "w") as f:
                 json.dump(run_inbox(scenario, rest[0], argv), f)
+        if path == CONTAINER_IMAGES and not scenario.get("responses") and not scenario.get("still_running"):
+            with open(os.path.join(DIR, f"exec-{pid}.json"), "w") as f:
+                json.dump(run_container_images(rest[0], argv), f)
         print(json.dumps({"return": {"pid": pid}}))
         return 0
     if request["execute"] == "guest-exec-status":
+        if scenario.get("still_running"):
+            print(json.dumps({"return": {"exited": False}}))
+            return 0
         n = request["arguments"]["pid"] - 4000
         responses = scenario.get("responses") or [{"entries": []}]
         r = responses[min(n, len(responses) - 1)]

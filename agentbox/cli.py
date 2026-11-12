@@ -10,7 +10,8 @@ import os
 import re
 import sys
 
-from . import activity, allowlist, credentials, describe, detection, generate, github, guest, images, lifecycle
+from . import activity, allowlist, container_images, credentials, describe, detection, generate, github, guest
+from . import images, lifecycle
 from . import lists, network, pairings, paths, settings, setup, transfer, version, versions, vms, watch
 from .errors import Fail
 
@@ -105,6 +106,9 @@ Controls the agent VMs on this Host.
                                                      and the VMs' ports in the firewalld zone libvirt
   agentbox weekly-check [--json]                     (timer, daily) Reset old VMs when idle; with auto_update
                                                      also VMs whose Image has a newer Build
+  agentbox cleanup-container-images [--json]         (timer, hourly) in each running VM with the Container
+                                                     image cleanup on, remove the Container images no
+                                                     container uses that were not used for its days
   agentbox images [--json]                           Images and their Builds, which VM uses which, the versions
                                                      of Orca, Claude Code, codex, opencode and Fedora in them
                                                      and what a new Build would bring
@@ -141,7 +145,8 @@ COMMANDS = {**guest.COMMANDS, **lifecycle.COMMANDS, **network.COMMANDS, **creden
             **generate.COMMANDS, **vms.COMMANDS, **activity.COMMANDS, **detection.COMMANDS,
             **pairings.COMMANDS, **settings.COMMANDS, **github.COMMANDS, **allowlist.COMMANDS,
             **images.COMMANDS, **describe.COMMANDS, **watch.COMMANDS, **lists.COMMANDS,
-            **setup.COMMANDS, **version.COMMANDS, **versions.COMMANDS, **transfer.COMMANDS}
+            **setup.COMMANDS, **version.COMMANDS, **versions.COMMANDS, **transfer.COMMANDS,
+            **container_images.COMMANDS}
 
 # The options that take a value, as USAGE shows them ("--note TEXT", "--for 15min|1h|...").
 # Given as --note VALUE, the value is the next argument, whatever it looks like.

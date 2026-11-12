@@ -169,6 +169,34 @@ flowchart LR
   that were killed hard. A VM that is off is started as `pair` starts it, a paused one is
   refused, and a VM whose Build lacks the wrapper fails with `inbox_missing`. Every import is
   recorded in Activity with folder, target, files and bytes.
+- The **Container image cleanup** keeps a VM's Data disk from filling up with Container images
+  nobody uses any more ([ADR 0016](docs/adr/0016-containers-live-on-the-data-disk.md)). Each
+  record says whether it is on (`container_image_cleanup`) and after how many days
+  (`container_image_cleanup_days`, 1 to 365); a record without them means on and 7 days.
+  Inside the VM a user service of the agent (`agentbox-container-image-usage.service`, running
+  whether the cleanup is on or off) follows `podman events` and keeps, per Container image, the
+  time it was last used: pulled, built, or a container created or started from it. It keeps
+  them in a file in the agent's Podman storage, so they survive a Reset with the Container
+  images. Every hour `agentbox-container-image-cleanup.timer` (shipped in the RPM, `Persistent`,
+  so a Host that slept or was off catches up) runs `agentbox cleanup-container-images`, which
+  goes through the VM registry. The cleanup runs only in running VMs: it skips VMs whose
+  cleanup is off and VMs that are off, paused or missing in libvirt, and never starts or wakes
+  one. For each other VM it takes the VM's lifecycle lock without waiting (a VM whose lock is
+  held is skipped for this hour) and holds it while the guest agent runs a fourth fixed wrapper
+  in the Image (`agentbox-container-images prune <days>`), with a limit of 5 minutes. The
+  wrapper drops to the user `agent` before it does anything and removes, through the agent's
+  rootless Podman, only Container images that no container uses, running or stopped, and whose
+  last use is more than that many calendar days ago; a Container image without a recorded use
+  counts as used when the wrapper first sees it. It never removes a container or a volume, and
+  removes only with `podman rmi`, never by force, so Podman itself refuses a Container image a
+  container took meanwhile. Only a JSON result with two whole numbers (Container images
+  removed, bytes freed) comes back; anything else from the VM, its error output included, is
+  `container_image_cleanup_failed` and reaches neither the output nor Activity. A VM whose
+  Build lacks the wrapper fails with `container_image_cleanup_missing`, a run past its limit
+  with `vm_query_timeout`, and one VM failing never stops the others. A run that removed
+  something is recorded in Activity (`container-image-cleanup.removed`, with the number, the
+  bytes and the days), a failed one with its error code (`container-image-cleanup.failed`), a
+  run that removed nothing or a VM that was skipped not at all.
 - VMs are reset automatically once their System disk is seven days old, and with automatic
   updates (`auto_update`) once their Image has a newer current Build than the one their
   System disk came from (not when pinned to a Build), but only when no Orca client is
@@ -178,7 +206,8 @@ flowchart LR
   stops a VM and needs it to stay off holds it for its whole length: Reset (also the
   automatic one, which holds it from its checks on, and the one in `create`), Restart,
   Pause and the stop and undefine of `delete`. `agentbox import` holds it from the attach of
-  its disk to the deletion of its tar file, so no Reset or Pause comes in between. What starts a VM (`start`, `wake` from a
+  its disk to the deletion of its tar file, so no Reset or Pause comes in between; the
+  Container image cleanup holds it while its wrapper runs in the VM. What starts a VM (`start`, `wake` from a
   connection to its Orca port, `pair`) holds it only around "check the state, start"; `wake`
   does not hold it while it waits for Orca. So a connection during a Reset waits and then
   finds the VM running on its new System disk (or off after `--no-start`, and starts it).
@@ -595,8 +624,10 @@ Host after every Build
   later), the minimum age for uv (`uv.toml` and `UV_EXCLUDE_NEWER`), pnpm and Bun, the Git
   hooks path and `pre-push` hook, the resolver (`guest-setup`'s nameserver line, `dns=none`,
   no `DNS=` or `FallbackDNS=` for systemd-resolved), no proxy variable or option in systemd's
-  `DefaultEnvironment`, the three guest-agent
-  wrappers (`agentbox-inbox` must drop to the agent and unpack with the `data` filter), that Claude Code fetches no claude.ai connectors (`ENABLE_CLAUDEAI_MCP_SERVERS=false`
+  `DefaultEnvironment`, the four guest-agent
+  wrappers (`agentbox-inbox` must drop to the agent and unpack with the `data` filter,
+  `agentbox-container-images` must drop to the agent and remove only with `podman rmi`, never by
+  force and never a container or volume), that Claude Code fetches no claude.ai connectors (`ENABLE_CLAUDEAI_MCP_SERVERS=false`
   in systemd's `DefaultEnvironment`, which reaches `orca serve`, the agents and terminals it
   starts, and exported last by `/etc/profile.d/agentbox.sh` for shells; see Credentials for
   why), and that the merged `DefaultEnvironment` sets no variable that switches a Safeguard
@@ -866,7 +897,9 @@ One timeline of what happened on the Host and who caused it, kept in journald
   GitHub owners or the GitHub App is of kind `credentials`, described without the secret.
 - Other events are recorded where they happen: sign-ins by the Control Room, automatic
   Resets and postponed ones (with the reason) by `weekly-check`, the start of an automatic
-  update (`build.automatic`) by `check-versions`, the outcome of each Build and the Resets of
+  update (`build.automatic`) by `check-versions`, the Container image cleanup of a VM that
+  removed something or failed by `cleanup-container-images` (actor `timer`), the outcome of
+  each Build and the Resets of
   an Update (`reset.update`, with the actor who asked) by the Build's unit,
   expired Temporary allowlist
   entries (`allowlist.expired`) by `expire-allowlist`, a VM that stopped responding
@@ -959,25 +992,26 @@ certificate name, owner user) and does the Host steps, in this order
    started, never restarted (see VMs).
 8. **Expiry of Temporary allowlist entries**: `agentbox-allowlist-expire.timer` enabled and
    started.
-9. **`agentbox migrate`** and **`agentbox migrate-allowlist`**.
-10. **Certificate and password** of the Control Room: the certificate unless there is one.
-11. **Firewall for the home network**: in Network mode the rules of the Control Room and Orca
+9. **Container image cleanup**: `agentbox-container-image-cleanup.timer` enabled and started.
+10. **`agentbox migrate`** and **`agentbox migrate-allowlist`**.
+11. **Certificate and password** of the Control Room: the certificate unless there is one.
+12. **Firewall for the home network**: in Network mode the rules of the Control Room and Orca
     ports; none in Local-only.
-12. **`regenerate`**: the Host setup written, then the VMs' networks, units, disks and
+13. **`regenerate`**: the Host setup written, then the VMs' networks, units, disks and
     definitions from the VM registry. It loads the VM network rules before it brings up a VM
     network, so steps 5 and 6 and the rules are in place before any VM can start.
-13. **Proxies**, only while there are text lists to migrate (`suspicious-domains`,
+14. **Proxies**, only while there are text lists to migrate (`suspicious-domains`,
     `legitimate-domains`): the running proxies restarted onto the installed code and the units
     `regenerate` loaded. Code from before the records reads only those files and would go on
     without the Host's Watchlist and Legitimate domains once the next step moves them aside.
     A restart that fails stops setup before the lists move.
-14. **`agentbox migrate-lists`**.
-15. **Activity journal**: the namespace's runtime directory owned as journald owns it, its
+15. **`agentbox migrate-lists`**.
+16. **Activity journal**: the namespace's runtime directory owned as journald owns it, its
     running sockets with group and mode of the drop-in, in place; the proxies and the Control
     Room restart when a socket's group changed, and in the next run when that restart failed
     (see Activity).
-16. **Feeds**: the first fetch started at once, while none has run yet.
-17. **Control Room**: `agentbox-web.service` enabled and started; restarted after a new Host
+17. **Feeds**: the first fetch started at once, while none has run yet.
+18. **Control Room**: `agentbox-web.service` enabled and started; restarted after a new Host
     setup.
 
 The migrations run as commands of their own, each with its own Activity entry. Every step

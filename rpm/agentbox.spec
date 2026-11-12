@@ -8,9 +8,9 @@
 # (ARCHITECTURE.md, "Setting a Host up") come with `sudo agentbox setup`. The package never
 # writes Settings, the VM registry, the certificate or the Host setup (ADR 0009).
 #
-# An update restarts the Control Room, the expiry timer and, when their code changed, the
-# proxies of the VMs, and never a VM; removal also takes the units agentbox regenerate wrote
-# (docs/releasing.md). rpm/upgrade-test.sh checks both.
+# An update restarts the Control Room, the expiry and cleanup timers and, when their code
+# changed, the proxies of the VMs, and never a VM; removal also takes the units agentbox
+# regenerate wrote (docs/releasing.md). rpm/upgrade-test.sh checks both.
 
 Name:           agentbox
 Version:        @VERSION@
@@ -123,6 +123,7 @@ find %{buildroot}%{_datadir}/agentbox -type f ! -perm /111 -exec chmod 0644 {} +
 install -d -m 0755 %{buildroot}%{_unitdir}/systemd-journald@agentbox.socket.d
 install -m 0644 rpm/units/agentbox-web.service rpm/units/agentbox-vmnet.service \
     rpm/units/agentbox-allowlist-expire.service rpm/units/agentbox-allowlist-expire.timer \
+    rpm/units/agentbox-container-image-cleanup.service rpm/units/agentbox-container-image-cleanup.timer \
     %{buildroot}%{_unitdir}/
 install -m 0644 rpm/units/agentbox-journal.conf %{buildroot}%{_unitdir}/systemd-journald@agentbox.socket.d/
 
@@ -178,9 +179,10 @@ fi
 # would disable the ones a Host has enabled. agentbox setup enables and starts what it needs.
 
 %preun
-# removal only: stop and disable the Control Room and the expiry timer. agentbox-vmnet
-# stays: its rules keep the VM networks closed until the Host restarts.
-%systemd_preun agentbox-web.service agentbox-allowlist-expire.timer
+# removal only: stop and disable the Control Room, the expiry timer and the timer of the
+# Container image cleanup. agentbox-vmnet stays: its rules keep the VM networks closed until
+# the Host restarts.
+%systemd_preun agentbox-web.service agentbox-allowlist-expire.timer agentbox-container-image-cleanup.timer
 # removal only: the units agentbox regenerate wrote to /etc/systemd/system run programs of
 # this package: per VM the proxy, the token service and the Orca port, and the Reset check,
 # the Feeds, the Builds and the version check. They are disabled, stopped and deleted with it, and systemd forgets
@@ -210,7 +212,7 @@ fi
 
 %postun
 # update only: restart what runs, so it runs the new Release; no VM is touched
-%systemd_postun_with_restart agentbox-web.service agentbox-allowlist-expire.timer
+%systemd_postun_with_restart agentbox-web.service agentbox-allowlist-expire.timer agentbox-container-image-cleanup.timer
 
 %posttrans
 # update only: when this Release brings other proxy code, the proxies of the VMs that run
@@ -252,6 +254,8 @@ fi
 %{_unitdir}/agentbox-vmnet.service
 %{_unitdir}/agentbox-allowlist-expire.service
 %{_unitdir}/agentbox-allowlist-expire.timer
+%{_unitdir}/agentbox-container-image-cleanup.service
+%{_unitdir}/agentbox-container-image-cleanup.timer
 %{_unitdir}/systemd-journald@agentbox.socket.d/
 %{_sysusersdir}/agentbox.conf
 %{_tmpfilesdir}/agentbox.conf
