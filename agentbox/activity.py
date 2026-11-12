@@ -52,7 +52,7 @@ import sys
 import threading
 import time
 
-from . import paths, registry, settings
+from . import paths, registry, settings, vmenv
 from .errors import Fail, die
 from .guest import TIME
 from .sanitize import clean, field, message_text, redact
@@ -71,7 +71,7 @@ SOCKETS = (f"{JOURNAL_RUN}/socket", paths.host("/run/systemd/journal/socket"))
 # the wakes files, and records its own entries, responding.py.)
 READ_ONLY = {"status", "logs", "blocked", "alerts", "allowlist", "owners", "activity", "check-domain", "check-regex",
              "watchlist", "legitimate", "harmless", "pairings", "settings", "github-app", "github-tokens", "images", "build-log",
-             "containerfile", "describe", "watch", "version"}
+             "containerfile", "describe", "watch", "version", "env"}
 # Commands that record their own entries (one per VM or entry) instead of one for the call;
 # fetch-versions records none, and check-versions only the start of an automatic update
 # (build.automatic); otherwise they change only their records of what is available
@@ -383,6 +383,57 @@ def _mark_seen(a):
     return _said(f"Mark the Alerts for {domain} as seen", domain=domain) if domain else _said("Mark Alerts as seen")
 
 
+# Room for the list of VM variables in a description, so a failure's message fits behind it
+ENV_LISTED = 360
+
+
+def _fit(items, room, more):
+    """items joined with ", ", as many whole ones as fit into room characters together with
+    more(n) for the n left out (a first item longer than that is cut, ending in "…"): a cut
+    list says so, where record() would cut it silently."""
+    shown, used = [], 0
+    for i, item in enumerate(items):
+        rest = len(items) - i - 1
+        needed = used + (2 if shown else 0) + len(item) + (len(more(rest)) if rest else 0)
+        if needed > room:
+            break
+        shown.append(item)
+        used += (2 if len(shown) > 1 else 0) + len(item)
+    if not shown and items:
+        tail = more(len(items) - 1) if len(items) > 1 else ""
+        return items[0][:max(0, room - len(tail) - 1)] + "…" + tail
+    left = len(items) - len(shown)
+    return ", ".join(shown) + (more(left) if left else "")
+
+
+def _env_param(items):
+    """A list of VM variables or names as a parameter, cut where it would not fit (", … +n")."""
+    return _fit(items, MAX_DESCRIPTION, lambda n: f", … +{n}") if items else None
+
+
+def _env_listed(items):
+    return _fit(items, ENV_LISTED, lambda n: f" and {n} more")
+
+
+def _set_env(a):
+    """The variables as NAME=value (their values are not secret, vmenv.py), only those whose
+    name has the form of one, and the flag replace. The description lists the names before
+    the values: the values only when all fit."""
+    pairs = [p for p in _positional(a)[1:] if vmenv.NAME.fullmatch(p.partition("=")[0]) and "=" in p]
+    listed = ", ".join(pairs)
+    if len(listed) > ENV_LISTED:
+        listed = _env_listed([p.partition("=")[0] for p in pairs]) + " (values left out, too long)"
+    if "--replace" in a:
+        return _said("Replace the VM variables" + (": " + listed if pairs else " with none"),
+                     env=_env_param(pairs), replace=True)
+    return _said("Set VM variables" + (": " + listed if pairs else ""), env=_env_param(pairs))
+
+
+def _unset_env(a):
+    names = [n for n in _positional(a)[1:] if vmenv.NAME.fullmatch(n)]
+    return _said("Remove VM variables" + (": " + _env_listed(names) if names else ""), names=_env_param(names))
+
+
 def _create(a):
     image = _name(_opt(a, "--image"), settings.IMAGE)
     return _said("Create the VM" + (f" with Image {image}" if image else ""), image=image)
@@ -445,6 +496,8 @@ DESCRIBE = {
                         if "--delete-data-disk" in a else _said("Delete the VM"),
     "set-memory": lambda a: _said(f"Memory limit {_arg(a, 1)} MiB", mib=_arg(a, 1))
                             if re.fullmatch(r"[0-9]{1,9}", _arg(a, 1)) else _said("Change the memory limit"),
+    "set-env": _set_env,
+    "unset-env": _unset_env,
     "allow": _listed("Allow {}", "for", temporary=True, force=True),
     "disallow": _listed("Remove the Allowlist entry {}"),
     "extend": _listed("Extend the Allowlist entry {}", "by", force=True),

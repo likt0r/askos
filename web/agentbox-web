@@ -416,6 +416,7 @@ def set_settings(body):
 
 IMAGE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")          # wie agentbox/settings.py
 BUILD_ID = re.compile(r"[0-9]{8}(-[0-9]{4}([0-9]{2})?)?")    # wie agentbox/images.py
+ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")         # a VM variable, as agentbox/vmenv.py
 BUILD_LOG_FILTERS = {"after_cursor": "--after-cursor", "lines": "--lines"}
 
 
@@ -1465,6 +1466,14 @@ AGENTBOX_ERRORS = {
     "invalid_memory": (400, "Memory limit out of range (at least 1024 MiB, at most the Host's memory)"),
     "memory_not_applied": (500, "The memory limit is saved, but the VM was not defined again; "
                                 "agentbox regenerate finishes it"),
+    "env_not_applied": (500, "The VM variables are saved, but the VM was not defined again; "
+                             "agentbox regenerate finishes it"),
+    "invalid_env_name": (400, "Invalid name of a VM variable (A-Z, a-z, 0-9 and _, not starting with a digit, "
+                              "at most 64 characters)"),
+    "env_name_reserved": (400, "A Safeguard or Agent Box itself sets or reads this variable; it cannot be a "
+                               "VM variable"),
+    "invalid_env_value": (400, "Invalid value of a VM variable (no line breaks or other control characters)"),
+    "env_too_large": (400, "Too many VM variables (at most 64) or a value longer than 4 KiB"),
     "guest_agent_unavailable": (503, "The VM's guest agent does not answer"),
     "vm_query_timeout": (504, "The query in the VM took too long"),
     "vm_journal_failed": (502, "Reading the VM's journal failed"),
@@ -1582,7 +1591,11 @@ def agentbox_failure(exit_code, stderr, stdout="", secrets_in=()):
 # each passed on only in the form agentbox gives it: which rule a Regex entry's pattern breaks,
 # the host of the breadth check's sample it matches
 ERROR_PARAMS = {"invalid_pattern": {"reason": re.compile(r"[a-z][a-z-]{0,39}")},
-                "pattern_too_broad": {"host": re.compile(r"[a-z0-9][a-z0-9.-]{0,252}")}}
+                "pattern_too_broad": {"host": re.compile(r"[a-z0-9][a-z0-9.-]{0,252}")},
+                # the VM variable refused, as agentbox names it (agentbox/vmenv.py NAME)
+                "env_name_reserved": {"name": ENV_NAME},
+                "invalid_env_value": {"name": ENV_NAME},
+                "env_too_large": {"name": ENV_NAME}}
 
 
 def error_params(error, params):
@@ -1592,12 +1605,14 @@ def error_params(error, params):
 
 def error_field(error, params):
     """The request field a refusal is about: the setting an invalid_setting names (only a
-    known key), memory_mib for invalid_memory."""
+    known key), memory_mib for invalid_memory, env for a refused VM variable."""
     if error == "invalid_setting":
         key = params.get("setting")
         return key if isinstance(key, str) and key in SETTING_KEYS else None
     if error == "invalid_memory":
         return "memory_mib"
+    if error in ("invalid_env_name", "env_name_reserved", "invalid_env_value", "env_too_large"):
+        return "env"
     return None
 
 
@@ -1906,6 +1921,33 @@ def put_memory(h, m, url, body):
     if isinstance(mib, bool) or not isinstance(mib, int) or mib < 0:
         raise invalid("memory_mib", "memory_mib must be a whole number of MiB")
     return 200, run_json("set-memory", m["vm"], str(mib), "--json")
+
+
+def utf8(text):
+    """Whether text has a UTF-8 form (no lone surrogate)."""
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+@route("PUT", VM + "/env")
+def put_env(h, m, url, body):
+    """The VM's whole list of VM variables (set-env --replace): names agentbox can take as
+    NAME=VALUE (a name with "=" or a leading "--" would read differently), values without NUL
+    and in UTF-8 (no argument can carry a NUL, and JSON can carry a lone UTF-16 surrogate,
+    "\\ud800", that no argument can be encoded with); agentbox checks everything else."""
+    env = body.get("env")
+    if not isinstance(env, dict) or not all(isinstance(v, str) for v in env.values()):
+        raise invalid("env", "env must be an object of names and text values")
+    for name, value in env.items():
+        if not ENV_NAME.fullmatch(name):
+            raise ApiError(400, "invalid_env_name", AGENTBOX_ERRORS["invalid_env_name"][1], field="env")
+        if "\0" in value or not utf8(value):
+            raise ApiError(400, "invalid_env_value", AGENTBOX_ERRORS["invalid_env_value"][1], field="env",
+                           params={"name": name})
+    return 200, run_json("set-env", m["vm"], "--replace", *(f"{k}={v}" for k, v in env.items()), "--json")
 
 
 @route("PUT", VM + "/claude-token", secret=("token",))

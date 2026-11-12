@@ -8,7 +8,7 @@ import os
 import re
 import sys
 
-from . import paths, state_files
+from . import paths, state_files, vmenv
 from .errors import Fail, die
 from .sanitize import clean
 
@@ -26,6 +26,8 @@ IMAGE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 ORCA_BASE = 6800                     # Orca port = ORCA_BASE + network number
 FIELDS = {"name": str, "network": int, "orca_port": int, "image": str, "build": (str, type(None)),
           "memory_mib": int, "data_disk_gib": int, "github_owners": list, "created": str}
+# Fields a record may lack: the VM variables (vmenv.py), none when missing
+OPTIONAL = {"env": dict}
 
 
 def record_file(name):
@@ -43,6 +45,9 @@ def problem(rec, name):
     for key, kind in FIELDS.items():
         if key not in rec or isinstance(rec[key], bool) or not isinstance(rec[key], kind):
             return f"field {key} is missing or has the wrong type"
+    for key, kind in OPTIONAL.items():
+        if key in rec and not isinstance(rec[key], kind):
+            return f"field {key} has the wrong type"
     if rec["name"] != name:
         return "the name does not match the file name"
     if reserved(name):
@@ -57,7 +62,8 @@ def problem(rec, name):
         return "memory_mib or data_disk_gib too small"
     if not all(isinstance(o, str) for o in rec["github_owners"]):
         return "github_owners must be a list of names"
-    return None
+    why = vmenv.problem(rec["env"]) if "env" in rec else None
+    return f"env: {why}" if why else None
 
 
 def load(name):

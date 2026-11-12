@@ -3,9 +3,10 @@ and the Host configuration of every VM generated from it.
 
 `agentbox regenerate` writes per VM the libvirt network, the proxy and
 token-service sockets and services, the Orca port forwarder, the Data disk,
-the Claude-token placeholder, the Observer directory and the libvirt domain
-(through virt-install, ADR 0004); for all VMs together the nftables rules of
-the VM networks and the storage pool of their disks, and the journald
+the Claude-token placeholder, the file of its VM variables (vmenv.py), the
+Observer directory and the libvirt domain (through virt-install, ADR 0004);
+for all VMs together the nftables rules of the VM networks and the storage
+pool of their disks, and the journald
 namespace of Activity with its retention, and the timers of the daily Reset check
 (Reset time) and of the Feeds (feed interval) with the Feeds service (young-domain days),
 and the unit of the Builds with the timer of the weekly rebuild (rebuild day and time),
@@ -22,7 +23,7 @@ import re
 import subprocess
 import tempfile
 
-from . import activity, hostsetup, lifecycle, paths, registry, settings, state_files, virsh
+from . import activity, hostsetup, lifecycle, paths, registry, settings, state_files, virsh, vmenv
 from .errors import die
 from .registry import bridge, dom, guest_ip, host_ip, mac
 
@@ -42,6 +43,7 @@ SAID = {"network": "network created or started", "units": "units written",
                                      "VM has no network until its next Restart (libvirt does not reconnect "
                                      "a running VM to a restarted network)",
         "data-disk": "Data disk created", "claude-token": "placeholder for the Claude token created",
+        "vm-env": "VM variables written (apply from the next start)",
         "observer": "directory for the Observer created",
         "domain": "VM defined again (applies from the next start)",
         "domain-postponed": "VM definition postponed, the VM is paused"}
@@ -295,12 +297,15 @@ def virt_install_args(rec, uuid):
         "--controller", "usb,model=none",
         "--events", "on_poweroff=destroy,on_reboot=restart,on_crash=destroy",
         "--features", "acpi=on,apic=on",
-        # the VM learns its name, Orca port, Claude token and the address devices pair with at boot
+        # the VM learns its name, Orca port, Claude token, the address devices pair with and its
+        # VM variables at boot; values that could hold a comma only as files (virt-install
+        # splits --sysinfo at commas)
         "--sysinfo", f"type=fwcfg,entry0.name=opt/agentbox/context,entry0={vm},"
                      f"entry1.name=opt/agentbox/orca_port,entry1={rec['orca_port']},"
                      f"entry2.name=opt/agentbox/claude_token,entry2.file={state_files.claude_token_file(vm)},"
                      f"entry3.name=opt/agentbox/pairing_address,"
-                     f"entry3={hostsetup.pairing_address(hostsetup.load())}",
+                     f"entry3={hostsetup.pairing_address(hostsetup.load())},"
+                     f"entry4.name=opt/agentbox/env,entry4.file={state_files.vm_env_file(vm)}",
         "--disk", disk.format(lifecycle.system_disk(vm), "vda"),
         "--disk", disk.format(data_disk(vm), "vdb") + ",serial=agentbox-data",
         "--network", f"network={dom(vm)},mac={mac(rec)},model=virtio",
@@ -551,6 +556,33 @@ def _claude_token(rec):
         return False
     state_files.write_atomic(state_files.claude_token_file(rec["name"]), b"none\n", 0o640, gid)
     return True
+
+
+def fw_cfg_file(path, data):
+    """Write a file QEMU passes into a VM as an fw_cfg entry, when its content or mode differ:
+    owner root, group qemu, mode 0640, in a directory of the same group with mode 0750 (the
+    Claude token's way). Whether it was written."""
+    folder = os.path.dirname(path)
+    os.makedirs(folder, exist_ok=True)
+    os.chmod(folder, 0o750)
+    gid = _qemu()[1] if os.geteuid() == 0 else -1
+    if os.geteuid() == 0:
+        os.chown(folder, 0, gid)
+    try:
+        with open(path, "rb") as f:
+            st = os.fstat(f.fileno())
+            if f.read() == data and st.st_mode & 0o7777 == 0o640 and gid in (-1, st.st_gid):
+                return False
+    except FileNotFoundError:
+        pass
+    state_files.write_atomic(path, data, 0o640, gid)
+    return True
+
+
+def vm_env(rec):
+    """The file of the VM's VM variables (vmenv.py), from its record; a VM picks a change up at
+    its next start. Written before the domain is defined, which names it."""
+    return fw_cfg_file(state_files.vm_env_file(rec["name"]), vmenv.fw_cfg(rec.get("env", {})))
 
 
 def _observer(rec):
@@ -980,7 +1012,7 @@ def apply():
     for rec in records:
         done = []
         for key, step in (("network", _network), ("units", _units), ("data-disk", _data_disk),
-                          ("claude-token", _claude_token), ("observer", _observer)):
+                          ("claude-token", _claude_token), ("vm-env", vm_env), ("observer", _observer)):
             got = step(rec)
             if got:
                 done.append(got if isinstance(got, str) else key)

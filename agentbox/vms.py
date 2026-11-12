@@ -20,6 +20,11 @@ start, so the running VM keeps its memory until a Restart or Reset (a reboot ins
 the VM is not enough, QEMU keeps running). Nothing is changed live: QEMU cannot raise
 the maximum of a running VM, and lowering its balloon would take memory away from
 working agents. A paused VM is refused, its saved memory belongs to the old definition.
+
+`agentbox set-env`, `unset-env` and `env` change and show a VM's VM variables (vmenv.py):
+the record, then the file QEMU passes into the VM at its next start. The domain names that
+file and is not defined again, so a paused VM is not refused: it resumes with the variables
+of its last boot and gets the new ones at its next Restart or Reset.
 """
 import datetime
 import json
@@ -28,7 +33,7 @@ import re
 import shutil
 
 from . import activity, allowlist, detection, generate, images, lifecycle, paths, registry, responding, settings, state_files
-from . import virsh
+from . import virsh, vmenv
 from .credentials import OWNER
 from .errors import Fail, die
 from .registry import dom
@@ -154,7 +159,8 @@ def _leftovers(rec):
     (its Claude token, its Orca identity on the Data disk, a network with another number)."""
     name = rec["name"]
     files = [("Data disk", generate.data_disk(name)), ("System disk", lifecycle.system_disk(name)),
-             ("Claude token", state_files.claude_token_file(name)), ("Observer", lifecycle.observer_dir(name)),
+             ("Claude token", state_files.claude_token_file(name)), ("VM variables", state_files.vm_env_file(name)),
+             ("Observer", lifecycle.observer_dir(name)),
              *(("units", os.path.join(paths.SYSTEMD, u)) for u in generate.units(rec))]
     found = list(dict.fromkeys(what for what, path in files if os.path.lexists(path)))
     if virsh.run("domuuid", dom(name)).returncode == 0:
@@ -339,7 +345,8 @@ def _disks(name, archive, delete_data, say):
 
 def _files(name, say):
     responding.clear(name)           # bookkeeping only, never fails (the stop removed it already)
-    gone = [_remove(f) for f in (state_files.claude_token_file(name), state_files.open_web_file(name),
+    gone = [_remove(f) for f in (state_files.claude_token_file(name), state_files.vm_env_file(name),
+                                 state_files.open_web_file(name),
                                  generate.legacy_owners_file(name), detection.seen_file(name),
                                  os.path.join(paths.STATE, "domains", f"{name}.xml"))]
     gone.append(allowlist.drop_vm(name))
@@ -351,7 +358,7 @@ def _files(name, say):
             die(f"{observer}: {e.strerror}", error="action_failed", vm=name)
         gone.append(True)
     if any(gone):
-        say(f"{name}: Claude token, Allowlist entries and Observer removed")
+        say(f"{name}: Claude token, VM variables, Allowlist entries and Observer removed")
 
 
 def delete(args):
@@ -434,4 +441,125 @@ def set_memory(args):
         print(message)
 
 
-COMMANDS = {"create": create, "delete": delete, "set-memory": set_memory}
+# --- VM variables ------------------------------------------------------------
+
+def _applies(name, changed):
+    """(state, applies) after a change of what the VM gets at its start: next_start when it is
+    off (or libvirt has no domain), next_restart when it runs or is paused, None unchanged."""
+    state = lifecycle.vm_state(name)
+    return state, None if not changed else "next_start" if state in ("shut off", virsh.MISSING) else "next_restart"
+
+
+def _change_env(name, change):
+    """Apply change(env) -> new env to the VM's VM variables: everything is checked first,
+    then the record is saved, then the file QEMU passes in is written and the VM defined again
+    if its definition changed (a domain from before VM variables lacks the fw_cfg entry, and
+    an upgrade runs no regenerate). A variable the record has already may have a name refused
+    since (vmenv.refused): it stays, never passed on. Holds the registry lock (no regenerate
+    writes the file or defines the VM meanwhile), the record's lock and the lifecycle lock (no
+    start or Pause between the change and the answer saying when it applies), as set-memory
+    does. Returns (before, after, state, applies, defined), defined as generate.domain."""
+    with state_files.locked(paths.REGISTRY):
+        with state_files.locked(registry.record_file(name)):
+            with state_files.vm_lock(name):
+                rec = registry.load(name)
+                before = dict(rec.get("env", {}))
+                after = vmenv.check(change(dict(before)), kept=before)
+                if after != before:
+                    rec = {**rec, "env": after}
+                    registry.save(rec)
+                try:
+                    written = generate.vm_env(rec)
+                except (Fail, OSError) as e:
+                    why = e.message.strip() if isinstance(e, Fail) else f"{e.filename}: {e.strerror}"
+                    die(f"{name}: VM variables saved, but the file the VM reads was not written: {why}; "
+                        f"agentbox regenerate finishes it", error="env_not_applied", vm=name)
+                try:
+                    defined = generate.domain(rec)
+                except Fail as f:
+                    die(f"{name}: VM variables saved, but the VM was not defined again: "
+                        f"{f.message.strip()}; agentbox regenerate finishes it", error="env_not_applied", vm=name)
+                state, applies = _applies(name, after != before or written or defined == "domain")
+    return before, after, state, applies, defined
+
+
+def _what(before, after):
+    """What changed, for the message: the names set and the names removed."""
+    changed = [n for n in after if before.get(n) != after[n]]
+    removed = [n for n in before if n not in after]
+    parts = ([", ".join(changed) + " set"] if changed else []) + ([", ".join(removed) + " removed"] if removed else [])
+    return "VM variables " + "; ".join(parts) if parts else "VM variables written again"
+
+
+def _env_answer(name, opts, before, after, state, applies, defined, what):
+    said = f"{name}: VM variables unchanged" if applies is None else f"{name}: {what}"
+    if applies is None:
+        activity.unchanged()
+    if defined == "domain-postponed":
+        # its saved memory belongs to the old definition (generate.domain); regenerate defines it
+        # once the VM runs again, as for every other change of its definition
+        message = (f"{said}; the VM is paused, so it is defined again only once it no longer has a Pause "
+                   f"(agentbox start {name}, then agentbox regenerate), and the VM variables apply from the "
+                   f"next Restart or Reset after that")
+    elif applies is None:
+        message = said
+    elif applies == "next_start":
+        message = f"{said}, applies from the next start"
+    else:
+        message = (f"{said}, applies from the next Restart (agentbox restart {name}) or Reset; "
+                   f"until then the VM keeps the VM variables it started with")
+    if "json" in opts:
+        print(json.dumps({"vm": name, "env": after, "changed": applies is not None, "state": state,
+                          "applies": applies, "message": message}, ensure_ascii=False))
+    else:
+        print(message)
+
+
+def set_env(args):
+    """agentbox set-env <vm> NAME=VALUE [NAME=VALUE ...] [--replace] [--json]: add or change VM
+    variables; --replace makes these the whole list (none: no VM variables)."""
+    positional, opts = _options(args, {"replace": False, "json": False})
+    if not positional or len(positional) == 1 and "replace" not in opts:
+        die("set-env <vm> NAME=VALUE [NAME=VALUE ...] [--replace] [--json]", error="invalid_argument")
+    name = registry.check(positional[0])
+    given = vmenv.pairs(positional[1:])
+    replace = "replace" in opts
+    result = _change_env(name, lambda env: dict(given) if replace else {**env, **given})
+    _env_answer(name, opts, *result, _what(*result[:2]))
+
+
+def unset_env(args):
+    """agentbox unset-env <vm> NAME [NAME ...] [--json]: remove VM variables; names the VM
+    does not have change nothing."""
+    positional, opts = _options(args, {"json": False})
+    if len(positional) < 2:
+        die("unset-env <vm> NAME [NAME ...] [--json]", error="invalid_argument")
+    name = registry.check(positional[0])
+    names = [vmenv.valid_name(n) for n in positional[1:]]
+    result = _change_env(name, lambda env: {k: v for k, v in env.items() if k not in names})
+    _env_answer(name, opts, *result, _what(*result[:2]))
+
+
+def env(args):
+    """agentbox env <vm> [--json]: the VM's VM variables, names and values."""
+    positional, opts = _options(args, {"json": False})
+    if len(positional) != 1:
+        die("env <vm> [--json]", error="invalid_argument")
+    name = registry.check(positional[0])
+    variables = registry.load(name).get("env", {})
+    refused = vmenv.refused(variables)
+    if "json" in opts:
+        print(json.dumps({"vm": name, "env": variables, "refused": refused}, ensure_ascii=False))
+    elif not variables:
+        print(f"{name}: no VM variables")
+    else:
+        # one line each; the values are text without line breaks (vmenv.check_value)
+        for n, v in variables.items():
+            print(f"{n}={clean(v, False)}")
+        for n in refused:
+            print(f"{name}: {n} is not passed on to the VM: a Safeguard or Agent Box itself sets or reads it "
+                  f"(agentbox unset-env {name} {n} removes it)")
+
+
+COMMANDS = {"create": create, "delete": delete, "set-memory": set_memory, "set-env": set_env,
+            "unset-env": unset_env, "env": env}
