@@ -133,8 +133,8 @@ class ControlRoomTest(unittest.TestCase):
             return []
 
     def calls(self):
-        """argv of every agentbox call without the leading --actor (see ActorTest)."""
-        return [c[1:] if c and c[0].startswith("--actor=") else c for c in self.raw_calls()]
+        """argv of every agentbox call without the --actor after the command (see ActorTest)."""
+        return [[c[0], *c[2:]] if len(c) > 1 and c[1].startswith("--actor=") else c for c in self.raw_calls()]
 
     def post(self, path, body=None, header=True, raw=None):
         conn = http.client.HTTPSConnection("127.0.0.1", self.port, context=self.ssl, timeout=60)
@@ -391,18 +391,19 @@ CHROME_ANDROID = ("Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (
 
 
 class ActorTest(ControlRoomTest):
-    """#15: every agentbox call names the browser's device and address with --actor."""
+    """#15: every agentbox call names the browser's device and address with --actor, right after
+    the command (which comes first for the sudoers rule, #50)."""
 
     def setUp(self):
         super().setUp()
         self.login()
 
-    def test_actions_pass_device_and_address_before_the_command(self):
+    def test_actions_pass_device_and_address_after_the_command(self):
         self.user_agent = FIREFOX_LINUX
         self.respond(stdout="priv eingefroren")
         status, obj, _ = self.post("/api/priv/pause", {})
         self.assertEqual((status, obj), (200, {"ok": True, "message": "priv eingefroren"}))
-        self.assertEqual(self.raw_calls(), [["--actor=Firefox/Linux (127.0.0.1)", "pause", "priv"]])
+        self.assertEqual(self.raw_calls(), [["pause", "--actor=Firefox/Linux (127.0.0.1)", "priv"]])
 
     def test_reading_calls_pass_it_too(self):
         self.user_agent = EDGE_WINDOWS
@@ -410,7 +411,7 @@ class ActorTest(ControlRoomTest):
         self.assertEqual(self.get("/api/status"), (200, {}))
         self.respond(canned())
         self.logs({})
-        self.assertEqual([c[0] for c in self.raw_calls()], ["--actor=Edge/Windows (127.0.0.1)"] * 2)
+        self.assertEqual([c[1] for c in self.raw_calls()], ["--actor=Edge/Windows (127.0.0.1)"] * 2)
 
     def test_the_old_status_shows_only_vms(self):
         # the warnings of `status --json` are for the new Control Room (System)
@@ -427,13 +428,13 @@ class ActorTest(ControlRoomTest):
                 self.user_agent = agent
                 self.respond(stdout="ok")
                 self.post("/api/priv/close-web", {})
-                self.assertEqual(self.raw_calls()[-1], [f"--actor={device} (127.0.0.1)", "close-web", "priv"])
+                self.assertEqual(self.raw_calls()[-1], ["close-web", f"--actor={device} (127.0.0.1)", "priv"])
 
     def test_secret_actions_carry_the_actor_but_not_the_secret_in_argv(self):
         self.respond(stdout="Token gueltig und gespeichert")
         self.post("/api/priv/claude-token", {"token": "sk-ant-oat01-geheim"})
         argv = self.raw_calls()[-1]
-        self.assertEqual(argv, ["--actor=unknown device (127.0.0.1)", "set-claude-token", "priv", "--no-prompt"])
+        self.assertEqual(argv, ["set-claude-token", "--actor=unknown device (127.0.0.1)", "priv", "--no-prompt"])
 
 
 class SignInActivityTest(ControlRoomTest):
@@ -533,7 +534,7 @@ class ActivityEndpointTest(ControlRoomTest):
         self.respond(self.TIMELINE)
         self.get("/api/activity?kind=--json&vm=&search=--actor=x")
         self.assertEqual(self.calls()[-1], ["activity", "--kind=--json", "--search=--actor=x", "--json"])
-        self.assertTrue(self.raw_calls()[-1][0].startswith("--actor=unknown device"))
+        self.assertTrue(self.raw_calls()[-1][1].startswith("--actor=unknown device"))
 
     def test_repeated_parameter_is_refused(self):
         self.login()

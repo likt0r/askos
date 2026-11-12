@@ -717,9 +717,9 @@ The Control Room API has `GET /api/settings` and `POST /api/settings` with a JSO
 changes (only these keys; anything else is refused). Password, home network and ports are
 not Settings and cannot be changed from the browser.
 
-Every command also takes `--json`, and `--actor TEXT` before the command names who caused
-it in Activity (the Control Room passes the browser's device and address, timers pass
-`timer`; without it, the user who ran `sudo`). Commands other than `logs` and `pair`
+Every command also takes `--json`, and `--actor TEXT` before the command or right after it
+names who caused it in Activity (the Control Room passes the browser's device and address,
+timers pass `timer`; without it, the user who ran `sudo`). Commands other than `logs` and `pair`
 need root.
 
 The Control Room offers the same in the browser; creating and deleting VMs, the GitHub

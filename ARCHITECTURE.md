@@ -856,11 +856,21 @@ Host after every Build
 
 ### Control Room
 A small Python standard-library service running as an unprivileged user; every action is one
-call of `sudo agentbox …` with fixed arguments, naming the browser's device (from its
-User-Agent) and address as the actor. HTTPS with a self-signed certificate, a
-password with scrypt, sessions in memory, a login brake after five failures, CSRF protection
-via a custom header and `SameSite=Strict`. Sign-ins (successful, failed, refused by the
-brake) and sign-outs are Activity entries with address and device. Pairing codes, tokens
+call of `sudo agentbox <command> …` with fixed arguments, the command first, naming the
+browser's device (from its User-Agent) and address as the actor right after it. The Control
+Room's commands are `CONTROL_ROOM_COMMANDS` in `agentbox/cli.py`; tests hold it equal to the
+commands the backend runs and to the list in its sudoers rule. That rule lets `agentbox-web`
+run `agentbox` only with one of these commands as the first argument (a sudoers regular
+expression, sudo 1.9.10 or later). Since sudo matches the arguments joined with spaces, a first
+argument such as `start setup` still passes it; agentbox knows no such command. Called through
+`sudo` by `agentbox-web`, agentbox itself also runs only these commands, and refuses every other
+command and `--force` before anything runs (`control_room_refused`), which no sudoers rule could
+tell from a note that contains it. So even a taken-over backend cannot run `setup`, `import` or
+`regenerate`, or lift strong Signals, and agentbox's own check holds should sudo's matching ever
+be got around. HTTPS with a self-signed certificate, a password with scrypt, sessions in
+memory, a login brake after five failures, CSRF protection via a custom header and
+`SameSite=Strict`. Sign-ins (successful, failed, refused by the brake) and sign-outs are
+Activity entries with address and device. Pairing codes, tokens
 and passwords never appear in logs.
 
 Host readings come without privileges, every five seconds, from the kernel and `nvidia-smi`
@@ -1048,8 +1058,8 @@ One timeline of what happened on the Host and who caused it, kept in journald
   device) are no parameters and never collide with them. The Control Room words each entry
   from code and parameters in its language; the English description is the fallback for an
   action it does not know, and older entries, with German text and no code, show theirs. The actor
-  comes from the global option `--actor`: the Control Room passes device and address, the
-  Maintenance window passes `timer`, a connection to a VM's Orca port that wakes it passes
+  comes from the global option `--actor`, before the command or right after it: the Control
+  Room passes device and address after the command, the Maintenance window passes `timer`, a connection to a VM's Orca port that wakes it passes
   `Orca (<address>)`; without it, it is the user who ran `sudo`. `watch` records its
   entries with the actor `watch`. Setting a Claude token,
   GitHub owners or the GitHub App is of kind `credentials`, described without the secret.
@@ -1183,8 +1193,7 @@ a Host setup, `agentbox setup` without options keeps it and the password and doe
 again (after an update, or to finish a run that stopped); any other option needs `--force`,
 which replaces the Host setup and the password; a password there already stays without it,
 also on a first run. Setup is the owner's command at the Host: run through `sudo` by a service
-or system user (the Control Room's sudoers rule allows `agentbox` with any arguments) it
-refuses before anything runs. A step that fails stops setup with a message
+or system user it refuses before anything runs. A step that fails stops setup with a message
 naming it (`setup stopped at <step>`). Every file is replaced whole, and the Host setup is
 written only after the steps before it succeeded, so running setup again goes on from there.
 
@@ -1436,9 +1445,11 @@ attacks on the laptops.
   characters, scrypt), no second factor, a brake of five failed sign-ins per address in 15
   minutes, and a self-signed certificate the browser can check only if the owner compares or
   installs it. Who can try: in Local-only anyone who can use the Host, in Network mode the whole
-  home network. `--force` keeps a stolen session from lifting strong Signals, not code that
-  runs as the Control Room's service user: its sudoers rule lets it run `agentbox` as root with
-  any arguments, and only `agentbox setup` refuses it ([Setting a Host up](#setting-a-host-up)).
+  home network. `--force` keeps a stolen session from lifting strong Signals. Code that runs as
+  the Control Room's service user gets no further than the Control Room: its sudoers rule lets
+  it run `agentbox` as root only with the Control Room's own commands, and agentbox refuses it
+  every other command and `--force` ([Control Room](#control-room)); within those commands it
+  can do whatever they can.
   Mitigation: Local-only, the default; a long password; in Network mode, a home network you
   trust (or a VPN into it).
 - **A paired device has the VM.** Orca gives a Paired device full access to its VM, past every

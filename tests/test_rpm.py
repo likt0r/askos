@@ -157,12 +157,32 @@ class PackageTest(unittest.TestCase):
         self.assertIn("%tmpfiles_create agentbox.conf", spec_sections(self.spec, ("post",)))
 
     def test_the_sudoers_rule_lets_the_control_room_run_only_the_packages_cli(self):
-        rule = meaningful(read("rpm", "agentbox-web.sudoers"))
-        self.assertEqual(rule, [f"agentbox-web ALL=(root) NOPASSWD: {paths.CLI}",
-                                f"agentbox-web ALL=(root) NOPASSWD: {paths.CLI} watch"])
+        [rule] = meaningful(read("rpm", "agentbox-web.sudoers"))
+        # with the Control Room's commands as the first argument (test_control_room_sudo)
+        self.assertTrue(rule.startswith(f"agentbox-web ALL=(root) NOPASSWD: {paths.CLI} ^("), rule)
+        # its regular expression needs sudo 1.9.10
+        self.assertRegex(self.spec, r"(?m)^Requires:\s+sudo >= 1\.9\.10$")
+        self.assertRegex(self.spec, r"(?m)^BuildRequires:\s+sudo >= 1\.9\.10$")
+        # and %post's visudo checks it, so an update brings that sudo before %post runs
+        self.assertRegex(self.spec, r"(?m)^Requires\(post\):\s+sudo >= 1\.9\.10$")
         # checked when built and again when installed
         self.assertIn("visudo -cqf rpm/agentbox-web.sudoers", spec_sections(self.spec, ("check",)))
         self.assertIn("visudo -cqf %{_sysconfdir}/sudoers.d/agentbox-web", spec_sections(self.spec, ("post",)))
+
+    def test_visudo_takes_the_sudoers_rule(self):
+        """As the spec's %check runs it; where there is no visudo, or one without the regular
+        expressions the rule needs (sudo before 1.9.10, as on CI's Ubuntu), the build checks it."""
+        if not shutil.which("visudo"):
+            self.skipTest("no visudo")
+        with tempfile.TemporaryDirectory() as tmp:
+            probe = os.path.join(tmp, "probe")
+            with open(probe, "w") as f:
+                f.write("nobody ALL=(root) NOPASSWD: /usr/bin/true ^(a|b)$\n")
+            if subprocess.run(["visudo", "-cqf", probe], capture_output=True).returncode != 0:
+                self.skipTest("visudo without regular expressions in arguments")
+        r = subprocess.run(["visudo", "-cqf", os.path.join(RPM, "agentbox-web.sudoers")], capture_output=True,
+                           text=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def test_it_requires_what_a_host_needs(self):
         requires = set(re.findall(r"^Requires:\s+(\S+)", self.spec, re.MULTILINE))
@@ -415,6 +435,24 @@ class InstalledTest(unittest.TestCase):
             self.assertEqual(f.read(), read("rpm", "agentbox-web.sudoers"))
         r = subprocess.run(["visudo", "-c"], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_sudo_lets_the_control_room_run_only_its_commands_first(self):
+        """The installed sudo itself, asked as root whether agentbox-web may run these arguments
+        (sudo -l -U exits 1 for a call the rules do not allow)."""
+        def allowed(*args):
+            r = subprocess.run(["sudo", "-n", "-l", "-U", "agentbox-web", "/usr/bin/agentbox", *args],
+                               capture_output=True, text=True, timeout=60)
+            self.assertIn(r.returncode, (0, 1), r.stderr)
+            return r.returncode == 0
+        for args in (["watch"], ["status", "--json"], ["start", "--actor=Firefox/Linux (192.0.2.1)", "work", "--json"],
+                     ["allow", "--actor=x", "all", "a.example", "--note=a, b: c = d # e", "--json"],
+                     ["start setup"]):        # one argument: agentbox knows no such command
+            with self.subTest(args=args):
+                self.assertTrue(allowed(*args))
+        for args in (["setup"], ["import", "work", "/etc"], ["--actor=x", "start", "work"],
+                     ["--actor=Firefox/Linux (192.0.2.1) start", "setup"], ["startx"], ["--version"]):
+            with self.subTest(args=args):
+                self.assertFalse(allowed(*args))
 
     def test_a_rule_visudo_rejects_is_set_aside(self):
         """The install scriptlet as rpm ran it, on a Host whose visudo rejects the rule: the rule

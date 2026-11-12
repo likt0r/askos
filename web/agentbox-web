@@ -2,10 +2,14 @@
 """Dashboard der Agent-Box: Steuerung der VMs per Browser aus dem Heimnetz.
 
 Laeuft als System-User agentbox-web (nicht root). Jede Aktion ist genau ein
-Aufruf von `sudo -n agentbox ...` mit festen Argumenten;
-agentbox prueft Kontext und Werte selbst. Jeder Aufruf nennt mit --actor das
-Geraet (aus dem User-Agent) und die Adresse des Browsers; agentbox vermerkt
-damit jede Aktion in der Aktivitaet. Anmeldungen vermerkt dieser Dienst selbst
+Aufruf von `sudo -n agentbox <befehl> ...` mit festen Argumenten, der Befehl
+zuerst: die sudoers-Regel laesst dort nur die Befehle dieses Dienstes zu, und
+agentbox fuehrt fuer agentbox-web selbst nur sie aus (CONTROL_ROOM_COMMANDS in
+agentbox/cli.py, tests/test_control_room_sudo.py haelt Regel, Liste und Aufrufe
+gleich), nie mit --force; Kontext und Werte prueft agentbox ebenfalls. Jeder
+Aufruf nennt direkt nach dem Befehl mit --actor das Geraet (aus dem
+User-Agent) und die Adresse des Browsers; agentbox vermerkt damit jede Aktion
+in der Aktivitaet. Anmeldungen vermerkt dieser Dienst selbst
 dort (Journal-Namensraum agentbox, Kennung agentbox-activity), nie mit Passwort.
 
 Die versionierte API /api/v1/... (docs/control-room-api.md) dient der neuen
@@ -242,10 +246,10 @@ def check_password(password):
 
 # --- agentbox ---------------------------------------------------------------
 
-def agentbox(*args, stdin=None, timeout=300):
-    # --actor steht vor dem Befehl (globale Option von agentbox)
+def agentbox(command, *args, stdin=None, timeout=300):
+    # der Befehl zuerst (nur ihn laesst die sudoers-Regel dort zu), --actor direkt dahinter
     actor = getattr(request, "actor", None)
-    argv = [*AGENTBOX, *([f"--actor={actor}"] if actor else []), *args]
+    argv = [*AGENTBOX, command, *([f"--actor={actor}"] if actor else []), *args]
     r = subprocess.run(argv, input=stdin, capture_output=True, text=True, timeout=timeout)
     # a failure with --json is a JSON object on stderr (cli_error); the old UI shows its message
     said = cli_error(r.stderr) if r.returncode != 0 else None
@@ -1457,6 +1461,7 @@ def invalid(field, message):
 # translates them (web/ui/i18n/locales, errors.*).
 AGENTBOX_ERRORS = {
     "sudo_failed": (500, "The Control Room may not run agentbox (sudo)"),
+    "control_room_refused": (500, "Only the CLI on the Host can do this, not the Control Room"),
     "vm_not_found": (404, "No such VM"),
     "name_reserved": (400, "This name is reserved"),
     "invalid_name": (400, "Invalid VM name (a-z, 0-9 and -, 2 to 16 characters, starting with a letter)"),
@@ -1628,11 +1633,13 @@ def error_field(error, params):
     return None
 
 
-def run(*args, stdin=None, timeout=120, secrets_in=()):
-    """agentbox with --actor; its output (stdout) or ApiError. Every call passes --json, so a
-    failure names its code. secrets_in: values that never go back in an error."""
+def run(command, *args, stdin=None, timeout=120, secrets_in=()):
+    """agentbox <command> with --actor right after it (the sudoers rule pins the first
+    argument to the Control Room's commands); its output (stdout) or ApiError. Every call
+    passes --json, so a failure names its code. secrets_in: values that never go back in an
+    error."""
     actor = getattr(request, "actor", None)
-    argv = [*AGENTBOX, *([f"--actor={actor}"] if actor else []), *args]
+    argv = [*AGENTBOX, command, *([f"--actor={actor}"] if actor else []), *args]
     try:
         r = subprocess.run(argv, input=stdin, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:

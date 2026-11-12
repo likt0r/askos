@@ -27,11 +27,12 @@ BuildArch:      noarch
 BuildRequires:  python3-devel
 BuildRequires:  systemd-rpm-macros
 # visudo for the check of the sudoers rule
-BuildRequires:  sudo
+BuildRequires:  sudo >= 1.9.10
 
 Requires:       python3
 Requires:       systemd
-Requires:       sudo
+# regular expressions in the Control Room's sudoers rule
+Requires:       sudo >= 1.9.10
 # the VMs: libvirt with KVM, its virsh, qemu-img and virt-install
 Requires:       libvirt-daemon-kvm
 Requires:       libvirt-client
@@ -48,7 +49,7 @@ Requires:       openssl
 Requires:       iproute
 Requires:       curl
 # visudo and chattr in %%post
-Requires(post): sudo
+Requires(post): sudo >= 1.9.10
 Requires(post): e2fsprogs
 # agentbox setup: the owner user into libvirt and the members of agentbox-journal (usermod,
 # gpasswd), and chattr for a VM disk directory it makes

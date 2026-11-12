@@ -133,12 +133,30 @@ class ActivityTest(unittest.TestCase):
 
 
 class ActorTest(ActivityTest):
-    """--actor is a global option before the command; without it the actor is the user."""
+    """--actor is a global option before the command or right after it (the Control Room's
+    place, see test_control_room_sudo); without it the actor is the user."""
 
     def test_both_forms_before_the_command(self):
         self.assertEqual(self.run_agentbox("--actor", FIREFOX, "allow", "work", "example.org")[0], 0)
         self.assertEqual(self.run_agentbox("--actor=timer", "disallow", "work", "example.org")[0], 0)
         self.assertEqual([e["AGENTBOX_ACTOR"] for e in self.entries()], [FIREFOX, "timer"])
+
+    def test_both_forms_right_after_the_command(self):
+        code, out, err = self.run_agentbox("allow", f"--actor={FIREFOX}", "work", "example.org", "--json")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(json.loads(out)["added_by"], FIREFOX)
+        self.assertEqual(self.run_agentbox("disallow", "--actor", "timer", "work", "example.org")[0], 0)
+        self.assertEqual([e["AGENTBOX_ACTOR"] for e in self.entries()], [FIREFOX, "timer"])
+        # only there: further on it is the command's argument, which allow does not know
+        code, _, err = self.run_agentbox("allow", "work", "--actor=timer", "example.org")
+        self.assertEqual(code, 1)
+        self.assertIn("unknown option: --actor=timer", err)
+
+    def test_given_twice_it_is_refused(self):
+        code, out, err = self.run_agentbox("--actor=timer", "close-web", f"--actor={FIREFOX}", "work", "--json")
+        self.assertEqual((code, out), (2, ""))
+        self.assertEqual(json.loads(err)["error"], "invalid_argument")
+        self.assertEqual(self.entries(), [])
 
     def test_the_command_does_not_see_it(self):
         code, out, err = self.run_agentbox("--actor=timer", "allow", "work", "example.org", "--json")

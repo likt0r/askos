@@ -1,5 +1,7 @@
-# The Control Room may only call agentbox; agentbox checks context and arguments.
-agentbox-web ALL=(root) NOPASSWD: /usr/bin/agentbox
-# agentbox watch: the one event helper the service keeps running (read only). The line
-# above allows it already; this one keeps it allowed should that one get narrower.
-agentbox-web ALL=(root) NOPASSWD: /usr/bin/agentbox watch
+# The Control Room may call only agentbox, with one of its commands as the first argument and
+# --actor after it: CONTROL_ROOM_COMMANDS in agentbox/cli.py (tests/test_control_room_sudo.py
+# holds both lists equal), `watch` included. sudo matches the arguments joined with spaces, so
+# a first argument such as "start setup" passes here; agentbox knows no such command and
+# refuses it. agentbox itself also refuses every other command and --force, which this rule
+# leaves alone, since it could not tell --force from a note that contains it.
+agentbox-web ALL=(root) NOPASSWD: /usr/bin/agentbox ^(activity|alerts|allow|allowlist|blocked|build|build-log|check-domain|check-regex|close-web|containerfile|create|delete|describe|disallow|extend|focus|github-app|github-tokens|harmless|images|legitimate|legitimate-add|legitimate-remove|legitimate-set-note|logs|make-permanent|mark-harmless|mark-seen|open-web|owners|pair|pairings|pause|remove-github-app|reset|restart|revoke-pairings|set-claude-token|set-container-image-cleanup|set-env|set-github-app|set-image|set-memory|set-note|set-owners|set-settings|settings|start|status|unmark-harmless|unpair|update-now|watch|watch-add|watch-remove|watch-set-note|watchlist)( .*)?$
