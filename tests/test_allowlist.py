@@ -186,20 +186,6 @@ class ScopeTest(ProxyTest):
         self.assertIn("[work] ALLOWED work.example (allowlist work.example work)\n", log)
         self.assertIn("[work] BLOCKED priv.example (not on the Allowlist)\n", log)
 
-    def test_an_allowlist_entry_of_a_user_content_host_lets_a_feed_hit_through_with_an_alert(self):
-        # A known limit (ARCHITECTURE.md#what-it-does-not-protect-against), to change with #59
-        # (the Allowlist no longer passing before the Open web check): claudeusercontent.com is on
-        # the starting Allowlist, and decide() lets an Allowlist domain entry pass before the Open
-        # web check, so a threat-intelligence Feed hit below it is allowed with an Alert, not
-        # blocked as it is when the web is open.
-        self.store(entry("claudeusercontent.com", "all", added_by="migration"))
-        write(os.path.join(self.dir, "feeds", "threat-intelligence"), "evil.claudeusercontent.com\n")
-        self.start()
-        self.tunnel("evil.claudeusercontent.com")
-        log = self.log()
-        self.assertIn("[work] ALERT evil.claudeusercontent.com [threat]\n", log)
-        self.assertIn("[work] ALLOWED evil.claudeusercontent.com (allowlist claudeusercontent.com all)\n", log)
-
     def test_the_most_specific_entry_is_logged_the_vms_own_on_a_tie(self):
         self.store(entry("example.org", "all"), entry("example.org", "work"), entry("api.example.org", "all"))
         self.start()
@@ -356,30 +342,173 @@ class OpenWebTest(ProxyTest):
         time.sleep(SETTLE)
         self.assertTrue(self.alive(t))
 
-    def test_strongly_suspicious_destinations_stay_blocked_unless_allowed(self):
+    def test_strongly_suspicious_destinations_stay_blocked(self):
         self.store()
         self.open_web()
         self.start()
         self.assertTrue(self.refused("upload.exfil.example"))
         self.assertIn("[work] BLOCKED upload.exfil.example (suspicious: exfil)\n", self.log())
-        # an entry (only possible with allow --force) lets it through
+        # an entry (allow --force made one before ADR 0018) does not let it through either
         self.store(entry("exfil.example", "work"))
-        self.tunnel("upload.exfil.example")
-        self.assertIn("[work] ALERT upload.exfil.example [exfil]\n", self.log())
+        self.assertTrue(self.refused("upload.exfil.example"))
+        self.assertEqual(self.log().count("[work] BLOCKED upload.exfil.example (suspicious: exfil)\n"), 2)
+        self.assertNotIn("ALLOWED upload.exfil.example", self.log())
 
-    def test_an_unreadable_watchlist_closes_open_web_but_not_the_allowlist(self):
-        # the Watchlist is missing (no record, no text file from before): what Open web would
-        # keep blocked is unknown, so it lets nothing through; the Allowlist still does
+    def test_an_unreadable_watchlist_lets_nothing_through(self):
+        # the Watchlist is missing (no record, no text file from before): which Signals are
+        # strong is unknown, so neither Open web nor the Allowlist lets anything through
         os.remove(os.path.join(self.conf, "suspicious-domains"))
         self.store(entry("listed.example", "work"))
         self.open_web()
         self.start()
         self.assertTrue(self.refused("free.example"))
-        self.assertIn("[work] BLOCKED free.example (Watchlist unreadable, Open web closed)\n", self.log())
-        self.tunnel("listed.example")
-        # back: Open web lets it through again
+        self.assertIn("[work] BLOCKED free.example (Watchlist unreadable)\n", self.log())
+        self.assertTrue(self.refused("listed.example"))
+        self.assertIn("[work] BLOCKED listed.example (Watchlist unreadable)\n", self.log())
+        # back: both let it through again, without a restart
         write(os.path.join(self.conf, "suspicious-domains"), "exfil.example exfil # Test\n")
         self.tunnel("free.example")
+        self.tunnel("listed.example")
+
+
+class StrongSignalsTest(ProxyTest):
+    """Strong Signals always block, also a destination on the Allowlist (#59, ADR 0018); the
+    Watchlist (its text file) has exfil.example (exfil)."""
+
+    def feed(self, name, *hosts):
+        write(os.path.join(self.dir, "feeds", name), "".join(h + "\n" for h in sorted(hosts)))
+
+    def test_a_feed_hit_below_a_domain_entry_is_blocked(self):
+        # claudeusercontent.com is on the Allowlist a new Host starts with
+        self.store(entry("claudeusercontent.com", "all", added_by="migration"))
+        self.feed("threat-intelligence", "evil.claudeusercontent.com")
+        self.start()
+        self.assertTrue(self.refused("evil.claudeusercontent.com"))
+        self.tunnel("other.claudeusercontent.com")
+        log = self.log()
+        self.assertIn("[work] ALERT evil.claudeusercontent.com [threat]\n", log)
+        self.assertIn("[work] BLOCKED evil.claudeusercontent.com (suspicious: threat)\n", log)
+        self.assertNotIn("ALLOWED evil.claudeusercontent.com", log)
+        self.assertIn("[work] ALLOWED other.claudeusercontent.com (allowlist claudeusercontent.com all)\n", log)
+
+    def test_an_exact_entry_for_a_strong_watchlist_host_does_not_let_it_through(self):
+        # as allow --force stored it before ADR 0018
+        self.store(entry("exfil.example", "work", note="forced"), entry("listed.example", "work"))
+        self.start()
+        self.assertTrue(self.refused("exfil.example"))
+        self.assertTrue(self.refused("upload.exfil.example"))
+        log = self.log()
+        self.assertIn("[work] ALERT exfil.example [exfil]\n", log)
+        self.assertIn("[work] BLOCKED exfil.example (suspicious: exfil)\n", log)
+        self.assertIn("[work] BLOCKED upload.exfil.example (suspicious: exfil)\n", log)
+        self.tunnel("listed.example")
+        # lifting the Signal (the Watchlist entry removed) is the way through
+        write(os.path.join(self.conf, "suspicious-domains"), "# empty\n")
+        self.tunnel("exfil.example")
+
+    def test_a_feed_entry_added_after_the_allowlist_entry_blocks(self):
+        self.store(entry("cdn.example", "work"))
+        self.start()
+        self.tunnel("cdn.example")
+        self.feed("threat-intelligence", "cdn.example")
+        self.assertTrue(self.refused("cdn.example"))
+        self.assertIn("[work] BLOCKED cdn.example (suspicious: threat)\n", self.log())
+        # a Watchlist entry added later the same
+        self.store(entry("cdn.example", "work"), entry("drop.example", "all"))
+        self.tunnel("www.drop.example")
+        write(os.path.join(self.conf, "suspicious-domains"), "exfil.example exfil\ndrop.example c2\n")
+        self.assertTrue(self.refused("www.drop.example"))
+        self.assertIn("[work] BLOCKED www.drop.example (suspicious: c2)\n", self.log())
+
+    def test_a_regex_entry_and_open_web_do_not_let_it_through_either(self):
+        self.store({"regex": r"^[a-z]+\.exfil\.example$", "scope": "all", "expires": None, "note": "",
+                    "added": 1793700000, "added_by": "bewr"})
+        self.open_web()
+        self.start()
+        self.assertTrue(self.refused("up.exfil.example"))
+        self.assertIn("[work] BLOCKED up.exfil.example (suspicious: exfil)\n", self.log())
+
+    def test_weak_signals_only_raise_alerts(self):
+        self.store(entry("young.example", "work"))
+        self.feed("newly-registered", "young.example")
+        self.start()
+        t = self.tunnel("young.example")
+        log = self.log()
+        self.assertIn("[work] ALERT young.example [young]\n", log)
+        self.assertIn("[work] ALLOWED young.example (allowlist young.example work)\n", log)
+        # a weak Signal gained later closes nothing
+        self.store(entry("young.example", "work"), entry("other.example", "work"))
+        u = self.tunnel("other.example")
+        self.feed("newly-registered", "young.example", "other.example")
+        time.sleep(SETTLE)
+        self.assertTrue(self.alive(t))
+        self.assertTrue(self.alive(u))
+        self.assertNotIn("CLOSED", self.log())
+        self.tunnel("other.example")
+        self.assertIn("[work] ALERT other.example [young]\n", self.log())
+
+    def test_a_tunnel_closes_when_its_destination_gains_a_strong_signal(self):
+        self.store(entry("a.example", "work"), entry("b.example", "all"), entry("c.example", "work"))
+        self.open_web()
+        self.start()
+        a, b, c, free = (self.tunnel("a.example"), self.tunnel("www.b.example"), self.tunnel("c.example"),
+                         self.tunnel("free.example"))
+        # a Feed update
+        self.feed("threat-intelligence", "a.example")
+        self.assertTrue(self.closed(a, timeout=3))
+        self.assertIn("[work] ALERT a.example [threat]\n[work] CLOSED a.example (suspicious: threat)\n", self.log())
+        # a new Watchlist entry, also for a tunnel only Open web allowed
+        write(os.path.join(self.conf, "suspicious-domains"), "exfil.example exfil\nb.example c2\nfree.example paste\n")
+        self.assertTrue(self.closed(b, timeout=3))
+        self.assertTrue(self.closed(free, timeout=3))
+        self.assertIn("[work] CLOSED www.b.example (suspicious: c2)\n", self.log())
+        self.assertIn("[work] CLOSED free.example (suspicious: paste)\n", self.log())
+        # the rest keeps running
+        self.assertTrue(self.alive(c))
+        self.assertNotIn("CLOSED c.example", self.log())
+
+    def unreadable(self, path):
+        """Makes the Watchlist record at path impossible to read: no permission (as root, which
+        reads anything, a directory in its place)."""
+        if os.geteuid() == 0:
+            os.mkdir(path)
+        else:
+            write(path, '{"entries": []}', mode=0)
+
+    def test_an_unreadable_watchlist_blocks_every_entry_and_recovers_without_restart(self):
+        record = os.path.join(self.conf, "watchlist.json")
+        self.store(entry("listed.example", "work"))
+        self.open_web()
+        self.start()
+        self.tunnel("listed.example")
+        for name, breaks in (("broken JSON", lambda: write(record, "{broken")),
+                             ("unreadable file", lambda: self.unreadable(record))):
+            with self.subTest(name):
+                breaks()
+                self.assertTrue(self.refused("listed.example"))
+                self.assertTrue(self.refused("free.example"))
+                self.assertIn("[work] BLOCKED listed.example (Watchlist unreadable)\n", self.log())
+                self.assertIn("[work] BLOCKED free.example (Watchlist unreadable)\n", self.log())
+                # repaired: entries and Open web work again, without a restart
+                if os.path.isdir(record):
+                    os.rmdir(record)
+                write(record, '{"entries": []}')
+                self.tunnel("listed.example")
+                self.tunnel("free.example")
+
+    def test_every_tunnel_closes_while_the_watchlist_is_unreadable(self):
+        record = os.path.join(self.conf, "watchlist.json")
+        self.store(entry("listed.example", "work"))
+        self.open_web()
+        self.start()
+        listed, free = self.tunnel("listed.example"), self.tunnel("free.example")
+        write(record, "{broken")
+        self.assertTrue(self.closed(listed, timeout=3))
+        self.assertTrue(self.closed(free, timeout=3))
+        self.assertIn("[work] CLOSED listed.example (Watchlist unreadable)\n", self.log())
+        self.assertIn("[work] CLOSED free.example (Watchlist unreadable)\n", self.log())
+        write(record, '{"entries": []}')
+        self.tunnel("listed.example")
 
 
 # --- Seam A: the CLI ------------------------------------------------------------------
@@ -390,6 +519,10 @@ echo "$1" >> "{dir}/classifier.log"
 case "$1" in evil.*) echo exfil; exit 2;; weak.*) echo young; exit 0;; esac
 echo
 '''
+
+
+# how allow, extend and make-permanent refuse evil.example, also with --force (ADR 0018)
+STRONG = 'evil.example has strong Signals (exfil), which block it whatever the Allowlist says, also with --force. To let it through, lift the Signal on the Host: agentbox check-domain evil.example names where it comes from; a Watchlist entry goes with watch-remove --force, a Feed hit or a lookalike name with legitimate-add --force (not below github.io, githubusercontent.com or claudeusercontent.com); nothing lifts the blockchain pattern, raw IPs or metadata addresses'
 
 
 def fake(path, program):
@@ -552,12 +685,18 @@ class AllowTest(CliTest):
         self.assertEqual(sorted((e["scope"], e["expires"] is None) for e in self.stored()),
                          [("all", True), ("work", False)])
 
-    def test_strong_signals_only_with_force(self):
-        self.assertEqual(self.refused("allow", "work", "evil.example"),
-                         "evil.example is suspicious (exfil). Allowing it only with --force")
-        self.assertEqual(self.refused("allow", "all", "evil.example", "--for", "15min"),
-                         "evil.example is suspicious (exfil). Allowing it only with --force")
-        self.assertEqual(self.ok("allow", "work", "evil.example", "--force"), "work: evil.example allowed\n")
+    def test_strong_signals_are_refused_also_with_force(self):
+        # the proxy would block it all the same (ADR 0018): the Allowlist never holds an entry that
+        # cannot work, and the message says how to lift the Signal instead
+        for args in (["allow", "work", "evil.example"], ["allow", "all", "evil.example", "--for", "15min"],
+                     ["allow", "work", "evil.example", "--force"]):
+            with self.subTest(args=args):
+                self.assertEqual(self.refused(*args), STRONG)
+        code, out, err = self.run_agentbox("allow", "work", "evil.example", "--force", "--json")
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(json.loads(err), {"error": "domain_suspicious", "message": STRONG,
+                                           "params": {"domain": "evil.example"}})
+        self.assertFalse(os.path.exists(os.path.join(self.conf, "allowlist.json")))
 
     def test_weak_signals_need_no_force(self):
         self.assertEqual(self.ok("allow", "work", "weak.example"), "work: weak.example allowed\n")
@@ -656,15 +795,18 @@ class ChangeTest(CliTest):
         self.assertEqual(self.refused("make-permanent", "priv", "a.example"),
                          "priv: a.example is not on the Allowlist")
 
-    def test_strong_signals_need_force_to_extend_or_make_permanent(self):
+    def test_strong_signals_are_refused_to_extend_or_make_permanent_also_with_force(self):
+        # an entry from before ADR 0018 (or one a Feed hit made strong since)
         later = int(time.time()) + 600
         self.store(entry("evil.example", "work", expires=later))
-        for args in (["extend", "work", "evil.example", "--for", "1h"], ["make-permanent", "work", "evil.example"]):
+        for args in (["extend", "work", "evil.example", "--for", "1h"], ["make-permanent", "work", "evil.example"],
+                     ["extend", "work", "evil.example", "--for", "1h", "--force"],
+                     ["make-permanent", "work", "evil.example", "--force"]):
             with self.subTest(args=args):
-                self.assertEqual(self.refused(*args), "evil.example is suspicious (exfil). Allowing it only with --force")
-        self.ok("extend", "work", "evil.example", "--for", "1h", "--force")
-        self.ok("make-permanent", "work", "evil.example", "--force")
-        self.assertIsNone(self.one("evil.example", "work")["expires"])
+                self.assertEqual(self.refused(*args), STRONG)
+                code, _, err = self.run_agentbox(*args, "--json")
+                self.assertEqual((code, json.loads(err)["error"]), (1, "domain_suspicious"))
+        self.assertEqual(self.one("evil.example", "work")["expires"], later)
 
     def test_set_note(self):
         self.store(entry("a.example", "all", note="alt"))
@@ -681,14 +823,14 @@ class ChangeTest(CliTest):
     def test_activity_of_each_command(self):
         self.store(entry("a.example", "all", expires=int(time.time()) + 600))
         for args in (["allow", "all", "b.example", "--for", "1h"], ["allow", "work", "c.example", "--temporary"],
-                     ["allow", "priv", "evil.example", "--note=x", "--force"],
+                     ["allow", "priv", "plain.example", "--note=x", "--force"],
                      ["extend", "all", "a.example", "--for=8h"], ["make-permanent", "all", "a.example"],
                      ["set-note", "all", "a.example", "--note", "geheim?"], ["disallow", "all", "a.example"]):
             self.ok("--actor", FIREFOX, *args)
         self.assertEqual(self.activity(), [
             ("allowlist", "allow", None, "Allow b.example for all VMs for 1 hour"),
             ("allowlist", "allow", "work", "Allow c.example temporarily"),
-            ("allowlist", "allow", "priv", "Allow evil.example with --force"),
+            ("allowlist", "allow", "priv", "Allow plain.example with --force"),
             ("allowlist", "extend", None, "Extend the Allowlist entry a.example for all VMs by 8 hours"),
             ("allowlist", "make-permanent", None, "Make the Allowlist entry a.example for all VMs permanent"),
             ("allowlist", "set-note", None, "Note on the Allowlist entry a.example for all VMs"),

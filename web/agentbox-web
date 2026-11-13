@@ -1498,11 +1498,12 @@ AGENTBOX_ERRORS = {
     "observer_not_removable": (409, "The Observer cannot be removed"),
     "device_not_found": (404, "No such paired device"),
     "no_pairings": (409, "Orca has no pairings to revoke"),
-    "domain_suspicious": (409, "This destination has strong Signals; only the CLI can allow it (--force)"),
+    "domain_suspicious": (409, "This destination has strong Signals, which block it whatever the Allowlist says; "
+                               "only lifting the Signal on the Host lets it through"),
     "allowlist_entry_not_found": (404, "No such Allowlist entry"),
     "allowlist_entry_permanent": (409, "This Allowlist entry is permanent"),
     "force_required": (409, "This would lift strong Signals; only the CLI on the Host can do it (--force)"),
-    "watchlist_recreate_force_required": (409, "Creating the Watchlist again would reopen Open web; only the CLI "
+    "watchlist_recreate_force_required": (409, "Creating the Watchlist again would open the proxy again; only the CLI "
                                                "on the Host can do it (--force)"),
     "builtin_entry": (409, "Built-in Legitimate domains cannot be changed"),
     "watchlist_entry_not_found": (404, "No such Watchlist entry"),
@@ -1513,8 +1514,8 @@ AGENTBOX_ERRORS = {
                                    "fix it there"),
     "migration_required": (409, "The lists from before cannot be taken over completely; run "
                                 "agentbox migrate-lists on the Host first"),
-    "watchlist_unreadable": (409, "The Watchlist on the Host cannot be read; Open web stays closed until "
-                                  "it is fixed there"),
+    "watchlist_unreadable": (409, "The Watchlist on the Host cannot be read; the proxy lets nothing through "
+                                  "until it is fixed there"),
     "invalid_domain": (400, "Invalid domain"),
     "invalid_pattern": (400, "This pattern cannot be a Regex entry"),
     "pattern_too_broad": (400, "This pattern is too broad: it matches unrelated hosts"),

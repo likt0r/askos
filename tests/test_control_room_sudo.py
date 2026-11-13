@@ -266,7 +266,7 @@ class CallerTest(ActivityTest):
         self.assertEqual(self.through_sudo("agentbox-web")[0], 0)
 
     def test_anyone_else_through_sudo_is_not_limited(self):
-        code, _, err = self.through_sudo("alice", "allow", "work", "evil.example", "--force")
+        code, _, err = self.through_sudo("alice", "allow", "work", "a.example", "--force")
         self.assertEqual(code, 0, err)
         code, _, err = self.through_sudo("alice", "version")
         self.assertEqual(code, 0, err)

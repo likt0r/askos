@@ -490,8 +490,8 @@ class CheckDomainTest(CliTest):
         code, out, _ = self.run_agentbox("check-domain", "upload.exfil.example")
         self.assertEqual(code, 0)
         self.assertEqual(out.splitlines()[:2],
-                         ["upload.exfil.example: strongly suspicious: Alert, blocked in Open web, "
-                          "allowed only with --force",
+                         ["upload.exfil.example: strongly suspicious: Alert, blocked, also with an Allowlist "
+                          "entry or Open web",
                           "  exfil         Watchlist: exfil.example (Testvorfall 2026)"])
 
     def test_unremarkable_and_legitimate_domains(self):
@@ -615,14 +615,15 @@ class HarmlessCliTest(CliTest):
         self.run_agentbox("mark-harmless", "bad.example")
         code, out, _ = self.run_agentbox("check-domain", "www.bad.example")
         self.assertEqual(out.splitlines()[:2],
-                         ["www.bad.example: marked harmless (bad.example): no Alert, stays blocked in Open web, "
-                          "allowed only with --force",
+                         ["www.bad.example: marked harmless (bad.example): no Alert, stays blocked, also with an "
+                          "Allowlist entry or Open web",
                           "  threat        HaGeZi Threat Intelligence Feeds: bad.example  [suppressed]"])
 
     def test_harmless_mark_does_not_lift_the_force_rule_of_allow(self):
         self.run_agentbox("mark-harmless", "githbu.com")
-        self.assertEqual(self.run_agentbox("allow", "work", "githbu.com"),
-                         (1, "", "agentbox: githbu.com is suspicious (lookalike). Allowing it only with --force\n"))
+        code, out, err = self.run_agentbox("allow", "work", "githbu.com", "--force")
+        self.assertEqual((code, out), (1, ""))
+        self.assertTrue(err.startswith("agentbox: githbu.com has strong Signals (lookalike), which block it"), err)
 
     def test_rejects_invalid_domains(self):
         for d in ("Example.org", "10.0.0.1", "-x.org", "example.org.", ""):

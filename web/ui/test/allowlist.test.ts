@@ -260,7 +260,7 @@ describe('Allowlist view', () => {
     ])
   })
 
-  it('refuses a destination with strong Signals and says why and that only the CLI can force it', async () => {
+  it('refuses a destination with strong Signals and says why and that only lifting the Signal lets it through', async () => {
     const { api } = await openApp('/allowlist', {
       'GET /allowlist': ok([]),
       'POST /allowlist': fail(409, 'domain_suspicious'),
@@ -277,10 +277,14 @@ describe('Allowlist view', () => {
     await click('[data-testid="add-submit"]')
 
     const refusal = must('[data-testid="refusal"]')
-    expect(refusal.textContent).toContain('webhook.site cannot be allowed here')
+    expect(refusal.textContent).toContain('webhook.site cannot be allowed')
+    expect(refusal.textContent).toContain('also with an entry forced on the Host')
+    expect(refusal.textContent).toContain('Only lifting the Signal on the Host lets it through')
     expect(refusal.querySelector('[data-signal="exfil"]')!.textContent).toContain('Exfiltration')
     expect(refusal.textContent).toContain('Watchlist: webhook.site (Shai-Hulud 1)')
-    expect(must('[data-testid="refusal-cli"]').textContent).toBe('sudo agentbox allow all webhook.site --force')
+    // no --force command: no Allowlist entry lets it through (ADR 0018)
+    expect(must('[data-testid="refusal-cli"]').textContent).toBe('sudo agentbox check-domain webhook.site')
+    expect(refusal.textContent).not.toContain('allow all webhook.site --force')
     // the form stays open; nothing was added
     expect($('[data-testid="allowlist-add"]')).not.toBeNull()
     expect(changes(api.calls).map(c => c.path)).toEqual(['/allowlist'])
@@ -325,7 +329,7 @@ describe('Allowlist view', () => {
     expect(changes(api.calls)).toEqual([])
   })
 
-  it('shows an extension refused for strong Signals with the CLI command', async () => {
+  it('shows an extension refused for strong Signals with how to find the Signal', async () => {
     await openApp('/allowlist', {
       'GET /allowlist': ok(entries()),
       'POST /allowlist/work/docs.rs/extend': fail(409, 'domain_suspicious'),
@@ -333,7 +337,7 @@ describe('Allowlist view', () => {
     })
     await click(row('docs.rs').querySelector('[data-testid="entry-extend"]')!)
     await click('[data-testid="extend-choices"] [data-duration="7d"]')
-    expect(must('[data-testid="refusal-cli"]').textContent).toBe('sudo agentbox extend work docs.rs --for 1h --force')
+    expect(must('[data-testid="refusal-cli"]').textContent).toBe('sudo agentbox check-domain docs.rs')
   })
 
   it('reloads when an Allowlist change arrives live (CLI, expiry timer)', async () => {

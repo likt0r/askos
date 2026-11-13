@@ -67,8 +67,8 @@ Controls the agent VMs on this Host.
   agentbox allowlist [<vm>|all] [--json]             Allowlist entries (all, a VM's, those for all VMs)
                                                      with time left and use in the last 24 hours
   agentbox allow <vm|all> <domain> [--for 15min|1h|8h|7d | --temporary] [--note TEXT] [--force] [--json]
-                Allowlist entry for one VM or all, permanent or temporary (suspicious ones only
-                with --force)
+                Allowlist entry for one VM or all, permanent or temporary (never one with strong
+                Signals; while the Watchlist cannot be read only with --force)
   agentbox allow <vm|all> --regex PATTERN [--confirm-pattern] [--for ...|--temporary] [--note TEXT] [--json]
                 Regex entry: never allows strong Signals; without --confirm-pattern it only shows
                 which hosts of the proxy log of the last 7 days it would allow

@@ -227,9 +227,10 @@ class RecordTest(ActivityTest):
         code, _, err = self.run_agentbox("--actor=timer", "allow", "work", "evil.example")
         self.assertEqual(code, 1)
         [e] = self.entries()
-        self.assertEqual((e["AGENTBOX_OUTCOME"], e["AGENTBOX_EXIT"], e["PRIORITY"], e["AGENTBOX_DESCRIPTION"]),
-                         ("failed", "1", "4", "Allow evil.example: evil.example is suspicious (exfil). "
-                                              "Allowing it only with --force"))
+        self.assertEqual((e["AGENTBOX_OUTCOME"], e["AGENTBOX_EXIT"], e["PRIORITY"]), ("failed", "1", "4"))
+        self.assertTrue(e["AGENTBOX_DESCRIPTION"].startswith(
+            "Allow evil.example: evil.example has strong Signals (exfil), which block it whatever the Allowlist "
+            "says, also with --force. To let it through, lift the Signal on the Host"), e["AGENTBOX_DESCRIPTION"])
 
     def test_code_parameters_and_error_code(self):
         """#69: the action is the entry's code, its parameters are fields of their own, and a
@@ -238,6 +239,8 @@ class RecordTest(ActivityTest):
         self.assertEqual(self.run_agentbox("allow", "work", "evil.example", "--temporary")[0], 1)
         ok, failed = [{k: v for k, v in e.items() if k.startswith("AGENTBOX_") and k != "AGENTBOX_ACTOR"}
                       for e in self.entries()]
+        said = failed.pop("AGENTBOX_DESCRIPTION")
+        self.assertTrue(said.startswith("Allow evil.example temporarily: evil.example has strong Signals (exfil)"), said)
         self.assertEqual(ok, {
             "AGENTBOX_KIND": "allowlist", "AGENTBOX_ACTION": "allow", "AGENTBOX_CODE": "allow",
             "AGENTBOX_OUTCOME": "ok", "AGENTBOX_DESCRIPTION": "Allow pypi.org for all VMs for 1 hour",
@@ -245,8 +248,6 @@ class RecordTest(ActivityTest):
         self.assertEqual(failed, {
             "AGENTBOX_KIND": "allowlist", "AGENTBOX_ACTION": "allow", "AGENTBOX_CODE": "allow", "AGENTBOX_VM": "work",
             "AGENTBOX_OUTCOME": "failed", "AGENTBOX_EXIT": "1",
-            "AGENTBOX_DESCRIPTION": "Allow evil.example temporarily: evil.example is suspicious (exfil). "
-                                    "Allowing it only with --force",
             "AGENTBOX_PARAM_DOMAIN": "evil.example", "AGENTBOX_PARAM_SCOPE": "work",
             "AGENTBOX_PARAM_TEMPORARY": "true", "AGENTBOX_ERROR": "domain_suspicious",
             "AGENTBOX_ERROR_PARAM_DOMAIN": "evil.example"})
@@ -334,16 +335,16 @@ class RecordTest(ActivityTest):
     def test_kind_and_description_per_command(self):
         self.write_conf("open-work", "4102444800\n")
         self.write_conf("watchlist.json", '{"entries": []}\n')       # Open web needs a readable Watchlist
-        for args in (["open-web", "work", "30"], ["close-web", "work"], ["allow", "priv", "evil.example", "--force"],
-                     ["disallow", "priv", "evil.example"], ["set-owners", "priv", "alice", "my-org", "--json"],
+        for args in (["open-web", "work", "30"], ["close-web", "work"], ["allow", "priv", "plain.example", "--force"],
+                     ["disallow", "priv", "plain.example"], ["set-owners", "priv", "alice", "my-org", "--json"],
                      ["pause", "work"], ["focus", "priv"], ["focus", "off"]):
             self.assertEqual(self.run_agentbox(*args)[0], 0, args)
         self.assertEqual([(e["AGENTBOX_KIND"], e["AGENTBOX_ACTION"], e.get("AGENTBOX_VM"), e["AGENTBOX_DESCRIPTION"])
                           for e in self.entries()], [
             ("allowlist", "open-web", "work", "Open web for 30 minutes"),
             ("allowlist", "close-web", "work", "Close Open web"),
-            ("allowlist", "allow", "priv", "Allow evil.example with --force"),
-            ("allowlist", "disallow", "priv", "Remove the Allowlist entry evil.example"),
+            ("allowlist", "allow", "priv", "Allow plain.example with --force"),
+            ("allowlist", "disallow", "priv", "Remove the Allowlist entry plain.example"),
             ("credentials", "set-owners", "priv", "Set GitHub owners: alice, my-org"),
             ("action", "pause", "work", "Pause"),
             ("action", "focus", "priv", "Focus on priv"),

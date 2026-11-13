@@ -699,7 +699,7 @@ class HostStepsTest(SetupTest):
         code, _, err = self.setup_run("--password-file", self.password_file)
         self.assertEqual(code, 0, err)
         self.assertIn(f"WARNING: {self.path('etc/agentbox/watchlist.json')} is missing", err)
-        self.assertIn("Open web stays closed", err)
+        self.assertIn("the proxy lets nothing through until it is back", err)
         self.assertIn(f"WARNING: {self.path('etc/agentbox/legitimate.json')} is missing", err)
         self.assertIn("only the built-in Legitimate domains", err)
         self.assertFalse(os.path.exists(self.path("etc/agentbox/watchlist.json")))

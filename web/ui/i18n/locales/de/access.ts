@@ -70,9 +70,10 @@ export default {
       removed: '{domain} entfernt.',
     },
     refusal: {
-      title: '{domain} kann hier nicht freigegeben werden',
-      text: 'Es hat starke Merkmale, deshalb gibt der Control Room es nicht frei, auch nicht vorübergehend:',
-      cli: 'Wenn du sicher bist, kann nur die CLI auf dem Host es erzwingen:',
+      title: '{domain} kann nicht freigegeben werden',
+      text: 'Es hat starke Merkmale, die es sperren, was immer die Allowlist sagt, auch mit einem auf dem Host erzwungenen Eintrag:',
+      lift: 'Nur wenn das Merkmal auf dem Host aufgehoben wird, kommt es durch: ein Eintrag der Watchlist geht mit watch-remove --force, ein Treffer eines Feeds oder ein nachgeahmter Name mit legitimate-add --force. Nichts hebt Treffer eines Feeds unter github.io, githubusercontent.com oder claudeusercontent.com auf, auch nicht das Blockchain-Muster, rohe IP-Adressen oder Metadaten-Adressen.',
+      cli: 'Woher seine Merkmale kommen, auf dem Host:',
     },
   },
   regex: {
@@ -139,7 +140,7 @@ export default {
       reasons: {
         'not-allowed': 'nicht auf der Allowlist',
         'suspicious': 'starke Merkmale: {signals}',
-        'watchlist-unreadable': 'die Watchlist ist nicht lesbar (offenes Web und Regex-Einträge gesperrt)',
+        'watchlist-unreadable': 'die Watchlist ist nicht lesbar (der Proxy lässt nichts durch)',
         'not-public': 'keine öffentliche Adresse',
         'not-tls': 'kein TLS-Handshake (die VM hat etwas anderes als HTTPS gesendet)',
         'no-server-name': 'kein Servername im TLS-Handshake',
@@ -222,8 +223,8 @@ export default {
       },
       raisesAlerts: 'Ein Zugriff löst einen Verdacht aus.',
       noAlerts: 'Sie löst keinen Verdacht aus (harmlos markiert).',
-      blockedInOpenWeb: 'Sie bleibt im offenen Web gesperrt.',
-      onlyCli: 'Nur die CLI auf dem Host kann sie freigeben (--force).',
+      blocked: 'Sie bleibt gesperrt, auch mit einem Allowlist-Eintrag oder im offenen Web.',
+      onlyLift: 'Nur wenn ihre Merkmale auf dem Host aufgehoben werden, kommt sie durch (--force).',
       noSignals: 'Keine Merkmale.',
     },
     harmless: {
@@ -306,7 +307,7 @@ export default {
       removed: '{domain} von der Watchlist entfernt.',
       onlyCli: 'Einen starken Eintrag entfernen oder abschwächen geht nur auf dem Host:',
       recreateTitle: 'Auf dem Host gibt es keine Watchlist.',
-      onlyCliRecreate: 'Sie neu anzulegen öffnete das offene Web wieder, deshalb geht es nur auf dem Host, mit --force:',
+      onlyCliRecreate: 'Sie neu anzulegen öffnete den Proxy wieder, deshalb geht es nur auf dem Host, mit --force:',
       lockedOne: 'Starker Eintrag: nur auf dem Host (--force)',
     },
     legitimate: {

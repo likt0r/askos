@@ -26,20 +26,21 @@ matched with re.fullmatch against the lowercased host without its trailing dot, 
 compiled once whenever its file is read again. The rules a pattern has to follow are
 here (pattern_problem), and agentbox loads this file to judge patterns the same way
 (agentbox/patterns.py). A regex Legitimate domain lifts only weak Signals: which strong
-ones it would lift cannot be checked for a pattern (ADR 0009, ADR 0013). In the proxy a regex
-Allowlist entry never allows a destination with strong Signals, checked per connection.
+ones it would lift cannot be checked for a pattern (ADR 0009, ADR 0013). In the proxy no
+Allowlist entry, domain or pattern, and no Open web allows a destination with strong Signals,
+checked per connection (ADR 0018).
 
 Grundlage: Auswertung von Supply-Chain-Vorfaellen 2024-2026 (Shai-Hulud,
 s1ngularity, chalk/debug, axios, TanStack, keyv, GlassWorm). Feste Domains
 stehen in der Verdachtsliste; die Muster hier fangen auch Domains, die erst
 nach einem Vorfall bekannt werden. False Positives sind in Kauf genommen: das
-Ergebnis ist ein Hinweis, keine Sperre (ausser im offenen Web bei starken
-Merkmalen).
+Ergebnis ist ein Hinweis, keine Sperre, except for strong Signals: they always block,
+also a destination on the Allowlist (ADR 0018).
 
 Listen (jeweils inkl. Subdomains, bei Aenderung ohne Neustart neu gelesen; fuer die
 Merkmale bleibt bei einer kaputten Datei der letzte gute Stand, bei der Verdachtsliste
-von Hand auch, wenn sie fehlt. Ist sie kaputt oder fehlt sie ganz, sperrt der Proxy aber
-das offene Web):
+von Hand auch, wenn sie fehlt. While it is broken or missing altogether, the proxy lets
+nothing through, Allowlist entries included, and closes every tunnel):
   /etc/agentbox/watchlist.json       Verdachtsliste von Hand (agentbox watch-add/-remove),
                                      jeder Eintrag mit Kategorie und Quelle
   /etc/agentbox/legitimate.json      bekannte legitime Domains (agentbox legitimate-add/
@@ -508,7 +509,7 @@ def refused_entry(e, broad=True):
     entry counts as nothing, in the proxy as in agentbox (patterns.py), which lists it with
     this text and removes it by its pattern: on the Allowlist it allows nothing, as a
     Harmless mark it silences nothing, as a Legitimate domain it lifts nothing, and on the
-    Watchlist, where it would raise a Signal, Open web stays closed until it is gone."""
+    Watchlist, where it would raise a Signal, the proxy lets nothing through until it is gone."""
     if not isinstance(e, dict) or not isinstance(e.get("regex"), str):
         return None
     why = pattern_problem(e["regex"], broad)
@@ -566,11 +567,11 @@ def _watchlist_record(text):
     """watchlist.json  ->  Listed of (kategorie, quelle); ein Tippfehler in der Kategorie
     machte einen starken Eintrag sonst schwach. Its patterns need no breadth check: a
     broad one only raises false Alerts. A pattern the rules refuse raises no Signal, so what
-    Open web would have to keep blocked is unknown: the record reads without it, but counts
+    the proxy would have to keep blocked is unknown: the record reads without it, but counts
     as unreadable (Refused) until it is removed."""
     listed, refused = _listed(_checked(text, WATCH_FIELDS), lambda e: (e["category"], e["source"]), broad=False)
     if refused:
-        raise Refused(f"{refused}; Open web stays closed until it is removed (agentbox watch-remove --regex)",
+        raise Refused(f"{refused}; the proxy lets nothing through until it is removed (agentbox watch-remove --regex)",
                       listed)
     return listed
 
@@ -647,10 +648,27 @@ def hand_watchlist():
 
 def watchlist_unreadable():
     """Warum die Verdachtsliste von Hand gerade nicht lesbar ist, sonst None: watchlist.json
-    ist kaputt oder nicht lesbar, oder sie fehlt und die Textdatei davor auch. Der Proxy
-    sperrt dann das offene Web, auch mit einem letzten guten Stand im Speicher: was es
-    gesperrt halten muesste, ist unbekannt. agentbox (lists.py) urteilt genauso."""
+    ist kaputt oder nicht lesbar, oder sie fehlt und die Textdatei davor auch. The proxy
+    then lets nothing through, Allowlist entries included, also with a last good state in
+    memory: which Signals are strong is unknown (ADR 0018). agentbox (lists.py) urteilt genauso."""
     return _hand_watchlist()[1]
+
+
+def signals_key():
+    """The state of every file the Signals come from (the Watchlist, the Legitimate domains,
+    each also as the text file from before, and the Feeds; not the Harmless marks, which only
+    silence Alerts), as a value that changes whenever one of them changes: the proxy
+    classifies its open tunnels again only then (ADR 0018). Costs a stat per file."""
+    out = []
+    for path in (WATCHLIST, LEGACY_WATCHLIST, LEGITIMATE, LEGACY_LEGITIMATE,
+                 *(os.path.join(FEEDS_DIR, name) for name in FEEDS)):
+        try:
+            st = os.stat(path)
+        except OSError as e:
+            out.append(e.errno)
+        else:
+            out.append((st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns))
+    return tuple(out)
 
 
 def _within(host, domains):
@@ -1124,7 +1142,12 @@ SELFTEST_REGEX_CASES = [
 # ... that never allows strong Signals, checked on every connection; and nothing while the
 # Watchlist cannot be read (checked last, with Open web closed)
 SELFTEST_REGEX_BLOCKED = [("y.exfil-selftest.example", "suspicious: exfil")]
-SELFTEST_REGEX_UNREADABLE = ("free1-selftest.example", "Watchlist unreadable, regex entries closed")
+SELFTEST_REGEX_UNREADABLE = ("free1-selftest.example", "Watchlist unreadable")
+# Domain entries on the Allowlist of these cases (ADR 0018): one above a Feed hit, which still
+# blocks it, and one that lets nothing through while the Watchlist cannot be read (checked last)
+SELFTEST_ALLOWLIST_DOMAINS = ("evil-selftest.example", "listed-selftest.example")
+SELFTEST_DOMAIN_BLOCKED = [("www.evil-selftest.example", "suspicious: threat")]
+SELFTEST_DOMAIN_UNREADABLE = ("listed-selftest.example", "Watchlist unreadable")
 # Lines of the proxy log
 LOG_ALERT = re.compile(r"\] ALERT (\S+) \[(.*)\]$")
 LOG_BLOCKED = re.compile(r"\] BLOCKED (\S+) \((.*)\)$")
@@ -1206,7 +1229,8 @@ def _selftest_regex_lists(conf):
     _put(os.path.join(conf, "harmless"), "".join(d + "\n" for d in SELFTEST_HARMLESS)
          + f"regex {SELFTEST_REGEX['harmless']}\n")
     _put(os.path.join(conf, "allowlist.json"), json.dumps({"entries": [
-        {"regex": p, "scope": "all", "expires": None, **added} for p in SELFTEST_REGEX["allowlist"]]}))
+        {"regex": p, "scope": "all", "expires": None, **added} for p in SELFTEST_REGEX["allowlist"]]
+        + [{"domain": d, "scope": "all", "expires": None, **added} for d in SELFTEST_ALLOWLIST_DOMAINS]}))
 
 
 def self_test():
@@ -1274,6 +1298,8 @@ def self_test():
         cases += SELFTEST_REGEX_CASES
         for host, _, _ in SELFTEST_REGEX_CASES:
             answers[host] = _connect(sock, host)
+        for host, _ in SELFTEST_DOMAIN_BLOCKED:
+            answers[host] = _connect(sock, host)
         with open(os.path.join(conf, "open-selftest"), "w") as f:
             f.write(f"{int(time.time()) + 600}\n")
         for host, _ in SELFTEST_OPEN:
@@ -1283,6 +1309,7 @@ def self_test():
         answers[SELFTEST_UNREADABLE[0]] = _connect(sock, SELFTEST_UNREADABLE[0])
         os.remove(os.path.join(conf, "open-selftest"))
         answers[SELFTEST_REGEX_UNREADABLE[0]] = _connect(sock, SELFTEST_REGEX_UNREADABLE[0])
+        answers[SELFTEST_DOMAIN_UNREADABLE[0]] = _connect(sock, SELFTEST_DOMAIN_UNREADABLE[0])
         server.terminate()
         server.wait(10)
         alerts, blocks = {}, {}
@@ -1308,6 +1335,11 @@ def self_test():
             why = blocks.get(host, "")
             ok = why == reason and answers[host] == REFUSED
             results.append((ok, host, f"Allowlist pattern: expected blocked ({reason}), got "
+                                      f"{why or '-'} ({answers[host]})"))
+        for host, reason in SELFTEST_DOMAIN_BLOCKED + [SELFTEST_DOMAIN_UNREADABLE]:
+            why = blocks.get(host, "")
+            ok = why == reason and answers[host] == REFUSED
+            results.append((ok, host, f"Allowlist domain: expected blocked ({reason}), got "
                                       f"{why or '-'} ({answers[host]})"))
     except (OSError, subprocess.SubprocessError, IndexError) as e:
         print(f"FAILED  self-test aborted: {e}")

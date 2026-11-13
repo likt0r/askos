@@ -227,7 +227,7 @@ class WatchlistTest(CliTest):
     def test_an_unreadable_record_is_reported_and_kept(self):
         # as the proxy sees it: it closes Open web then
         path = os.path.join(self.conf, "watchlist.json")
-        closed = "Watchlist unreadable, Open web closed: "
+        closed = "Watchlist unreadable, nothing passes the proxy: "
         write(path, "{kaputt")
         self.assertEqual(self.refused("watch-add", "a.example", "--category", "exfil"),
                          f"{closed}{path}: not valid JSON")
@@ -267,7 +267,7 @@ class WatchlistTest(CliTest):
         for data, why in cases:
             with self.subTest(why=why):
                 write(path, data)
-                closed = f"Watchlist unreadable, Open web closed: {path}: {why}"
+                closed = f"Watchlist unreadable, nothing passes the proxy: {path}: {why}"
                 self.assertEqual(self.refused("watch-remove", "a.example", "--force"), closed)
                 self.assertEqual(self.refused("open-web", "work", "30"), closed)
                 r = subprocess.run([sys.executable, "-I", SUSPICIOUS, "a.example"], capture_output=True, text=True,
@@ -279,10 +279,10 @@ class WatchlistTest(CliTest):
         open_file = os.path.join(self.conf, "open-work")
         write(path, "{kaputt")
         self.assertEqual(self.refused("open-web", "work", "30"),
-                         f"Watchlist unreadable, Open web closed: {path}: not valid JSON")
+                         f"Watchlist unreadable, nothing passes the proxy: {path}: not valid JSON")
         os.remove(path)
         self.assertEqual(self.refused("open-web", "work", "30"),
-                         f"Watchlist unreadable, Open web closed: {path} missing")
+                         f"Watchlist unreadable, nothing passes the proxy: {path} missing")
         self.assertFalse(os.path.exists(open_file))
         # the text file from before is a readable Watchlist as well
         write(os.path.join(self.conf, "suspicious-domains"), "exfil.example exfil\n")
@@ -294,8 +294,8 @@ class WatchlistTest(CliTest):
         self.ok("open-web", "work", "30")
 
     def test_without_a_readable_watchlist_the_allowlist_takes_nothing_without_force(self):
-        # what is strongly suspicious is unknown then; an entry would let it through, as the
-        # proxy lets Allowlist entries through while it keeps Open web closed
+        # what is strongly suspicious is unknown then (the proxy lets nothing through meanwhile,
+        # ADR 0018); --force stores the entry unchecked, the proxy checks it once it is readable
         path = os.path.join(self.conf, "watchlist.json")
         allowlist = os.path.join(self.conf, "allowlist.json")
         until = int(time.time()) + 600
@@ -308,7 +308,7 @@ class WatchlistTest(CliTest):
                     os.remove(path)
                 else:
                     write(path, broken)
-                refusal = (f"Watchlist unreadable, Open web closed: {why}; whether webhook.site is strongly "
+                refusal = (f"Watchlist unreadable, nothing passes the proxy: {why}; whether webhook.site is strongly "
                            f"suspicious cannot be checked. Allowing it only with --force")
                 self.assertEqual(self.refused("allow", "work", "webhook.site"), refusal)
                 self.assertEqual(self.refused("allow", "all", "webhook.site", "--for", "1h"), refusal)
@@ -324,7 +324,7 @@ class WatchlistTest(CliTest):
         write(path, record(watch("exfil.example")))
         self.ok("allow", "work", "plain.example")
         self.assertEqual(self.refused("allow", "work", "x.exfil.example"),
-                         "x.exfil.example is suspicious (exfil). Allowing it only with --force")
+                         'x.exfil.example has strong Signals (exfil), which block it whatever the Allowlist says, also with --force. To let it through, lift the Signal on the Host: agentbox check-domain x.exfil.example names where it comes from; a Watchlist entry goes with watch-remove --force, a Feed hit or a lookalike name with legitimate-add --force (not below github.io, githubusercontent.com or claudeusercontent.com); nothing lifts the blockchain pattern, raw IPs or metadata addresses')
 
     def test_activity_of_each_command(self):
         for args in (["watch-add", "drop.example", "--category", "paste", "--source", "S", "--note", "N"],
@@ -406,9 +406,11 @@ class LegitimateTest(CliTest):
                 self.assertEqual(([s["signal"] for s in rep["signals"]], rep["strong"]), (["blockchain"], True))
         rep = self.check("www.base.example")
         self.assertEqual((rep["legitimate"], rep["signals"]), ("base.example", []))
-        # still blocked in Open web, and only the CLI can allow it
-        self.assertIn("is suspicious (blockchain)", self.refused("allow", "all", "mainnet.base.example"))
-        self.ok("allow", "all", "mainnet.base.example", "--force")
+        # still blocked, and no Allowlist entry lets it through, not even a forced one (ADR 0018)
+        for force in ((), ("--force",)):
+            with self.subTest(force=force):
+                self.assertIn("has strong Signals (blockchain)",
+                              self.refused("allow", "all", "mainnet.base.example", *force))
 
     def test_feed_entries_below_a_legitimate_domain_of_the_host_still_count(self):
         # the Feeds are stored as fetched: a new Legitimate domain is checked against every entry
@@ -701,7 +703,7 @@ class MigrationTest(CliTest):
         os.remove(os.path.join(self.conf, "legitimate-domains"))
         path = os.path.join(self.conf, "watchlist.json")
         said = ("Watchlist: neither watchlist.json nor suspicious-domains, nothing created "
-                "(Open web stays closed until the first agentbox watch-add --force)")
+                "(the proxy lets nothing through until the first agentbox watch-add --force)")
         created = "Legitimate domains: legitimate.json created empty, no legitimate-domains"
         self.assertEqual(self.ok("migrate-lists"), f"{said}; {created}\n")
         self.assertFalse(os.path.exists(path))
@@ -713,7 +715,7 @@ class MigrationTest(CliTest):
         self.assertEqual(self.json("migrate-lists")["message"], said)
         self.assertFalse(os.path.exists(path))
         self.assertEqual(self.activity(), [])
-        closed = f"Watchlist unreadable, Open web closed: {path} missing"
+        closed = f"Watchlist unreadable, nothing passes the proxy: {path} missing"
         self.assertEqual(self.refused("open-web", "work", "30"), closed)
         self.assertEqual(self.json("watchlist")["unreadable"], f"{path} missing")
         self.assertEqual(self.refused("watch-remove", "a.example"), closed)
@@ -725,8 +727,9 @@ class MigrationTest(CliTest):
         self.assertEqual((code, out, json.loads(err)["error"]), (1, "", "watchlist_recreate_force_required"))
         self.assertFalse(os.path.exists(path))
         self.forget_activity()
-        recreate = (f"Watchlist unreadable, Open web closed: {path} is missing; agentbox watch-add with --force on "
-                    f"the Host creates it again and so opens Open web again. Creating it again only with --force")
+        recreate = (f"Watchlist unreadable, nothing passes the proxy: {path} is missing; agentbox watch-add with --force on "
+                    f"the Host creates it again and so lets the proxy pass anything again. Creating it again only with "
+                    f"--force")
         self.assertEqual(self.refused("watch-add", "drop.example", "--category", "c2"), recreate)
         self.ok("watch-add", "drop.example", "--category", "c2", "--force")
         self.assertEqual([(e["domain"], e["category"]) for e in self.stored("watchlist.json")],
@@ -864,7 +867,7 @@ class ProxyTest(unittest.TestCase):
         self.assertEqual(self.alert("b.exfil.example"), ["exfil"])
         self.open_web()
         self.alert("free.example")
-        self.assertEqual(self.blocked_reason("free.example"), "Watchlist unreadable, Open web closed")
+        self.assertEqual(self.blocked_reason("free.example"), "Watchlist unreadable")
 
     def test_a_broken_watchlist_closes_open_web_also_with_a_last_good_state(self):
         # nothing is allowlisted here: a destination Open web let through would be resolved,
@@ -873,9 +876,9 @@ class ProxyTest(unittest.TestCase):
         self.open_web()
         write(os.path.join(self.conf, "watchlist.json"), "{kaputt")
         self.assertEqual(self.alert("b.exfil.example"), ["exfil"])
-        self.assertEqual(self.blocked_reason("b.exfil.example"), "Watchlist unreadable, Open web closed")
+        self.assertEqual(self.blocked_reason("b.exfil.example"), "Watchlist unreadable")
         self.assertIsNone(self.alert("free.example"))
-        self.assertEqual(self.blocked_reason("free.example"), "Watchlist unreadable, Open web closed")
+        self.assertEqual(self.blocked_reason("free.example"), "Watchlist unreadable")
         # repaired: Open web is open again, strong Signals stay blocked
         write(os.path.join(self.conf, "watchlist.json"), record(watch("exfil.example")))
         self.alert("c.exfil.example")
@@ -893,20 +896,20 @@ class ProxyTest(unittest.TestCase):
         self.open_web()
         write(path, "{kaputt")
         self.alert("free.example")
-        self.assertEqual(self.blocked_reason("free.example"), "Watchlist unreadable, Open web closed")
+        self.assertEqual(self.blocked_reason("free.example"), "Watchlist unreadable")
         os.rename(path, path + ".away")
         # meanwhile the text file from before stands in for it
         self.alert("x.old.example")
         self.assertEqual(self.blocked_reason("x.old.example"), "suspicious: exfil")
         os.rename(path + ".away", path)
         self.alert("back.example")
-        self.assertEqual(self.blocked_reason("back.example"), "Watchlist unreadable, Open web closed")
+        self.assertEqual(self.blocked_reason("back.example"), "Watchlist unreadable")
 
     def test_a_broken_watchlist_closes_open_web_from_the_start(self):
         write(os.path.join(self.conf, "watchlist.json"), '{"entries": "x"}')
         self.open_web()
         self.alert("free.example")
-        self.assertEqual(self.blocked_reason("free.example"), "Watchlist unreadable, Open web closed")
+        self.assertEqual(self.blocked_reason("free.example"), "Watchlist unreadable")
 
     def test_a_missing_watchlist_closes_open_web_unless_the_text_file_is_there(self):
         os.remove(os.path.join(self.conf, "watchlist.json"))
@@ -916,7 +919,7 @@ class ProxyTest(unittest.TestCase):
         self.assertEqual(self.blocked_reason("x.old.example"), "suspicious: exfil")
         os.remove(os.path.join(self.conf, "suspicious-domains"))
         self.alert("free.example")
-        self.assertEqual(self.blocked_reason("free.example"), "Watchlist unreadable, Open web closed")
+        self.assertEqual(self.blocked_reason("free.example"), "Watchlist unreadable")
 
 
 # --- the self-test with records ---------------------------------------------------------

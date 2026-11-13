@@ -12,6 +12,10 @@ these lines):
   [<vm>] ALLOWED <host> (allowlist <domain> <scope>)   or (open web)
   [<vm>] ALLOWED <host> (allowlist regex <pattern> <scope>)   a Regex entry
   [<vm>] BLOCKED <host> (<reason>)
+  [<vm>] BLOCKED <host> (suspicious: <signal>,...)   strong Signals, whatever would allow it
+  [<vm>] BLOCKED <host> (Watchlist unreadable)       nothing passes then
+  [<vm>] BLOCKED <host> (no agentbox-suspicious)     nor without the classifier
+  [<vm>] CLOSED <host> (suspicious: <signal>,...)    or (Watchlist unreadable): open tunnels
   [<vm>] BLOCKED <client address> (not a TLS handshake)   or (no server name)
   [<vm>] ALERT <host> [<signal>,...]
   [<vm>] CLOSED <host> (<reason>)       tunnel closed by the proxy (ADR 0005)
@@ -30,21 +34,26 @@ Datei nicht gibt (vor agentbox migrate-allowlist), gelten die alten Listen
 
 A Regex entry (ADR 0013) has a pattern (regex) instead of the domain, compiled once
 whenever the file is read again; one that breaks the rules of agentbox-suspicious is
-left out. It never allows a destination with strong Signals, checked on every connection
-as in Open web ("suspicious: <signals>"), and nothing while the Watchlist cannot be read:
-  [<vm>] BLOCKED <host> (Watchlist unreadable, regex entries closed)
-Without agentbox-suspicious Regex entries allow nothing.
+left out.
 
 Steht in /etc/agentbox/open-<vm> eine Zeit in der Zukunft, ist jede
-oeffentliche Domain erlaubt (offenes Web auf Zeit), ausser stark verdaechtigen.
-Solange die Verdachtsliste von Hand nicht lesbar ist (watchlist.json kaputt, oder
-sie fehlt und die Textdatei davor auch), laesst das offene Web nichts durch:
-  [<vm>] BLOCKED <host> (Watchlist unreadable, Open web closed)
+oeffentliche Domain erlaubt (offenes Web auf Zeit).
+
+Strong Signals always block (ADR 0018): every destination is classified on every
+connection, and one with strong Signals is blocked whatever would allow it, a domain
+entry (also one added with --force), a Regex entry or Open web ("suspicious: <signals>").
+While the hand-maintained Watchlist cannot be read (watchlist.json broken, or missing
+without the text file from before), which Signals are strong is unknown, so nothing
+passes at all ("Watchlist unreadable"). Without agentbox-suspicious nothing passes either.
 
 Tunnel (ADR 0005): offene Tunnel laufen ohne Zeitlimit weiter, auch wenn der
 Eintrag ablaeuft, der sie erlaubt hat. Geschlossen werden nur Tunnel, deren
 Zugang bewusst endet und die nichts anderes mehr erlaubt: ein Eintrag wird
 entfernt, bevor er abgelaufen ist (agentbox disallow), oder das offene Web endet.
+Closed as well (ADR 0018): a tunnel whose destination gains a strong Signal (a Feed
+update, a new Watchlist entry), with an Alert, and every tunnel while the Watchlist cannot
+be read. The proxy classifies its open tunnels again only when a file the Signals come
+from changes (agentbox-suspicious signals_key), not on every check.
 """
 import asyncio
 import collections
@@ -348,31 +357,37 @@ class Allowlist:
         return bool(compiled and suspicious.pattern_matches(compiled, host))
 
 
-def regex_refusal(tags):
-    """Why Regex entries cannot allow a host, as the reason for the log, else None: it has
-    strong Signals, or the Watchlist cannot be read (which Signals are strong is unknown
-    then), checked on every connection the way Open web does it."""
-    if not suspicious or suspicious.watchlist_unreadable():
-        return "Watchlist unreadable, regex entries closed"
+# while the Watchlist cannot be read nothing passes, and open tunnels close (ADR 0018)
+UNREADABLE = "Watchlist unreadable"
+NO_CLASSIFIER = "no agentbox-suspicious"
+
+
+def refusal(tags):
+    """Why no entry and no Open web can let a host with these Signals through, as the reason
+    for the log, else None (ADR 0018): it has strong Signals; or the Watchlist cannot be read,
+    so which Signals are strong is unknown; or there is no classifier to tell."""
+    if not suspicious:
+        return NO_CLASSIFIER
+    if suspicious.watchlist_unreadable():
+        return UNREADABLE
     if strong(tags):
         return f"suspicious: {','.join(tags)}"
     return None
 
 
-def granting(host, tags, lists, now):
-    """(die Eintraege, die host jetzt erlauben, why the Regex entries that match it do not, or
-    None)."""
-    keys, patterns = [], []
+def granting(host, lists, now):
+    """Die Eintraege, die host jetzt erlauben (domains and Regex entries alike: the Signals
+    are checked before, refusal)."""
+    keys = []
     for k, expires in lists.current().items():
         if expires is not None and expires <= now:
             continue
-        if not k.regex:
-            if host == k.value or host.endswith("." + k.value):
+        if k.regex:
+            if lists.matches(k.value, host):
                 keys.append(k)
-        elif lists.matches(k.value, host):
-            patterns.append(k)
-    refused = regex_refusal(tags) if patterns else None
-    return frozenset(keys if refused else keys + patterns), refused
+        elif host == k.value or host.endswith("." + k.value):
+            keys.append(k)
+    return frozenset(keys)
 
 
 def open_until(ctx):
@@ -391,21 +406,16 @@ def strong(tags):
 
 def decide(ctx, lists, host, tags, now):
     """(grant, reason for the log). Grant: the entries that allow host, OPEN (only Open web)
-    or None (blocked, with the reason)."""
-    keys, refused = granting(host, tags, lists, now)
+    or None (blocked, with the reason). The Signals come first (ADR 0018): strong ones block
+    whatever would allow host, and while the Watchlist cannot be read nothing passes."""
+    why = refusal(tags)
+    if why:
+        return None, why
+    keys = granting(host, lists, now)
     if keys:
         return keys, None
     if open_until(ctx):
-        # without a readable Watchlist it is unknown what would have to stay blocked: nothing passes
-        if suspicious and suspicious.watchlist_unreadable():
-            return None, "Watchlist unreadable, Open web closed"
-        # in Open web destinations with strong Signals stay blocked (unless allowed)
-        if strong(tags):
-            return None, f"suspicious: {','.join(tags)}"
         return OPEN, None
-    # a Regex entry matches, but does not allow it (strong Signals, or no Watchlist)
-    if refused:
-        return None, refused
     return None, "not on the Allowlist"
 
 
@@ -423,10 +433,11 @@ def logged(ctx, grant):
 # --- Tunnel ----------------------------------------------------------------------
 
 class Tunnel:
-    """Ein offener Tunnel und was ihn erlaubt (Eintraege oder OPEN)."""
+    """Ein offener Tunnel und was ihn erlaubt (Eintraege oder OPEN); its Signals, and the
+    state of the files they came from (signals_key) when they were classified."""
 
-    def __init__(self, host, tags, grant, writers):
-        self.host, self.tags, self.grant, self.writers = host, tags, grant, writers
+    def __init__(self, host, tags, key, grant, writers):
+        self.host, self.tags, self.key, self.grant, self.writers = host, tags, key, grant, writers
 
     def close(self):
         for w in self.writers:
@@ -442,7 +453,7 @@ def withdraw(ctx, lists, now, revoked, web_ended, is_open):
     for t in list(tunnels):
         if not (web_ended if t.grant == OPEN else t.grant & revoked):
             continue
-        keys, _ = granting(t.host, t.tags, lists, now)
+        keys = granting(t.host, lists, now)
         if keys:
             t.grant = frozenset(keys)
         elif is_open and not strong(t.tags):
@@ -451,6 +462,42 @@ def withdraw(ctx, lists, now, revoked, web_ended, is_open):
             log(ctx, f"CLOSED {t.host} ({'Open web ended' if t.grant == OPEN else 'removed from the Allowlist'})")
             tunnels.discard(t)
             t.close()
+
+
+def signals_key():
+    """The state of the files the Signals come from, to tell when they changed; None without
+    a classifier."""
+    return suspicious.signals_key() if suspicious else None
+
+
+def classified(host):
+    """(the Signals of host, the Signals that raise an Alert): the harmless ones raise none."""
+    tags = suspicious.classify(host) if suspicious else []
+    return tags, suspicious.alerting(host, tags) if tags else []
+
+
+def recheck(ctx):
+    """Signals of the open tunnels (ADR 0018): while the Watchlist cannot be read every one
+    closes; else a tunnel whose destination has gained a strong Signal closes, with an Alert.
+    A tunnel is classified again only when a file its Signals came from has changed since,
+    each host once."""
+    unreadable = refusal([]) is not None
+    key = None if unreadable else signals_key()
+    fresh = {}
+    for t in list(tunnels):
+        if not unreadable and t.key != key:
+            if t.host not in fresh:
+                fresh[t.host] = classified(t.host)
+            t.tags, t.key = fresh[t.host][0], key
+        why = refusal(t.tags)
+        if not why:
+            continue
+        alert = fresh.get(t.host, ((), ()))[1]
+        if alert and not unreadable:
+            log(ctx, f"ALERT {t.host} [{','.join(alert)}]")
+        log(ctx, f"CLOSED {t.host} ({why})")
+        tunnels.discard(t)
+        t.close()
 
 
 async def watch(ctx, lists):
@@ -464,6 +511,8 @@ async def watch(ctx, lists):
         await asyncio.sleep(CHECK_SECONDS)
         try:
             now = time.time()
+            if tunnels:
+                recheck(ctx)
             entries = lists.current()
             revoked = {k for k, expires in known.items() if k not in entries and (expires is None or expires > now)}
             is_open = bool(open_until(ctx))
@@ -584,8 +633,10 @@ async def handle(ctx, lists, reader, writer):
         writer.close()
         return
 
-    tags = suspicious.classify(host) if suspicious else []
-    alert = suspicious.alerting(host, tags) if tags else []     # without the harmless ones
+    # the state of the Signals' files before they are read: a change in between classifies the
+    # tunnel again (recheck)
+    key = signals_key()
+    tags, alert = classified(host)
     if alert:
         # a line of its own, so agentbox and the Control Room can collect Alerts
         log(ctx, f"ALERT {host} [{','.join(alert)}]")
@@ -622,7 +673,7 @@ async def handle(ctx, lists, reader, writer):
         log(ctx, f"ALLOWED {host} (open web)")
     else:
         log(ctx, f"ALLOWED {host} ({logged(ctx, grant)})")
-    tunnel = Tunnel(host, tags, grant, (writer, up_writer))
+    tunnel = Tunnel(host, tags, key, grant, (writer, up_writer))
     tunnels.add(tunnel)
     try:
         up_writer.write(head)       # the ClientHello goes to the destination first

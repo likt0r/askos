@@ -166,8 +166,8 @@ describe('Watchlist view', () => {
     expect(result.dataset.strong).toBe('true')
     expect(result.textContent).toContain('npm-cache.example: strongly suspicious')
     expect(result.textContent).toContain('Reaching it raises an Alert.')
-    expect(result.textContent).toContain('It stays blocked in Open web.')
-    expect(result.textContent).toContain('Only the CLI on the Host can allow it (--force).')
+    expect(result.textContent).toContain('It stays blocked, also with an Allowlist entry or in Open web.')
+    expect(result.textContent).toContain('Only lifting its Signals on the Host lets it through (--force).')
     expect([...result.querySelectorAll('[data-signal]')].map(s => (s as HTMLElement).dataset.signal)).toEqual(['lookalike', 'young'])
     // each reason worded from its code and parameters, the classifier's English text on hover
     expect($$('[data-testid="signal-reason"]').map(r => r.textContent!.trim())).toEqual([
@@ -182,7 +182,7 @@ describe('Watchlist view', () => {
     expect(changes(api.calls)).toEqual([{ method: 'PUT', path: '/watchlist/harmless/npm-cache.example', body: undefined, csrf: '1' }])
     await waitFor(() => expect(must('[data-testid="check-result"]').textContent).toContain('marked harmless (npm-cache.example)'))
     expect(must('[data-testid="check-result"]').textContent).toContain('It raises no Alerts (harmless mark).')
-    expect(must('[data-testid="check-result"]').textContent).toContain('It stays blocked in Open web.')
+    expect(must('[data-testid="check-result"]').textContent).toContain('It stays blocked, also with an Allowlist entry or in Open web.')
     await waitFor(() => expect($$('[data-testid="harmless-row"]').map(r => r.dataset.domain)).toEqual(['githbu.com', 'npm-cache.example']))
   })
 
@@ -257,12 +257,12 @@ describe('Watchlist view', () => {
     expect(changes(api.calls)).toEqual([{ method: 'DELETE', path: '/watchlist/entries/jsonkeeper.com', body: undefined, csrf: '1' }])
   })
 
-  it('says when the Watchlist on the Host cannot be read and Open web stays closed; the Feeds still show', async () => {
+  it('says when the Watchlist on the Host cannot be read and nothing passes the proxy; the Feeds still show', async () => {
     await openApp('/watchlist', routes({
       'GET /watchlist': ok({ ...WATCHLIST, entries: [], unreadable: '/etc/agentbox/watchlist.json: not valid JSON' }),
     }))
     const alert = must('[data-testid="hand-list-unreadable"]')
-    expect(alert.textContent).toContain('Open web stays closed until it is fixed on the Host.')
+    expect(alert.textContent).toContain('The proxy lets nothing through until it is fixed on the Host.')
     expect(alert.textContent).toContain('/etc/agentbox/watchlist.json: not valid JSON')
     expect($('[data-testid="hand-list-error"]')).toBeNull()
     expect($$('[data-testid="watchlist-entry"]')).toEqual([])
@@ -280,7 +280,7 @@ describe('Watchlist view', () => {
     await click('[data-testid="watch-add-submit"]')
     const refusal = must('[data-testid="watch-add-error"]')
     expect(refusal.textContent).toContain('There is no Watchlist on the Host.')
-    expect(refusal.textContent).toContain('Creating it again would reopen Open web, so only the Host can do it, with --force:')
+    expect(refusal.textContent).toContain('Creating it again would open the proxy again, so only the Host can do it, with --force:')
     expect(refusal.textContent).not.toContain('removed or weakened')
     expect(refusal.textContent).toContain('sudo agentbox watch-add drop.example --category exfil --force')
   })

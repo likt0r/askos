@@ -1,5 +1,7 @@
 # Every list takes Regex entries; on the Allowlist they never allow strong Signals
 
+_Amended by [ADR 0018](0018-strong-signals-always-block.md) (2026-11-13):_ what this ADR says of regex Allowlist entries now holds for every entry: no domain entry, forced or not, lets a destination with strong Signals through, and while the Watchlist cannot be read nothing passes (`BLOCKED <host> (Watchlist unreadable)`, which replaces `(Watchlist unreadable, regex entries closed)`).
+
 Every list matched a domain and its subdomains. Some cases need a pattern instead: a family of lookalike names (`^npm-[a-z]+\.(com|net)$`), or names that differ in a varying label (`^mirror[0-9]+\.vendor\.example$`). The owner decided on 2026-11-04 (#2) that all four lists take regular expressions: the Allowlist, the Watchlist, the Legitimate domains and the Harmless marks.
 
 A **Regex entry** has a pattern in place of the domain. It matches with `re.fullmatch` against the lowercased host name without its trailing dot: exactly the hosts it describes, no subdomains of its own accord. Domain entries keep their meaning. A record entry carries the pattern in the field `regex` instead of `domain`, a Harmless mark is the line `regex <pattern>`, and the CLI takes `--regex PATTERN` wherever it takes a domain; an entry is removed or changed by the same value it was added with. A domain and a pattern of the same text are two entries.

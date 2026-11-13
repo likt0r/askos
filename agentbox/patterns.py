@@ -18,8 +18,8 @@ Alerts).
 Stored. A record entry has the field regex in place of domain; a Harmless mark is the line
 "regex <pattern>". A stored pattern the rules refuse (a hand edit, or a later Release with
 stricter rules) counts as nothing: on the Allowlist it allows nothing, as a Harmless mark it
-silences nothing, as a Legitimate domain it lifts nothing, and on the Watchlist Open web stays
-closed until it is removed. It is listed with the reason (refused) and removed by its pattern;
+silences nothing, as a Legitimate domain it lifts nothing, and on the Watchlist the proxy lets
+nothing through until it is removed (ADR 0018). It is listed with the reason (refused) and removed by its pattern;
 the other entries keep working. Commands take the pattern with --regex PATTERN where they take a domain,
 and remove or change an entry by the same value.
 """

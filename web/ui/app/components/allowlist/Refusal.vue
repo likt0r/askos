@@ -1,16 +1,14 @@
 <script setup lang="ts">
 // The backend refused to allow a destination with strong Signals (409 domain_suspicious):
-// why (its Signals from check-domain) and that only the CLI on the Host can force it.
+// why (its Signals from check-domain), that no Allowlist entry lets it through, also not one
+// forced on the Host, and that only lifting the Signal there does (ADR 0018).
 import type { DomainCheck } from '~/utils/access'
 
-const props = defineProps<{ domain: string, scope: string, command?: 'allow' | 'extend' | 'make-permanent' }>()
+const props = defineProps<{ domain: string }>()
 const { t } = useI18n()
 const check = ref<DomainCheck | null>(null)
 
-const cli = computed(() => {
-  const cmd = props.command ?? 'allow'
-  return `sudo agentbox ${cmd} ${props.scope} ${props.domain}${cmd === 'extend' ? ' --for 1h' : ''} --force`
-})
+const cli = computed(() => `sudo agentbox check-domain ${props.domain}`)
 const strong = computed(() => check.value?.signals.filter(s => s.strong) ?? [])
 
 watch(() => props.domain, async (domain) => {
@@ -30,6 +28,7 @@ watch(() => props.domain, async (domain) => {
       <div class="space-y-2">
         <p>{{ t('allowlist.refusal.text') }}</p>
         <WatchlistSignalList v-if="strong.length" :signals="strong" />
+        <p>{{ t('allowlist.refusal.lift') }}</p>
         <p>{{ t('allowlist.refusal.cli') }}</p>
         <code class="block overflow-x-auto whitespace-nowrap rounded bg-elevated px-2 py-1 font-mono text-xs text-highlighted" data-testid="refusal-cli">{{ cli }}</code>
       </div>

@@ -285,7 +285,7 @@ def list_source(record, legacy):
     """The file a list of the Host comes from: its record; before the migration its text file;
     on a new Host (neither, nor the text file moved aside by the migration) the one of the
     Release; None for a record lost after the migration, which the Release's list would replace
-    with a stale one and so open Open web again."""
+    with a stale one and so let the proxy pass what the lost one would block."""
     for path in (_conf(record), _conf(legacy)):
         if os.path.isfile(path):
             return path
@@ -337,7 +337,7 @@ def _seed(name, dest):
 
 
 LOST = {
-    "watchlist.json": "Open web stays closed until it is back (or until the admin creates a new one with "
+    "watchlist.json": "the proxy lets nothing through until it is back (or until the admin creates a new one with "
                       "agentbox watch-add <domain> --category <category> --force; the Control Room cannot)",
     "legitimate.json": "agentbox migrate-lists creates it empty, only the built-in Legitimate domains count",
 }

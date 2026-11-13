@@ -71,9 +71,10 @@ export default {
       removed: '{domain} removed.',
     },
     refusal: {
-      title: '{domain} cannot be allowed here',
-      text: 'It has strong Signals, so the Control Room refuses to allow it, even temporarily:',
-      cli: 'If you are sure, only the CLI on the Host can force it:',
+      title: '{domain} cannot be allowed',
+      text: 'It has strong Signals, which block it whatever the Allowlist says, also with an entry forced on the Host:',
+      lift: 'Only lifting the Signal on the Host lets it through: a Watchlist entry goes with watch-remove --force, a Feed hit or a lookalike name with legitimate-add --force. Nothing lifts Feed hits below github.io, githubusercontent.com or claudeusercontent.com, the blockchain pattern, raw IPs or metadata addresses.',
+      cli: 'Where its Signals come from, on the Host:',
     },
   },
   regex: {
@@ -141,7 +142,7 @@ export default {
       reasons: {
         'not-allowed': 'not on the Allowlist',
         'suspicious': 'strong Signals: {signals}',
-        'watchlist-unreadable': 'the Watchlist cannot be read (Open web and Regex entries closed)',
+        'watchlist-unreadable': 'the Watchlist cannot be read (nothing passes the proxy)',
         'not-public': 'no public address',
         'not-tls': 'not a TLS handshake (the VM sent something other than HTTPS)',
         'no-server-name': 'no server name in the TLS handshake',
@@ -225,8 +226,8 @@ export default {
       },
       raisesAlerts: 'Reaching it raises an Alert.',
       noAlerts: 'It raises no Alerts (harmless mark).',
-      blockedInOpenWeb: 'It stays blocked in Open web.',
-      onlyCli: 'Only the CLI on the Host can allow it (--force).',
+      blocked: 'It stays blocked, also with an Allowlist entry or in Open web.',
+      onlyLift: 'Only lifting its Signals on the Host lets it through (--force).',
       noSignals: 'No Signals.',
     },
     harmless: {
@@ -309,7 +310,7 @@ export default {
       removed: '{domain} removed from the Watchlist.',
       onlyCli: 'A strong entry can only be removed or weakened on the Host:',
       recreateTitle: 'There is no Watchlist on the Host.',
-      onlyCliRecreate: 'Creating it again would reopen Open web, so only the Host can do it, with --force:',
+      onlyCliRecreate: 'Creating it again would open the proxy again, so only the Host can do it, with --force:',
       lockedOne: 'Strong entry: only on the Host (--force)',
     },
     legitimate: {
