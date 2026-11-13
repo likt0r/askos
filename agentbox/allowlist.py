@@ -192,8 +192,8 @@ def _valid(data, path):
 
     def broken(why):
         die(f"{path}: {why}", error="action_failed")
-    return entry_store.valid(data["entries"], _problem, broken, key=lambda e: (patterns.key(e), e["scope"]),
-                             twice=lambda e: f"{patterns.value(e)} ({e['scope']}) twice")
+    return entry_store.valid(data["entries"], _problem, broken, _clipped, key=lambda e: (patterns.key(e), e["scope"]),
+                             twice=lambda e: f"{_clipped(patterns.value(e), entry_store.SHOWN)} ({e['scope']}) twice")
 
 
 def legacy_files():
