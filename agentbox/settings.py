@@ -2,10 +2,9 @@
 
 Every value has a built-in default, so a missing file means all defaults; a file
 that is not JSON, holds an unknown key or an invalid value is a clear error for
-every consumer (load() is the only reader on the Host; the Control Room backend
-and agentbox-feeds, which run unprivileged and cannot import this package, get
-their values from their own read of the file and from the generated unit). The
-file is world-readable and holds nothing secret.
+every consumer (load() is the only reader on the Host: the Control Room backend,
+which runs unprivileged, imports it too; agentbox-feeds gets its values from the
+generated unit). The file is world-readable and holds nothing secret.
 
 `agentbox settings` shows the values, `agentbox set-settings KEY=VALUE...` validates
 all of them, saves nothing when one is invalid, and otherwise saves and applies what
@@ -31,6 +30,9 @@ LANGUAGES = ("en", "de")
 BROWSER = "browser"            # default_language: each browser's own language (en or de, else en)
 TIME = re.compile(r"([01][0-9]|2[0-3]):[0-5][0-9]")
 IMAGE = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
+# a Build of an Image (images.py; activity.py and the Control Room, which do not import images):
+# YYYYMMDD-HHMMSS, before that YYYYMMDD-HHMM or YYYYMMDD
+BUILD_ID = re.compile(r"[0-9]{8}(?:-[0-9]{4}(?:[0-9]{2})?)?")
 # a release of Orca as its tags name it without the v (vm/build/orca-release takes the same)
 ORCA_VERSION = re.compile(r"(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})")
 MAX_MEMORY_MIB = 1048576       # as vms.py: when the Host's memory is unknown; create checks the real one
@@ -134,7 +136,7 @@ SPEC = {
     "session_hours": Setting(12, _int(1, 168), "at the next sign-in"),
     # en or de wins over the browser's language after sign-in; a language chosen in the
     # browser wins over both, and it does not apply on the sign-in page (web/ui/app/utils/
-    # language.ts). The Control Room backend reads it for GET/POST /session (LANGUAGES there)
+    # language.ts). The Control Room backend reads it for GET/POST /session
     "default_language": Setting(BROWSER, _choice(BROWSER, *LANGUAGES),
                                 "from the next sign-in or the next load of the Control Room"),
 }

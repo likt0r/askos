@@ -79,9 +79,14 @@ def reserved(name):
                 or name in DEFAULT_ENVIRONMENT or name in SHELL)
 
 
+def is_name(name):
+    """Whether name has the form of a VM variable's name (the Control Room checks it too)."""
+    return isinstance(name, str) and bool(NAME.fullmatch(name)) and len(name) <= MAX_NAME
+
+
 def valid_name(name):
     """The name if it has the form of one (removing a variable needs no more); dies otherwise."""
-    if not isinstance(name, str) or not NAME.fullmatch(name) or len(name) > MAX_NAME:
+    if not is_name(name):
         die(f"invalid name of a VM variable: {_shown(name) if isinstance(name, str) else '?'} "
             f"(up to {MAX_NAME} characters from A-Z, a-z, 0-9 and _, not starting with a digit)",
             error="invalid_env_name")

@@ -2,7 +2,7 @@
 
 One semantic version (`MAJOR.MINOR.PATCH`, no `v`), stored in the file VERSION next to this
 package (paths.VERSION): release-it writes it when a Release is cut, the RPM installs it beside the code,
-and the Control Room backend reads the same file. A checkout that is not a Release says
+and the Control Room backend reads the same file with release(). A checkout that is not a Release says
 0.0.0.
 """
 import json
@@ -37,15 +37,19 @@ def file_url(repository, ref, path):
     return f"{base}/blob/{ref}/{path}" if base and ref else None
 
 
-def release():
-    """The Release as text; a missing or malformed VERSION file is a clear error."""
+def release(path=None):
+    """The Release as text, from the VERSION file (or another one, path); a missing or
+    malformed file is a clear error."""
+    path = path or VERSION_FILE
     try:
-        with open(VERSION_FILE, encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             text = f.read().strip()
     except OSError as e:
-        die(f"{VERSION_FILE}: {e.strerror}", error="action_failed")
+        die(f"{path}: {e.strerror}", error="action_failed")
+    except ValueError:
+        die(f"{path}: not UTF-8 text", error="action_failed")
     if not SEMVER.fullmatch(text):
-        die(f"{VERSION_FILE}: not a version of the form MAJOR.MINOR.PATCH: {text!r}", error="action_failed")
+        die(f"{path}: not a version of the form MAJOR.MINOR.PATCH: {text!r}", error="action_failed")
     return text
 
 
