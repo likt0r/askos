@@ -33,6 +33,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 AGENTBOX = os.path.join(REPO, "bin", "agentbox")
 TESTS = os.path.join(REPO, "tests")
 DAY = 86400
+WAIT = 60                            # seconds a test waits for what has to come: reached only when it does not
 TOKEN = "ghs_" + "A" * 36
 CLAUDE = "sk-ant-oat01-" + "b" * 40
 CODE = "orca://pair?code=Zz9_secret-code"
@@ -150,8 +151,11 @@ class WatchTest(unittest.TestCase):
         shutil.rmtree(self.dir)
 
     def scenario(self, **s):
-        with open(os.path.join(self.dir, "scenario.json"), "w") as f:
+        """Replaced whole: the fakes that watch starts read it at any moment."""
+        tmp = os.path.join(self.dir, "scenario.json.new")
+        with open(tmp, "w") as f:
             json.dump(s, f)
+        os.replace(tmp, os.path.join(self.dir, "scenario.json"))
 
     def domains(self, change):
         """change(domains) edits fake_virsh's VM states, as a virsh call does: one at a time
@@ -198,22 +202,31 @@ class WatchTest(unittest.TestCase):
 
     # --- watch -----------------------------------------------------------------
 
-    def start(self):
+    def start(self, **env):
         self.err = open(os.path.join(self.dir, "watch.err"), "w")
         self.addCleanup(self.err.close)
-        self.proc = subprocess.Popen([AGENTBOX, "watch"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                     stderr=self.err, env=self.env(), text=True)
+        proc = self.proc = subprocess.Popen([AGENTBOX, "watch"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                            stderr=self.err, env={**self.env(), **env}, text=True)
         self.addCleanup(self.stop)
-        self.lines = queue.Queue()
-        self.raw = []
+        lines = self.lines = queue.Queue()
+        raw = self.raw = []
         self.kept = []               # events read while event() waited for another name, oldest first
 
         def read():
-            for line in self.proc.stdout:
-                self.raw.append(line)
-                self.lines.put(json.loads(line))
-            self.lines.put(None)
-        threading.Thread(target=read, daemon=True).start()
+            # into this watch's own queue: the test may have started the next watch by the
+            # time the last lines and the end of this one are read
+            while True:
+                try:
+                    line = proc.stdout.readline()
+                except ValueError:   # closed by stop()
+                    break
+                if not line:
+                    break
+                raw.append(line)
+                lines.put(json.loads(line))
+            lines.put(None)
+        self.reader = threading.Thread(target=read, daemon=True)
+        self.reader.start()
 
     def stop(self):
         if self.proc and self.proc.poll() is None:
@@ -224,9 +237,10 @@ class WatchTest(unittest.TestCase):
                 self.proc.kill()
                 self.proc.wait()
         if self.proc:
+            self.reader.join(timeout=10)             # it has read to the end of watch's output
             self.proc.stdout.close()
 
-    def event(self, name, check=lambda d: True, timeout=10):
+    def event(self, name, check=lambda d: True, timeout=WAIT):
         """The next event of this name whose data passes check. Events of other names stay for
         a later event() or events(): watch sends from several threads (the poll, each journal
         follower, the Build lines), so the order between names is not fixed."""
@@ -253,34 +267,52 @@ class WatchTest(unittest.TestCase):
                 return e
             self.kept.append(e)
 
-    def events(self, seconds):
-        """Every event no event() gave out or passed, and those of the next seconds, in the
-        order watch sent them."""
+    def events(self, seconds=0):
+        """Every event no event() gave out or passed, those read by now and those of the next
+        seconds, in the order watch sent them."""
         out, self.kept, deadline = self.kept, [], time.monotonic() + seconds
-        while time.monotonic() < deadline:
+        while True:
             try:
-                e = self.lines.get(timeout=0.05)
+                e = self.lines.get(timeout=max(0, min(0.05, deadline - time.monotonic())))
             except queue.Empty:
+                if time.monotonic() >= deadline:
+                    return out
                 continue
             if e is not None:
                 out.append(e)
-        return out
+
+    def until(self, found, what):
+        """Wait until found() is true and give its value; fails with `what` after WAIT seconds."""
+        deadline = time.monotonic() + WAIT
+        while True:
+            value = found()
+            if value:
+                return value
+            if time.monotonic() > deadline:
+                self.fail(f"{what}; stderr: {self.stderr()}")
+            time.sleep(0.01)
 
     def followers(self):
         """Wait for the journal followers, which start after the first poll and report only
         what is written after them (--lines=0)."""
-        deadline = time.monotonic() + 10
-        while len([c for c in self.calls("journalctl") if "--follow" in c["argv"]]) < 2:
-            self.assertLess(time.monotonic(), deadline, "no journal followers")
-            time.sleep(0.05)
+        self.until(lambda: len([c for c in self.calls("journalctl") if "--follow" in c["argv"]]) >= 2,
+                   "no journal followers")
 
     def stderr(self):
-        with open(os.path.join(self.dir, "watch.err")) as f:
-            return f.read()
+        try:
+            with open(os.path.join(self.dir, "watch.err")) as f:
+                return f.read()
+        except FileNotFoundError:    # no watch was started
+            return ""
 
     def calls(self, cmd):
-        with open(os.path.join(self.dir, "calls.jsonl")) as f:
-            return [c for c in map(json.loads, f) if c.get("cmd") == cmd]
+        """The calls of `cmd` the fakes recorded by now (a line still being written is none yet)."""
+        try:
+            with open(os.path.join(self.dir, "calls.jsonl")) as f:
+                lines = f.read().split("\n")[:-1]
+        except FileNotFoundError:
+            return []
+        return [c for c in map(json.loads, lines) if c.get("cmd") == cmd]
 
 
 class SnapshotTest(WatchTest):
