@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.7.0](https://github.com/likt0r/askos/compare/v0.6.1...v0.7.0) (2026-11-13)
+
+### Features
+
+* agentbox import copies a Host folder into a VM, unpacked under ~/code ([#48](https://github.com/likt0r/askos/issues/48)) ([2650e53](https://github.com/likt0r/askos/commit/2650e53f0af0ab7246f5d2b974cceee0fec6cef3)), closes [#47](https://github.com/likt0r/askos/issues/47), references [#46](https://github.com/likt0r/askos/issues/46)
+* containers survive a Reset; per-VM Container image cleanup ([#67](https://github.com/likt0r/askos/issues/67)) ([6863411](https://github.com/likt0r/askos/commit/6863411a0e0ee9ea9c9cc4b945cbddcd2bb2fb7d)), closes [#60](https://github.com/likt0r/askos/issues/60) [#61](https://github.com/likt0r/askos/issues/61) [#62](https://github.com/likt0r/askos/issues/62) [#63](https://github.com/likt0r/askos/issues/63) [#64](https://github.com/likt0r/askos/issues/64), references [#60](https://github.com/likt0r/askos/issues/60)
+* Feed hits count on claudeusercontent.com subdomains, like GitHub's user-content hosts ([#65](https://github.com/likt0r/askos/issues/65)) ([1a6879b](https://github.com/likt0r/askos/commit/1a6879b82f8ecb5c4ba838c5907c4d2ada771708)), closes [#58](https://github.com/likt0r/askos/issues/58), references [#23](https://github.com/likt0r/askos/issues/23) [#55](https://github.com/likt0r/askos/issues/55) [#58](https://github.com/likt0r/askos/issues/58) [#59](https://github.com/likt0r/askos/issues/59) [#59](https://github.com/likt0r/askos/issues/59) [#59](https://github.com/likt0r/askos/issues/59) [#59](https://github.com/likt0r/askos/issues/59)
+* Feed hits count on the user-content hosts github.io and githubusercontent.com ([#55](https://github.com/likt0r/askos/issues/55)) ([24d7a1f](https://github.com/likt0r/askos/commit/24d7a1fac2edd5d160ec6b9bf55bebb4be1ff61f)), closes [#23](https://github.com/likt0r/askos/issues/23), references [#18](https://github.com/likt0r/askos/issues/18)
+* one maintenance window runs Feeds, version check, weekly rebuild and Reset check in order ([#66](https://github.com/likt0r/askos/issues/66)) ([aa83671](https://github.com/likt0r/askos/commit/aa836719b30d26a5feecd4dd6e844eea4638331e)), closes [#49](https://github.com/likt0r/askos/issues/49)
+* VM variables, environment variables per VM for orca serve, agents, terminals and shells ([#31](https://github.com/likt0r/askos/issues/31)) ([92d017a](https://github.com/likt0r/askos/commit/92d017adde2d022c1c0d2e0cdc44e8264780b81e)), closes [#29](https://github.com/likt0r/askos/issues/29)
+
+### Bug Fixes
+
+* the Control Room may run only its own agentbox commands, without --force (sudoers and CLI) ([#56](https://github.com/likt0r/askos/issues/56)) ([98e07ef](https://github.com/likt0r/askos/commit/98e07ef457d866d5a4acc39507ceb184a4c02b97)), closes [#50](https://github.com/likt0r/askos/issues/50)
+
 ## [0.6.1](https://github.com/likt0r/askos/compare/v0.6.0...v0.6.1) (2026-11-12)
 
 ### Bug Fixes
