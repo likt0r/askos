@@ -5,8 +5,8 @@ it, and then to download the Node runtime of Orca's server as the installed Orca
 
 The script runs as the Containerfile runs it (python3 -I), against a fake curl
 (fake_registry_curl.py) that plays GitHub's API, its downloads and nodejs.org; nothing
-reaches the network. `agentbox fetch-versions` picks Orca by the same rule
-(agentbox/versions.py), which ChooseTest holds to the script's.
+reaches the network. `agentbox fetch-versions` picks Orca with this script's own functions
+(agentbox/versions.py loads it), which ChooseTest checks.
 
 Run from the repo root: python3 -m unittest discover -s tests
 """
@@ -541,69 +541,63 @@ class RuntimeTest(ScriptTest):
 
 
 class ChooseTest(unittest.TestCase):
-    """agentbox fetch-versions says which Orca the next Build takes: by the script's rule."""
+    """agentbox fetch-versions says which Orca the next Build takes: with this script's own
+    functions, loaded from the installed Release (versions.orca_rules)."""
 
-    CASES = {
-        "the newest old enough": (RELEASES, None),
-        "nothing old enough": ([release("1.4.253", 1)], None),
-        "a later fix of an older line": ([release("1.4.253", 1), release("1.3.9", 2.5), release("1.4.251", 3)], None),
-        "drafts, prereleases and other tags": ([release("1.4.260", 9, draft=True), release("1.4.259", 9, prerelease=True),
-                                                release("0.0.1", 9, tag="mobile-android-v0.0.1"),
-                                                release("1.4.257", 9, tag="1.4.257"), release("1.4.250", 9)], None),
-        "a replaced asset": ([release("1.4.252", 5, asset_days=0.5), release("1.4.251", 6)], None),
-        "a created asset": ([release("1.4.252", 5, created_days=0.5), release("1.4.251", 6)], None),
-        "a pin": (RELEASES, "1.4.253"),
-        "a pin of a draft": (RELEASES, "1.4.254"),
-        "a pin of nothing": (RELEASES, "9.9.9"),
-        "odd entries": ([None, 1, "x", {"tag_name": "v1.0.0"}, {"tag_name": "v1.0.0", "draft": False, "prerelease": False},
-                         {"tag_name": "v1.0.1", "draft": 0, "prerelease": False, "published_at": stamp(0)},
-                         {"tag_name": "v1.0.2", "draft": False, "prerelease": False, "published_at": "2026-01-01T00:00:00"},
-                         {"tag_name": "v1.0.3", "draft": False, "prerelease": False, "published_at": "yesterday"},
-                         {"tag_name": "v1.0.4", "draft": False, "prerelease": False,
-                          "published_at": "2026-01-01T02:00:00+02:00"}], None),
-        "not a list": ({"tag_name": "v1.0.0"}, None),
-    }
+    def setUp(self):
+        versions._orca = None
+        self.addCleanup(setattr, versions, "_orca", None)
 
-    def test_the_fetch_picks_as_the_build_does(self):
-        build = script()
+    def test_the_fetch_loads_the_script_of_the_installed_release(self):
+        with mock.patch.object(versions.paths, "VM_SOURCE", REPO):
+            rules = versions.orca_rules()
+        self.assertEqual(rules.__file__, SCRIPT)
+        self.assertIs(versions.orca_rules(), rules)         # once
         cutoff = time.time() - 2 * DAY
-        for name, (releases, pin) in self.CASES.items():
-            with self.subTest(case=name):
-                theirs = build.choose(releases, cutoff, pin)
-                self.assertIs(versions.orca_choose(releases, cutoff, pin), theirs)
-                for r in releases if isinstance(releases, list) else []:
-                    v = build.version_of(r)
-                    for pinned in (False, True):
-                        if v is not None:
-                            self.assertEqual(versions.orca_asset_ok(r, v, cutoff, pinned),
-                                             build.asset_ok(r, v, cutoff, pinned), (v, pinned))
-                if theirs is not None:
-                    version = build.version_of(theirs)
-                    self.assertEqual(versions.orca_version_of(theirs), version)
-                    try:
-                        build.rpm_asset(theirs, version)
-                        usable = True
-                    except build.Failed:
-                        usable = False
-                    self.assertEqual(versions.orca_rpm(theirs, version), usable)
-        self.assertEqual(build.version_of(build.choose(RELEASES, cutoff)), "1.4.251")
-        self.assertEqual(build.version_of(self.CASES["odd entries"][0][-1]), "1.0.4")
+        self.assertEqual(rules.version_of(rules.choose(RELEASES, cutoff)), "1.4.251")
+        self.assertEqual(rules.version_of(rules.choose(RELEASES, cutoff, "1.4.253")), "1.4.253")
 
-    def test_both_take_the_same_versions_and_assets(self):
-        build = script()
-        self.assertEqual(build.VERSION.pattern, versions.settings.ORCA_VERSION.pattern)
-        self.assertEqual((build.REPO, build.PAGES, build.PER_PAGE, build.MAX_RPM),
-                         (versions.ORCA_REPO, versions.ORCA_PAGES, versions.ORCA_PER_PAGE, versions.ORCA_MAX_RPM))
-        for digest in (False, "sha256:" + "0" * 63, "sha256:" + "a" * 64, "SHA256:" + "a" * 64):
-            for size in (1, 0, -1, True, "1", (1 << 30) + 1):
-                r = release("1.4.251", 3, digest=digest, size=size)
-                try:
-                    build.rpm_asset(r, "1.4.251")
-                    usable = True
-                except build.Failed:
-                    usable = False
-                with self.subTest(digest=digest, size=size):
-                    self.assertEqual(versions.orca_rpm(r, "1.4.251"), usable)
+    def test_loading_it_runs_nothing(self):
+        with mock.patch.object(versions.paths, "VM_SOURCE", REPO), mock.patch.object(sys, "argv", ["x", "rpm"]), \
+                mock.patch.object(subprocess, "run", side_effect=AssertionError("ran")):
+            versions.orca_rules()
+
+    def test_without_the_script_the_fetch_fails(self):
+        with tempfile.TemporaryDirectory() as empty, mock.patch.object(versions.paths, "VM_SOURCE", empty):
+            with self.assertRaises(versions.Fail) as caught:
+                versions.orca_newest(time.time())
+        self.assertEqual((caught.exception.error, caught.exception.exit), ("action_failed", 127))
+        self.assertIn("orca-release is missing", caught.exception.message)
+
+    def test_a_script_that_cannot_be_loaded_fails_the_fetch(self):
+        for content, why in (("def broken(:\n", "SyntaxError"), ("import no_such_module\n", "ModuleNotFoundError"),
+                             ("raise RuntimeError\n", "RuntimeError"),
+                             ('REPO = "x"\n', "it lacks PAGES, PER_PAGE, Failed, choose, asset_ok, version_of, "
+                                             "rpm_asset")):
+            versions._orca = None
+            with self.subTest(why=why), tempfile.TemporaryDirectory() as source:
+                os.makedirs(os.path.join(source, "vm", "build"))
+                with open(os.path.join(source, "vm", "build", "orca-release"), "w") as f:
+                    f.write(content)
+                with mock.patch.object(versions.paths, "VM_SOURCE", source), \
+                        self.assertRaises(versions.Fail) as caught:
+                    versions.orca_newest(time.time())
+                self.assertEqual(caught.exception.error, "action_failed")
+                self.assertIn(f"cannot be loaded ({why})", caught.exception.message)
+
+    def test_without_the_script_the_fetch_asks_nobody(self):
+        with tempfile.TemporaryDirectory() as empty, mock.patch.object(versions.paths, "VM_SOURCE", empty), \
+                mock.patch.object(versions, "_min_age_days", return_value=2), \
+                mock.patch.object(versions, "_orca_pin", return_value=None), \
+                mock.patch.object(versions, "_get", side_effect=AssertionError("asked")):
+            with self.assertRaises(versions.Fail):
+                versions.fetch(lambda line: None)
+
+    def test_both_take_the_same_versions(self):
+        # orca_version (settings) and what the fetch found are checked with the settings'
+        # pattern; the script decides with its own
+        with mock.patch.object(versions.paths, "VM_SOURCE", REPO):
+            self.assertEqual(versions.orca_rules().VERSION.pattern, versions.settings.ORCA_VERSION.pattern)
 
 
 if __name__ == "__main__":
