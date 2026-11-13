@@ -372,8 +372,6 @@ class InstalledTest(unittest.TestCase):
         pairs += [(os.path.join(REPO, d, name), f"/usr/libexec/{name}") for name, d in PROGRAMS.items()]
         pairs += [(os.path.join(REPO, "agentbox", n), f"/usr/lib/agentbox/agentbox/{n}")
                   for n in os.listdir(os.path.join(REPO, "agentbox")) if n.endswith(".py")]
-        pairs += [(os.path.join(REPO, "web", "static", n), f"/usr/share/agentbox/web/{n}")
-                  for n in os.listdir(os.path.join(REPO, "web", "static"))]
         pairs += [(os.path.join(REPO, "proxy", n), f"/usr/share/agentbox/lists/{n}") for n in SEEDS]
         pairs += [(os.path.join(REPO, "github-app", n), f"/usr/share/agentbox/vm/github-app/{n}") for n in GUEST_TOOLS]
         for top, _, names in os.walk(os.path.join(REPO, "vm")):
@@ -442,12 +440,12 @@ class InstalledTest(unittest.TestCase):
                                capture_output=True, text=True, timeout=60)
             self.assertIn(r.returncode, (0, 1), r.stderr)
             return r.returncode == 0
-        for args in (["watch"], ["status", "--json"], ["start", "--actor=Firefox/Linux (192.0.2.1)", "work", "--json"],
+        for args in (["watch"], ["start", "--actor=Firefox/Linux (192.0.2.1)", "work", "--json"],
                      ["allow", "--actor=x", "all", "a.example", "--note=a, b: c = d # e", "--json"],
                      ["start setup"]):        # one argument: agentbox knows no such command
             with self.subTest(args=args):
                 self.assertTrue(allowed(*args))
-        for args in (["setup"], ["import", "work", "/etc"], ["--actor=x", "start", "work"],
+        for args in (["setup"], ["status", "--json"], ["import", "work", "/etc"], ["--actor=x", "start", "work"],
                      ["--actor=Firefox/Linux (192.0.2.1) start", "setup"], ["startx"], ["--version"]):
             with self.subTest(args=args):
                 self.assertFalse(allowed(*args))
