@@ -223,21 +223,15 @@ class RecordTest(ActivityTest):
                           for e in self.entries()],
                          [("create", "lab", FIREFOX, "ok"), ("delete", "lab", FIREFOX, "ok")])
 
-    def test_failure_with_its_reason(self):
-        code, _, err = self.run_agentbox("--actor=timer", "allow", "work", "evil.example")
-        self.assertEqual(code, 1)
-        [e] = self.entries()
-        self.assertEqual((e["AGENTBOX_OUTCOME"], e["AGENTBOX_EXIT"], e["PRIORITY"], e["AGENTBOX_DESCRIPTION"]),
-                         ("failed", "1", "4", "Allow evil.example: evil.example is suspicious (exfil). "
-                                              "Allowing it only with --force"))
-
     def test_code_parameters_and_error_code(self):
         """#69: the action is the entry's code, its parameters are fields of their own, and a
         failure adds its error code and that error's parameters; the English text stays."""
         self.assertEqual(self.run_agentbox("allow", "all", "pypi.org", "--for", "1h", "--note", "x", "--json")[0], 0)
         self.assertEqual(self.run_agentbox("allow", "work", "evil.example", "--temporary")[0], 1)
+        entries = self.entries()
         ok, failed = [{k: v for k, v in e.items() if k.startswith("AGENTBOX_") and k != "AGENTBOX_ACTOR"}
-                      for e in self.entries()]
+                      for e in entries]
+        self.assertEqual([e["PRIORITY"] for e in entries], ["5", "4"])
         self.assertEqual(ok, {
             "AGENTBOX_KIND": "allowlist", "AGENTBOX_ACTION": "allow", "AGENTBOX_CODE": "allow",
             "AGENTBOX_OUTCOME": "ok", "AGENTBOX_DESCRIPTION": "Allow pypi.org for all VMs for 1 hour",

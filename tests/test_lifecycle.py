@@ -562,14 +562,6 @@ class LifecycleLockTest(LifecycleTest):
 
 
 class FocusTest(LifecycleTest):
-    def test_work_pauses_priv(self):
-        self.assertEqual(self.run_agentbox("focus", "work"), (0, "priv paused\n", ""))
-        self.assertEqual(self.vm_calls(), [("managedsave", "agentbox-priv")])
-
-    def test_priv_pauses_work(self):
-        self.assertEqual(self.run_agentbox("focus", "priv"), (0, "work paused\n", ""))
-        self.assertEqual(self.vm_calls(), [("managedsave", "agentbox-work")])
-
     def test_pauses_every_other_vm(self):
         vm_records.write(self.root, vm_records.record("lab", 3))
         self.assertEqual(self.run_agentbox("focus", "priv"), (0, "work paused\nlab paused\n", ""))

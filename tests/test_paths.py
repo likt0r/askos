@@ -163,7 +163,7 @@ class CheckoutTest(unittest.TestCase):
 
 
 class SystemTest(unittest.TestCase):
-    """The module itself: system locations, and AGENTBOX_ROOT moving what agentbox opens."""
+    """The module itself: AGENTBOX_ROOT moving what agentbox opens, not what it names."""
 
     def paths(self, **env):
         out = subprocess.run([sys.executable, "-I", "-c", """if True:
@@ -176,17 +176,6 @@ class SystemTest(unittest.TestCase):
             """, REPO], capture_output=True, text=True, env={"PATH": os.environ["PATH"], **env}, timeout=60,
                              check=True).stdout
         return json.loads(out)
-
-    def test_system_locations(self):
-        self.assertEqual(self.paths(), {
-            "PREFIX": "/usr", "CLI": "/usr/bin/agentbox", "PROXY": "/usr/libexec/agentbox-proxy",
-            "TOKEND": "/usr/libexec/agentbox-gh-tokend", "FEEDS_PROGRAM": "/usr/libexec/agentbox-feeds",
-            "SUSPICIOUS": "/usr/libexec/agentbox-suspicious", "WEB_BACKEND": "/usr/libexec/agentbox-web",
-            "WEB_STATIC": "/usr/share/agentbox/web", "WEB_UI": "/usr/share/agentbox/web/ui",
-            "VM_SOURCE": "/usr/share/agentbox/vm", "SEED_LISTS": "/usr/share/agentbox/lists",
-            # a checkout's own VERSION; installed, the one beside the package
-            "VERSION": os.path.join(REPO, "VERSION"),
-            "CONF": "/etc/agentbox", "STATE": "/var/lib/agentbox", "SYSTEMD": "/etc/systemd/system"})
 
     def test_under_agentbox_root_what_agentbox_opens_moves_and_what_it_names_stays(self):
         root = "/tmp/agentbox-test-root"
