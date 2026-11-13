@@ -1507,14 +1507,13 @@ class ContainersTest(ImagesTest):
         compose file's traefik:v3.5.4 failed. A drop-in after Fedora's own sets docker.io alone,
         as Docker has it; one registry leaves short-name-mode nothing to prompt for."""
         drop_ins = "etc/containers/registries.conf.d"
-        setting = [f for f in sorted(os.listdir(os.path.join(self.root, drop_ins)))
-                   if "unqualified-search-registries" in self.read(f"/{drop_ins}/{f}")]
-        self.assertEqual(len(setting), 1, setting)
-        conf = tomllib.loads(self.read(f"/{drop_ins}/{setting[0]}"))
-        self.assertEqual(conf, {"unqualified-search-registries": ["docker.io"]})   # aliases stay
+        found = {f: tomllib.loads(self.read(f"/{drop_ins}/{f}")) for f in os.listdir(os.path.join(self.root, drop_ins))}
+        [name] = [f for f, conf in found.items() if "unqualified-search-registries" in conf]
+        self.assertEqual(found[name], {"unqualified-search-registries": ["docker.io"]})   # aliases stay
         # drop-ins load in alpha-numerical order, later ones overwrite: after Fedora's shortnames
-        self.assertGreater(setting[0], "000-shortnames.conf")
-        self.assertEqual(sorted(os.listdir(os.path.join(self.root, drop_ins)))[-1], setting[0])
+        self.assertGreater(name, "000-shortnames.conf")
+        self.assertEqual(sorted(found)[-1], name)
+        self.assertTrue(f"`/{drop_ins}/{name}`" in self.read_repo("README.md"), f"README.md does not name {name}")
 
     def shell_docker_host(self, uid, docker_host):
         """DOCKER_HOST after a shell of user uid read the profile, with docker_host set before."""

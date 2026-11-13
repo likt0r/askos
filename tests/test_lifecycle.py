@@ -837,7 +837,7 @@ class WeeklyCheckFailSafeTest(LifecycleTest):
         result = {r["vm"]: r for r in json.loads(out)}
         self.assertEqual(result["priv"]["action"], "postponed")
         self.assertEqual(result["priv"]["reason"], "gui-unknown")
-        self.assertNotIn("shutdown", [c for c, _ in self.vm_calls()])
+        self.assertEqual(self.vm_calls(), [])
 
     def test_one_failing_vm_does_not_stop_the_others(self):
         os.remove(self.path("var/lib/agentbox/images/base.qcow2"))
