@@ -163,7 +163,7 @@ class CheckoutTest(unittest.TestCase):
 
 
 class SystemTest(unittest.TestCase):
-    """The module itself: system locations, and AGENTBOX_ROOT moving what agentbox opens."""
+    """The module itself: AGENTBOX_ROOT moving what agentbox opens, not what it names."""
 
     def paths(self, **env):
         out = subprocess.run([sys.executable, "-I", "-c", """if True:
