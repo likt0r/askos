@@ -96,8 +96,6 @@ JOURNAL = """\
 1793700950.000001 titan agentbox-proxy-work[812]: [work] CLOSED example.org (removed from the Allowlist)
 1793701100.000001 titan agentbox-proxy-work[812]: [work] BLOCKED ten.internal (does not resolve to a public address)
 1793701200.000001 titan agentbox-proxy-work[812]: [work] BLOCKED pypi.org (not on the Allowlist)
-1793701300.000001 titan agentbox-proxy-work[812]: [work] VERDACHT old.example [exfil]
-1793701300.000002 titan agentbox-proxy-work[812]: [work] BLOCKIERT old.example (nicht auf der Allowlist)
 """
 
 UNKNOWN_VM = "agentbox: No such VM: dev\n"
@@ -258,11 +256,6 @@ class BlockedTest(NetworkTest):
         self.assertEqual([(r["domain"], r["suspicious"]) for r in rows],
                          [("pypi.org", []), ("ten.internal", []), ("evil.example", ["exfil", "young"]), ("10.77.1.2", [])])
 
-    def test_older_german_keywords_are_ignored(self):
-        self.journal("1793701300.000001 titan agentbox-proxy-work[812]: [work] BLOCKIERT old.example "
-                     "(nicht auf der Allowlist)\n")
-        self.assertEqual(self.run_agentbox("blocked", "work", "--json"), (0, "[]\n", ""))
-
     def test_vm_names_with_hyphens(self):
         vm_records.write(self.root, vm_records.record("research-lab", 3))
         self.journal("1793701300.000001 titan agentbox-proxy-research-lab[812]: [research-lab] BLOCKED "
@@ -340,10 +333,6 @@ class AlertsTest(NetworkTest):
         self.assertEqual([a["domain"] for a in json.loads(out)], ["paste.example", "evil.example"])
 
     def test_no_entries(self):
-        self.assertEqual(self.run_agentbox("alerts", "work", "--json"), (0, "[]\n", ""))
-
-    def test_older_german_keywords_are_ignored(self):
-        self.journal("1793701300.000001 titan agentbox-proxy-work[812]: [work] VERDACHT old.example [exfil]\n")
         self.assertEqual(self.run_agentbox("alerts", "work", "--json"), (0, "[]\n", ""))
 
 

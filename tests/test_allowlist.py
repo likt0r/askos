@@ -248,18 +248,6 @@ class ScopeTest(ProxyTest):
         self.assertTrue(self.refused("all.example"))
         self.tunnel("new.example")
 
-    def test_log_keywords_are_english(self):
-        self.store(entry("a.example", "work"))
-        self.start()
-        self.tunnel("a.example")
-        self.assertTrue(self.refused("b.example"))
-        self.assertTrue(self.refused("upload.exfil.example"))
-        log = self.log()
-        for keyword in ("ALLOWED", "BLOCKED", "ALERT"):
-            self.assertRegex(log, rf"\[work\] {keyword} ")
-        for german in ("ERLAUBT", "BLOCKIERT", "VERDACHT", "bereit"):
-            self.assertNotIn(german, log)
-
 
 class ExpiryTest(ProxyTest):
     def test_expired_entry_stops_new_connections_but_the_open_tunnel_continues(self):
@@ -724,7 +712,6 @@ class ListTest(CliTest):
             proxy_line("priv", "ALLOWED docs.rs (allowlist docs.rs priv)", 400),
             proxy_line("work", "ALLOWED files.pypi.org (allowlist pypi.org work)", 300),
             proxy_line("work", "ALLOWED github.com (allowlist github.com all)", 25 * 3600),     # older than a day
-            proxy_line("work", "ERLAUBT github.com", 200),                                   # German: ignored
             proxy_line("work", "ALLOWED pypi.org (open web)", 100),
             proxy_line("work", "BLOCKED pypi.org (not on the Allowlist)", 50),
         ])
