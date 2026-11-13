@@ -12,12 +12,11 @@ User-Agent) und die Adresse des Browsers; agentbox vermerkt damit jede Aktion
 in der Aktivitaet. Anmeldungen vermerkt dieser Dienst selbst
 dort (Journal-Namensraum agentbox, Kennung agentbox-activity), nie mit Passwort.
 
-Die versionierte API /api/v1/... (docs/control-room-api.md) dient der neuen
-Oberflaeche (Nuxt, als statische Dateien unter AGENTBOX_WEB_UI installiert); die
-unversionierten Endpunkte bleiben fuer die bisherige Oberflaeche, bis die neue sie
-ersetzt. Live-Ereignisse (GET /api/events) kommen aus den Messwerten des Hosts und aus
-einem einzigen `sudo -n agentbox watch`, das dieser Dienst startet (und neu startet,
-wenn es endet) und dessen Ereignisse er an alle Verbindungen verteilt.
+Die API /api/v1/... (docs/control-room-api.md) dient der Oberflaeche (Nuxt, als
+statische Dateien unter AGENTBOX_WEB_UI installiert). Live-Ereignisse (GET
+/api/v1/events) kommen aus den Messwerten des Hosts und aus einem einzigen
+`sudo -n agentbox watch`, das dieser Dienst startet (und neu startet, wenn es endet)
+und dessen Ereignisse er an alle Verbindungen verteilt.
 
   agentbox-web                     Server starten (HTTPS)
   agentbox-web --hash-password     Passwort von stdin lesen, Hash ausgeben
@@ -59,9 +58,7 @@ sys.path.insert(0, _package_dir())
 from agentbox import paths  # noqa: E402
 
 CONF = os.environ.get("AGENTBOX_WEB_CONF", "/etc/agentbox/web")
-STATIC = os.environ.get("AGENTBOX_WEB_STATIC", paths.WEB_STATIC)
-# Die neue Oberflaeche (Nuxt, statisch erzeugt): index.html, _nuxt/, Schriften, ...
-# Solange dort keine index.html liegt, gilt die bisherige aus STATIC.
+# Die Oberflaeche (Nuxt, statisch erzeugt): index.html, _nuxt/, Schriften, ...
 UI = os.environ.get("AGENTBOX_WEB_UI", paths.WEB_UI)
 # Adresse und Port kommen aus dem Host setup (host.json, nur auf dem Host aenderbar; ADR 0009),
 # ohne die Datei gilt Local-only. Die Umgebung hat Vorrang (Tests, Entwicklung).
@@ -113,14 +110,9 @@ LANGUAGES = ("browser", "en", "de")     # default_language der Einstellungen, de
 MAX_FAILS, LOCK_SECONDS = 5, 15 * 60
 MAX_BODY = 8 * 1024
 DRAIN_BODY = 1024 * 1024    # so viel eines abgelehnten Bodys wird noch abgenommen
-STATIC_FILES = {
-    "/": ("index.html", "text/html; charset=utf-8"),
-    "/app.js": ("app.js", "text/javascript; charset=utf-8"),
-    "/style.css": ("style.css", "text/css; charset=utf-8"),
-}
 
-# Content-Security-Policy der API und der bisherigen Oberflaeche; die neue bekommt
-# zusaetzlich die Hashes der Inline-Skripte ihrer index.html (UiBuild)
+# Content-Security-Policy der API; die Seiten der Oberflaeche bekommen zusaetzlich die
+# Hashes der Inline-Skripte ihrer index.html (UiBuild)
 CSP = ("default-src 'self'; style-src 'self'; script-src 'self'; "
        "img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
 
@@ -244,106 +236,19 @@ def check_password(password):
     return hmac.compare_digest(got.hex(), digest)
 
 
-# --- agentbox ---------------------------------------------------------------
+# --- Werte fuer agentbox -------------------------------------------------------
+# Was aus einer Anfrage zu einer Option von agentbox wird. Werte gehen immer als
+# --option=wert hinaus, damit keiner zur eigenen Option wird; agentbox prueft sie.
 
-def agentbox(command, *args, stdin=None, timeout=300):
-    # der Befehl zuerst (nur ihn laesst die sudoers-Regel dort zu), --actor direkt dahinter
-    actor = getattr(request, "actor", None)
-    argv = [*AGENTBOX, command, *([f"--actor={actor}"] if actor else []), *args]
-    r = subprocess.run(argv, input=stdin, capture_output=True, text=True, timeout=timeout)
-    # a failure with --json is a JSON object on stderr (cli_error); the old UI shows its message
-    said = cli_error(r.stderr) if r.returncode != 0 else None
-    out = (r.stdout.strip() or (said[1] if said else r.stderr.strip())).removeprefix("agentbox: ")
-    return r.returncode == 0, out
-
-
-def agentbox_json(*args):
-    ok, out = agentbox(*args, timeout=60)
-    if not ok:
-        raise RuntimeError(out)
-    return json.loads(out or "null")
-
-
-# Filter fuer das Journal einer VM -> Option von `agentbox logs`. Werte gehen
-# immer als --option=wert hinaus, damit keiner zur eigenen Option wird;
-# agentbox prueft sie.
+# Filter fuer das Journal einer VM -> Option von `agentbox logs`
 LOG_FILTERS = {"unit": "--unit", "priority": "--priority", "since": "--since", "until": "--until",
                "boot": "--boot", "grep": "--grep", "lines": "--lines", "after_cursor": "--after-cursor"}
 
-
-def logs(ctx, body):
-    args = []
-    for key, opt in LOG_FILTERS.items():
-        v = body.get(key)
-        if v is None:                    # null = kein Filter
-            continue
-        # nur Text und ganze Zahlen; true/false, Listen, Kommazahlen sind Fehler,
-        # nicht etwas, das zu Text umgewandelt wird
-        if isinstance(v, bool) or not isinstance(v, (str, int)):
-            return False, f"invalid value for {key}"
-        v = str(v)
-        if not v.strip():                # leer = kein Filter
-            continue
-        # Suchtext unveraendert (Leerzeichen koennen gemeint sein), sonst getrimmt
-        args.append(f"{opt}={v if key == 'grep' else v.strip()}")
-    return agentbox("logs", ctx, *args, "--json", timeout=60)
-
-
-# Neue VM: Feld -> Option von `agentbox create`. Werte gehen als --option=wert
-# hinaus (wie bei logs); agentbox prueft sie, Netz und Orca-Port vergibt es selbst.
+# Neue VM: Feld -> Option von `agentbox create`; Netz und Orca-Port vergibt agentbox selbst
 CREATE_FIELDS = {"image": "--image", "memory_mib": "--memory-mib", "data_disk_gib": "--data-disk-gib",
                  "copy_allowlist_from": "--copy-allowlist-from"}
 
-
-def create(ctx, body):
-    args = []
-    for key, opt in CREATE_FIELDS.items():
-        v = body.get(key)
-        if v is None or v == "":         # null/leer = Vorgabe
-            continue
-        if isinstance(v, bool) or not isinstance(v, (str, int)):
-            raise ValueError(f"invalid value for {key}")
-        args.append(f"{opt}={str(v).strip()}")
-    owners = body.get("github_owners") or []
-    if not isinstance(owners, list) or not all(isinstance(o, str) for o in owners):
-        raise ValueError("github_owners must be a list of names")
-    args += [f"--owner={o.strip()}" for o in owners if o.strip()]
-    return agentbox("create", ctx, *args, "--json")
-
-
-def delete(ctx, body):
-    # Loeschen nur mit dem getippten Namen; agentbox prueft ihn noch einmal
-    if body.get("confirm") != ctx:
-        raise ValueError(f"type the name {ctx} to delete it")
-    data = body.get("delete_data_disk", False)
-    if not isinstance(data, bool):
-        raise ValueError("delete_data_disk must be true or false")
-    return agentbox("delete", ctx, f"--confirm={ctx}", *(["--delete-data-disk"] if data else []), "--json")
-
-
-def pair(ctx, body):
-    # Der Code gibt vollen Zugriff auf die VM: nur mit ausdruecklicher Bestaetigung
-    if body.get("confirm") is not True:
-        raise ValueError("the Pairing code is shown only with confirm=true")
-    return agentbox("pair", ctx)
-
-
-def revoke_pairings(ctx, body):
-    # wie Loeschen: nur mit dem getippten Namen; agentbox prueft ihn noch einmal
-    if body.get("confirm") != ctx:
-        raise ValueError(f"type the name {ctx} to revoke its pairings")
-    return agentbox("revoke-pairings", ctx, f"--confirm={ctx}", "--json", timeout=240)
-
-
-def unpair(ctx, body):
-    device = body.get("device")
-    if not isinstance(device, str) or not device.strip() or device.strip().startswith("-"):
-        raise ValueError("device is missing or invalid")
-    return agentbox("unpair", ctx, device.strip(), "--json")
-
-
-# Filter der Aktivitaet (Query-Parameter) -> Option von `agentbox activity`;
-# wie bei logs immer als --option=wert, agentbox prueft die Werte
+# Filter der Aktivitaet (Query-Parameter) -> Option von `agentbox activity`
 ACTIVITY_FILTERS = {"kind": "--kind", "vm": "--vm", "since": "--since", "until": "--until",
                     "search": "--search", "lines": "--lines"}
 
@@ -367,15 +272,6 @@ def query_options(query, filters):
     return args
 
 
-def activity(query):
-    """GET /api/activity?kind=..&vm=..&since=..&until=..&search=..&lines=..: Zeitleiste."""
-    try:
-        args = query_options(query, ACTIVITY_FILTERS)
-    except ValueError as e:
-        return False, str(e)
-    return agentbox("activity", *args, "--json", timeout=120)
-
-
 # Einstellungen, die der Leitstand aendern darf (agentbox prueft die Werte; ein Test haelt
 # die Liste mit `agentbox settings` gleich). Passwort, Heimnetz und Ports gehoeren nicht dazu.
 SETTING_KEYS = ("reset_age_days", "maintenance_time", "rebuild_day", "builds_kept",
@@ -397,242 +293,12 @@ def setting_text(key, value):
     return str(value) if isinstance(value, (str, int)) else None
 
 
-def set_settings(body):
-    """POST /api/settings {schluessel: wert, ...}: nur bekannte Schluessel, Werte Text oder Zahl
-    (auto_update auch true/false; "default" fuer den Standard); agentbox prueft sie und speichert
-    alles oder nichts."""
-    if not body:
-        raise ValueError("no setting given")
-    args = []
-    for key, value in body.items():
-        if key not in SETTING_KEYS:
-            raise ValueError(f"unknown setting: {str(key)[:40]}")
-        if setting_text(key, value) is None:
-            raise ValueError(f"{key}: text or a number expected")
-        args.append(f"{key}={setting_text(key, value)}")
-    return agentbox("set-settings", *args, "--json", timeout=120)
-
-
-# --- Images und Builds ----------------------------------------------------------
-# Live-Fortschritt eines Builds: die Oberflaeche fragt GET /api/images/<image>/log mit
-# after_cursor alle paar Sekunden nach neuen Zeilen, solange GET /api/images ihn als
-# laufend zeigt. Ein build-Ereignis im SSE-Strom braeuchte einen Dienst, der als root das
-# Journal verfolgt (agentbox watch, geplant); dieser Dienst darf es nicht lesen.
-
 IMAGE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")          # wie agentbox/settings.py
 BUILD_ID = re.compile(r"[0-9]{8}(-[0-9]{4}([0-9]{2})?)?")    # wie agentbox/images.py
 ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")         # a VM variable, as agentbox/vmenv.py
 BUILD_LOG_FILTERS = {"after_cursor": "--after-cursor", "lines": "--lines"}
-
-
-def build_log(image, query):
-    """GET /api/images/<image>/log?build=..&after_cursor=..&lines=..: Protokoll eines Builds
-    (ohne build: der laufende, sonst der neueste); agentbox prueft die Werte."""
-    try:
-        builds = parse_qs(query, max_num_fields=6).get("build", [])
-        args = query_options(query, BUILD_LOG_FILTERS)
-    except ValueError as e:
-        return False, str(e)
-    if len(builds) > 1:
-        return False, "give build only once"
-    build = builds[0].strip() if builds else ""
-    if build and not BUILD_ID.fullmatch(build):
-        return False, f"invalid Build: {build[:40]}"
-    return agentbox("build-log", image, *([build] if build else []), *args, "--json", timeout=60)
-
-
-def start_build(body):
-    """POST /api/build {"image": "<image>"|"all"}: Build aus dem installierten Release starten (Unit)."""
-    image = body.get("image")
-    if image == "all":
-        return agentbox("build", "--all", "--json", timeout=60)
-    if not isinstance(image, str) or not IMAGE_NAME.fullmatch(image):
-        raise ValueError("image must be the name of an Image or all")
-    return agentbox("build", image, "--json", timeout=60)
-
-
-def set_image(ctx, body):
-    """POST /api/<vm>/set-image {"image": .., "build": null|"<build>"}: Image der VM und
-    optional ein frueherer Build; gilt ab dem naechsten Reset."""
-    image, build = body.get("image"), body.get("build")
-    if not isinstance(image, str) or not IMAGE_NAME.fullmatch(image):
-        raise ValueError("image is missing or invalid")
-    if build is not None and (not isinstance(build, str) or not BUILD_ID.fullmatch(build)):
-        raise ValueError("build must be null or a Build")
-    return agentbox("set-image", ctx, image, *([f"--build={build}"] if build else []), "--json")
-
-
-# --- Zugangsdaten ------------------------------------------------------------
-# Token und Schluessel gehen nur ueber stdin an agentbox, nie als Argument, und
-# kommen in keiner Antwort, keinem Log und keiner Fehlermeldung vor.
-
 TOKEN_FILTERS = {"since": "--since", "until": "--until", "lines": "--lines"}
 APP_ID = re.compile(r"[1-9][0-9]{0,11}")
-# Aktion -> Felder des Bodys, die ein Geheimnis tragen
-SECRET_FIELDS = {"claude-token": ("token",), "github-app": ("private_key",)}
-
-
-def scrub(text, action, body):
-    """Text ohne das, was die Aktion als Geheimnis bekam: als Ganzes, ohne
-    Leerraum (so speichert agentbox ein Token) und Zeile fuer Zeile (PEM).
-    agentbox gibt es nie aus; das hier haelt es auch dann aus Antwort und Log."""
-    for name in SECRET_FIELDS.get(action, ()):
-        v = body.get(name)
-        if not isinstance(v, str):
-            continue
-        parts = {v.strip(), "".join(v.split()), *(line.strip() for line in v.splitlines())}
-        for part in sorted((p for p in parts if len(p) >= 16), key=len, reverse=True):
-            text = text.replace(part, "[hidden]")
-    return text
-
-
-def github_tokens(ctx, query):
-    """GET /api/<vm>/github-tokens?since=..&until=..&lines=..: Repos mit Tokens, Ablehnungen."""
-    try:
-        args = query_options(query, TOKEN_FILTERS)
-    except ValueError as e:
-        return False, str(e)
-    return agentbox("github-tokens", ctx, *args, "--json", timeout=120)
-
-
-def claude_token(ctx, body):
-    """Claude-Token setzen; agentbox prueft es bei Anthropic, bevor es das alte ersetzt."""
-    token = body.get("token")
-    if not isinstance(token, str) or not token.strip():
-        raise ValueError("token is missing or not text")
-    return agentbox("set-claude-token", ctx, "--no-prompt", stdin=token, timeout=120)
-
-
-def set_owners(ctx, body):
-    owners = body.get("owners")
-    if not isinstance(owners, list) or not all(isinstance(o, str) for o in owners):
-        raise ValueError("owners must be a list of names")
-    names = [o.strip() for o in owners if o.strip()]
-    # GitHub-Namen beginnen nie mit "-": so wird keiner zur Option
-    if any(n.startswith("-") for n in names):
-        raise ValueError("invalid GitHub name")
-    return agentbox("set-owners", ctx, *names)
-
-
-def set_github_app(body):
-    """POST /api/github-app {"app_id": .., "private_key": ".pem"}: App-ID und Schluessel
-    ersetzen; agentbox prueft beides vorher bei GitHub."""
-    app_id = body.get("app_id")
-    if isinstance(app_id, bool) or not isinstance(app_id, (str, int)) or not APP_ID.fullmatch(str(app_id).strip()):
-        raise ValueError("app_id must be a number")
-    key = body.get("private_key")
-    if not isinstance(key, str) or not key.strip():
-        raise ValueError("private_key is missing or not text")
-    return agentbox("set-github-app", str(app_id).strip(), "--no-prompt", "--json", stdin=key, timeout=120)
-
-
-def domain(body):
-    """Domain aus dem Body; agentbox prueft sie. Nie etwas, das wie eine Option aussieht."""
-    d = body.get("domain")
-    if not isinstance(d, str) or not d.strip() or d.strip().startswith("-"):
-        raise ValueError("domain is missing or invalid")
-    return d.strip().lower()
-
-
-def mark_seen(ctx, body):
-    """Alle Alerts der VM, oder mit domain die zu einem Ziel, als gesehen markieren."""
-    if body.get("domain") in (None, ""):
-        return agentbox("mark-seen", ctx)
-    return agentbox("mark-seen", ctx, domain(body))
-
-
-# Allowlist. ctx ist eine VM oder "all" (alle VMs); agentbox prueft beides.
-# Dauer ("duration") einer Freigabe -> Option von agentbox allow/extend: ohne
-# Dauer (null oder "permanent") dauerhaft, "default" die voreingestellte Dauer
-# voruebergehender Freigaben. --force gibt der Leitstand nie mit: stark
-# verdaechtige Ziele gibt nur die Kommandozeile frei.
-DURATIONS = ("15min", "1h", "8h", "7d")
-
-
-def duration(body, temporary_only=False):
-    d = body.get("duration")
-    if d in DURATIONS:
-        return [f"--for={d}"]
-    if not temporary_only and d in (None, "permanent"):
-        return []
-    if not temporary_only and d == "default":
-        return ["--temporary"]
-    raise ValueError("duration must be " + ("" if temporary_only else "permanent, default, ") + "15min, 1h, 8h or 7d")
-
-
-def note(body, required=False):
-    """Notiz als --note=wert (wird so nie zur eigenen Option); agentbox prueft sie."""
-    n = body.get("note")
-    if n is None and not required:
-        return []
-    if not isinstance(n, str):
-        raise ValueError("note must be text")
-    return [f"--note={n}"]
-
-
-def allow(ctx, body):
-    """Freigabe fuer eine VM oder alle, dauerhaft oder auf Zeit, mit Notiz; auch aus
-    der Liste der blockierten Ziele einer VM."""
-    return agentbox("allow", ctx, domain(body), *duration(body), *note(body))
-
-
-def allowlist_entries(query):
-    """GET /api/allowlist?vm=..: alle Freigaben oder die, die fuer eine VM gelten
-    (vm=all: die fuer alle VMs), mit Restzeit und Nutzung der letzten 24 Stunden."""
-    try:
-        params = parse_qs(query, max_num_fields=2)
-    except ValueError:
-        return False, "too many parameters"
-    values = params.get("vm", [])
-    if len(values) > 1:
-        return False, "give vm only once"
-    vm = values[0].strip() if values else ""
-    if vm and not VM_NAME.fullmatch(vm):
-        return False, f"No such VM: {vm[:40]}"
-    return agentbox("allowlist", *([vm] if vm else []), "--json", timeout=120)
-
-
-# Aktion -> Funktion(ctx, body) -> (ok, text). Nur diese sind erreichbar.
-ACTIONS = {
-    "start": lambda c, b: agentbox("start", c),
-    "pause": lambda c, b: agentbox("pause", c),
-    "restart": lambda c, b: agentbox("restart", c),
-    "reset": lambda c, b: agentbox("reset", c),
-    "focus": lambda c, b: agentbox("focus", c),
-    "allow": allow,
-    "disallow": lambda c, b: agentbox("disallow", c, domain(b)),
-    "extend": lambda c, b: agentbox("extend", c, domain(b), *duration(b, temporary_only=True)),
-    "make-permanent": lambda c, b: agentbox("make-permanent", c, domain(b)),
-    "set-note": lambda c, b: agentbox("set-note", c, domain(b), *note(b, required=True)),
-    "open-web": lambda c, b: agentbox("open-web", c, str(int(b.get("minutes", 30)))),
-    "close-web": lambda c, b: agentbox("close-web", c),
-    "set-owners": set_owners,
-    "claude-token": claude_token,
-    "pair": pair,
-    "pairings": lambda c, b: agentbox("pairings", c, "--json", timeout=60),
-    "unpair": unpair,
-    "revoke-pairings": revoke_pairings,
-    "logs": logs,
-    "create": create,
-    "delete": delete,
-    "mark-seen": mark_seen,
-    "set-image": set_image,
-}
-# Antworten dieser Aktionen nie ins Journal
-SECRET_ACTIONS = {"pair", "claude-token", "logs", "github-app"}
-# Diese antworten bei Erfolg mit dem JSON von agentbox statt mit einer Meldung
-JSON_ACTIONS = {"logs", "create", "delete", "check-domain", "pairings", "revoke-pairings", "settings",
-                "github-app", "build", "set-image"}
-
-# Aktionen ohne VM (Verdachtsliste, GitHub-App): POST /api/<aktion>
-GLOBAL_ACTIONS = {
-    "check-domain": lambda b: agentbox("check-domain", domain(b), "--json", timeout=60),
-    "mark-harmless": lambda b: agentbox("mark-harmless", domain(b)),
-    "unmark-harmless": lambda b: agentbox("unmark-harmless", domain(b)),
-    "settings": set_settings,
-    "github-app": set_github_app,
-    "build": start_build,
-}
 
 
 # --- HTTP -------------------------------------------------------------------
@@ -708,84 +374,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
             raise ValueError("JSON object expected")
         return obj
 
-    # GET: Seite und Lese-APIs
+    # Unter /api/ nur die API (v1), sonst die Oberflaeche
     def do_GET(self):
         request.actor = self.actor()
         url = urlparse(self.path)
-        path = url.path
-        if path.startswith("/api/v1/") or path == "/api/v1":
+        if url.path.startswith("/api/"):
             return v1(self, "GET", url)
-        if not path.startswith("/api/"):
-            return serve_page(self, path)
-        if not self.session():
-            return self.send_json(401, {"error": "not signed in"})
-        parts = path.split("/")[2:]
-        if parts == ["host"]:
-            return serve_host(self)
-        if parts == ["events"]:
-            return serve_events(self)
-        try:
-            if parts == ["status"]:
-                # die alte Oberflaeche kennt nur VMs: host_warnings zeigt die neue (System)
-                return self.send_json(200, {k: v for k, v in agentbox_json("status", "--json").items()
-                                            if k != "host_warnings"})
-            if parts == ["activity"]:
-                ok, out = activity(url.query)
-                if not ok:
-                    return self.send_json(400, {"error": out[:300]})
-                return self.send_json(200, json.loads(out))
-            if parts == ["settings"]:
-                return self.send_json(200, agentbox_json("settings", "--json"))
-            if parts == ["harmless"]:
-                return self.send_json(200, agentbox_json("harmless", "--json"))
-            if parts == ["github-app"]:
-                # fragt GitHub: scheitert das, ist es kein Fehler dieses Dienstes
-                ok, out = agentbox("github-app", "--json", timeout=120)
-                if not ok:
-                    return self.send_json(502, {"error": out[:300]})
-                return self.send_json(200, json.loads(out))
-            if parts == ["allowlist"]:
-                ok, out = allowlist_entries(url.query)
-                if not ok:
-                    return self.send_json(400, {"error": out[:300]})
-                return self.send_json(200, json.loads(out))
-            if parts == ["images"]:
-                return self.send_json(200, agentbox_json("images", "--json"))
-            if len(parts) == 3 and parts[0] == "images" and IMAGE_NAME.fullmatch(parts[1]) and parts[2] == "log":
-                ok, out = build_log(parts[1], url.query)
-                if not ok:
-                    return self.send_json(400, {"error": out[:300]})
-                return self.send_json(200, json.loads(out))
-            if len(parts) == 2 and VM_NAME.fullmatch(parts[0]):
-                ctx, what = parts
-                if what == "github-tokens":
-                    ok, out = github_tokens(ctx, url.query)
-                    if not ok:
-                        return self.send_json(400, {"error": out[:300]})
-                    return self.send_json(200, json.loads(out))
-                if what == "blocked":
-                    return self.send_json(200, agentbox_json("blocked", ctx, "--json"))
-                if what == "alerts":
-                    return self.send_json(200, agentbox_json("alerts", ctx, "--json"))
-                if what == "allowlist":
-                    # die eigenen Freigaben der VM als Domains (die bisherige Oberflaeche);
-                    # alles mit Geltungsbereich und Ablauf: GET /api/allowlist?vm=<vm>
-                    entries = agentbox_json("allowlist", ctx, "--json")
-                    return self.send_json(200, [e["domain"] for e in entries
-                                                if e.get("scope") == ctx and e.get("domain")])
-                if what == "owners":
-                    ok, out = agentbox("owners", ctx, timeout=30)
-                    return self.send_json(200, [l for l in out.splitlines() if l.strip()] if ok else [])
-        except Exception as e:
-            return self.send_json(500, {"error": str(e)[:300]})
-        return self.send_json(404, {"error": "not found"})
+        return serve_page(self, url.path)
 
-    # POST: Anmeldung und Aktionen
     def do_HEAD(self):
         path = urlparse(self.path).path
         if path.startswith("/api/"):
             return self.send_error(501)
         return serve_page(self, path)
+
+    def do_POST(self):
+        self.other("POST")
 
     def do_PUT(self):
         self.other("PUT")
@@ -797,79 +401,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.other("DELETE")
 
     def other(self, method):
-        """PUT, PATCH, DELETE: nur die API v1 kennt sie."""
+        """POST, PUT, PATCH, DELETE: nur die API kennt sie."""
         request.actor = self.actor()
         url = urlparse(self.path)
-        if url.path.startswith("/api/v1/"):
+        if url.path.startswith("/api/"):
             return v1(self, method, url)
         return self.send_error(501)
 
-    def do_POST(self):
-        request.actor = self.actor()
-        url = urlparse(self.path)
-        path = url.path
-        if path.startswith("/api/v1/"):
-            return v1(self, "POST", url)
-        # Schutz gegen Cross-Site-Requests: nur das eigene JS setzt diesen Header
-        if self.headers.get("X-Agentbox") != "1":
-            return self.send_json(403, {"error": "forbidden"})
-        try:
-            body = self.body()
-        except (ValueError, json.JSONDecodeError) as e:
-            return self.send_json(400, {"error": str(e)})
-
-        if path == "/api/login":
-            return self.login(body)
-        if path == "/api/logout":
-            token = self.session()
-            with lock:
-                sessions.pop(token, None)
-            if token:
-                signin_activity(self, "signout")
-            return self.send_json(200, {"ok": True}, extra=[("Set-Cookie", "agentbox=; Max-Age=0; Path=/; Secure; HttpOnly; SameSite=Strict")])
-
-        if not self.session():
-            return self.send_json(401, {"error": "not signed in"})
-        parts = path.split("/")[2:]
-        if len(parts) == 1 and parts[0] in GLOBAL_ACTIONS:
-            ctx, action = None, parts[0]
-        elif len(parts) != 2 or not VM_NAME.fullmatch(parts[0]) or parts[1] not in ACTIONS:
-            return self.send_json(404, {"error": "unknown action"})
-        else:
-            ctx, action = parts
-        try:
-            ok, out = GLOBAL_ACTIONS[action](body) if ctx is None else ACTIONS[action](ctx, body)
-        except subprocess.TimeoutExpired:
-            ok, out = False, "timed out"
-        except (ValueError, TypeError) as e:
-            ok, out = False, f"invalid input: {e}"
-        # was an Token oder Schluessel kam, geht nie zurueck, auch nicht im Log
-        out = scrub(out, action, body)
-        result = None
-        if ok and action in JSON_ACTIONS:
-            try:
-                result = json.loads(out)
-            except ValueError:
-                ok, out = False, "unreadable answer from agentbox"
-        # Antworten vertraulicher Aktionen nie ins Journal; bei logs auch keine
-        # Fehlertexte (Inhalte aus der VM), bei pair/claude-token schon (Diagnose)
-        shown = "(confidential)" if ok and action in SECRET_ACTIONS or action == "logs" else out[:200]
-        log(f"{self.ip()}: {ctx or '-'} {action} -> {'ok' if ok else 'FAILED'}: {shown}")
-        if result is not None:
-            return self.send_json(200, result)
-        return self.send_json(200 if ok else 400, {"ok": ok, "message": out})
-
-    def login(self, body):
-        result, value = self.attempt_login(body.get("password", ""))
-        if result == "locked":
-            return self.send_json(429, {"error": "too many failed attempts, try again later"})
-        if result == "wrong":
-            return self.send_json(401, {"error": "wrong password"})
-        return self.send_json(200, {"ok": True}, extra=[("Set-Cookie", value)])
-
     def attempt_login(self, password):
-        """Anmeldung mit Bremse (alte und neue API): ("ok", Cookie), ("locked", Sekunden bis
-        zum naechsten Versuch) oder ("wrong", None)."""
+        """Anmeldung mit Bremse: ("ok", Cookie), ("locked", Sekunden bis zum naechsten
+        Versuch) oder ("wrong", None)."""
         ip = self.ip()
         now = time.time()
         with lock:
@@ -950,7 +491,7 @@ sampler = None          # startet mit dem Server (main)
 
 
 class Events:
-    """Ein Ereignisstrom fuer alle Live-Verbindungen (GET /api/events).
+    """Ein Ereignisstrom fuer alle Live-Verbindungen (GET /api/v1/events).
 
     Jedes Ereignis bekommt eine fortlaufende ID `<STREAM_ID>-<n>` und wird einmal
     als SSE-Text gebaut. Die letzten REPLAY_EVENTS liegen in einem Ringpuffer, aus
@@ -1036,31 +577,22 @@ def publish_sample(sample):
                    value=r["value"], threshold=r["threshold"])
 
 
-def serve_host(handler):
-    """GET /api/host: aktuelle Messwerte, Schwellen und Verlauf."""
-    if sampler is None:
-        return handler.send_json(503, {"error": "host readings not available"})
-    return handler.send_json(200, sampler.snapshot())
-
-
 def session_alive(token):
     with lock:
         exp = sessions.get(token)
         return bool(exp and exp > time.time())
 
 
-def serve_events(handler, v1=False):
-    """GET /api/events (und /api/v1/events): Server-Sent Events, bis der Browser geht oder
-    die Sitzung endet."""
+def serve_events(handler):
+    """GET /api/v1/events: Server-Sent Events, bis der Browser geht oder die Sitzung endet."""
     token = handler.session()
     with events.cond:
         full = events.streams >= MAX_STREAMS
         if not full:
             events.streams += 1
     if full:
-        error = api_error("too_many_streams", "Too many live connections, try again later") if v1 else \
-            {"error": "too many live connections"}
-        return handler.send_json(503, error, extra=[("Retry-After", "10")])
+        return handler.send_json(503, api_error("too_many_streams", "Too many live connections, try again later"),
+                                 extra=[("Retry-After", "10")])
     handler.close_connection = True
     try:
         pos, resumed, first = events.resume(handler.headers.get("Last-Event-ID", ""))
@@ -1228,12 +760,13 @@ watcher = Watch()
 
 
 # --- Oberflaeche ----------------------------------------------------------------
-# Die neue Oberflaeche ist ein statischer Nuxt-Build (ssr: false): index.html, die
+# Die Oberflaeche ist ein statischer Nuxt-Build (ssr: false): index.html, die
 # gehashten Dateien unter /_nuxt/ (und /_fonts/), sonst ein paar feste Dateien. Jeder
 # Pfad, der keine API und keine Datei ist, bekommt index.html (die Oberflaeche waehlt
 # die Seite selbst). Die CSP bleibt bei 'self'; erlaubt sind zusaetzlich genau die
 # Inline-Skripte (und -Styles) dieser index.html, ueber ihre sha256-Hashes, die beim
-# Laden der Datei berechnet werden. Ohne neue Oberflaeche gilt die bisherige.
+# Laden der Datei berechnet werden. Ohne installierten Build antwortet jede Seite 503,
+# die API bleibt erreichbar.
 
 UI_CHECK_SECONDS = max(0.05, float(os.environ.get("AGENTBOX_WEB_UI_CHECK_SECONDS", "2")))
 IMMUTABLE = ("/_nuxt/", "/_fonts/")     # Dateinamen mit Inhalts-Hash
@@ -1275,63 +808,45 @@ def page_csp(scripts, styles):
 
 
 class UiBuild:
-    """Die installierte Oberflaeche: welche (neu oder bisherig), ihre Version (Hash der
-    index.html) und die CSP ihrer Seite. Wird alle UI_CHECK_SECONDS neu geprueft; eine neue
-    Version geht als version-Ereignis an alle offenen Seiten."""
+    """Die installierte Oberflaeche: ihre Version (Hash der index.html) und die CSP ihrer
+    Seite, None ohne Build. Wird alle UI_CHECK_SECONDS neu geprueft; eine neue Version geht
+    als version-Ereignis an alle offenen Seiten."""
 
     def __init__(self):
         self.lock = threading.Lock()
         self.key = None
-        self.info = None            # {"kind", "root", "index", "version", "installed", "csp", "etag"}
+        self.info = None            # {"root", "index", "version", "installed", "csp", "etag"}
 
-    def _key(self):
-        files = [os.path.join(UI, "index.html")]
+    @staticmethod
+    def _key():
         try:
-            st = os.stat(files[0])
-            return ("nuxt", os.path.realpath(UI), st.st_mtime_ns, st.st_size, st.st_ino)
+            st = os.stat(os.path.join(UI, "index.html"))
         except OSError:
-            pass
-        out = ["legacy"]
-        for name in ("index.html", "app.js", "style.css"):
-            try:
-                st = os.stat(os.path.join(STATIC, name))
-                out.append((name, st.st_mtime_ns, st.st_size, st.st_ino))
-            except OSError:
-                out.append((name, None))
-        return tuple(out)
+            return None
+        return os.path.realpath(UI), st.st_mtime_ns, st.st_size, st.st_ino
 
     def refresh(self):
-        """True, wenn sich die installierte Oberflaeche geaendert hat."""
+        """True, wenn sich die installierte Oberflaeche geaendert hat (auch: kam oder ging)."""
         key = self._key()
         with self.lock:
             if key == self.key:
                 return False
-        info = self._load(key)
+        info = self._load() if key else None
         with self.lock:
-            changed = self.info is None or info["version"] != self.info["version"]
+            changed = (self.info or {}).get("version") != (info or {}).get("version")
             self.key, self.info = key, info
         return changed
 
     @staticmethod
-    def _load(key):
-        if key[0] == "nuxt":
-            root = os.path.realpath(UI)
-            with open(os.path.join(root, "index.html"), "rb") as f:
-                index = f.read()
-            scripts, styles = inline_hashes(index.decode("utf-8", "replace"))
-            digest = hashlib.sha256(index).hexdigest()
-            installed = os.stat(os.path.join(root, "index.html")).st_mtime
-            return {"kind": "nuxt", "root": root, "index": index, "version": digest[:16], "csp": page_csp(scripts, styles),
-                    "etag": f'"{digest[:32]}"', "installed": installed}
-        h = hashlib.sha256()
-        for name in ("index.html", "app.js", "style.css"):
-            try:
-                with open(os.path.join(STATIC, name), "rb") as f:
-                    h.update(f.read())
-            except OSError:
-                pass
-        return {"kind": "legacy", "root": STATIC, "index": None, "version": "legacy-" + h.hexdigest()[:16],
-                "csp": CSP, "etag": None, "installed": None}
+    def _load():
+        root = os.path.realpath(UI)
+        with open(os.path.join(root, "index.html"), "rb") as f:
+            index = f.read()
+        scripts, styles = inline_hashes(index.decode("utf-8", "replace"))
+        digest = hashlib.sha256(index).hexdigest()
+        installed = os.stat(os.path.join(root, "index.html")).st_mtime
+        return {"root": root, "index": index, "version": digest[:16], "csp": page_csp(scripts, styles),
+                "etag": f'"{digest[:32]}"', "installed": installed}
 
     def current(self):
         with self.lock:
@@ -1344,17 +859,22 @@ class UiBuild:
 
     def public(self):
         info = self.current()
-        installed = info["installed"]
-        return {"version": info["version"], "ui": info["kind"],
-                "installed": datetime.datetime.fromtimestamp(installed, datetime.timezone.utc)
-                .isoformat(timespec="seconds").replace("+00:00", "Z") if installed else None}
+        if info is None:
+            return {"version": None, "ui": None, "installed": None}
+        return {"version": info["version"], "ui": "nuxt",
+                "installed": datetime.datetime.fromtimestamp(info["installed"], datetime.timezone.utc)
+                .isoformat(timespec="seconds").replace("+00:00", "Z")}
+
+    def announce(self):
+        version = self.public()["version"]
+        log(f"UI: version {version}" if version else f"UI: no build installed in {UI}")
 
     def loop(self):
         while True:
             try:
                 if self.refresh():
                     events.publish("version", self.public(), state=True)
-                    log(f"UI: version {self.public()['version']}")
+                    self.announce()
             except Exception as e:      # eine halb kopierte Oberflaeche: beim naechsten Mal
                 log(f"UI unreadable: {type(e).__name__}")
             time.sleep(UI_CHECK_SECONDS)
@@ -1366,31 +886,19 @@ class UiBuild:
             log(f"UI unreadable: {type(e).__name__}")
         if self.info:
             events.publish("version", self.public(), state=True)
+        self.announce()
         threading.Thread(target=self.loop, name="ui-version", daemon=True).start()
 
 
 ui = UiBuild()
-
-
-def serve_legacy(handler, path):
-    """Die bisherige Oberflaeche: drei feste Dateien, sonst 404 wie bisher."""
-    name, ctype = STATIC_FILES[path]
-    with open(os.path.join(STATIC, name), "rb") as f:
-        return handler.send(200, f.read(), ctype)
+NO_UI = "The Control Room UI is not installed on this Host.\n"
 
 
 def serve_page(handler, path):
     """GET (und HEAD) ausserhalb von /api/: die Oberflaeche."""
     info = ui.current()
-    if info["kind"] == "legacy":
-        if path in STATIC_FILES:
-            return serve_legacy(handler, path)
-        return handler.send_json(404, {"error": "not found"})
-    # die bisherige Oberflaeche bleibt unter /legacy/ erreichbar, solange sie installiert ist
-    if path in ("/legacy", "/legacy/"):
-        return serve_legacy(handler, "/")
-    if path in ("/app.js", "/style.css"):
-        return serve_legacy(handler, path)
+    if info is None:
+        return handler.send(503, NO_UI, "text/plain; charset=utf-8")
     rel = unquote(path)
     parts = rel.split("/")
     if "\x00" in rel or "\\" in rel or any(p in (".", "..") for p in parts):
@@ -1398,7 +906,7 @@ def serve_page(handler, path):
     if rel not in ("/", "/index.html"):
         full = os.path.realpath(os.path.join(info["root"], rel.lstrip("/")))
         if full.startswith(info["root"] + os.sep) and os.path.isfile(full):
-            return serve_file(handler, rel, full)
+            return serve_file(handler, rel, full, info["csp"])
         # fehlende Dateien bleiben 404, statt HTML zu bekommen
         if rel.startswith(IMMUTABLE) or os.path.splitext(parts[-1])[1].lower() in TYPES:
             return handler.send_json(404, api_error("not_found", "Not found"))
@@ -1409,12 +917,11 @@ def serve_page(handler, path):
                         extra=[("ETag", info["etag"])])
 
 
-def serve_file(handler, rel, full):
+def serve_file(handler, rel, full, csp):
     ext = os.path.splitext(full)[1].lower()
     st = os.stat(full)
     etag = f'"{st.st_mtime_ns:x}-{st.st_size:x}"'
     cache = "public, max-age=31536000, immutable" if rel.startswith(IMMUTABLE) else "no-cache"
-    csp = ui.current()["csp"]
     extra = [("ETag", etag), ("Last-Modified", email.utils.formatdate(st.st_mtime, usegmt=True))]
     ctype = TYPES.get(ext, "application/octet-stream")
     if handler.headers.get("If-None-Match") == etag:
@@ -1424,12 +931,12 @@ def serve_file(handler, rel, full):
 
 
 # --- API v1 ---------------------------------------------------------------------
-# Versioned, for the new UI (docs/control-room-api.md). Errors are
-# {"error": {"code": <stable>, "message": <English>, "detail": <optional>}}; the UI
-# translates the code. agentbox names the code itself (its --json failure on stderr); its
-# English message goes only into detail. Each call of agentbox is exactly one, as in the
-# old API, with fixed arguments and values as --option=value; agentbox checks everything
-# again.
+# The UI's API (docs/control-room-api.md); v1() answers every path under /api/.
+# Errors are {"error": {"code": <stable>, "message": <English>, "detail": <optional>}}; the
+# UI translates the code. agentbox names the code itself (its --json failure on stderr); its
+# English message goes only into detail. Each request is at most one call of agentbox, with
+# fixed arguments and values as --option=value, so none becomes an option; agentbox checks
+# everything again.
 
 class ApiError(Exception):
     """detail: what agentbox said about it (English); field: the request's field that is wrong;
@@ -1658,7 +1165,8 @@ def run_json(*args, **kw):
 
 
 def hide(text, values):
-    """The text without these secrets (as scrub: whole, without whitespace, line by line)."""
+    """The text without these secrets: each whole, without whitespace (as agentbox stores a
+    token) and line by line (a PEM key), so an echo in any of these forms is hidden."""
     for v in values:
         if not isinstance(v, str):
             continue
@@ -1713,7 +1221,7 @@ def path_word(v, what):
 
 
 def options(url, filters):
-    """Query-Parameter -> --option=wert (nur die bekannten, wie in der alten API)."""
+    """Query-Parameter -> --option=wert (nur die bekannten)."""
     try:
         return query_options(url.query, filters)
     except ValueError:
@@ -1842,7 +1350,7 @@ def get_version(h, m, url, body):
 
 @route("GET", "/events")
 def get_events(h, m, url, body):
-    serve_events(h, v1=True)
+    serve_events(h)
 
 
 @route("GET", "/host")
@@ -2414,13 +1922,13 @@ def patch_settings(h, m, url, body):
 
 
 def v1(handler, method, url):
-    """Eine Anfrage an /api/v1/...: CSRF, Route, Anmeldung, Endpunkt, Fehlerformat."""
+    """Eine Anfrage unter /api/: CSRF, Route, Anmeldung, Endpunkt, Fehlerformat."""
     path = url.path
     status, result, extra, code = 500, None, [], None
     name, vm, secret, body, read = "-", None, (), {}, method == "GET"
     try:
-        # Schutz gegen Cross-Site-Requests wie in der alten API: nur das eigene JS setzt
-        # diesen Header; ohne ihn wird der Body nicht gelesen
+        # Schutz gegen Cross-Site-Requests: nur das eigene JS setzt diesen Header; ohne
+        # ihn wird der Body nicht gelesen
         if method != "GET" and handler.headers.get("X-Agentbox") != "1":
             raise ApiError(403, "csrf_header_missing", "Requests that change something need the header "
                                                        "X-Agentbox: 1")
@@ -2469,7 +1977,7 @@ def v1(handler, method, url):
         # eine fruehe Antwort (401, 404, ...): den Body trotzdem abnehmen, sonst sieht der
         # Browser statt der Antwort einen Verbindungsabbruch
         handler.drain()
-    # eigenes Log wie bisher: Aenderungen und Fehler, nie Inhalte (Codes, Tokens, Schluessel)
+    # eigenes Log: Aenderungen und Fehler, nie Inhalte (Codes, Tokens, Schluessel)
     if method != "GET" or status >= 500:
         log(f"{handler.ip()}: {vm or '-'} v1 {method} {name} -> {'ok' if status < 400 else 'FAILED'}"
             + (f" {code}" if code else ""))

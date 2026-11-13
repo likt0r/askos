@@ -1,5 +1,5 @@
 """Control Room backend (`web/agentbox-web`): the versioned API /api/v1, the live events
-from `agentbox watch`, notifications, the version event and serving the new UI (#12,
+from `agentbox watch`, notifications, the version event and serving the UI (#12,
 #13, #21), against a fake `agentbox` (fake_agentbox.py, which also plays `agentbox
 watch`), fake kernel files and a placeholder UI build (tests/ui_build, not a real Nuxt
 build).
@@ -35,7 +35,6 @@ from test_host_readings import DEVICE_LINKS, TITAN, Stream  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SERVER = os.path.join(ROOT, "web", "agentbox-web")
-STATIC = os.path.join(ROOT, "web", "static")
 UI_BUILD = os.path.join(ROOT, "tests", "ui_build")
 FAKE = os.path.join(ROOT, "tests", "fake_agentbox.py")
 PASSWORD = "correct horse battery staple"
@@ -100,7 +99,7 @@ class V1Test(unittest.TestCase):
         self.addCleanup(self.journald.close)
         self.stderr_path = os.path.join(self.dir, "server.err")
         env = dict(os.environ, PATH=os.path.join(self.dir, "bin"), AGENTBOX_ROOT=os.path.join(self.dir, "root"),
-                   AGENTBOX_WEB_CONF=conf.name, AGENTBOX_WEB_STATIC=STATIC, AGENTBOX_WEB_UI=self.ui,
+                   AGENTBOX_WEB_CONF=conf.name, AGENTBOX_WEB_UI=self.ui,
                    AGENTBOX_WEB_BIND="127.0.0.1", AGENTBOX_WEB_PORT="0",
                    AGENTBOX_WEB_COMMAND=f"{sys.executable} -I {FAKE}", FAKE_AGENTBOX_DIR=self.dir,
                    AGENTBOX_WEB_JOURNAL=self.journald.path,
@@ -213,17 +212,8 @@ class V1Test(unittest.TestCase):
         self.assertEqual(status, 200, obj)
         self.cookie = resp.getheader("Set-Cookie").split(";")[0]
 
-    def stream(self, last_id=None, path="/api/v1/events"):
+    def stream(self, last_id=None):
         s = Stream(self, last_id=last_id)
-        if path != "/api/events":
-            s.close()
-            s.conn = http.client.HTTPSConnection("127.0.0.1", self.port, context=self.ssl, timeout=10)
-            headers = {"Cookie": self.cookie}
-            if last_id:
-                headers["Last-Event-ID"] = last_id
-            s.conn.request("GET", path, headers=headers)
-            s.resp = s.conn.getresponse()
-            s.status = s.resp.status
         self.addCleanup(s.close)
         return s
 
@@ -278,8 +268,6 @@ class AccessTest(V1Test):
         answer = self.request("POST", "/api/v1/session", {"password": PASSWORD})
         self.assertError(answer, 429, "too_many_attempts")
         self.assertTrue(0 < int(answer[2].getheader("Retry-After")) <= 900)
-        # the brake is shared with the old sign-in
-        self.assertEqual(self.request("POST", "/api/login", {"password": PASSWORD})[0], 429)
         self.assertNotIn(PASSWORD, self.server_log())
         self.assertNotIn("guess-4711", json.dumps(self.journald.entries()))
 
@@ -295,13 +283,21 @@ class AccessTest(V1Test):
         self.assertError(self.request("POST", "/api/v1/vms", b"{" + b" " * 9000 + b"}"), 413, "body_too_large")
         self.assertEqual(self.calls(), [])
 
-    def test_old_api_unchanged(self):
+    def test_under_api_only_v1(self):
+        # no other sign-in: without a session every other path is unauthenticated, and sets no cookie
+        for method, path in (("POST", "/api/login"), ("POST", "/api/session"), ("GET", "/api/status")):
+            with self.subTest(path=path):
+                answer = self.request(method, path, {"password": PASSWORD} if method == "POST" else None)
+                self.assertError(answer, 401, "unauthenticated")
+                self.assertIsNone(answer[2].getheader("Set-Cookie"))
+        self.assertError(self.request("POST", "/api/login", None, header=False), 403, "csrf_header_missing")
+        self.assertEqual(self.journald.entries(), [])
         self.login()
-        self.respond({"vm": "work", "state": "running", "message": "work neu gestartet"})
-        self.assertEqual(self.request("POST", "/api/work/restart", {})[:2],
-                         (200, {"ok": True, "message": json.dumps({"vm": "work", "state": "running",
-                                                                   "message": "work neu gestartet"})}))
-        self.assertEqual(self.request("GET", "/api/nope")[:2], (404, {"error": "not found"}))
+        for method, path in (("GET", "/api/status"), ("GET", "/api/events"), ("GET", "/api/host"),
+                             ("POST", "/api/work/restart"), ("POST", "/api/logout"), ("PUT", "/api/v2/vms")):
+            with self.subTest(path=path):
+                self.assertError(self.request(method, path, {} if method != "GET" else None), 404, "not_found")
+        self.assertEqual(self.calls(), [])
 
 
 class SessionLanguageTest(V1Test):
@@ -1093,12 +1089,6 @@ class EventsTest(V1Test):
         ids = [b["id"] for b in blocks[1:]]
         self.assertTrue(all(re.fullmatch(r"[0-9a-f]{8}-\d+", i) for i in ids))
 
-    def test_old_stream_carries_them_too(self):
-        self.until_state()
-        s = self.stream(path="/api/events")
-        self.assertEqual(s.block()["event"], "hello")
-        s.event("state")
-
     def test_vm_changes_are_events_and_update_the_snapshot(self):
         self.until_state()
         s = self.stream()
@@ -1285,15 +1275,8 @@ class UiTest(V1Test):
                 self.assertEqual(self.get(path)[0], 404)
 
     def test_api_paths_are_never_the_ui(self):
-        self.assertEqual(self.request("GET", "/api/whatever")[:2], (401, {"error": "not signed in"}))
+        self.assertError(self.request("GET", "/api/whatever"), 401, "unauthenticated")
         self.assertError(self.request("GET", "/api/v1/whatever"), 401, "unauthenticated")
-
-    def test_old_ui_stays_reachable(self):
-        status, body, resp = self.get("/legacy/")
-        with open(os.path.join(STATIC, "index.html"), "rb") as f:
-            self.assertEqual(body, f.read())
-        self.assertNotIn("sha256", resp.getheader("Content-Security-Policy"))
-        self.assertEqual(self.get("/app.js")[2].getheader("Content-Type"), "text/javascript; charset=utf-8")
 
     def test_version_event_when_a_new_build_is_installed(self):
         self.login()
@@ -1317,22 +1300,34 @@ class UiTest(V1Test):
         self.assertIn(sha256(color), resp.getheader("Content-Security-Policy"))
 
 
-class LegacyUiTest(V1Test):
+class NoUiTest(V1Test):
     UI = False
 
-    def test_without_a_new_build_the_old_ui(self):
-        status, body, resp = self.request("GET", "/", header=False, raw=True)
-        with open(os.path.join(STATIC, "index.html"), "rb") as f:
-            self.assertEqual((status, body), (200, f.read()))
-        self.assertEqual(resp.getheader("Content-Security-Policy"),
-                         "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; "
-                         "frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
-        self.assertEqual(resp.getheader("Cache-Control"), "no-store")
-        self.assertEqual(self.request("GET", "/vms/work", header=False)[:2], (404, {"error": "not found"}))
+    def test_without_a_build_the_pages_say_so_and_the_api_works(self):
+        for path in ("/", "/vms/work", "/_nuxt/entry.Bx3k9Q.js"):
+            with self.subTest(path=path):
+                status, body, resp = self.request("GET", path, header=False, raw=True)
+                self.assertEqual((status, body), (503, b"The Control Room UI is not installed on this Host.\n"))
+                self.assertEqual(resp.getheader("Content-Type"), "text/plain; charset=utf-8")
+                self.assertEqual(resp.getheader("Cache-Control"), "no-store")
         self.login()
-        version = json.loads(self.stream().event("version")["data"])
-        self.assertEqual(version["ui"], "legacy")
-        self.assertTrue(version["version"].startswith("legacy-"))
+        self.assertEqual({k: v for k, v in self.request("GET", "/api/v1/version")[1].items() if k != "release"},
+                         {"api": 1, "version": None, "ui": None, "installed": None})
+        self.assertIn(f"UI: no build installed in {self.ui}", self.server_log())
+
+    def test_a_build_installed_later_is_served_and_announced(self):
+        self.login()
+        s = self.stream()
+        self.assertEqual(s.block()["event"], "hello")
+        # whole at once, so the server never sees half a build
+        shutil.copytree(UI_BUILD, self.ui + ".new")
+        os.rename(self.ui + ".new", self.ui)
+        version = json.loads(s.event("version")["data"])
+        self.assertEqual(version["ui"], "nuxt")
+        status, body, _ = self.request("GET", "/", header=False, raw=True)
+        with open(os.path.join(self.ui, "index.html"), "rb") as f:
+            self.assertEqual((status, body), (200, f.read()))
+        self.assertEqual(version["version"], hashlib.sha256(body).hexdigest()[:16])
 
 
 if __name__ == "__main__":

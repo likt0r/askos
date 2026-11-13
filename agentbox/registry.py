@@ -14,11 +14,11 @@ from .sanitize import clean
 
 # the same pattern guards the token service and the Control Room (a test keeps them equal)
 NAME = re.compile(r"[a-z][a-z0-9-]{1,15}")
-# Words that stand where a VM name may stand: `agentbox focus off`, "all" for
-# Allowlist entries of every VM, the Control Room API paths next to /api/<vm>/...
-# (today status, login, logout; then the areas of the new Control Room and its
-# API versions v1, v2, ...) and "new" in the UI's /vms/<vm> routes. A VM keeps
-# its name for good, so these are reserved before anything uses them.
+# Words that stand, or may come to stand, where a VM name may stand: `agentbox focus
+# off`, "all" for Allowlist entries of every VM, the Control Room's areas and the words
+# of its paths (status, login, logout, activity, ...), its API versions v1, v2, ... and
+# "new" in the UI's /vms/<vm> routes. A VM keeps its name for good, so these are
+# reserved before anything uses them.
 RESERVED = {"off", "all", "new", "status", "login", "logout", "activity", "allowlist", "watchlist", "images",
             "settings", "system", "host", "events", "version", "vms", "github-app"}
 API_VERSION = re.compile(r"v[0-9]+")

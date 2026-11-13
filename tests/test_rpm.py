@@ -337,7 +337,7 @@ class InstalledTest(unittest.TestCase):
         """agentbox.paths as the installed package sees itself (no AGENTBOX_ROOT)."""
         code = ("import json, sys; sys.path.insert(0, '/usr/lib/agentbox'); from agentbox import paths; "
                 "print(json.dumps({k: getattr(paths, k) for k in ('PREFIX', 'INSTALLED', 'CLI', 'VERSION', "
-                "'PROXY', 'TOKEND', 'FEEDS_PROGRAM', 'SUSPICIOUS', 'WEB_BACKEND', 'WEB_STATIC', 'WEB_UI', "
+                "'PROXY', 'TOKEND', 'FEEDS_PROGRAM', 'SUSPICIOUS', 'WEB_BACKEND', 'WEB_UI', "
                 "'VM_SOURCE', 'SEED_LISTS', 'CONF', 'STATE', 'SYSTEMD')}))")
         r = subprocess.run(["/usr/bin/python3", "-I", "-c", code], capture_output=True, text=True, check=True,
                            env={"PATH": "/usr/bin"})
@@ -349,8 +349,7 @@ class InstalledTest(unittest.TestCase):
                          ("/usr", True, "/usr/bin/agentbox", "/etc/agentbox", "/var/lib/agentbox",
                           "/etc/systemd/system"))
         named = [p[k] for k in ("CLI", "VERSION", "PROXY", "TOKEND", "FEEDS_PROGRAM", "SUSPICIOUS", "WEB_BACKEND")]
-        named += [os.path.join(p["WEB_STATIC"], "index.html"), os.path.join(p["WEB_UI"], "index.html"),
-                  os.path.join(p["VM_SOURCE"], "vm", "Containerfile")]
+        named += [os.path.join(p["WEB_UI"], "index.html"), os.path.join(p["VM_SOURCE"], "vm", "Containerfile")]
         named += [os.path.join(p["SEED_LISTS"], name) for name in SEEDS]
         for path in named:
             self.assertIn(path, self.files)
