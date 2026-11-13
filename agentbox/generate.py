@@ -3,8 +3,8 @@ and the Host configuration of every VM generated from it.
 
 `agentbox regenerate` writes per VM the libvirt network, the proxy and
 token-service sockets and services, the Orca port forwarder, the Data disk,
-the Claude-token placeholder, the file of its VM variables (vmenv.py), the
-Observer directory and the libvirt domain (through virt-install, ADR 0004);
+the placeholders for the Claude token and the OpenCode key, the file of its VM
+variables (vmenv.py), the Observer directory and the libvirt domain (through virt-install, ADR 0004);
 for all VMs together the nftables rules of the VM networks and the storage
 pool of their disks, and the journald
 namespace of Activity with its retention, the timer of the Maintenance window (maintenance
@@ -42,6 +42,7 @@ SAID = {"network": "network created or started", "units": "units written",
                                      "VM has no network until its next Restart (libvirt does not reconnect "
                                      "a running VM to a restarted network)",
         "data-disk": "Data disk created", "claude-token": "placeholder for the Claude token created",
+        "opencode-key": "placeholder for the OpenCode key created",
         "vm-env": "VM variables written (apply from the next start)",
         "observer": "directory for the Observer created",
         "domain": "VM defined again (applies from the next start)",
@@ -296,15 +297,16 @@ def virt_install_args(rec, uuid):
         "--controller", "usb,model=none",
         "--events", "on_poweroff=destroy,on_reboot=restart,on_crash=destroy",
         "--features", "acpi=on,apic=on",
-        # the VM learns its name, Orca port, Claude token, the address devices pair with and its
-        # VM variables at boot; values that could hold a comma only as files (virt-install
-        # splits --sysinfo at commas)
+        # the VM learns its name, Orca port, Claude token, the address devices pair with, its
+        # VM variables and its OpenCode key at boot; values that could hold a comma only as
+        # files (virt-install splits --sysinfo at commas)
         "--sysinfo", f"type=fwcfg,entry0.name=opt/agentbox/context,entry0={vm},"
                      f"entry1.name=opt/agentbox/orca_port,entry1={rec['orca_port']},"
                      f"entry2.name=opt/agentbox/claude_token,entry2.file={state_files.claude_token_file(vm)},"
                      f"entry3.name=opt/agentbox/pairing_address,"
                      f"entry3={hostsetup.pairing_address(hostsetup.load())},"
-                     f"entry4.name=opt/agentbox/env,entry4.file={state_files.vm_env_file(vm)}",
+                     f"entry4.name=opt/agentbox/env,entry4.file={state_files.vm_env_file(vm)},"
+                     f"entry5.name=opt/agentbox/opencode_key,entry5.file={state_files.opencode_key_file(vm)}",
         "--disk", disk.format(lifecycle.system_disk(vm), "vda"),
         "--disk", disk.format(data_disk(vm), "vdb") + ",serial=agentbox-data",
         "--network", f"network={dom(vm)},mac={mac(rec)},model=virtio",
@@ -543,18 +545,26 @@ def _data_disk(rec):
     return True
 
 
-def _claude_token(rec):
-    """QEMU refuses empty fw_cfg files, so a VM without token gets "none"."""
-    secrets = os.path.dirname(state_files.claude_token_file(rec["name"]))
+def _secret_placeholder(path):
+    """QEMU refuses empty fw_cfg files, so a VM without token or key gets "none"."""
+    secrets = os.path.dirname(path)
     os.makedirs(secrets, exist_ok=True)
     os.chmod(secrets, 0o750)
     gid = _qemu()[1] if os.geteuid() == 0 else -1
     if os.geteuid() == 0:
         os.chown(secrets, 0, gid)
-    if os.path.exists(state_files.claude_token_file(rec["name"])):
+    if os.path.exists(path):
         return False
-    state_files.write_atomic(state_files.claude_token_file(rec["name"]), b"none\n", 0o640, gid)
+    state_files.write_atomic(path, b"none\n", 0o640, gid)
     return True
+
+
+def _claude_token(rec):
+    return _secret_placeholder(state_files.claude_token_file(rec["name"]))
+
+
+def _opencode_key(rec):
+    return _secret_placeholder(state_files.opencode_key_file(rec["name"]))
 
 
 def fw_cfg_file(path, data):
@@ -980,7 +990,8 @@ def apply():
     for rec in records:
         done = []
         for key, step in (("network", _network), ("units", _units), ("data-disk", _data_disk),
-                          ("claude-token", _claude_token), ("vm-env", vm_env), ("observer", _observer)):
+                          ("claude-token", _claude_token), ("opencode-key", _opencode_key), ("vm-env", vm_env),
+                          ("observer", _observer)):
             got = step(rec)
             if got:
                 done.append(got if isinstance(got, str) else key)

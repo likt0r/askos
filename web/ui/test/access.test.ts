@@ -123,6 +123,35 @@ describe('Access tab', () => {
     expect(changes(api.calls)).toEqual([])
   })
 
+  it('stores an OpenCode key checked by the backend and never shows it again', async () => {
+    const KEY = 'sk-OpencodeGoKey_0123456789abcdefghijklmnopqrstuv'
+    const { api } = await openApp('/vms/work/access', { ...ACCESS, 'PUT /vms/work/opencode-key': ok({ vm: 'work', stored: true, length: KEY.length }) }, [workVm()])
+    expect(must('[data-testid="opencode-since"]').textContent).toContain('No OpenCode key stored.')
+    const input = must('[data-testid="opencode-input"] input, input[data-testid="opencode-input"]') as HTMLInputElement
+    expect(input.type).toBe('password')
+    await type('[data-testid="opencode-input"]', KEY.slice(0, 20) + '\n' + KEY.slice(20))
+    await click('[data-testid="opencode-submit"]')
+
+    expect(changes(api.calls)).toEqual([{ method: 'PUT', path: '/vms/work/opencode-key', body: { key: KEY }, csrf: '1' }])
+    expect(input.value).toBe('')
+    expect(must('[data-testid="opencode-stored"]').textContent).toContain(`Key valid and stored (${KEY.length} characters).`)
+    expect(must('[data-testid="opencode-stored"]').textContent).toContain('restart of work')
+    expect(document.body.innerHTML).not.toContain(KEY.slice(3, 30))
+  })
+
+  it('says a refused OpenCode key changed nothing, and refuses a Claude token before sending it', async () => {
+    const { api } = await openApp('/vms/work/access', { ...ACCESS, 'PUT /vms/work/opencode-key': fail(422, 'opencode_key_rejected') }, [workVm({ opencode_key_since: '2026-10-01T08:00:00Z' })])
+    expect(must('[data-testid="opencode-since"]').textContent).toContain('A key is stored since')
+    await type('[data-testid="opencode-input"]', TOKEN)
+    expect((must('[data-testid="opencode-submit"]') as HTMLButtonElement).disabled).toBe(true)
+    await type('[data-testid="opencode-input"]', 'sk-OpencodeGoKey_0123456789')
+    await click('[data-testid="opencode-submit"]')
+    expect(changes(api.calls)).toEqual([{ method: 'PUT', path: '/vms/work/opencode-key', body: { key: 'sk-OpencodeGoKey_0123456789' }, csrf: '1' }])
+    const error = must('[data-testid="opencode-error"]')
+    expect(error.textContent).toContain('opencode.ai rejected the key.')
+    expect(error.textContent).toContain('The stored key stays in use.')
+  })
+
   it('lists the repositories the VM got tokens for and the refused requests', async () => {
     const { api, es } = await openApp('/vms/work/access', { ...ACCESS, 'GET /vms/work/github-tokens?since=-24h': ok({ ...TOKENS, repositories: [], requests: [] }) }, [workVm()])
     expect($$('[data-testid="token-repo"]').map(r => r.dataset.repository)).toEqual(['likt0r/askos'])

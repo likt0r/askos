@@ -15,9 +15,10 @@ PAIR_CODE = re.compile(r"orca://pair\?code=[A-Za-z0-9_-]+(?![A-Za-z0-9_-])")
 PAIR_ANY = re.compile(r"orca(?:://|%3A%2F%2F)pair\S*", re.IGNORECASE)
 BIDI = set("‪‫‬‭‮⁦⁧⁨⁩")
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")      # colour and cursor sequences
-# Claude and GitHub tokens (GitHub's are up to ~400 characters with "-", ".", "_"),
-# JWTs and private keys, should one slip into a message
-SECRET = re.compile(r"sk-ant-[A-Za-z0-9_-]+|gh[opsur]_[A-Za-z0-9_.-]{8,}|github_pat_[A-Za-z0-9_]{8,}"
+# Claude tokens, other sk- API keys (OpenCode keys among them; long enough not to hit words),
+# GitHub tokens (GitHub's are up to ~400 characters with "-", ".", "_"), JWTs and private keys,
+# should one slip into a message
+SECRET = re.compile(r"sk-ant-[A-Za-z0-9_-]+|(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{16,}|gh[opsur]_[A-Za-z0-9_.-]{8,}|github_pat_[A-Za-z0-9_]{8,}"
                     r"|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+"
                     r"|-----BEGIN [A-Z ]*PRIVATE KEY-----")
 

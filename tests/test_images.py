@@ -559,6 +559,25 @@ class SafeguardTest(ImagesTest):
         self.assertIn('mountpoint -q "$HOME_DIR/$p" || mount --bind "$DATA/home/$p" "$HOME_DIR/$p"',
                       setup)
 
+    def test_opencode_sessions_live_on_the_data_disk_without_a_login(self):
+        """opencode's sessions (opencode.db) and its chosen model outlive a Reset like Claude
+        Code's transcripts; logins made in the VM do not outlive the next start
+        (test_opencode_logins.py).
+        The key comes from the Host as OPENCODE_API_KEY."""
+        with open(os.path.join(REPO, "vm/files/usr/lib/agentbox/guest-setup")) as f:
+            setup = f.read()
+        persist = setup.split("PERSIST=(", 1)[1].split(")", 1)[0].split()
+        self.assertIn(".local/share/opencode", persist)
+        self.assertIn(".local/state/opencode", persist)
+        self.assertNotIn(".config/opencode", persist)
+        # as the agent, after the bind and before orca serve; a failure never stops the start
+        forget = ('runuser -u agent -- /usr/lib/agentbox/opencode-forget-logins "$DATA/home/.local/share/opencode" \\\n'
+                  '  || echo "guest-setup: opencode logins not removed" >&2\n')
+        self.assertIn(forget, setup)
+        self.assertLess(setup.index("PERSIST=("), setup.index(forget))
+        self.assertIn("printf 'OPENCODE_API_KEY=%s\\n' \"$key\" >> /run/agentbox/env\n", setup)
+        self.assertIn("printf 'export OPENCODE_API_KEY=%s\\n' \"$key\" >> /run/agentbox/agent-env\n", setup)
+
     def test_a_proxy_variable_or_option_is_rejected(self):
         self.image("weak", DERIVED + "COPY zz.conf /etc/systemd/system.conf.d/zz.conf\n"
                    "COPY proxy.sh /etc/profile.d/proxy.sh\nCOPY node.sh /etc/profile.d/node.sh\n"

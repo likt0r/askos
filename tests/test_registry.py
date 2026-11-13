@@ -378,7 +378,9 @@ class RegenerateTest(RegistryTest):
                                        f"entry2.file={self.path('etc/agentbox/secrets/claude-priv')},"
                                        "entry3.name=opt/agentbox/pairing_address,entry3=192.0.2.8,"
                                        "entry4.name=opt/agentbox/env,"
-                                       f"entry4.file={self.path('var/lib/agentbox/vm-env/priv.env')}"),
+                                       f"entry4.file={self.path('var/lib/agentbox/vm-env/priv.env')},"
+                                       "entry5.name=opt/agentbox/opencode_key,"
+                                       f"entry5.file={self.path('etc/agentbox/secrets/opencode-priv')}"),
                          ("--network", "network=agentbox-priv,mac=52:54:00:77:02:02,model=virtio"),
                          ("--channel", "unix,target.type=virtio,target.name=org.qemu.guest_agent.0")]:
             with self.subTest(opt=opt):
@@ -404,14 +406,18 @@ class RegenerateTest(RegistryTest):
                                     "300G"] for vm in ("work", "priv")])
         self.assertEqual(self.read("etc/agentbox/secrets/claude-priv"), "none\n")
         self.assertEqual(self.mode("etc/agentbox/secrets/claude-priv"), 0o640)
+        self.assertEqual(self.read("etc/agentbox/secrets/opencode-priv"), "none\n")
+        self.assertEqual(self.mode("etc/agentbox/secrets/opencode-priv"), 0o640)
         self.assertEqual(self.mode("var/lib/agentbox/observer-priv"), 0o700)
 
     def test_keeps_existing_data_disk_and_token(self):
         self.write("var/lib/agentbox/vms/priv-data.qcow2", '{"mine": true}')
         self.write("etc/agentbox/secrets/claude-priv", "sk-ant-x\n", mode=0o640)
+        self.write("etc/agentbox/secrets/opencode-priv", "sk-oc\n", mode=0o640)
         self.run_agentbox("regenerate")
         self.assertEqual(self.read("var/lib/agentbox/vms/priv-data.qcow2"), '{"mine": true}')
         self.assertEqual(self.read("etc/agentbox/secrets/claude-priv"), "sk-ant-x\n")
+        self.assertEqual(self.read("etc/agentbox/secrets/opencode-priv"), "sk-oc\n")
         self.assertNotIn(self.path("var/lib/agentbox/vms/priv-data.qcow2"),
                          [c["argv"][-2] for c in self.calls("qemu-img") if c["argv"][0] == "create"])
 
@@ -647,8 +653,8 @@ class RegenerateTest(RegistryTest):
 
     def test_first_run_reports_what_it_did(self):
         result = self.json("regenerate")
-        self.assertEqual(result, {"vms": {vm: ["network", "units", "data-disk", "claude-token", "vm-env", "observer",
-                                               "domain"]
+        self.assertEqual(result, {"vms": {vm: ["network", "units", "data-disk", "claude-token", "opencode-key", "vm-env",
+                                               "observer", "domain"]
                                           for vm in ("work", "priv")}, "firewall": True, "storage": True,
                                   "retention": 90, "timers": True,
                                   "zone": ["port 53/udp open", "port 53/tcp open", "port 443/tcp open", "port 9100/tcp open",
@@ -679,7 +685,8 @@ class RegenerateTest(RegistryTest):
     def test_paused_vm_keeps_its_definition_until_it_runs_again(self):
         self.scenario(vms={"priv": {"uuid": PRIV_UUID, "managed_save": True, "state": "shut off"}})
         self.assertEqual(self.json("regenerate")["vms"]["priv"],
-                         ["network", "units", "data-disk", "claude-token", "vm-env", "observer", "domain-postponed"])
+                         ["network", "units", "data-disk", "claude-token", "opencode-key", "vm-env", "observer",
+                          "domain-postponed"])
         self.assertEqual([c["dom"] for c in self.calls("define")], ["agentbox-work"])
         self.scenario(vms={"priv": {"uuid": PRIV_UUID}})
         os.remove(os.path.join(self.dir, "domains.json"))

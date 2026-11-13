@@ -197,3 +197,9 @@ _Avoid_: grant, org access
 **Claude token**:
 A VM's long-lived token from `claude setup-token`, stored on the Host, passed to the VM at boot and replaced only by one Anthropic accepts.
 _Avoid_: API key, login, subscription
+
+## OpenCode
+
+**OpenCode key**:
+A VM's API key from the opencode.ai console (for OpenCode Go or Zen), stored on the Host, passed to the VM at boot as `OPENCODE_API_KEY` and replaced only by one opencode.ai accepts.
+_Avoid_: OpenCode token, opencode login

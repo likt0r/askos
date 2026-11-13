@@ -497,6 +497,8 @@ class SecretTest(ActivityTest):
         super().setUp()
         with open(self.path("etc/agentbox/secrets/claude-priv"), "w") as f:
             f.write("none\n")
+        with open(self.path("etc/agentbox/secrets/opencode-priv"), "w") as f:
+            f.write("none\n")
 
     def answer(self, text):
         with open(os.path.join(self.dir, "curl-answer"), "w") as f:
@@ -522,6 +524,26 @@ class SecretTest(ActivityTest):
         self.assertNotIn(b"sk-ant", self.raw())
         self.assertNotIn(TOKEN[7:20].encode(), self.raw())
 
+    def test_opencode_key(self):
+        key = "sk-OpencodeSecret_0123456789"
+        self.answer('{"object":"list","data":[]}')
+        code, _, err = self.run_agentbox("set-opencode-key", "priv", "--no-prompt", stdin=key + "\n")
+        self.assertEqual(code, 0, err)
+        [e] = self.entries()
+        self.assertEqual((e["AGENTBOX_KIND"], e["AGENTBOX_ACTION"], e["AGENTBOX_OUTCOME"], e["AGENTBOX_DESCRIPTION"]),
+                         ("credentials", "set-opencode-key", "ok", "Set the OpenCode key"))
+        self.assertNotIn(b"OpencodeSecret", self.raw())
+
+    def test_refused_opencode_key_echoed_back(self):
+        key = "sk-OpencodeSecret_0123456789"
+        self.answer('{"error":{"type":"authentication_error","message":"bad key ' + key + '"}}')
+        code, _, _ = self.run_agentbox("set-opencode-key", "priv", "--no-prompt", stdin=key + "\n")
+        self.assertEqual(code, 1)
+        [e] = self.entries()
+        self.assertEqual(e["AGENTBOX_OUTCOME"], "failed")
+        self.assertIn("opencode.ai rejects the key", e["AGENTBOX_DESCRIPTION"])
+        self.assertNotIn(b"OpencodeSecret", self.raw())
+
     def test_token_passed_as_argument_by_mistake(self):
         self.answer('{"id":"msg_01","type":"message"}')
         self.run_agentbox("set-claude-token", "priv", TOKEN, "--no-prompt", stdin=TOKEN + "\n")
@@ -542,7 +564,10 @@ class SecretTest(ActivityTest):
         self.run_agentbox(f"--actor=x {CODE} {TOKEN} ghs_abcdefghijklmnop", "close-web", "work")
         self.assertEqual(self.entries()[-1]["AGENTBOX_ACTOR"],
                          "x orca://pair?[hidden] [hidden] [hidden]")
-        for secret in (b"Ab3_x-9", b"sk-ant", b"ghs_"):
+        # an OpenCode key (or any other sk- API key) too, but not a short word that starts so
+        self.run_agentbox("--actor=x sk-Oc12AbCdEf_34-ghiJKLmn sk-learn", "close-web", "work")
+        self.assertEqual(self.entries()[-1]["AGENTBOX_ACTOR"], "x [hidden] sk-learn")
+        for secret in (b"Ab3_x-9", b"sk-ant", b"ghs_", b"Oc12AbCdEf"):
             self.assertNotIn(secret, self.raw())
 
 

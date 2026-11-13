@@ -192,7 +192,8 @@ def _leftovers(rec):
     (its Claude token, its Orca identity on the Data disk, a network with another number)."""
     name = rec["name"]
     files = [("Data disk", generate.data_disk(name)), ("System disk", lifecycle.system_disk(name)),
-             ("Claude token", state_files.claude_token_file(name)), ("VM variables", state_files.vm_env_file(name)),
+             ("Claude token", state_files.claude_token_file(name)),
+             ("OpenCode key", state_files.opencode_key_file(name)), ("VM variables", state_files.vm_env_file(name)),
              ("Observer", lifecycle.observer_dir(name)),
              *(("units", os.path.join(paths.SYSTEMD, u)) for u in generate.units(rec))]
     found = list(dict.fromkeys(what for what, path in files if os.path.lexists(path)))
@@ -385,7 +386,8 @@ def _disks(name, archive, delete_data, say):
 
 def _files(name, say):
     responding.clear(name)           # bookkeeping only, never fails (the stop removed it already)
-    gone = [_remove(f) for f in (state_files.claude_token_file(name), state_files.vm_env_file(name),
+    gone = [_remove(f) for f in (state_files.claude_token_file(name), state_files.opencode_key_file(name),
+                                 state_files.vm_env_file(name),
                                  state_files.open_web_file(name),
                                  generate.legacy_owners_file(name), detection.seen_file(name),
                                  os.path.join(paths.STATE, "domains", f"{name}.xml"))]
@@ -398,7 +400,7 @@ def _files(name, say):
             die(f"{observer}: {e.strerror}", error="action_failed", vm=name)
         gone.append(True)
     if any(gone):
-        say(f"{name}: Claude token, VM variables, Allowlist entries and Observer removed")
+        say(f"{name}: Claude token, OpenCode key, VM variables, Allowlist entries and Observer removed")
 
 
 def delete(args):

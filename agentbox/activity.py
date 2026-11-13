@@ -82,8 +82,8 @@ COMMAND_KINDS = {"allow": "allowlist", "disallow": "allowlist", "open-web": "all
                  "extend": "allowlist", "make-permanent": "allowlist", "set-note": "allowlist",
                  "migrate-allowlist": "allowlist", "pair": "pairing", "observe": "pairing", "unpair": "pairing",
                  "revoke-pairings": "pairing", "set-settings": "settings",
-                 "set-claude-token": "credentials", "set-owners": "credentials", "set-github-app": "credentials",
-                 "remove-github-app": "credentials",
+                 "set-claude-token": "credentials", "set-opencode-key": "credentials", "set-owners": "credentials",
+                 "set-github-app": "credentials", "remove-github-app": "credentials",
                  "build": "build", "set-image": "build", "update-now": "build"}
 
 MAX_ACTOR = 100
@@ -520,6 +520,7 @@ DESCRIBE = {
     "migrate-lists": lambda a: _said("Take over the Watchlist and the Legitimate domains from the text files"),
     "set-owners": _owners,
     "set-claude-token": lambda a: _said("Set the Claude token"),
+    "set-opencode-key": lambda a: _said("Set the OpenCode key"),
     # the App ID only when it is one: never echo what might be a pasted key
     "set-github-app": lambda a: _said(f"Add or replace the GitHub App (App ID {_arg(a, 0)})", app_id=_arg(a, 0))
                                 if re.fullmatch(r"[1-9][0-9]{0,11}", _arg(a, 0))

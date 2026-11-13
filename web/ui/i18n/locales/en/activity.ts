@@ -81,6 +81,7 @@ export default {
       listCreated: '{list} created empty (there was no {legacy})',
       setOwners: 'Set GitHub owners: {owners}',
       setClaudeToken: 'Set the Claude token',
+      setOpencodeKey: 'Set the OpenCode key',
       setGithubApp: 'Add or replace the GitHub App',
       setGithubAppId: 'Add or replace the GitHub App (App ID {id})',
       removeGithubApp: 'Remove a GitHub App',

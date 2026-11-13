@@ -43,7 +43,7 @@ REFUSED = [
     "YARN_IGNORE_SCRIPTS", "CORE_HOOKS_PATH", "ENABLE_CLAUDEAI_MCP_SERVERS",
     # reserved: the unit of orca serve, guest-setup, what every process or shell reads first
     "PATH", "HOME", "XDG_RUNTIME_DIR", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "NODE_OPTIONS", "BASH_ENV",
-    "ENV", "CLAUDE_CODE_OAUTH_TOKEN", "AGENTBOX_CONTEXT", "AGENTBOX_GH_ADDR", "AGENTBOX_ANYTHING", "ORCA_PORT",
+    "ENV", "CLAUDE_CODE_OAUTH_TOKEN", "OPENCODE_API_KEY", "AGENTBOX_CONTEXT", "AGENTBOX_GH_ADDR", "AGENTBOX_ANYTHING", "ORCA_PORT",
     "PAIRING_ADDRESS",
     # the rest of the Image's DefaultEnvironment
     "DO_NOT_TRACK", "ORCA_TELEMETRY_DISABLED", "DISABLE_AUTOUPDATER", "DOCKER_HOST", "RUSTUP_HOME", "JAVA_HOME",
@@ -173,8 +173,9 @@ class SetEnvTest(EnvTest):
         self.ok("regenerate")
         argv = [c["argv"] for c in self.calls("virt-install") if "agentbox-work" in c["argv"]][-1]
         sysinfo = argv[argv.index("--sysinfo") + 1]
-        self.assertTrue(sysinfo.endswith(f",entry4.name=opt/agentbox/env,entry4.file={self.path(ENV_FILE.format('work'))}"),
-                        sysinfo)
+        self.assertIn(f",entry4.name=opt/agentbox/env,entry4.file={self.path(ENV_FILE.format('work'))},", sysinfo)
+        self.assertTrue(sysinfo.endswith(",entry5.name=opt/agentbox/opencode_key,"
+                                         f"entry5.file={self.path('etc/agentbox/secrets/opencode-work')}"), sysinfo)
         self.assertNotIn("entry9", " ".join(argv))
         self.assertNotIn(base64.b64encode(b"a,b,entry9.name=x").decode(), " ".join(argv))
 
@@ -636,7 +637,7 @@ class GuestTest(unittest.TestCase):
         self.assertEqual(len(created), 2)
         self.assertLess(max(created), start)
         writes = [(i, line) for i, line in enumerate(code) if re.search(r">>? */run/agentbox/(env|agent-env)\b", line)]
-        self.assertEqual(len(writes), 3)
+        self.assertEqual(len(writes), 5)
         for i, line in writes:
             self.assertGreater(i, start, line)
             self.assertRegex(line, r">> /run/agentbox/(env|agent-env)$")

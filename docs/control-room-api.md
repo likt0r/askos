@@ -24,7 +24,7 @@ Vocabulary as in [GLOSSARY.md](../GLOSSARY.md). How the backend works:
   unchanged (named per endpoint below). Where that output has a `message` field, it is
   agentbox's own English text for people at a terminal, not translated; the UI should
   build its own text from the structured fields.
-- **Secrets.** Claude tokens and the GitHub App key go only in request bodies, are passed
+- **Secrets.** Claude tokens, OpenCode keys and the GitHub App key go only in request bodies, are passed
   to `agentbox` on stdin and never appear in a response, an error or a log. The Pairing code
   appears only in the response of `POST /vms/<vm>/pairing-code`. Events never carry any of
   them.
@@ -132,6 +132,9 @@ else `500 action_failed`, with the message in `detail`:
 | 422 | `claude_token_rejected` | Anthropic rejected the token; the old one stays |
 | 502 | `anthropic_unavailable` | Anthropic answered unexpectedly; nothing changed |
 | 400 | `invalid_claude_token` | not a token from `claude setup-token` |
+| 422 | `opencode_key_rejected` | opencode.ai rejected the OpenCode key; the old one stays |
+| 502 | `opencode_unavailable` | opencode.ai answered unexpectedly; nothing changed |
+| 400 | `invalid_opencode_key` | not an API key from opencode.ai (`sk-...`; a Claude token or key is refused) |
 | 422 | `github_app_rejected` | GitHub rejected App ID or key; nothing changed |
 | 502 | `github_unavailable` | GitHub not reachable or answered with an error |
 | 400 | `invalid_private_key`, `invalid_app_id` | not the App's `.pem` / not an App ID |
@@ -219,6 +222,7 @@ Sign-ins, failures, refusals by the brake and sign-outs are Activity entries (co
   "failed_wakes": {"count": 0, "last": null, "address": null},
   "open_web_until": null,
   "claude_token_since": "2026-10-01T08:00:00Z",
+  "opencode_key_since": null,
   "devices": [{"address": "192.0.2.36", "connections": 2}]
 }
 ```
@@ -307,6 +311,7 @@ Sign-ins, failures, refusals by the brake and sign-outs are Activity entries (co
 | `PUT /vms/<vm>/image` | `{"image", "build": null\|"<build>"}` | `set-image`: `{"vm", "image", "build", "message"}`; applies at the next Reset |
 | `PUT /vms/<vm>/github-owners` | `{"owners": ["likt0r", ...]}` | `set-owners`: `{"vm", "owners"}` |
 | `PUT /vms/<vm>/claude-token` | `{"token": "sk-ant-oat..."}` | `set-claude-token` (token on stdin, checked with Anthropic before it replaces the old one): `{"vm", "stored": true, "length"}` |
+| `PUT /vms/<vm>/opencode-key` | `{"key": "sk-..."}` | `set-opencode-key` (an API key from opencode.ai for OpenCode Go or Zen, on stdin, checked with opencode.ai before it replaces the old one; the VM gets it as `OPENCODE_API_KEY` from its next start): `{"vm", "stored": true, "length"}` |
 | `POST /vms/<vm>/open-web` | `{"minutes": 30}` | `open-web`; while the Watchlist cannot be read: `409 watchlist_unreadable` |
 | `DELETE /vms/<vm>/open-web` | | `close-web` |
 | `GET /vms/<vm>/logs` | `?unit&priority&since&until&boot&grep&lines&after_cursor` | `logs`: `{"vm", "entries": [{"time", "unit", "identifier", "priority", "message", "boot", "cursor"}], "cursor", "truncated"}`; poll with `after_cursor=<cursor>` for new lines |
@@ -438,7 +443,7 @@ first:
 
 | `code` | `params` |
 |---|---|
-| `start`, `wake`, `pause`, `restart`, `close-web`, `migrate-allowlist`, `set-claude-token`, `pair`, `observe`, `unpair`, `revoke-pairings`, `migrate`, `regenerate`, `setup` | none |
+| `start`, `wake`, `pause`, `restart`, `close-web`, `migrate-allowlist`, `set-claude-token`, `set-opencode-key`, `pair`, `observe`, `unpair`, `revoke-pairings`, `migrate`, `regenerate`, `setup` | none |
 | `reset` | `no_start` |
 | `focus` | `target` (a VM), or `off` |
 | `create` | `image` (when given) |

@@ -97,7 +97,7 @@ export default {
   },
   delete: {
     title: '{name} löschen?',
-    text: 'Die VM, ihre System disk, ihr Netz, ihr Claude-Token und ihre eigenen Freigaben werden entfernt. Das lässt sich nicht rückgängig machen.',
+    text: 'Die VM, ihre System disk, ihr Netz, ihr Claude-Token, ihr OpenCode-Schlüssel und ihre eigenen Freigaben werden entfernt. Das lässt sich nicht rückgängig machen.',
     deleteData: 'Auch die Data disk löschen',
     archived: 'Nicht angehakt: Die Data disk (Repositorys, Orca-Daten, Agenten-Verläufe) wird auf dem Host archiviert.',
     deleteDataWarning: 'Die Data disk mit ihren Repositorys und nicht gepushter Arbeit wird endgültig gelöscht.',

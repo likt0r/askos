@@ -2,7 +2,7 @@
 terminals it starts, and login shells.
 
 They live in the VM's record (`"env": {"NAME": "value"}`, registry.py) and reach the VM
-at boot like its name and Claude token: `agentbox regenerate` (and `set-env`) write them
+at boot like its name, Claude token and OpenCode key: `agentbox regenerate` (and `set-env`) write them
 into a file that QEMU passes as the fw_cfg entry opt/agentbox/env, one line
 `NAME=<base64 of the value>` per variable, or `none` without any (QEMU refuses empty
 fw_cfg files). Values never go into virt-install's --sysinfo string, which it splits at
@@ -41,7 +41,8 @@ MAX_VALUE = 4096                     # bytes of the value in UTF-8
 # EnvironmentFile overrides), by guest-setup (the fixed values of /run/agentbox/env and
 # agent-env), read by every process or shell before anything else, or run as code by shells.
 RESERVED = frozenset({"PATH", "HOME", "XDG_RUNTIME_DIR", "NODE_OPTIONS", "BASH_ENV", "ENV",
-                      "CLAUDE_CODE_OAUTH_TOKEN", "ENABLE_CLAUDEAI_MCP_SERVERS", "ORCA_PORT", "PAIRING_ADDRESS"})
+                      "CLAUDE_CODE_OAUTH_TOKEN", "ENABLE_CLAUDEAI_MCP_SERVERS", "OPENCODE_API_KEY", "ORCA_PORT",
+                      "PAIRING_ADDRESS"})
 RESERVED_PREFIXES = ("LD_", "AGENTBOX_", "GIT_CONFIG_")
 # What the patterns of the safeguard check miss, in either case (npm reads its variables so):
 # npm going around the minimum release age (before)

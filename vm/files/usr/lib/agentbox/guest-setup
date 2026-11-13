@@ -42,6 +42,13 @@ if [[ "$token" == sk-ant-* ]]; then
   printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$token" >> /run/agentbox/env
   printf 'export CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$token" >> /run/agentbox/agent-env
 fi
+# The OpenCode key (opencode.ai, for OpenCode Go or Zen) the same way; "none" without one.
+# Only the characters the Host accepted, so nothing can break the files' lines.
+key=$(fwcfg opencode_key 2>/dev/null | tr -d '[:space:]' || true)
+if [[ "$key" =~ ^sk-[A-Za-z0-9_-]+$ && "$key" != sk-ant-* ]]; then
+  printf 'OPENCODE_API_KEY=%s\n' "$key" >> /run/agentbox/env
+  printf 'export OPENCODE_API_KEY=%s\n' "$key" >> /run/agentbox/agent-env
+fi
 hostnamectl set-hostname "agentbox-$CONTEXT"
 
 # The Host is the .1 of the VM's own isolated network
@@ -72,15 +79,24 @@ mountpoint -q "$DATA" || { echo "guest-setup: the Data disk is not mounted" >&2;
 # Podman-Speicher des Agenten (Container images, Container, Volumes, Build-Cache)
 # liegt auf der Datenplatte (ADR 0017); Podmans Benutzerkonfiguration
 # (~/.config/containers) bleibt Systemplatte und geht mit jedem Reset verloren.
+# opencode keeps its sessions in .local/share/opencode (opencode.db) and the chosen model
+# and prompt history in .local/state/opencode.
 PERSIST=(code orca .config/orca .claude/projects .codex/sessions .cargo/registry .cargo/git
-         .gradle .android .local/share/android-sdk .local/share/containers)
+         .gradle .android .local/share/android-sdk .local/share/containers
+         .local/share/opencode .local/state/opencode)
 install -d -o agent -g agent -m 700 "$HOME_DIR"
 for p in "${PERSIST[@]}"; do
   install -d -o agent -g agent -m 700 "$DATA/home/$p" "$HOME_DIR/$p"
   mountpoint -q "$HOME_DIR/$p" || mount --bind "$DATA/home/$p" "$HOME_DIR/$p"
 done
 chown agent:agent "$HOME_DIR"/.config "$HOME_DIR"/.claude "$HOME_DIR"/.codex "$HOME_DIR"/.cargo \
-  "$HOME_DIR"/.local "$HOME_DIR"/.local/share
+  "$HOME_DIR"/.local "$HOME_DIR"/.local/share "$HOME_DIR"/.local/state
+# Logins made in the VM land next to opencode's sessions (auth.json, mcp-auth.json, login
+# tables in opencode.db): they do not outlive the start after it, like Codex's login, which
+# stays on the System disk. The key comes from the Host (OPENCODE_API_KEY). As the agent, so
+# opencode.db and its journal stay the agent's; a failure is reported, never fatal.
+runuser -u agent -- /usr/lib/agentbox/opencode-forget-logins "$DATA/home/.local/share/opencode" \
+  || echo "guest-setup: opencode logins not removed" >&2
 
 # Der Android-Emulator (SwiftShader) braucht ausfuehrbaren Heap. Die Grenze
 # ist hier die VM, nicht SELinux in ihr; gilt nur bis zum naechsten Start.
