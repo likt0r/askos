@@ -821,10 +821,6 @@ class ObserveTest(LifecycleTest):
             "message": "work: the Host observes Orca in the VM. Agents: waiting=1 working=2"})
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class WeeklyCheckFailSafeTest(LifecycleTest):
     """weekly-check postpones when it cannot tell whether a laptop is attached, and
     one failing VM does not stop the check of the others."""
@@ -841,7 +837,7 @@ class WeeklyCheckFailSafeTest(LifecycleTest):
         result = {r["vm"]: r for r in json.loads(out)}
         self.assertEqual(result["priv"]["action"], "postponed")
         self.assertEqual(result["priv"]["reason"], "gui-unknown")
-        self.assertEqual(self.vm_calls().count("shutdown"), 0)
+        self.assertEqual(self.vm_calls(), [])
 
     def test_one_failing_vm_does_not_stop_the_others(self):
         os.remove(self.path("var/lib/agentbox/images/base.qcow2"))
@@ -898,3 +894,7 @@ class HostShutdownTest(unittest.TestCase):
         with open(os.path.join(REPO, "agentbox", "lifecycle.py")) as f:
             stop = re.search(r'tunable\("AGENTBOX_SHUTDOWN_SECONDS", (\d+)\)', f.read()).group(1)
         self.assertEqual(config["SHUTDOWN_TIMEOUT"], stop)
+
+
+if __name__ == "__main__":
+    unittest.main()

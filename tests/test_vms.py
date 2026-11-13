@@ -423,7 +423,7 @@ class SetContainerImageCleanupTest(VmsTest):
         for state in ("shut off", "paused"):
             with self.subTest(state=state):
                 self.scenario(vms={"work": {"state": state}})
-                self.assertTrue(self.json("set-container-image-cleanup", "work", "off")["changed"] or state == "paused")
+                self.assertTrue(self.json("set-container-image-cleanup", "work", "off")["changed"])
                 self.ok("set-container-image-cleanup", "work", "on")
         self.assertEqual(self.virsh("define", "shutdown", "destroy", "start", "managedsave"), [])
 
