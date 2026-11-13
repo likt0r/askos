@@ -114,9 +114,6 @@ class BackendHostSetupTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.setup_path = os.path.join(tmp.name, "host.json")
-        with socket.socket() as s:
-            s.bind(("127.0.0.1", 0))
-            self.port = s.getsockname()[1]
 
     def start(self, setup):
         if setup is not None:
@@ -140,11 +137,33 @@ class BackendHostSetupTest(unittest.TestCase):
             proc.wait()
         proc.stderr.close()
 
+    def serve(self, setup_for, address, hold_loopback=False):
+        """The backend listening on the port of the record, which the Host setup cannot leave to the kernel (port 0
+        is no valid web_port): it takes a free port, and if another test running at the same time has taken it by
+        the time the backend binds, another one. hold_loopback keeps 127.0.0.1 on that port bound without
+        listen(), so nothing else can answer there meanwhile."""
+        for _ in range(10):
+            holder = socket.socket()
+            self.addCleanup(holder.close)
+            holder.bind(("127.0.0.1", 0))
+            self.port = holder.getsockname()[1]
+            if not hold_loopback:
+                holder.close()
+            proc = self.start(setup_for(self.port))
+            if self.listens(proc, address) is not None:
+                return proc
+        self.fail("no free port for the backend after 10 attempts")
+
     def listens(self, proc, address):
+        """True once the backend answers on address and the port, False when it never does, None when it exited
+        because the port is in use."""
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
             if proc.poll() is not None:
-                self.fail("server exited early: " + proc.stderr.read())
+                err = proc.stderr.read()
+                if "Address already in use" in err:
+                    return None
+                self.fail("server exited early: " + err)
             try:
                 socket.create_connection((address, self.port), timeout=1).close()
                 return True
@@ -161,13 +180,13 @@ class BackendHostSetupTest(unittest.TestCase):
         return proc.returncode, proc.stderr.read()
 
     def test_local_only_listens_on_loopback_on_the_port_of_the_record(self):
-        proc = self.start({"mode": "local", "web_port": self.port})
+        proc = self.serve(lambda port: {"mode": "local", "web_port": port}, "127.0.0.1")
         self.assertTrue(self.listens(proc, "127.0.0.1"))
 
     def test_network_mode_listens_on_the_bind_address(self):
         # any address in 127.0.0.0/8 is local on Linux, so this stands in for the Host's LAN address
-        proc = self.start({"mode": "network", "bind": "127.0.0.2", "web_port": self.port,
-                           "home_network": "127.0.0.0/8"})
+        proc = self.serve(lambda port: {"mode": "network", "bind": "127.0.0.2", "web_port": port,
+                                        "home_network": "127.0.0.0/8"}, "127.0.0.2", hold_loopback=True)
         self.assertTrue(self.listens(proc, "127.0.0.2"))
         with self.assertRaises(OSError):
             socket.create_connection(("127.0.0.1", self.port), timeout=1).close()
