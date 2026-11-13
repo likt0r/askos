@@ -206,6 +206,7 @@ class WatchTest(unittest.TestCase):
         self.addCleanup(self.stop)
         self.lines = queue.Queue()
         self.raw = []
+        self.kept = []               # events read while event() waited for another name, oldest first
 
         def read():
             for line in self.proc.stdout:
@@ -226,8 +227,20 @@ class WatchTest(unittest.TestCase):
             self.proc.stdout.close()
 
     def event(self, name, check=lambda d: True, timeout=10):
-        """The next event of this name whose data passes check."""
+        """The next event of this name whose data passes check. Events of other names stay for
+        a later event() or events(): watch sends from several threads (the poll, each journal
+        follower, the Build lines), so the order between names is not fixed."""
         deadline = time.monotonic() + timeout
+        while True:
+            e = self.next(name, deadline)
+            if check(e["data"]):
+                return e["data"]
+
+    def next(self, name, deadline):
+        """The oldest event of this name that no event() or events() gave out or passed."""
+        for i, e in enumerate(self.kept):
+            if e["event"] == name:
+                return self.kept.pop(i)
         while True:
             try:
                 e = self.lines.get(timeout=max(0.01, deadline - time.monotonic()))
@@ -236,12 +249,14 @@ class WatchTest(unittest.TestCase):
             if e is None:
                 self.fail(f"watch ended; stderr: {self.stderr()}")
             self.assertEqual(set(e), {"event", "time", "data"})
-            if e["event"] == name and check(e["data"]):
-                return e["data"]
+            if e["event"] == name:
+                return e
+            self.kept.append(e)
 
     def events(self, seconds):
-        """Every event in the next seconds."""
-        out, deadline = [], time.monotonic() + seconds
+        """Every event no event() gave out or passed, and those of the next seconds, in the
+        order watch sent them."""
+        out, self.kept, deadline = self.kept, [], time.monotonic() + seconds
         while time.monotonic() < deadline:
             try:
                 e = self.lines.get(timeout=0.05)
@@ -289,6 +304,8 @@ class SnapshotTest(WatchTest):
         self.assertEqual(priv["agents"], {})
         self.assertEqual(snap["problems"], [])
         event = self.event("services")
+        sent = [json.loads(line)["event"] for line in self.raw]
+        self.assertLess(sent.index("vms"), sent.index("services"))
         self.assertEqual(event["warnings"], [])
         services = event["units"]
         self.assertEqual([s["unit"] for s in services],
