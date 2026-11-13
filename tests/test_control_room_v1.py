@@ -341,13 +341,20 @@ class SessionLanguageTest(V1Test):
         self.assertEqual(self.language(), "browser")
         self.assertEqual(self.calls(), [])
 
-    def test_unusable_values_mean_browser(self):
+    def test_browser_without_the_key(self):
         self.sign_in()
-        for text in ("kaputt", "[]", "{}", '{"default_language": "fr"}', '{"default_language": "EN"}',
-                     '{"default_language": 1}', '{"default_language": ["de"]}', '{"default_language": null}'):
-            with self.subTest(text=text):
-                self.settings_file(text)
-                self.assertEqual(self.language(), "browser")
+        self.settings_file('{"session_hours": 3}')
+        self.assertEqual(self.language(), "browser")
+        self.settings_file("{}")
+        self.assertEqual(self.language(), "browser")
+
+    def test_a_value_agentbox_refuses_is_no_browser(self):
+        # never the default in its place: the request is refused and the backend ends
+        # (test_control_room_settings.RefusedSettingsTest)
+        self.sign_in()
+        self.settings_file('{"default_language": "EN"}')
+        self.assertError(self.request("GET", "/api/v1/session"), 503, "settings_unreadable")
+        self.assertEqual(self.server.wait(timeout=15), 78)
 
     def test_not_without_a_session(self):
         self.settings_file('{"default_language": "de"}')

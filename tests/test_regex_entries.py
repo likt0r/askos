@@ -633,6 +633,10 @@ class ListsCliTest(lists_tests.CliTest):
                "AGENTBOX_FEEDS_DIR": self.feeds}
         cases = [
             (lists_tests.record(watch_rx("x"), watch_rx("x", "c2")), "x listed twice"),
+            # a hand edit with control characters: shown with the classifier's printable in both,
+            # at most as long as a host name
+            (lists_tests.record(watch_rx("x\x1b[2J\n" + "y" * 300), watch_rx("x\x1b[2J\n" + "y" * 300, "c2")),
+             "x?[2J?" + "y" * 247 + " listed twice"),
             (lists_tests.record(watch_rx("x") | {"domain": "x.example"}), "broken entry (both domain and regex)"),
             (lists_tests.record(watch_rx(7)), "broken entry (field regex missing or of the wrong type)"),
         ]

@@ -234,7 +234,8 @@ class BackendHostSetupTest(unittest.TestCase):
                                        "owner_user": "alice"}), ("127.0.0.5", 9000))
 
     def test_a_broken_record_stops_the_server(self):
-        # the CLI's checks, with its message and without a traceback
+        # the CLI's checks, with its message and without a traceback; exit status 78 (EX_CONFIG),
+        # which the unit does not restart (RestartPreventExitStatus=78)
         for name, setup in {"not json": "{", "local on a LAN address": {"mode": "local", "bind": "192.0.2.8"},
                             "bad port": {"web_port": 70000}, "unknown field": {"mode": "local", "port": 8800},
                             "network without home_network": {"mode": "network", "bind": "192.0.2.8"},
@@ -242,7 +243,7 @@ class BackendHostSetupTest(unittest.TestCase):
                                                     "home_network": "127.0.0.0/8"}}.items():
             with self.subTest(name):
                 code, err = self.fails(setup)
-                self.assertNotEqual(code, 0)
+                self.assertEqual(code, 78)
                 self.assertTrue(err.startswith(f"agentbox-web: Host setup {self.setup_path}: "), err)
                 self.assertNotIn("Traceback", err)
 

@@ -65,6 +65,7 @@ Codes from the backend itself:
 | 429 | `too_many_attempts` | login brake: five failures in 15 minutes from one address (`Retry-After` in seconds) |
 | 503 | `too_many_streams` | eight live connections are open already (`Retry-After: 10`) |
 | 503 | `readings_unavailable` | host readings are not available |
+| 503 | `settings_unreadable` | agentbox refuses `/etc/agentbox/settings.json` (sign-in, `GET /session`; its reason in `detail`): the backend never falls back to the defaults, it answers this, logs the reason and then stops (exit status 78, which its unit does not restart) until the file is fixed on the Host |
 | 502 | `bad_agentbox_answer` | agentbox printed something that is not JSON |
 | 504 | `timeout` | agentbox did not finish in time |
 | 500 | `internal_error` | a bug in the backend |
@@ -179,14 +180,15 @@ UI (`errors.*`); `tests/test_control_room_v1.py` checks that they agree.
 
 | Method and path | Body | Response |
 |---|---|---|
-| `POST /session` | `{"password": "..."}` | `200 {"authenticated": true, "expires": "<time>", "default_language": "browser"\|"en"\|"de"}` and the cookie; `401 wrong_password`, `429 too_many_attempts` |
-| `GET /session` | | `200 {"authenticated": true, "expires": "<time>", "default_language": "browser"\|"en"\|"de"}`, else `401 unauthenticated` |
+| `POST /session` | `{"password": "..."}` | `200 {"authenticated": true, "expires": "<time>", "default_language": "browser"\|"en"\|"de"}` and the cookie; `401 wrong_password`, `429 too_many_attempts`, `503 settings_unreadable` |
+| `GET /session` | | `200 {"authenticated": true, "expires": "<time>", "default_language": "browser"\|"en"\|"de"}`, else `401 unauthenticated`; `503 settings_unreadable` |
 | `DELETE /session` | | `200 {"authenticated": false}`, cookie cleared, live streams of the session end |
 | `GET /version` | | `200 {"api": 1, "version": "<16 hex>"\|null, "ui": "nuxt"\|null, "installed": "<time>"\|null, "release": "<MAJOR.MINOR.PATCH>"\|null}` (`version` is the UI build, which open pages compare to offer a reload; `version`, `ui` and `installed` are `null` while no UI build is installed; `release` is the Release of Agent Box, the same as `agentbox version`) |
 
 `default_language` is the Setting as the backend reads `/etc/agentbox/settings.json` at
-that request (`browser` when the file has no valid value or agentbox refuses the file), so the UI knows it right after
-sign-in and on every page load without `GET /settings`.
+that request (`browser` without the file or the key), so the UI knows it right after
+sign-in and on every page load without `GET /settings`. A file agentbox refuses answers
+`503 settings_unreadable` and stops the backend (Errors); it does not start with one either.
 
 Sign-ins, failures, refusals by the brake and sign-outs are Activity entries (codes
 `signin`, `signin.failed`, `signin.locked`, `signout`).

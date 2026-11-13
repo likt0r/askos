@@ -73,10 +73,24 @@ class ControlRoomTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.dir = tmp.name
+        # the server reads agentbox's files (the Settings) as agentbox does, under AGENTBOX_ROOT:
+        # never the Host's
+        self.root = os.path.join(self.dir, "root")
+        self.settings = os.path.join(self.root, "etc", "agentbox", "settings.json")
+        os.makedirs(os.path.dirname(self.settings))
         self.stderr_path = os.path.join(self.dir, "server.err")
         self.journald = Journald(os.path.join(self.dir, "journal.socket"))
         self.addCleanup(self.journald.close)
+        self.ssl = ssl._create_unverified_context()
+        self.start_server()
+        self.wait_for_server()
+        self.cookie = None
+        self.user_agent = None
+
+    def start_server(self):
+        """The server, its stderr in a new server.err; it may stop at once (wait_for_server)."""
         env = dict(os.environ,
+                   AGENTBOX_ROOT=self.root,
                    AGENTBOX_WEB_CONF=conf.name, AGENTBOX_WEB_UI=os.path.join(self.dir, "ui"),
                    AGENTBOX_WEB_BIND="127.0.0.1", AGENTBOX_WEB_PORT="0",
                    AGENTBOX_WEB_COMMAND=f"{sys.executable} -I {FAKE}",
@@ -85,23 +99,20 @@ class ControlRoomTest(unittest.TestCase):
         with open(self.stderr_path, "w") as err:
             self.server = subprocess.Popen([sys.executable, "-I", SERVER], env=env,
                                            stdout=subprocess.DEVNULL, stderr=err)
-        self.addCleanup(self.stop_server)
-        self.ssl = ssl._create_unverified_context()
-        self.wait_for_server()
-        self.cookie = None
-        self.user_agent = None
+        self.addCleanup(self.stop_server, self.server)
 
     def tearDown(self):
         self.stop_server()
 
-    def stop_server(self):
-        if self.server.poll() is None:
-            self.server.terminate()
+    def stop_server(self, server=None):
+        server = server or self.server
+        if server.poll() is None:
+            server.terminate()
             try:
-                self.server.wait(timeout=10)
+                server.wait(timeout=10)
             except subprocess.TimeoutExpired:
-                self.server.kill()
-                self.server.wait()
+                server.kill()
+                server.wait()
 
     def wait_for_server(self):
         deadline = time.monotonic() + 15

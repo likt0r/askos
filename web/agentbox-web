@@ -62,6 +62,19 @@ CONF = os.environ.get("AGENTBOX_WEB_CONF", "/etc/agentbox/web")
 UI = os.environ.get("AGENTBOX_WEB_UI", paths.WEB_UI)
 
 
+# The exit status at a Host setup or Settings agentbox refuses (EX_CONFIG): the unit does not
+# restart the service then (RestartPreventExitStatus=78), it stays failed with the reason in
+# the journal until the file is fixed and the service started again.
+CONFIG_REFUSED = 78
+
+
+def refused_config(message):
+    """Ends this service at a file agentbox refuses: one line with the reason, no traceback,
+    exit status CONFIG_REFUSED."""
+    print(f"agentbox-web: {message}", file=sys.stderr, flush=True)
+    sys.exit(CONFIG_REFUSED)
+
+
 def bind_port():
     """(address, port) from the Host setup (host.json, changed only on the Host; ADR 0009),
     Local-only without the file; the environment wins (tests, development). The record is read
@@ -72,8 +85,19 @@ def bind_port():
     try:
         setup = hostsetup.load()
     except Fail as f:
-        sys.exit(f"agentbox-web: {f.message}")
+        refused_config(f.message)
     return setup["bind"], setup["web_port"]
+
+
+def check_settings():
+    """The Settings at the start: a file agentbox refuses stops this service, as one found
+    while it runs does (setting()); a missing file is the defaults."""
+    try:
+        settings.load()
+    except Fail as f:
+        refused_config(f"Settings {f.message}")
+
+
 # der Starter unter dem Pfad, den die sudoers-Regel nennt (paths.CLI)
 AGENTBOX = os.environ.get("AGENTBOX_WEB_COMMAND", f"sudo -n {paths.CLI}").split()
 # Journal-Sockets fuer die Aktivitaet: der Namensraum agentbox, sonst das Vorgabe-Journal
@@ -162,13 +186,19 @@ def make_hash(password):
 def setting(key):
     """A value of the Settings as agentbox reads them (settings.load(); the file is world-readable),
     read anew each time: session_hours at every sign-in, default_language for GET and POST /session,
-    which the UI needs after signing in without GET /settings (a call of agentbox with sudo). The
-    default when the file cannot be used, as agentbox refuses it then, with the reason in the log."""
+    which the UI needs after signing in without GET /settings (a call of agentbox with sudo); a
+    missing file is the defaults. A file agentbox refuses is never replaced by the defaults (they
+    can be wider than what the owner set, such as longer sessions): the request is answered 503
+    settings_unreadable, the reason goes into the log, and the service ends once that answer is
+    sent (Server.process_request_thread), with CONFIG_REFUSED as at the start."""
     try:
         return settings.load()[key]
     except Fail as f:
-        log(f"Settings unusable, {key} is its default: {f.message}")
-        return settings.DEFAULTS[key]
+        log(f"Settings {f.message}; the Control Room stops")
+        request.settings_refused = True
+        raise ApiError(503, "settings_unreadable", "The Settings on the Host cannot be read; the Control Room "
+                                                   "stopped until they are fixed there", detail=f.message,
+                       headers=[("Connection", "close")])
 
 
 def check_password(password):
@@ -365,6 +395,17 @@ class Server(http.server.ThreadingHTTPServer):
     def __init__(self, addr, handler, tls):
         super().__init__(addr, handler)
         self.tls = tls
+        self.settings_refused = False
+
+    def process_request_thread(self, conn, address):
+        """A connection to its end; when one of its requests found the Settings refused
+        (setting()), its answer is sent and the connection closed, and then the server stops
+        (serve_forever returns, main ends the service)."""
+        request.settings_refused = False
+        super().process_request_thread(conn, address)
+        if request.settings_refused:
+            self.settings_refused = True
+            self.shutdown()
 
     # TLS-Handshake im Thread der Verbindung, nicht beim Annehmen
     def finish_request(self, request, client_address):
@@ -1876,6 +1917,7 @@ def main():
         print(make_hash(pw))
         return
     bind, port = bind_port()
+    check_settings()
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     ctx.load_cert_chain(f"{CONF}/cert.pem", f"{CONF}/key.pem")
@@ -1886,6 +1928,9 @@ def main():
     # der gebundene Port: mit AGENTBOX_WEB_PORT=0 waehlt ihn der Kernel (Tests lesen ihn hier)
     log(f"Control Room running on https://{bind}:{httpd.server_address[1]}")
     httpd.serve_forever()
+    # it returns only when a request found the Settings refused
+    if httpd.settings_refused:
+        sys.exit(CONFIG_REFUSED)
 
 
 if __name__ == "__main__":

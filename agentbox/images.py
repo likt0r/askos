@@ -966,13 +966,29 @@ def start(target, resets=(), **request):
             if target == UPDATE:
                 die(f"an update is running already (journalctl -fu {name})", error="update_running")
             die(f"a Build of {target} is being started already", error="build_running", image=target)
-        state_files.write_atomic(_request_file(target), json.dumps(
-            {"actor": activity.actor(), "reset": list(resets), **request}).encode(), 0o600)
-    r = programs.systemctl("start", "--no-block", name, timeout=60, ok=None)
-    if r.returncode != 0:
-        state_files.remove(_request_file(target), fail=False)
-        programs.fail(r, f"systemctl start {name}", program="systemctl")
+        mine = json.dumps({"actor": activity.actor(), "reset": list(resets), **request}).encode()
+        state_files.write_atomic(_request_file(target), mine, 0o600)
+    # a start that fails in any way (an exit code, no answer in time, not startable) takes its
+    # request file back, or the next start within a minute would be refused as waiting; unless
+    # the unit runs after all (systemd queued it before the time limit) and takes it, or it is
+    # another caller's by now
+    try:
+        r = programs.systemctl("start", "--no-block", name, timeout=60, ok=None)
+        if r.returncode != 0:
+            programs.fail(r, f"systemctl start {name}", program="systemctl")
+    except BaseException:
+        _take_back(target, name, mine)
+        raise
     return name
+
+
+def _take_back(target, name, mine):
+    """Remove the request file of a start that failed, if it is still this call's and no unit
+    of the target runs to take it."""
+    with state_files.locked(REQUEST_LOCK):
+        if _active(name) or state_files.read(_request_file(target), None) != mine:
+            return
+        state_files.remove(_request_file(target), fail=False)
 
 
 def build_cmd(args):

@@ -1,7 +1,8 @@
 """Host readings for the Control Room backend.
 
-Loaded by agentbox-web (next to it in libexec, agentbox/paths.py), not a program of its own.
-Everything is read without privileges, as the user agentbox-web:
+Loaded by agentbox-web (next to it in libexec, agentbox/paths.py), not a program of its own;
+it imports the package's leaf modules from where agentbox-web found them (registry: the
+pattern of VM names). Everything is read without privileges, as the user agentbox-web:
 
   CPU load          /proc/stat (busy share between two samples), /proc/loadavg
   CPU temperature   hwmon k10temp, zenpower or coretemp (Tdie, Tctl or Package id 0)
@@ -24,6 +25,8 @@ import re
 import subprocess
 import threading
 import time
+
+from agentbox import registry
 
 # Defaults until Settings make them configurable; a reading is over its threshold
 # when it reaches it. None: no threshold.
@@ -49,7 +52,7 @@ NVIDIA_TIMEOUT = 10
 CPU_SENSORS = ("k10temp", "zenpower", "coretemp")  # hwmon names, first found wins
 CPU_LABELS = ("Tdie", "Tctl", "Package id 0")      # preferred sensor within it
 DOMAIN_PREFIX = "agentbox-"                        # libvirt domain of a VM (agentbox/registry.py)
-VM_NAME = re.compile(r"[a-z][a-z0-9-]{1,15}")
+VM_NAME = registry.NAME                           # which VMs exist only agentbox knows
 KIB, MIB = 1024, 1024 * 1024
 
 

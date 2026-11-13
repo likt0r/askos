@@ -23,6 +23,10 @@ def shown(text, limit):
     return text[:limit]
 
 
+def printable(text, limit):
+    return "".join(c if c.isprintable() else "?" for c in text)[:limit]
+
+
 class ArgumentsTest(unittest.TestCase):
     def fails(self, call, *args):
         with self.assertRaises(Fail) as caught:
@@ -100,7 +104,7 @@ class ValidTest(unittest.TestCase):
     def valid(self, entries, **kw):
         def broken(why):
             raise ValueError(why)
-        return entry_store.valid(entries, lambda e: entry_store.problem(e, FIELDS, shown), broken, **kw)
+        return entry_store.valid(entries, lambda e: entry_store.problem(e, FIELDS, shown), broken, printable, **kw)
 
     def test_a_broken_or_second_entry_ends_it(self):
         good = [{"domain": "a.org", "note": "", "added": 1}, {"regex": "a.org", "note": "", "added": 1}]
@@ -109,6 +113,10 @@ class ValidTest(unittest.TestCase):
             self.valid(good + [1])
         with self.assertRaisesRegex(ValueError, r"^a\.org listed twice$"):
             self.valid(good + [dict(good[0])])
+        # the value is shown by the list's shown(text, limit), at most as long as a host name
+        odd = {"regex": "a\x1b[2J\x07" + "b" * 300, "note": "", "added": 1}
+        with self.assertRaisesRegex(ValueError, r"^a\?\[2J\?b{247} listed twice$"):
+            self.valid(good + [odd, dict(odd)])
 
     def test_key_and_twice_are_the_list_s(self):
         entries = [{"domain": "a.org", "scope": "x", "note": "", "added": 1},

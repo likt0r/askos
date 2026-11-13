@@ -520,7 +520,8 @@ def refused_entry(e, broad=True):
 def _checked(text, fields):
     """Die Eintraege eines Datensatzes; ein kaputter oder doppelter macht die ganze Datei
     kaputt (ValueError), wie fuer agentbox. A domain and a Regex entry of the same text are
-    two entries."""
+    two entries; a second one is named with printable, at most as long as a host name (a
+    hand edit may hold control characters), as agentbox names it (entry_store.valid)."""
     entries, seen = [], set()
     for e in _entries(text):
         why = _problem(e, fields)
@@ -528,7 +529,7 @@ def _checked(text, fields):
             raise ValueError(f"broken entry ({why})")
         key = ("regex", e["regex"]) if "regex" in e else ("domain", e["domain"])
         if key in seen:
-            raise ValueError(f"{key[1]} listed twice")
+            raise ValueError(f"{printable(key[1], MAX_HOST)} listed twice")
         seen.add(key)
         entries.append(e)
     return entries

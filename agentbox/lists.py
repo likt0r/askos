@@ -142,15 +142,21 @@ def _problem(kind, e):
     """What is wrong with an entry, or None. The classifier checks the entries of both
     records the same way, with the same texts byte for byte (agentbox-suspicious, _problem):
     a value in a text has its unprintable characters shown as ? by the classifier's own
-    printable."""
+    printable (_printable)."""
     def category_or_text(e):
         if "category" in kind["fields"] and e["category"] not in categories():
-            return f"unknown category {patterns.rules().printable(e['category'], 20)}"
+            return f"unknown category {_printable(e['category'], 20)}"
         if len(e["note"]) > MAX_NOTE or len(e.get("source", "")) > MAX_SOURCE:
             return "text too long"
         return None
 
-    return entry_store.problem(e, kind["fields"], lambda t, n: patterns.rules().printable(t, n), category_or_text)
+    return entry_store.problem(e, kind["fields"], _printable, category_or_text)
+
+
+def _printable(text, limit):
+    """A value in a message as the classifier shows it: unprintable characters as ?, at most
+    limit characters."""
+    return patterns.rules().printable(text, limit)
 
 
 def _valid(kind, entries, path):
@@ -163,7 +169,8 @@ def _valid(kind, entries, path):
             raise Unreadable(f"{path}: {why}")
         die(f"{LEGITIMATE_UNREADABLE}: {path}: {why}", error="legitimate_unreadable")
 
-    return entry_store.valid(entries, lambda e: _problem(kind, e), broken)
+    # a second entry is named as the classifier names it (_checked), byte for byte
+    return entry_store.valid(entries, lambda e: _problem(kind, e), broken, _printable)
 
 
 def _entry(kind, domain, now, added_by, category="", source="", note="", ref=None):

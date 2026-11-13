@@ -85,10 +85,17 @@ def problem(e, fields, shown, extra=None):
     return extra(e) if extra else None
 
 
-def valid(entries, check, broken, key=patterns.key, twice=lambda e: f"{patterns.value(e)} listed twice"):
+# a domain or pattern in a message: at most as long as a host name (the classifier's MAX_HOST)
+SHOWN = 253
+
+
+def valid(entries, check, broken, shown, key=patterns.key, twice=None):
     """The entries; at the first broken one (check(e) says why, see problem) or one whose key(e) came
     before (twice(e) says so) broken(why) ends the command, why "broken entry (...)" or the
-    text of twice."""
+    text of twice. Without twice that is "<domain or pattern> listed twice", the value shown
+    by shown(text, limit), as problem shows a domain: a hand-edited pattern may hold control
+    characters."""
+    twice = twice or (lambda e: f"{shown(patterns.value(e), SHOWN)} listed twice")
     seen = set()
     for e in entries:
         why = check(e)

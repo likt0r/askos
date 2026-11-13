@@ -187,7 +187,9 @@ class HostTest(unittest.TestCase):
         # sign-ins go to a stand-in, never into the Host's Activity
         journald = Journald(os.path.join(self.dir, "journal", "socket"))
         self.addCleanup(journald.close)
-        env = dict(os.environ, PATH=bindir,
+        # agentbox's files (the Settings a sign-in reads) under a root of the test, never the Host's
+        os.makedirs(os.path.join(self.dir, "root", "etc", "agentbox"))
+        env = dict(os.environ, PATH=bindir, AGENTBOX_ROOT=os.path.join(self.dir, "root"),
                    AGENTBOX_WEB_CONF=conf.name,
                    AGENTBOX_WEB_BIND="127.0.0.1", AGENTBOX_WEB_PORT="0", AGENTBOX_WEB_JOURNAL=journald.path,
                    AGENTBOX_WEB_COMMAND=f"{sys.executable} -I {FAKE_AGENTBOX}", FAKE_AGENTBOX_DIR=self.dir,
