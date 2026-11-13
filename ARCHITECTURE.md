@@ -13,6 +13,10 @@ Terms follow [GLOSSARY.md](GLOSSARY.md). Decisions with lasting consequences are
 Out of scope: theft of the Host, targeted attacks against its owner, attacks on the
 laptops that drive the agents.
 
+Where the layers below stop short against these two threats is listed in [What it does not
+protect against](#what-it-does-not-protect-against); how to report a hole privately is in
+[SECURITY.md](SECURITY.md).
+
 ## Overview
 
 ```mermaid
@@ -46,7 +50,9 @@ flowchart LR
 
 ### Host access
 - SSH: key only, one admin user, no forwarding. The desktop can be turned off; the Host
-  boots to a text console and the disk passphrase is entered over a remote keyboard.
+  boots to a text console and the disk passphrase is entered over a remote keyboard. This is
+  how the owner set up their Host; `agentbox setup` leaves sshd and the disk alone (see [The
+  Host](#the-host) below).
 - How far the Orca ports (one per VM) and the Control Room reach is the mode of the **Host
   setup** (`/etc/agentbox/host.json`, written only by `agentbox setup` on the Host, never by the
   Control Room). **Local-only**, the default: they listen on the loopback address only, and no
@@ -55,7 +61,8 @@ flowchart LR
   them; everything else on those ports is rejected. The rule covers the
   whole Orca port range 6801–7054, so a new VM needs no firewall change; only the ports of
   VMs in the registry have anything listening.
-- The Host applies security updates daily (dnf5-automatic) and never reboots on its own.
+- The Host applies security updates daily (dnf5-automatic, set up by the owner, not by Agent
+  Box) and never reboots on its own.
   Agent Box itself is updated only by the owner, with `dnf upgrade` of a Release
   ([docs/releasing.md](docs/releasing.md)).
 - Everything that changes VMs, the Allowlist or credentials goes through the `agentbox`
@@ -435,13 +442,16 @@ flowchart LR
   Legitimate domains,
 - random-looking labels and unusual TLDs (weak signals).
 
-**Legitimate domains** (registries, vendors, distributions) get no pattern Signals except the
-blockchain pattern, and Feed hits for one or a subdomain of it do not count, so a broken feed
-cannot stop normal work there. Three of the built-in ones are hosts of arbitrary user content,
+**Legitimate domains** (registries, vendors, distributions; no hosting services such as
+`amazonaws.com` or `vercel.app`) get no pattern Signals except the blockchain pattern, and
+Feed hits for one or a subdomain of it do not count, so a broken feed cannot stop normal work
+there. Three of the built-in ones are hosts of arbitrary user content,
 `github.io`, `githubusercontent.com` and `claudeusercontent.com` (anyone's GitHub Pages site,
 GitHub's raw-content hosts, the artifacts anyone shares from claude.ai): they keep the pattern
 Signals off the brand as well, but Feed hits on their subdomains count, so a known phishing or
-payload site there stays blocked in Open web unless an Allowlist entry covers it (see Known residual risks; #59). The domains themselves keep their treatment, as do
+payload site there stays blocked in Open web unless an Allowlist entry covers it (see [What it
+does not protect against](#what-it-does-not-protect-against); #59). The domains themselves keep
+their treatment, as do
 the brands' own domains such as `github.com`, `claude.ai`, `claude.com` and `anthropic.com`. No
 Legitimate entry lifts those Feed hits again, also not one of the Host at or below a
 user-content host (however specific), so one from before this rule stops suppressing them: the
@@ -540,7 +550,8 @@ Watchlist cannot be read. A
 failure stops setup and the installation.
 
 The approach sees host names only: abuse of allowed services such as GitHub is not
-visible here and is limited by token scope.
+visible here and is limited by token scope (see [Egress](#egress) and [What detection
+sees](#what-detection-sees) below).
 
 ### Credentials
 - **GitHub:** a GitHub App issues installation tokens valid for one repository and one hour,
@@ -1232,68 +1243,253 @@ themselves, so they work the same in a checkout. Only the two starters find the 
 on their own: `bin/agentbox` and `agentbox-web` look next to themselves in a checkout and
 otherwise in `lib/agentbox` under their own prefix.
 
-## Known residual risks
+## What it does not protect against
 
-- **Code inside a VM can read that VM's tokens** while it runs. Scope, lifetime and
-  per-VM revocation limit the damage; they do not prevent it.
-- **GitHub is on the allowlist** and so is a possible channel to send data out, for example
-  in issues or commits of a repository the VM may write to.
+The layers above narrow what a manipulated agent or a malicious package can do from inside a
+VM; they do not make a VM harmless. These are the limits known so far, one per bullet: the
+mechanism, where it stops, and what limits the damage where anything does. A limit listed here
+is known and no vulnerability; a way past a mechanism that this list does not name is one, and
+[SECURITY.md](SECURITY.md) says how to report it privately. Outside the [threat
+model](#threat-model) altogether: theft of the Host, targeted attacks against its owner,
+attacks on the laptops.
+
+### Egress
+
+- **Abuse of an allowed service.** The proxy decides by the server name of the TLS handshake and
+  passes whatever the connection then carries ([Network](#network)). A domain entry on the
+  Allowlist covers every subdomain, a Regex entry every host its pattern matches, and the
+  entries a new Host starts with (`proxy/allowlist`) include GitHub, the AI providers, the
+  package registries and the container registries, all of which take uploads from anyone with an
+  account: a commit, an issue, a package, an image, a file. Token scope limits only the tokens
+  the box issues; a credential an attacker plants in a repository or an issue works from the VM
+  as from anywhere. Mitigation: few Allowlist entries, for one VM where only one needs them,
+  temporary where a task needs them once.
+- **GitHub with the VM's own tokens.** The token service gives a VM a token for any repository
+  of its GitHub owners that one of the Host's GitHub Apps is installed on, as often as it asks;
+  each token is valid for that one repository and one hour, with contents, issues and pull
+  requests write ([Credentials](#credentials)). Data can leave in commits, issues and pull
+  requests there, and an agent can overwrite a branch that no branch protection or ruleset
+  guards (private repositories on GitHub Free have none); the `pre-push` hook that refuses
+  `main` and `master` only stops mistakes ([Packages](#packages)). Mitigation: GitHub owners per
+  VM; each App installed only on the repositories agents need; branch protection or rulesets on
+  GitHub.
+- **A Regex entry can be broader than it looks.** The breadth check refuses a pattern only when
+  it matches one of a fixed sample of unrelated hosts (`BREADTH_SAMPLE`): a broad pattern that
+  misses the sample passes. The preview before `--confirm-pattern` lists only the hosts of the
+  scope's proxy log of the last 7 days, not the ones a VM has not tried yet
+  ([Network](#network), [ADR 0013](docs/adr/0013-regex-entries-in-every-list.md)). Mitigation: a
+  regex Allowlist entry never allows a destination with strong Signals, checked on every
+  connection, and allows nothing while the Watchlist cannot be read; a domain entry where one
+  will do.
+- **A VM can make its own proxy match slowly.** The VM chooses the host names its proxy matches
+  against the patterns of every list that applies to it. The rules for patterns keep a host
+  crafted to make one backtrack to about 60 to 150 ms for a pattern at the limit of the rules
+  (typical patterns take well under a millisecond), and the number of patterns has no cap
+  ([ADR 0013](docs/adr/0013-regex-entries-in-every-list.md)). The proxy matches in its event
+  loop, so this slows only that VM's proxy, but the time is spent on the Host. Mitigation: the
+  rules for patterns; few patterns.
 - **User content below an Allowlist entry.** A domain entry is checked for strong Signals only
-  when it is added, and the Allowlist a new Host starts with has `githubusercontent.com` and
-  `claudeusercontent.com` (so claude.ai artifacts load in every VM without Open web). A
-  subdomain the threat-intelligence Feed lists there passes the proxy; it raises an Alert,
-  because Feed hits on the built-in user-content hosts count ([Detection](#detection)), but is
-  not blocked. An owner who prefers the block removes the entry (`agentbox disallow all
-  claudeusercontent.com`): artifacts then need Open web or an entry of their own, and Open web
-  keeps Feed-listed ones blocked.
-- **Domain fronting:** the proxy checks the server name of the TLS handshake only; what
-  goes on inside the connection it cannot see. An allowed domain served by a shared CDN
-  (e.g. `registry.npmjs.org`) can carry traffic to other sites on that CDN. HTTP/2
-  connection coalescing is the same: every name resolves to the Host's one address, so a
-  browser may send requests for another host its certificate covers over a connection open
-  to an allowed one, without a new server name for the proxy to see or log.
-- **Encrypted Client Hello:** a client that brings its own ECH key (the resolver never
-  answers the HTTPS records that carry one) could hide its real destination behind an
-  allowed outer name served by the same provider, the way domain fronting does.
-- **Services of the Host on ports 53 and 443:** one that listens on all of the Host's
-  addresses keeps the resolver or the proxy from binding the Host's address in a VM
-  network, so Agent Box refuses to set up the networks while it runs: `regenerate`, `setup`,
-  `create`, `delete` and a change of the Settings stop before anything changes and name the
-  port. A service bound to other addresses is no obstacle, and nftables keeps the VMs from
-  it.
+  when it is added (see [What detection sees](#what-detection-sees) below), and the Allowlist a
+  new Host starts with has `githubusercontent.com` and `claudeusercontent.com` (so claude.ai
+  artifacts load in every VM without Open web). A subdomain the threat-intelligence Feed lists
+  there passes the proxy; it raises an Alert, because Feed hits on the built-in user-content
+  hosts count ([Detection](#detection)), but is not blocked. Mitigation: an owner who prefers
+  the block removes the entry (`agentbox disallow all claudeusercontent.com`): artifacts then
+  need Open web or an entry of their own, and Open web keeps Feed-listed ones blocked.
+- **Domain fronting, connection coalescing and Encrypted Client Hello.** The proxy resolves the
+  name itself, so a VM cannot pick the address, but it checks the server name of the TLS
+  handshake only; what goes on inside the connection it cannot see ([Network](#network)). An
+  allowed domain served by a shared CDN (e.g. `registry.npmjs.org`) can carry traffic to other
+  sites on that CDN. HTTP/2 connection coalescing is the same: every name resolves to the Host's
+  one address, so a browser may send requests for another host its certificate covers over a
+  connection open to an allowed one, without a new server name for the proxy to see or log. A
+  client that brings its own ECH key (the resolver never answers the HTTPS records that carry
+  one) could hide its real destination behind an allowed outer name served by the same provider,
+  the way domain fronting does. No mitigation: the proxy does not decrypt TLS.
 - **Only TLS with a server name, on port 443, leaves a VM.** Plain HTTP, other ports and TLS
   without a server name get nowhere, and an IP literal as the name is a raw IP, a strong
-  Signal. A VM's UDP reaches only DHCP and the resolver on the Host's address on its
-  network, so there is no HTTP/3 (QUIC); clients fall back to TCP. A tool that needs any of
-  this has no way out, which is the intent; what reaches the proxy shows up as a blocked
-  connection of the VM's address.
-- **Repositories inside one VM are not isolated from each other.** Put sensitive projects in
+  Signal. A VM's UDP reaches only DHCP and the resolver on the Host's address on its network,
+  so there is no HTTP/3 (QUIC); clients fall back to TCP ([Network](#network)). A tool that
+  needs any of this has no way out, which is the intent; what reaches the proxy shows up as a
+  blocked connection of the VM's address.
+- **Open web.** For its duration a VM can send data to any public destination without strong
+  Signals, which includes every destination nobody has listed yet ([Network](#network)).
+  Mitigation: its time limit (`open_web_max_minutes`, 240 by default); strong Signals stay
+  blocked; when it ends, the tunnels only it allowed are closed
+  ([ADR 0005](docs/adr/0005-ending-access-closes-only-disallowed-tunnels.md)).
+- **An expired Temporary allowlist entry leaves its tunnels open.** The expiry stops new
+  connections only; a tunnel the entry allowed runs on, without an idle or lifetime limit, also
+  after the timer removed the entry ([Network](#network),
+  [ADR 0005](docs/adr/0005-ending-access-closes-only-disallowed-tunnels.md)). Mitigation:
+  `agentbox disallow` before the expiry closes them; after it, a restart of the VM's proxy
+  (`agentbox-proxy-<vm>.service`) or a Restart of the VM ends them.
+
+### What detection sees
+
+- **Names only, and only names someone has listed.** The classifier judges the server name of
+  each connection ([Detection](#detection)); it does not see what is sent, so a channel through
+  an allowed service raises nothing. The Feeds know what HaGeZi has listed and the Host has
+  fetched (in the [Maintenance window](#maintenance-window) and every `feed_interval_hours`, 12
+  by default): a destination on no list, registered before the newly-registered window
+  (`young_domain_days`, 14 by default), with an inconspicuous name has no Signal at all. The
+  `young` Signal, random-looking labels and unusual TLDs are weak: they raise Alerts and block
+  nothing, not even in Open web. Feed hits at or below a Legitimate domain do not count (for a
+  regex one, only the young Feed's), except on subdomains of the built-in user-content hosts
+  (`github.io`, `githubusercontent.com`, `claudeusercontent.com`). Mitigation: the
+  hand-maintained Watchlist, whose Regex entries can cover a family of names, for what an
+  incident brings to light.
+- **Signals do not stop a domain entry, and Alerts stop nothing.** Strong Signals are checked
+  when a domain entry is added, extended or made permanent (`--force`); a destination that
+  turns up on the Watchlist or a Feed after that still passes the proxy through its entry, with
+  an Alert for each connection ([Network](#network)). Only a Regex entry is checked on every
+  connection. No Alert pauses, resets or cuts off a VM on its own ([VMs](#vms)); someone has to
+  look. Mitigation: Alerts in the Control Room; `agentbox disallow` closes the entry's tunnels.
+
+### Credentials in a VM
+
+- **The Claude token is in the VM, and it is long-lived.** It reaches the VM at boot (fw_cfg),
+  and every agent and terminal there has it as `CLAUDE_CODE_OAUTH_TOKEN`
+  ([Credentials](#credentials), [VMs](#vms)). Code in the VM can read it and send it out through
+  any allowed service; it then works from anywhere, on the owner's Claude account, until it
+  expires or is revoked with Anthropic. `agentbox set-claude-token` stores a new token on the
+  Host and revokes nothing. The account's claude.ai connectors stay out of the VM only as long
+  as nobody logs in to claude.ai there: the token cannot fetch them, and
+  `ENABLE_CLAUDEAI_MCP_SERVERS=false`, a Safeguard, is a default that code in the VM can switch
+  back ([Credentials](#credentials)). Mitigation: one token per VM, so a leak is one token to
+  revoke; it never touches the Data disk.
+- **GitHub tokens can be taken out of the VM.** Any process in the VM can ask the token service,
+  as Git's credential helper and the `gh` wrapper do; the service knows the VM only by the
+  network a request comes from ([Credentials](#credentials)). A token taken out works anywhere
+  until it expires. Mitigation: one repository, one hour, no workflows or administration
+  permission.
+- **Credentials you bring into a VM yourself** get none of this: a Codex or OpenCode login, an
+  API key in a project's `.env`. Every agent in the VM can read them, and those on the Data disk
+  outlive a Reset; [Credentials](#credentials) covers GitHub and Claude only. Mitigation: keep
+  them out of VMs; no package-publishing token exists on the box unless one is brought in.
+
+### Inside a VM
+
+- **The package minimum age is a delay, not a check.** npm, pnpm, Bun and uv in the VM, and the
+  Build for the agents and Orca, take only versions at least `package_min_age_days` old (2 by
+  default), and npm runs no install scripts ([Packages](#packages)). A malicious version nobody
+  notices for longer gets in, and so does malicious code that runs when a package is used, not
+  installed. Fedora's packages in a Build, and other package managers in the VM (cargo, Gradle,
+  container images, for example), have no minimum age.
+- **The Safeguards are configuration inside the VM.** They hold for a package or an agent that
+  goes by the defaults, not against code that already runs there: it can loosen them for itself,
+  for example with a repository's own `.npmrc`, `pyproject.toml` or `.git/config`, or `env` in
+  Claude Code's settings ([Packages](#packages), [Credentials](#credentials)). So can a VM
+  variable that points a tool at another configuration file (`npm_config_userconfig`,
+  `npm_config_globalconfig`, `XDG_CONFIG_HOME`, which moves where Git and uv look for the user's
+  configuration): those names are not refused ([VMs](#vms)). The check of every Build knows the
+  Safeguards it was written for: a derived Image could undermine one in a way it does not look
+  for (a wrapper earlier on `PATH`, a service that rewrites a file at boot) ([Images and
+  Builds](#images-and-builds)). Mitigation: a Release is reviewed, and the check catches
+  convenient edits.
+- **Repositories in one VM are not isolated from each other.** Every agent in a VM runs as the
+  same user on the same Data disk
+  ([ADR 0001](docs/adr/0001-vm-is-the-unit-of-separation.md)). Mitigation: sensitive projects in
   their own VM.
-- **Private repositories without branch protection** (GitHub Free) can be overwritten by an
-  agent; the `pre-push` hook only stops mistakes.
-- **Open web** lets a compromised VM send data to any public destination for its duration.
-- **Build caches survive a Reset** (`target/`, `node_modules` in worktrees) and could carry
-  tampered output.
-- **The Control Room** can reveal pairing codes and open the web; it relies on a strong
-  password and, in Network mode, on the home network boundary (in Local-only, on who can use
-  the Host itself). A taken-over backend can do through `sudo` whatever the Control Room's
-  commands can, without `--force`.
-- **Activity is only as trustworthy as its writers.** Root and members of
-  `agentbox-journal` (the members of `libvirt`, Host admins in effect) can write any
-  command entry. A compromised proxy or token service can still write false lines for
-  its own VM, and the Control Room false sign-ins with any actor and description. Entries
-  such a service writes beyond its own are left out, but every read then goes through
-  all of them, which a flood can slow down to the 120 s limit; a flood by any writer can
-  also make journald delete older entries early through its size limits. Readers know
-  the services by the uids of their users; the package creates them once and keeps them,
-  but a user deleted and created again with another uid would hide its earlier lines.
-- **The safeguard check knows the Safeguards it was written for.** A derived Image could
-  undermine one in a way it does not look for (a wrapper earlier on `PATH`, a service that
-  rewrites a file at boot); a Release is reviewed, the check catches convenient edits. A
-  repository's own `.npmrc`, `pyproject.toml` or `.git/config` inside a VM can still loosen
-  npm, uv or Git for that repository, and so can a VM variable that points a tool at another
-  configuration file (`npm_config_userconfig`, `npm_config_globalconfig`, `XDG_CONFIG_HOME`, which moves where Git and uv look for the user's configuration): those names are
-  not refused.
-- **Builds run as root on the Host** (podman, bootc-image-builder) from the installed
-  Release's Containerfiles: what a Release is cut from (`main`). Branch protection on `main`
-  and installing only reviewed code are what keep agents' branches out of them.
+- **A Reset does not clean the Data disk.** It replaces the System disk only ([VMs](#vms)). What
+  an agent leaves on the Data disk is there for the next session: changes in the repositories
+  (their code, a `CLAUDE.md`, a project's `.claude/settings.json`, `.npmrc` or `.git/config`),
+  build caches (`target/`, `node_modules` in worktrees) that can carry tampered output, the VM's
+  containers with their Container images and volumes, which come back stopped
+  ([ADR 0017](docs/adr/0017-containers-live-on-the-data-disk.md)), and Claude Code's per-project
+  memory, kept with the transcripts under `~/.claude/projects`.
+  Mitigation: a VM deleted with its Data disk (`--delete-data-disk`) and created again starts
+  clean.
+
+### The boundary of a VM
+
+- **Hypervisor, KVM and the CPU.** A VM's own kernel keeps a kernel exploit inside it
+  ([VMs](#vms), [ADR 0002](docs/adr/0002-vms-instead-of-containers.md)); a bug in KVM, in QEMU
+  and its virtual devices, or in the CPU (side channels such as Spectre) can cross that
+  boundary. libvirt confines each VM's QEMU process with SELinux (sVirt) where SELinux enforces,
+  as on Fedora by default; Agent Box adds no layer of its own and does not check that SELinux
+  enforces. Mitigation: the Host's updates of kernel, QEMU and firmware ([The Host](#the-host)).
+- **The services a VM reaches run on the Host.** A VM reaches the proxy and the token service on
+  its network, both Agent Box's own Python, and libvirt's dnsmasq, its resolver and DHCP server
+  ([Network](#network)). A hole in one of them runs code on the Host: the proxies of all VMs run
+  as one user, `agentbox-proxy`, and the token services as `agentbox-gh`, the one user that
+  reads the GitHub Apps' keys; code running as it gets tokens for every repository of every
+  installation of every App, not only for one VM's GitHub owners. Mitigation: small services of
+  our own instead of large general ones ([ADR 0004](docs/adr/0004-own-security-services.md)),
+  without privileges, with `NoNewPrivileges` and a read-only system (`ProtectSystem=strict`);
+  the token service starts per request and reads one line.
+- **Services of the Host on ports 53 and 443.** One that listens on all of the Host's addresses
+  keeps the resolver or the proxy from binding the Host's address in a VM network, so Agent Box
+  refuses to set up the networks while it runs: `regenerate`, `setup`, `create`, `delete` and a
+  change of the Settings stop before anything changes and name the port. A service bound to
+  other addresses is no obstacle, and nftables keeps the VMs from it ([Network](#network)).
+- **The Host runs Orca's client against each VM.** To read the agents' status as the Observer,
+  `agentbox` runs the Host's Orca (`/opt/Orca`, installed by the owner, not part of a Release)
+  as root against the VM's `orca serve`: `agentbox watch` every 15 seconds for each running VM
+  whose Orca answers, the daily Reset check ([Maintenance window](#maintenance-window)) and
+  `agentbox status` ([VMs](#vms), [Control Room](#control-room)). A compromised VM controls that
+  server, so a hole in Orca's client is a way from a VM to root on the Host. Mitigation: Orca on
+  the Host kept up to date.
+
+### The Host
+
+- **Agent Box does not harden the Host.** SSH, the Host's updates, disk encryption and who can
+  log in are the owner's ([Host access](#host-access)). `agentbox setup` takes `ssh` out of
+  the VM networks' firewall zone and, in Network mode, lets only the home network reach the
+  Control Room and the Orca ports ([Setting a Host up](#setting-a-host-up)). Root on the Host
+  has every VM and every credential; the owner's account is in `libvirt`, which controls every
+  VM and makes it a Host admin in effect. Mitigation: what hardens any Fedora machine, as on the
+  owner's Host: SSH by key only, daily updates, an encrypted disk.
+- **The Control Room is one password away from every VM.** A session can do what the Control
+  Room offers: reveal Pairing codes, open the web, allow destinations without strong Signals,
+  replace credentials ([Control Room](#control-room)). It has one password (at least 16
+  characters, scrypt), no second factor, a brake of five failed sign-ins per address in 15
+  minutes, and a self-signed certificate the browser can check only if the owner compares or
+  installs it. Who can try: in Local-only anyone who can use the Host, in Network mode the whole
+  home network. `--force` keeps a stolen session from lifting strong Signals. Code that runs as
+  the Control Room's service user gets no further than the Control Room: its sudoers rule lets
+  it run `agentbox` as root only with the Control Room's own commands, and agentbox refuses it
+  every other command and `--force` ([Control Room](#control-room)); within those commands it
+  can do whatever they can.
+  Mitigation: Local-only, the default; a long password; in Network mode, a home network you
+  trust (or a VPN into it).
+- **A paired device has the VM.** Orca gives a Paired device full access to its VM, past every
+  layer here, and so does a Pairing code to whoever gets it ([VMs](#vms),
+  [Pairing Orca](README.md#pairing-orca)); attacks on the laptops are outside the threat model.
+  Mitigation: `agentbox revoke-pairings` gives the VM's Orca a new identity, and every device
+  must pair again.
+- **Activity is only as trustworthy as its writers** ([Activity](#activity)). Root and members
+  of `agentbox-journal` (the members of `libvirt`, Host admins in effect) can write any command
+  entry. A compromised proxy or token service can still write false lines for its own VM, and
+  the Control Room false sign-ins with any actor and description. Entries such a service writes
+  beyond its own are left out, but every read then goes through all of them, which a flood can
+  slow down to the 120 s limit; a flood by any writer can also make journald delete older
+  entries early through its size limits. Readers know the services by the uids of their users;
+  the package creates them once and keeps them, but a user deleted and created again with
+  another uid would hide its earlier lines. Evidence of what a VM did on the network comes from
+  the Host's proxy and token-service logs, never from the VM's own journal.
+
+### Agent Box's own code
+
+- **Releases are unsigned.** A Release is an RPM attached to its GitHub release, with a
+  `SHA256SUMS` file from the same place ([docs/releasing.md](docs/releasing.md),
+  [ADR 0009](docs/adr/0009-agent-box-ships-as-a-fedora-rpm.md)): the check catches a broken
+  download, not a release changed by someone who can write to the repository. The package runs
+  as root on the Host. Mitigation: none yet; ADR 0009's signed packages through COPR are to
+  follow.
+- **Builds run as root on the Host** (podman, bootc-image-builder) from the installed Release's
+  Containerfiles: what a Release is cut from, `main` ([Images and Builds](#images-and-builds)).
+  Mitigation: branch protection on `main` and installing only reviewed code are what keep
+  agents' branches out of them.
+
+### What no test covers
+
+- **No test runs a VM.** The tests run the real CLI, proxy, token service and Control Room
+  against fake external programs (`virsh`, `virt-install`, `qemu-img`, `podman`, `firewall-cmd`,
+  `systemctl`, `curl` for GitHub and Anthropic), and CI installs and updates the RPM in a Fedora
+  container ([CONTRIBUTING.md](CONTRIBUTING.md)). No test boots a VM (fw_cfg, the guest agent,
+  the Safeguards at work), loads the nftables and firewalld rules into a kernel (that a VM
+  reaches nothing but the resolver, the proxy and the token service), runs a Build with podman
+  and bootc-image-builder, shuts down or reboots a Host with `libvirt-guests`, or lets the proxy
+  resolve a real name (the proxy's tests give it the addresses a name resolves to, and allowed
+  tunnels go to a local server instead). What GitHub and Anthropic enforce, such as a token's
+  scope, is checked only as the request Agent Box sends.

@@ -187,10 +187,11 @@ class ScopeTest(ProxyTest):
         self.assertIn("[work] BLOCKED priv.example (not on the Allowlist)\n", log)
 
     def test_an_allowlist_entry_of_a_user_content_host_lets_a_feed_hit_through_with_an_alert(self):
-        # Known residual risk, to change with #59 (the Allowlist no longer passing before the Open
-        # web check): claudeusercontent.com is on the starting Allowlist, and decide() lets an
-        # Allowlist domain entry pass before the Open web check, so a threat-intelligence Feed hit
-        # below it is allowed with an Alert, not blocked as it is when the web is open.
+        # A known limit (ARCHITECTURE.md#what-it-does-not-protect-against), to change with #59
+        # (the Allowlist no longer passing before the Open web check): claudeusercontent.com is on
+        # the starting Allowlist, and decide() lets an Allowlist domain entry pass before the Open
+        # web check, so a threat-intelligence Feed hit below it is allowed with an Alert, not
+        # blocked as it is when the web is open.
         self.store(entry("claudeusercontent.com", "all", added_by="migration"))
         write(os.path.join(self.dir, "feeds", "threat-intelligence"), "evil.claudeusercontent.com\n")
         self.start()
