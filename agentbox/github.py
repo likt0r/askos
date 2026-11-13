@@ -35,7 +35,7 @@ import subprocess
 import sys
 import time
 
-from . import activity, paths, registry, state_files
+from . import activity, options, paths, registry, state_files
 from .errors import Fail, die
 from .sanitize import clean, redact
 
@@ -400,28 +400,6 @@ def github_app(args):
 OUTCOMES = {"github.token": "issued", "github.refused": "refused", "github.error": "error"}
 
 
-def _token_options(args):
-    """--since, --until and --lines as for `agentbox activity`, and --json."""
-    opts, as_json, i = {}, False, 0
-    while i < len(args):
-        a = args[i]
-        i += 1
-        if a == "--json":
-            as_json = True
-            continue
-        name, eq, val = a.partition("=")
-        if name not in ("--since", "--until", "--lines"):
-            die("unknown option: " + clean(a, False)[:60], 2, error="invalid_argument", option=clean(a, False)[:60])
-        if not eq:
-            if i >= len(args):
-                die(f"{name} needs a value", 2, error="invalid_argument", option=name)
-            val, i = args[i], i + 1
-        if not activity.CHECKS[name[2:]](val):
-            die(f"invalid value for {name}: " + clean(val, False)[:60], 2, error="invalid_argument", option=name)
-        opts[name[2:]] = val
-    return opts, as_json
-
-
 def tokens(vm, opts):
     """What the VM asked the token service for, newest first, and per repository
     how many tokens it got and how often it was refused."""
@@ -458,7 +436,9 @@ def _local(iso):
 def github_tokens(args):
     """agentbox github-tokens <vm> [--since T] [--until T] [--lines N] [--json]"""
     vm = registry.check(args[0] if args else "")
-    opts, as_json = _token_options(args[1:])
+    _, opts = options.parse(args[1:], {**{k: activity.CHECKS[k] for k in ("since", "until", "lines")},
+                                       "json": False}, positional=False)
+    as_json = opts.pop("json", False)
     result = tokens(vm, opts)
     if as_json:
         print(json.dumps(result, ensure_ascii=False))

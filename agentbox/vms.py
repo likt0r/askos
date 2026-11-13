@@ -39,7 +39,7 @@ import re
 import shutil
 
 from . import activity, allowlist, detection, generate, images, lifecycle, paths, registry, responding, settings, state_files
-from . import virsh, vmenv
+from . import options, virsh, vmenv
 from .credentials import OWNER
 from .errors import Fail, die
 from .registry import dom
@@ -48,41 +48,11 @@ from .sanitize import clean
 MIN_MEMORY_MIB = 1024
 MAX_MEMORY_MIB = 1048576             # when the Host's memory is unknown
 MAX_DATA_DISK_GIB = 16384
-# option -> takes a value; --owner may repeat
-CREATE_OPTIONS = {"image": True, "memory-mib": True, "data-disk-gib": True, "owner": True,
+# option -> takes a value (options.parse); --owner may repeat
+CREATE_OPTIONS = {"image": True, "memory-mib": True, "data-disk-gib": True, "owner": options.MANY,
                   "container-image-cleanup": True, "container-image-cleanup-days": True,
                   "copy-allowlist-from": True, "json": False}
 DELETE_OPTIONS = {"confirm": True, "delete-data-disk": False, "json": False}
-
-
-def _options(args, known):
-    """Positional arguments and options (--name value, --name=value, or a flag) as (list, dict)."""
-    positional, opts, i = [], {}, 0
-    while i < len(args):
-        a = args[i]
-        i += 1
-        if not a.startswith("--"):
-            positional.append(a)
-            continue
-        name, eq, value = a[2:].partition("=")
-        if name not in known:
-            die("unknown option: " + clean(a, False)[:60], error="invalid_argument", option=clean(a, False)[:60])
-        if not known[name]:
-            if eq:
-                die(f"--{name} takes no value", error="invalid_argument", option=f"--{name}")
-            opts[name] = True
-            continue
-        if not eq:
-            if i >= len(args):
-                die(f"--{name} needs a value", error="invalid_argument", option=f"--{name}")
-            value, i = args[i], i + 1
-        if name == "owner":
-            opts.setdefault(name, []).append(value)
-        elif name in opts:
-            die(f"--{name} given twice", error="invalid_argument", option=f"--{name}")
-        else:
-            opts[name] = value
-    return positional, opts
 
 
 def _remove(path):
@@ -207,7 +177,7 @@ def create(args):
     """agentbox create <vm> [--image I] [--memory-mib N] [--data-disk-gib N]
     [--container-image-cleanup on|off] [--container-image-cleanup-days N] [--owner O]...
     [--copy-allowlist-from VM] [--json]"""
-    positional, opts = _options(args, CREATE_OPTIONS)
+    positional, opts = options.parse(args, CREATE_OPTIONS, exit=1)
     if len(positional) != 1:
         die("create <vm> [--image I] [--memory-mib N] [--data-disk-gib N] [--owner O]... "
             "[--container-image-cleanup on|off] [--container-image-cleanup-days N] "
@@ -403,7 +373,7 @@ def _files(name, say):
 
 def delete(args):
     """agentbox delete <vm> --confirm <vm> [--delete-data-disk] [--json]"""
-    positional, opts = _options(args, DELETE_OPTIONS)
+    positional, opts = options.parse(args, DELETE_OPTIONS, exit=1)
     if len(positional) != 1:
         die("delete <vm> --confirm <vm> [--delete-data-disk]", error="invalid_argument")
     name = positional[0]
@@ -439,7 +409,7 @@ def set_memory(args):
     """agentbox set-memory <vm> <mib> [--json]: the VM's memory limit, from 1024 MiB up to
     the Host's memory; applies at the VM's next start, so a running VM at its next
     Restart or Reset. Refused while the VM is paused."""
-    positional, opts = _options(args, {"json": False})
+    positional, opts = options.parse(args, {"json": False}, exit=1)
     if len(positional) != 2:
         die("set-memory <vm> <mib> [--json]", error="invalid_argument")
     name = registry.check(positional[0])
@@ -488,7 +458,7 @@ def set_container_cleanup(args):
     Container image cleanup, on or off and after how many days an unused Container image
     goes (1 to 365). Whatever state the VM is in; takes effect the next time the cleanup
     runs. A call that changes nothing records nothing."""
-    positional, opts = _options(args, {"days": True, "json": False})
+    positional, opts = options.parse(args, {"days": True, "json": False}, exit=1)
     usage = "set-container-image-cleanup <vm> [on|off] [--days N] [--json]"
     if (not 1 <= len(positional) <= 2                       # the VM and on or off, nothing else
             or len(positional) == 2 and positional[1] not in ("on", "off")
@@ -603,7 +573,7 @@ def _env_answer(name, opts, before, after, state, applies, defined, what):
 def set_env(args):
     """agentbox set-env <vm> NAME=VALUE [NAME=VALUE ...] [--replace] [--json]: add or change VM
     variables; --replace makes these the whole list (none: no VM variables)."""
-    positional, opts = _options(args, {"replace": False, "json": False})
+    positional, opts = options.parse(args, {"replace": False, "json": False}, exit=1)
     if not positional or len(positional) == 1 and "replace" not in opts:
         die("set-env <vm> NAME=VALUE [NAME=VALUE ...] [--replace] [--json]", error="invalid_argument")
     name = registry.check(positional[0])
@@ -616,7 +586,7 @@ def set_env(args):
 def unset_env(args):
     """agentbox unset-env <vm> NAME [NAME ...] [--json]: remove VM variables; names the VM
     does not have change nothing."""
-    positional, opts = _options(args, {"json": False})
+    positional, opts = options.parse(args, {"json": False}, exit=1)
     if len(positional) < 2:
         die("unset-env <vm> NAME [NAME ...] [--json]", error="invalid_argument")
     name = registry.check(positional[0])
@@ -627,7 +597,7 @@ def unset_env(args):
 
 def env(args):
     """agentbox env <vm> [--json]: the VM's VM variables, names and values."""
-    positional, opts = _options(args, {"json": False})
+    positional, opts = options.parse(args, {"json": False}, exit=1)
     if len(positional) != 1:
         die("env <vm> [--json]", error="invalid_argument")
     name = registry.check(positional[0])
