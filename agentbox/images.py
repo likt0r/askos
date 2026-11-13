@@ -996,6 +996,9 @@ def _options(args, known):
 
 
 def _active(name):
+    """Whether a unit of a Build runs, or is about to: deactivating counts, a Build that is
+    stopping may still hold the run lock and write its Image (describe.ACTIVE leaves it out,
+    a connection being closed is no connection)."""
     try:
         r = subprocess.run(["systemctl", "is-active", name], capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.TimeoutExpired):

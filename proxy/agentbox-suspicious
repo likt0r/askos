@@ -476,7 +476,9 @@ def _entries(text):
     return data["entries"]
 
 
-def _printable(text, limit):
+def printable(text, limit):
+    """text for a message: unprintable characters as ?, at most limit characters (agentbox's
+    lists.py shows entries the same way)."""
     return "".join(c if c.isprintable() else "?" for c in text)[:limit]
 
 
@@ -494,9 +496,9 @@ def _problem(e, fields):
         if "domain" in e:
             return "both domain and regex"
     elif not DOMAIN.fullmatch(e["domain"]):
-        return f"invalid domain {_printable(e['domain'], 60)}"
+        return f"invalid domain {printable(e['domain'], 60)}"
     if fields is WATCH_FIELDS and e["category"] not in CATEGORIES:
-        return f"unknown category {_printable(e['category'], 20)}"
+        return f"unknown category {printable(e['category'], 20)}"
     if len(e["note"]) > MAX_TEXT or len(e.get("source", "")) > MAX_TEXT:
         return "text too long"
     return None
@@ -512,7 +514,7 @@ def refused_entry(e, broad=True):
     if not isinstance(e, dict) or not isinstance(e.get("regex"), str):
         return None
     why = pattern_problem(e["regex"], broad)
-    return f"regex entry {_printable(e['regex'], 60)} refused: {why[1]}" if why else None
+    return f"regex entry {printable(e['regex'], 60)} refused: {why[1]}" if why else None
 
 
 def _checked(text, fields):

@@ -107,7 +107,7 @@ def _classifier(*args):
     """agentbox-suspicious with the files of this Host (or the test root): its JSON answer."""
     try:
         r = subprocess.run([paths.SUSPICIOUS, *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                           env=paths.classifier_env(), timeout=30)
+                           env=paths.classifier_env(), timeout=paths.CLASSIFIER_SECONDS)
     except OSError:
         die(f"{paths.SUSPICIOUS} is missing", 127, error="action_failed")
     except subprocess.TimeoutExpired:

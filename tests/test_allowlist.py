@@ -384,10 +384,11 @@ class OpenWebTest(ProxyTest):
 
 # --- Seam A: the CLI ------------------------------------------------------------------
 
-# agentbox-suspicious: evil.* strongly suspicious (exit 2), weak.* a weak Signal, the rest unremarkable
+# agentbox-suspicious: evil.* strongly suspicious (exit 2), weak.* a weak Signal, slow.* no answer,
+# the rest unremarkable
 CLASSIFIER = '''#!/bin/sh
 echo "$1" >> "{dir}/classifier.log"
-case "$1" in evil.*) echo exfil; exit 2;; weak.*) echo young; exit 0;; esac
+case "$1" in evil.*) echo exfil; exit 2;; weak.*) echo young; exit 0;; slow.*) exec sleep 60;; esac
 echo
 '''
 
@@ -403,6 +404,7 @@ class CliTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
+        self.env = {}           # more environment for agentbox
         self.dir = os.path.realpath(tmp.name)
         self.root = os.path.join(self.dir, "root")
         self.conf = os.path.join(self.root, "etc", "agentbox")
@@ -424,7 +426,7 @@ class CliTest(unittest.TestCase):
 
     def run_agentbox(self, *args):
         env = {"PATH": os.path.join(self.dir, "bin") + ":" + os.environ["PATH"], "FAKE_DIR": self.dir,
-               "AGENTBOX_ROOT": self.root, "LANG": "C.UTF-8", "TZ": "UTC"}
+               "AGENTBOX_ROOT": self.root, "LANG": "C.UTF-8", "TZ": "UTC", **self.env}
         r = subprocess.run([AGENTBOX, *args], capture_output=True, text=True, env=env, timeout=60)
         return r.returncode, r.stdout, r.stderr
 
@@ -558,6 +560,15 @@ class AllowTest(CliTest):
         self.assertEqual(self.refused("allow", "all", "evil.example", "--for", "15min"),
                          "evil.example is suspicious (exfil). Allowing it only with --force")
         self.assertEqual(self.ok("allow", "work", "evil.example", "--force"), "work: evil.example allowed\n")
+
+    def test_a_classifier_that_does_not_answer_counts_as_strong_suspicion(self):
+        self.env["AGENTBOX_CLASSIFIER_SECONDS"] = "1"
+        started = time.monotonic()
+        self.assertEqual(self.refused("allow", "work", "slow.example"),
+                         "slow.example is suspicious (agentbox-suspicious does not answer). "
+                         "Allowing it only with --force")
+        self.assertLess(time.monotonic() - started, 30)
+        self.assertEqual(self.ok("allow", "work", "slow.example", "--force"), "work: slow.example allowed\n")
 
     def test_weak_signals_need_no_force(self):
         self.assertEqual(self.ok("allow", "work", "weak.example"), "work: weak.example allowed\n")

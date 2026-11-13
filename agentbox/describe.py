@@ -30,6 +30,8 @@ STATES = {"running": "running", "shut off": "stopped", "paused": "suspended", "i
 # A connection to a VM's Orca port is an instance of agentbox-gui-<vm>@.service, named by
 # systemd after the socket: <n>-[<cookie>-]<local address>:<port>-<remote address>:<port>
 GUI_INSTANCE = re.compile(r"agentbox-gui-(" + registry.NAME.pattern + r")@(.+)\.service")
+# States of an Orca connection's unit that count as connected. A deactivating one is being
+# closed, so it is left out; images._active counts it, because a Build stopping still runs.
 ACTIVE = ("active", "activating", "reloading")
 
 
