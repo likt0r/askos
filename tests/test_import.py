@@ -580,15 +580,19 @@ class WrapperTest(unittest.TestCase):
         self.code = os.path.join(self.root, CODE)
         os.makedirs(self.code)
 
-    def archive(self, *members):
-        """A tar file as the device: members are (TarInfo, bytes or None)."""
+    def archive(self, *members, built_elsewhere=False):
+        """A tar file as the device: members are (TarInfo, bytes or None). built_elsewhere: written next to the
+        device and renamed into place, so a reader sees it whole or not at all."""
         device = self.root + DEVICE
         os.makedirs(os.path.dirname(device), exist_ok=True)
-        with tarfile.open(device, "w", format=tarfile.PAX_FORMAT) as t:
+        target = device + ".part" if built_elsewhere else device
+        with tarfile.open(target, "w", format=tarfile.PAX_FORMAT) as t:
             for info, data in members:
                 if data is not None:
                     info.size = len(data)
                 t.addfile(info, io.BytesIO(data) if data is not None else None)
+        if built_elsewhere:
+            os.rename(target, device)
 
     def run_wrapper(self, *args):
         r = subprocess.run([sys.executable, "-I", WRAPPER, *args], capture_output=True, text=True,
@@ -705,7 +709,7 @@ class WrapperTest(unittest.TestCase):
         p = subprocess.Popen([sys.executable, "-I", WRAPPER, "receive", DEVICE, "foo"], env=env,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         time.sleep(1.5)
-        self.archive((tarfile.TarInfo("a.txt"), b"abc"))
+        self.archive((tarfile.TarInfo("a.txt"), b"abc"), built_elsewhere=True)
         out, err = p.communicate(timeout=30)
         self.assertEqual((p.returncode, json.loads(out)), (0, {"files": 1, "bytes": 3}), err)
 

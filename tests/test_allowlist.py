@@ -251,10 +251,12 @@ class ScopeTest(ProxyTest):
 
 class ExpiryTest(ProxyTest):
     def test_expired_entry_stops_new_connections_but_the_open_tunnel_continues(self):
-        self.store(entry("a.example", "work", expires=int(time.time()) + 2))
+        self.store()
         self.start()
+        expires = int(time.time()) + 3      # written once the proxy is ready, however long its start took
+        self.store(entry("a.example", "work", expires=expires))
         t = self.tunnel("a.example")
-        time.sleep(2.5)
+        time.sleep(max(expires + 0.5 - time.time(), SETTLE))
         self.assertTrue(self.refused("a.example"))
         self.assertIn("[work] BLOCKED a.example (not on the Allowlist)\n", self.log())
         time.sleep(SETTLE)
@@ -339,8 +341,8 @@ class OpenWebTest(ProxyTest):
 
     def test_open_web_running_out_closes_them_too(self):
         self.store()
-        self.open_web(seconds=2)
         self.start()
+        self.open_web(seconds=3)            # once the proxy is ready, however long its start took
         t = self.tunnel("free.example")
         self.assertTrue(self.closed(t, timeout=8))
 

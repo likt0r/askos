@@ -168,7 +168,10 @@ class PairingsTest(ActivityTest):
     def test_wrapper_hides_tokens_and_offers(self):
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(REPO, "vm", "files", DEVICES.lstrip("/"))) as f:
-                src = f.read().replace('DATA = "/var/home/agent/.config/orca"', f"DATA = {d!r}")
+                src = f.read()
+            line = 'DATA = "/var/home/agent/.config/orca"'
+            self.assertIn(line, src)
+            src = src.replace(line, f"DATA = {d!r}")
             wrapper = os.path.join(d, "w.py")
             with open(wrapper, "w") as f:
                 f.write(src)
