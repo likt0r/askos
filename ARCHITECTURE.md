@@ -168,9 +168,13 @@ flowchart LR
   (`auth.json` from `opencode auth login`, `mcp-auth.json` with MCP servers' OAuth tokens,
   the login tables of `opencode.db`); `guest-setup` deletes them at every start, keeping the
   sessions, so none outlives the next one, like a Codex login, which stays on the System
-  disk. So do approvals saved as "always" (`opencode.db`'s `permission` table) and the
-  commands opencode runs when it creates a worktree (`project.commands`, `workspace.extra`),
-  like agent settings. A file it cannot remove is reported and does not stop the start. The token and the VM
+  disk. So do approvals saved as "always" (`opencode.db`'s `permission` table and each
+  session's own rules) and the commands opencode runs when it creates a worktree
+  (`project.commands`, `workspace.extra`), like agent settings; triggers and views, which
+  opencode never makes, are dropped first, so none can put the rows back. A file it cannot
+  remove is reported, and a run past 60 seconds is ended: neither stops the start. This
+  covers `opencode.db` only, not a database opencode is pointed at otherwise (`OPENCODE_DB`,
+  another release channel). The token and the VM
   variables are files QEMU reads (`root:qemu`, mode 0640, in directories of mode 0750),
   never values in virt-install's `--sysinfo`, which it splits at commas: the VM variables
   are `/var/lib/agentbox/vm-env/<vm>.env`, entry `opt/agentbox/env`, one line
@@ -1422,8 +1426,11 @@ attacks on the laptops.
   build caches (`target/`, `node_modules` in worktrees) that can carry tampered output, the VM's
   containers with their Container images and volumes, which come back stopped
   ([ADR 0017](docs/adr/0017-containers-live-on-the-data-disk.md)), Claude Code's per-project
-  memory, kept with the transcripts under `~/.claude/projects`, and opencode's sessions under
-  `~/.local/share/opencode`.
+  memory, kept with the transcripts under `~/.claude/projects`, and opencode's data directory
+  `~/.local/share/opencode`: its sessions, and the Git directories of its snapshots and its
+  worktrees, whose own configuration (a filter, say) runs when opencode next uses them, as a
+  repository's `.git/config` does; only logins, saved approvals and start commands go at
+  each start ([VMs](#vms)).
   Mitigation: a VM deleted with its Data disk (`--delete-data-disk`) and created again starts
   clean.
 

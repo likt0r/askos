@@ -564,12 +564,13 @@ class SecretTest(ActivityTest):
         self.run_agentbox(f"--actor=x {CODE} {TOKEN} ghs_abcdefghijklmnop", "close-web", "work")
         self.assertEqual(self.entries()[-1]["AGENTBOX_ACTOR"],
                          "x orca://pair?[hidden] [hidden] [hidden]")
-        # an OpenCode key (or any other sk- API key) too, but not a short word that starts so
-        self.run_agentbox("--actor=x sk-Oc12AbCdEf_34-ghiJKLmn. sk-learn sk-hynix-semiconductor.com",
+        # an OpenCode key (or any other sk- API key) too, whatever follows it, but not a short
+        # word that starts so
+        self.run_agentbox("--actor=x sk-Oc12AbCdEf_34-ghiJKLmn. sk-learn", "close-web", "work")
+        self.assertEqual(self.entries()[-1]["AGENTBOX_ACTOR"], "x [hidden]. sk-learn")
+        self.run_agentbox("--actor=x sk-Oc12AbCdEf_34-ghiJKLmn.Retry sk-abcdefghijklmnopqrstuvwx.then",
                           "close-web", "work")
-        self.assertEqual(self.entries()[-1]["AGENTBOX_ACTOR"], "x [hidden]. sk-learn sk-hynix-semiconductor.com")
-        self.run_agentbox("--actor=x sk-Oc12AbCdEf_34-ghiJKLmn.Retry sk-Oc12AbCdEf_34-ghiJKLmn.5", "close-web", "work")
-        self.assertEqual(self.entries()[-1]["AGENTBOX_ACTOR"], "x [hidden].Retry [hidden].5")
+        self.assertEqual(self.entries()[-1]["AGENTBOX_ACTOR"], "x [hidden].Retry [hidden].then")
         for secret in (b"Ab3_x-9", b"sk-ant", b"ghs_", b"Oc12AbCdEf"):
             self.assertNotIn(secret, self.raw())
 

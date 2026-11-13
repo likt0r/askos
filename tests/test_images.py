@@ -574,8 +574,8 @@ class SafeguardTest(ImagesTest):
         self.assertIn(".local/share/opencode", persist)
         self.assertIn(".local/state/opencode", persist)
         self.assertNotIn(".config/opencode", persist)
-        # as the agent, after the bind and before orca serve; a failure never stops the start
-        forget = ('runuser -u agent -- /usr/lib/agentbox/opencode-forget "$DATA/home/.local/share/opencode" \\\n'
+        # as the agent, after the bind and before orca serve; a failure or a hang never stops the start
+        forget = ('timeout 60 runuser -u agent -- /usr/lib/agentbox/opencode-forget "$DATA/home/.local/share/opencode" \\\n'
                   '  || echo "guest-setup: opencode logins and approvals not removed" >&2\n')
         self.assertIn(forget, setup)
         self.assertLess(setup.index("PERSIST=("), setup.index(forget))
