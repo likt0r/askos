@@ -34,6 +34,7 @@ OVERVIEW = {"app": {k: v for k, v in APP.items() if k != "stored"},
                                "suspended": False, "html_url": "https://github.com/settings/installations/11",
                                "vms": ["priv"]}],
             "missing": [{"owner": "acme-corp", "vms": ["work"]}]}
+STORED = {"vm": "priv", "stored": True, "length": 44}
 TOKENS = {"vm": "priv", "repositories": [{"repository": "likt0r/askos", "tokens": 2,
                                           "last_token": "2026-11-03T10:00:00.000000Z", "refused": 0,
                                           "last_refused": None}],
@@ -44,13 +45,6 @@ class CredentialsTest(ControlRoomTest):
     def setUp(self):
         super().setUp()
         self.login()
-
-    def stdins(self):
-        try:
-            with open(os.path.join(self.dir, "stdin.jsonl")) as f:
-                return [json.loads(line) for line in f]
-        except FileNotFoundError:
-            return []
 
     def assert_nowhere(self, secret, *responses):
         """Not in a response, the server's log, its journal entries or agentbox's arguments."""
@@ -63,157 +57,165 @@ class CredentialsTest(ControlRoomTest):
 
 
 class ClaudeTokenTest(CredentialsTest):
+    def put(self, body):
+        return self.request("PUT", "/api/v1/vms/priv/claude-token", body)[:2]
+
     def test_token_goes_on_stdin_only(self):
-        self.respond(stdout="Token gueltig und gespeichert (44 Zeichen). Wirkt nach: agentbox restart priv")
-        status, obj, _ = self.post("/api/priv/claude-token", {"token": TOKEN})
-        self.assertEqual((status, obj), (200, {"ok": True, "message": "Token gueltig und gespeichert (44 Zeichen). "
-                                                                      "Wirkt nach: agentbox restart priv"}))
-        self.assertEqual(self.calls(), [["set-claude-token", "priv", "--no-prompt"]])
+        self.respond(STORED)
+        status, obj = self.put({"token": TOKEN})
+        self.assertEqual((status, obj), (200, STORED))
+        self.assertEqual(self.calls(), [["set-claude-token", "priv", "--no-prompt", "--json"]])
         self.assertEqual(self.stdins(), [TOKEN])
-        self.assertIn("priv claude-token -> ok: (confidential)", self.server_log())
+        self.assertIn("priv v1 PUT put_claude_token -> ok", self.server_log())
         self.assert_nowhere(TOKEN, obj)
 
     def test_refusal_is_shown_and_logged_without_the_token(self):
-        self.respond("", stderr="agentbox: Anthropic rejects the token: authentication_error", exitcode=1)
-        status, obj, _ = self.post("/api/priv/claude-token", {"token": TOKEN})
-        self.assertEqual((status, obj), (400, {"ok": False,
-                                               "message": "Anthropic rejects the token: authentication_error"}))
-        self.assertIn("priv claude-token -> FAILED: Anthropic rejects the token", self.server_log())
-        self.assert_nowhere(TOKEN, obj)
+        self.respond("", stderr=failure("claude_token_rejected", "Anthropic rejects the token: authentication_error",
+                                        vm="priv"), exitcode=1)
+        answer = self.put({"token": TOKEN})
+        self.assertError(answer, 422, "claude_token_rejected")
+        self.assertEqual(answer[1]["error"]["detail"], "Anthropic rejects the token: authentication_error")
+        self.assertIn("priv v1 PUT put_claude_token -> FAILED claude_token_rejected", self.server_log())
+        self.assert_nowhere(TOKEN, answer[1])
 
     def test_a_token_echoed_by_mistake_is_hidden(self):
         wrapped = TOKEN[:20] + "\n" + TOKEN[20:] + "\n"
-        self.respond("", stderr=f"agentbox: broken: {TOKEN}", exitcode=1)
-        status, obj, _ = self.post("/api/priv/claude-token", {"token": wrapped})
-        self.assertEqual((status, obj), (400, {"ok": False, "message": "broken: [hidden]"}))
+        self.respond("", stderr=failure("action_failed", f"broken: {TOKEN}"), exitcode=1)
+        answer = self.put({"token": wrapped})
+        self.assertError(answer, 500, "action_failed")
+        self.assertEqual(answer[1]["error"]["detail"], "broken: [hidden]")
         self.assertEqual(self.stdins(), [wrapped])
-        self.assert_nowhere(TOKEN, obj)
+        self.assert_nowhere(TOKEN, answer[1])
 
     def test_anything_but_text_is_refused(self):
         for body in ({}, {"token": ""}, {"token": "  "}, {"token": None}, {"token": [TOKEN]}, {"token": 42},
                      {"token": {"t": TOKEN}}):
             with self.subTest(body=body):
-                status, obj, _ = self.post("/api/priv/claude-token", body)
-                self.assertEqual((status, obj), (400, {"ok": False,
-                                                       "message": "invalid input: token is missing or not text"}))
+                answer = self.put(body)
+                self.assertError(answer, 400, "invalid_field")
+                self.assertEqual(answer[1]["error"]["field"], "token")
         self.assertEqual(self.calls(), [])
         self.assert_nowhere(TOKEN)
 
 
 class SetOwnersTest(CredentialsTest):
+    def put(self, body):
+        return self.request("PUT", "/api/v1/vms/priv/github-owners", body)
+
     def test_owners_become_arguments(self):
-        self.respond(stdout="priv: Owner gesetzt: likt0r acme-corp")
-        status, obj, _ = self.post("/api/priv/set-owners", {"owners": [" likt0r ", "acme-corp", ""]})
-        self.assertEqual((status, obj["ok"]), (200, True))
-        self.assertEqual(self.calls(), [["set-owners", "priv", "likt0r", "acme-corp"]])
+        self.respond({"vm": "priv", "github_owners": ["likt0r", "acme-corp"]})
+        self.assertEqual(self.put({"owners": [" likt0r ", "acme-corp", ""]})[0], 200)
+        self.assertEqual(self.calls(), [["set-owners", "priv", "likt0r", "acme-corp", "--json"]])
 
     def test_odd_owners_are_refused(self):
-        for body, message in (({"owners": "likt0r"}, "owners must be a list of names"),
-                              ({"owners": [1]}, "owners must be a list of names"),
-                              ({}, "owners must be a list of names"),
-                              ({"owners": ["--json"]}, "invalid GitHub name"),
-                              ({"owners": ["ok", "-x"]}, "invalid GitHub name")):
+        for body, code in (({"owners": "likt0r"}, "invalid_field"), ({"owners": [1]}, "invalid_field"),
+                           ({}, "github_owner_required"), ({"owners": ["--json"]}, "invalid_field"),
+                           ({"owners": ["ok", "-x"]}, "invalid_field")):
             with self.subTest(body=body):
-                status, obj, _ = self.post("/api/priv/set-owners", body)
-                self.assertEqual((status, obj), (400, {"ok": False, "message": f"invalid input: {message}"}))
+                answer = self.put(body)
+                self.assertError(answer, 400, code)
+                self.assertEqual(answer[1]["error"]["field"], "owners")
         self.assertEqual(self.calls(), [])
 
 
 class GitHubAppTest(CredentialsTest):
+    def put(self, body, header=True):
+        return self.request("PUT", "/api/v1/github-app", body, header=header)
+
     def test_replacing_app_id_and_key(self):
         self.respond(APP)
         for app_id in ("12345", 12345, " 12345 "):
             with self.subTest(app_id=app_id):
-                status, obj, _ = self.post("/api/github-app", {"app_id": app_id, "private_key": KEY})
+                status, obj, _ = self.put({"app_id": app_id, "private_key": KEY})
                 self.assertEqual((status, obj), (200, APP))
                 self.assertEqual(self.calls()[-1], ["set-github-app", "12345", "--no-prompt", "--json"])
                 self.assertEqual(self.stdins()[-1], KEY)
                 self.assert_nowhere(KEY, obj)
-        self.assertIn("- github-app -> ok: (confidential)", self.server_log())
+        self.assertIn("- v1 PUT put_github_app -> ok", self.server_log())
 
     def test_refusal_from_agentbox(self):
         message = "GitHub lehnt App-ID oder Schluessel ab (HTTP 401: Integration not found), nichts geaendert"
         self.respond("", stderr=failure("github_app_rejected", message), exitcode=1)
-        status, obj, _ = self.post("/api/github-app", {"app_id": "54321", "private_key": KEY})
-        self.assertEqual((status, obj), (400, {"ok": False, "message": message}))
-        self.assertIn(f"- github-app -> FAILED: {message}", self.server_log())
-        self.assert_nowhere(KEY, obj)
+        answer = self.put({"app_id": "54321", "private_key": KEY})
+        self.assertError(answer, 422, "github_app_rejected")
+        self.assertEqual(answer[1]["error"]["detail"], message)
+        self.assertIn("- v1 PUT put_github_app -> FAILED github_app_rejected", self.server_log())
+        self.assert_nowhere(KEY, answer[1])
 
     def test_key_echoed_by_mistake_is_hidden(self):
         self.respond("", stderr=failure("invalid_private_key", "broken:\n" + KEY), exitcode=1)
-        status, obj, _ = self.post("/api/github-app", {"app_id": "1", "private_key": KEY.replace("\n", "\r\n")})
-        self.assertEqual(status, 400)
-        self.assert_nowhere(KEY, obj)
+        answer = self.put({"app_id": "1", "private_key": KEY.replace("\n", "\r\n")})
+        self.assertError(answer, 400, "invalid_private_key")
+        self.assert_nowhere(KEY, answer[1])
 
     def test_odd_input_is_refused_before_agentbox(self):
-        cases = [({"private_key": KEY}, "app_id must be a number"),
-                 ({"app_id": True, "private_key": KEY}, "app_id must be a number"),
-                 ({"app_id": "abc", "private_key": KEY}, "app_id must be a number"),
-                 ({"app_id": "-1", "private_key": KEY}, "app_id must be a number"),
-                 ({"app_id": "--json", "private_key": KEY}, "app_id must be a number"),
-                 ({"app_id": 12.5, "private_key": KEY}, "app_id must be a number"),
-                 ({"app_id": ["1"], "private_key": KEY}, "app_id must be a number"),
+        cases = [({"private_key": KEY}, "invalid_app_id"),
+                 ({"app_id": True, "private_key": KEY}, "invalid_app_id"),
+                 ({"app_id": "abc", "private_key": KEY}, "invalid_app_id"),
+                 ({"app_id": "-1", "private_key": KEY}, "invalid_app_id"),
+                 ({"app_id": "--json", "private_key": KEY}, "invalid_app_id"),
+                 ({"app_id": 12.5, "private_key": KEY}, "invalid_app_id"),
+                 ({"app_id": ["1"], "private_key": KEY}, "invalid_app_id"),
                  # the key in the wrong field is not echoed either
-                 ({"app_id": KEY, "private_key": KEY}, "app_id must be a number"),
-                 ({"app_id": "1"}, "private_key is missing or not text"),
-                 ({"app_id": "1", "private_key": " "}, "private_key is missing or not text"),
-                 ({"app_id": "1", "private_key": [KEY]}, "private_key is missing or not text")]
-        for body, message in cases:
+                 ({"app_id": KEY, "private_key": KEY}, "invalid_app_id"),
+                 ({"app_id": "1"}, "invalid_field"),
+                 ({"app_id": "1", "private_key": " "}, "invalid_field"),
+                 ({"app_id": "1", "private_key": [KEY]}, "invalid_field")]
+        for body, code in cases:
             with self.subTest(body=body):
-                status, obj, _ = self.post("/api/github-app", body)
-                self.assertEqual((status, obj), (400, {"ok": False, "message": f"invalid input: {message}"}))
-                self.assert_nowhere(KEY, obj)
+                answer = self.put(body)
+                self.assertError(answer, 400, code)
+                self.assert_nowhere(KEY, answer[1])
         self.assertEqual(self.calls(), [])
 
     def test_needs_session_and_header(self):
+        self.assertError(self.put(None, header=False), 403, "csrf_header_missing")
         self.cookie = None
-        status, _, _ = self.post("/api/github-app", {"app_id": "1", "private_key": KEY})
-        self.assertEqual(status, 401)
-        self.login()
-        status, _, _ = self.post("/api/github-app", raw=b"", header=False)
-        self.assertEqual(status, 403)
+        self.assertError(self.put({"app_id": "1", "private_key": KEY}), 401, "unauthenticated")
         self.assertEqual(self.calls(), [])
+        self.assertEqual(self.stdins(), [])
 
     def test_installations(self):
         self.respond(OVERVIEW)
-        self.assertEqual(self.get("/api/github-app"), (200, OVERVIEW))
+        self.assertEqual(self.get("/api/v1/github-app"), (200, OVERVIEW))
         self.assertEqual(self.calls(), [["github-app", "--json"]])
 
     def test_github_failing_is_a_bad_gateway(self):
         self.respond("", stderr=failure("github_unavailable", "GitHub cannot be reached"), exitcode=1)
-        self.assertEqual(self.get("/api/github-app"), (502, {"error": "GitHub cannot be reached"}))
+        self.assertError(self.request("GET", "/api/v1/github-app"), 502, "github_unavailable")
 
     def test_installations_need_a_session(self):
         self.cookie = None
-        self.assertEqual(self.get("/api/github-app")[0], 401)
+        self.assertError(self.request("GET", "/api/v1/github-app"), 401, "unauthenticated")
         self.assertEqual(self.calls(), [])
 
 
 class GitHubTokensTest(CredentialsTest):
     def test_tokens_of_a_vm(self):
         self.respond(TOKENS)
-        self.assertEqual(self.get("/api/priv/github-tokens"), (200, TOKENS))
+        self.assertEqual(self.get("/api/v1/vms/priv/github-tokens"), (200, TOKENS))
         self.assertEqual(self.calls(), [["github-tokens", "priv", "--json"]])
 
     def test_filters_map_to_options(self):
         self.respond(TOKENS)
-        status, _ = self.get("/api/priv/github-tokens?since=-7d&until=2026-11-03%2010:00&lines=50&kind=alert&json=0")
+        status, _ = self.get("/api/v1/vms/priv/github-tokens?since=-7d&until=2026-11-03%2010:00&lines=50&kind=alert"
+                             "&json=0")
         self.assertEqual(status, 200)
         self.assertEqual(self.calls(), [["github-tokens", "priv", "--since=-7d", "--until=2026-11-03 10:00",
                                          "--lines=50", "--json"]])
 
     def test_values_stay_values(self):
         self.respond(TOKENS)
-        self.get("/api/priv/github-tokens?since=--json&lines=")
+        self.get("/api/v1/vms/priv/github-tokens?since=--json&lines=")
         self.assertEqual(self.calls(), [["github-tokens", "priv", "--since=--json", "--json"]])
 
     def test_refusals(self):
-        status, obj = self.get("/api/priv/github-tokens?since=-1d&since=-2d")
-        self.assertEqual((status, obj), (400, {"error": "give since only once"}))
-        self.assertEqual(self.get("/api/WORK/github-tokens")[0], 404)
+        self.assertError(self.request("GET", "/api/v1/vms/priv/github-tokens?since=-1d&since=-2d"), 400,
+                         "invalid_query")
+        self.assertError(self.request("GET", "/api/v1/vms/WORK/github-tokens"), 404, "not_found")
         self.assertEqual(self.calls(), [])
         self.respond("", stderr=failure("vm_not_found", "No such VM: nope", vm="nope"), exitcode=1)
-        self.assertEqual(self.get("/api/nope/github-tokens"), (400, {"error": "No such VM: nope"}))
+        self.assertError(self.request("GET", "/api/v1/vms/nope/github-tokens"), 404, "vm_not_found")
 
 
 if __name__ == "__main__":

@@ -290,9 +290,6 @@ class BlockReasonsTest(unittest.TestCase):
         code = self.ui("app", "utils", "access.ts")
         listed = re.search(r"^export const CLIENT_REASONS = \[([^\]]*)\]$", code, re.M).group(1)
         self.assertEqual(set(re.findall(r"'([a-z-]+)'", listed)), codes)
-        with open(os.path.join(REPO, "web", "static", "app.js")) as f:
-            legacy = re.search(r"^const CLIENT_REASONS = \[([^\]]*)\];$", f.read(), re.M).group(1)
-        self.assertEqual(set(re.findall(r'"([a-z-]+)"', legacy)), codes)
 
     def test_every_code_of_a_block_reason_is_worded(self):
         for language in ("en", "de"):

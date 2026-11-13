@@ -193,33 +193,33 @@ class PairActionTest(ControlRoomTest):
     def setUp(self):
         super().setUp()
         self.login()
-        self.respond("orca://pair?code=SECRET")
+        self.respond({"vm": "work", "code": "orca://pair?code=SECRET"})
 
     def test_pair_needs_an_explicit_confirmation(self):
         for body in ({}, {"confirm": False}, {"confirm": "true"}, {"confirm": 1}, {"confirm": None}):
             with self.subTest(body=body):
-                status, obj, _ = self.post("/api/work/pair", body)
-                self.assertEqual(status, 400)
-                self.assertFalse(obj["ok"])
+                self.assertError(self.request("POST", "/api/v1/vms/work/pairing-code", body), 400,
+                                 "confirmation_required")
         self.assertEqual(self.calls(), [])
 
     def test_confirmed_pair_returns_the_code_but_not_to_the_journal(self):
-        status, obj, _ = self.post("/api/work/pair", {"confirm": True})
-        self.assertEqual((status, obj["ok"]), (200, True))
-        self.assertEqual(self.calls(), [["pair", "work"]])
+        status, obj, _ = self.request("POST", "/api/v1/vms/work/pairing-code", {"confirm": True})
+        self.assertEqual((status, obj), (200, {"vm": "work", "code": "orca://pair?code=SECRET"}))
+        self.assertEqual(self.calls(), [["pair", "work", "--json"]])
         self.assertNotIn("SECRET", self.server_log())
 
     def test_pairings_and_revoke(self):
         self.respond({"vm": "work", "devices": [], "observer_known": False, "single_removal": False})
-        status, obj, _ = self.post("/api/work/pairings", {})
+        status, obj = self.get("/api/v1/vms/work/pairings")
         self.assertEqual((status, obj["vm"]), (200, "work"))
         self.assertEqual(self.calls(), [["pairings", "work", "--json"]])
         for body in ({}, {"confirm": "priv"}, {"confirm": True}):
             with self.subTest(body=body):
-                self.assertEqual(self.post("/api/work/revoke-pairings", body)[0], 400)
+                self.assertError(self.request("POST", "/api/v1/vms/work/pairings/revoke", body), 400,
+                                 "confirmation_required")
         self.assertEqual(len(self.calls()), 1)
         self.respond({"vm": "work", "observer_repaired": True, "message": "ok"})
-        self.assertEqual(self.post("/api/work/revoke-pairings", {"confirm": "work"})[0], 200)
+        self.assertEqual(self.request("POST", "/api/v1/vms/work/pairings/revoke", {"confirm": "work"})[0], 200)
         self.assertEqual(self.calls()[-1], ["revoke-pairings", "work", "--confirm=work", "--json"])
 
 

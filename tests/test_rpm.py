@@ -337,7 +337,7 @@ class InstalledTest(unittest.TestCase):
         """agentbox.paths as the installed package sees itself (no AGENTBOX_ROOT)."""
         code = ("import json, sys; sys.path.insert(0, '/usr/lib/agentbox'); from agentbox import paths; "
                 "print(json.dumps({k: getattr(paths, k) for k in ('PREFIX', 'INSTALLED', 'CLI', 'VERSION', "
-                "'PROXY', 'TOKEND', 'FEEDS_PROGRAM', 'SUSPICIOUS', 'WEB_BACKEND', 'WEB_STATIC', 'WEB_UI', "
+                "'PROXY', 'TOKEND', 'FEEDS_PROGRAM', 'SUSPICIOUS', 'WEB_BACKEND', 'WEB_UI', "
                 "'VM_SOURCE', 'SEED_LISTS', 'CONF', 'STATE', 'SYSTEMD')}))")
         r = subprocess.run(["/usr/bin/python3", "-I", "-c", code], capture_output=True, text=True, check=True,
                            env={"PATH": "/usr/bin"})
@@ -349,8 +349,7 @@ class InstalledTest(unittest.TestCase):
                          ("/usr", True, "/usr/bin/agentbox", "/etc/agentbox", "/var/lib/agentbox",
                           "/etc/systemd/system"))
         named = [p[k] for k in ("CLI", "VERSION", "PROXY", "TOKEND", "FEEDS_PROGRAM", "SUSPICIOUS", "WEB_BACKEND")]
-        named += [os.path.join(p["WEB_STATIC"], "index.html"), os.path.join(p["WEB_UI"], "index.html"),
-                  os.path.join(p["VM_SOURCE"], "vm", "Containerfile")]
+        named += [os.path.join(p["WEB_UI"], "index.html"), os.path.join(p["VM_SOURCE"], "vm", "Containerfile")]
         named += [os.path.join(p["SEED_LISTS"], name) for name in SEEDS]
         for path in named:
             self.assertIn(path, self.files)
@@ -373,8 +372,6 @@ class InstalledTest(unittest.TestCase):
         pairs += [(os.path.join(REPO, d, name), f"/usr/libexec/{name}") for name, d in PROGRAMS.items()]
         pairs += [(os.path.join(REPO, "agentbox", n), f"/usr/lib/agentbox/agentbox/{n}")
                   for n in os.listdir(os.path.join(REPO, "agentbox")) if n.endswith(".py")]
-        pairs += [(os.path.join(REPO, "web", "static", n), f"/usr/share/agentbox/web/{n}")
-                  for n in os.listdir(os.path.join(REPO, "web", "static"))]
         pairs += [(os.path.join(REPO, "proxy", n), f"/usr/share/agentbox/lists/{n}") for n in SEEDS]
         pairs += [(os.path.join(REPO, "github-app", n), f"/usr/share/agentbox/vm/github-app/{n}") for n in GUEST_TOOLS]
         for top, _, names in os.walk(os.path.join(REPO, "vm")):
@@ -443,12 +440,12 @@ class InstalledTest(unittest.TestCase):
                                capture_output=True, text=True, timeout=60)
             self.assertIn(r.returncode, (0, 1), r.stderr)
             return r.returncode == 0
-        for args in (["watch"], ["status", "--json"], ["start", "--actor=Firefox/Linux (192.0.2.1)", "work", "--json"],
+        for args in (["watch"], ["start", "--actor=Firefox/Linux (192.0.2.1)", "work", "--json"],
                      ["allow", "--actor=x", "all", "a.example", "--note=a, b: c = d # e", "--json"],
                      ["start setup"]):        # one argument: agentbox knows no such command
             with self.subTest(args=args):
                 self.assertTrue(allowed(*args))
-        for args in (["setup"], ["import", "work", "/etc"], ["--actor=x", "start", "work"],
+        for args in (["setup"], ["status", "--json"], ["import", "work", "/etc"], ["--actor=x", "start", "work"],
                      ["--actor=Firefox/Linux (192.0.2.1) start", "setup"], ["startx"], ["--version"]):
             with self.subTest(args=args):
                 self.assertFalse(allowed(*args))

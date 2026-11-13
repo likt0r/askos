@@ -16,7 +16,7 @@ lies under the prefix /usr, where the RPM puts it (ADR 0009):
   libexec/agentbox-gh-tokend                                    TOKEND
   libexec/agentbox-web                                          WEB_BACKEND
   libexec/agentbox-readings       (loaded by agentbox-web)
-  share/agentbox/web/             Control Room pages, ui/ the new UI   WEB_STATIC, WEB_UI
+  share/agentbox/web/ui/          the Control Room UI           WEB_UI
   share/agentbox/vm/              Containerfile and guest files  VM_SOURCE
                                   (vm/..., github-app/..., the Base image's build context)
   share/agentbox/lists/           lists a new Host starts with   SEED_LISTS
@@ -53,7 +53,6 @@ FEEDS_PROGRAM = LIBEXEC + "/agentbox-feeds"
 # run or read by agentbox and the Control Room
 SUSPICIOUS = host(LIBEXEC + "/agentbox-suspicious")
 WEB_BACKEND = host(LIBEXEC + "/agentbox-web")
-WEB_STATIC = host(SHARE + "/web")
 WEB_UI = host(SHARE + "/web/ui")
 VM_SOURCE = host(SHARE + "/vm")              # Builds from the installed Release (ADR 0010, #96)
 SEED_LISTS = host(SHARE + "/lists")

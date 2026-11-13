@@ -1,5 +1,5 @@
-"""Control Room backend (`web/agentbox-web`): host readings (GET /api/host) and the live
-event stream (GET /api/events), against fake kernel interface files and a fake
+"""Control Room backend (`web/agentbox-web`): host readings (GET /api/v1/host) and the live
+event stream (GET /api/v1/events), against fake kernel interface files and a fake
 `nvidia-smi` (fake_nvidia_smi.py).
 
 The real server runs on 127.0.0.1 with a throwaway certificate and password. /proc and
@@ -28,12 +28,12 @@ from fake_journald import Journald  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SERVER = os.path.join(ROOT, "web", "agentbox-web")
-STATIC = os.path.join(ROOT, "web", "static")
 FAKE_AGENTBOX = os.path.join(ROOT, "tests", "fake_agentbox.py")
 FAKE_NVIDIA_SMI = os.path.join(ROOT, "tests", "fake_nvidia_smi.py")
 PASSWORD = "correct horse battery staple"
 MIB = 1024 * 1024
 MAX_STREAMS = 8
+UNAUTHENTICATED = {"error": {"code": "unauthenticated", "message": "Not signed in"}}
 
 conf = None  # TemporaryDirectory with cert.pem, key.pem, password
 
@@ -122,14 +122,14 @@ UNREADABLE = ("sys/class/powercap/intel-rapl:0/energy_uj", "sys/class/powercap/i
 
 
 class Stream:
-    """A client of GET /api/events that reads the stream block by block."""
+    """A client of GET /api/v1/events that reads the stream block by block."""
 
     def __init__(self, test, last_id=None, cookie=None):
         self.conn = http.client.HTTPSConnection("127.0.0.1", test.port, context=test.ssl, timeout=10)
         headers = {"Cookie": cookie or test.cookie}
         if last_id:
             headers["Last-Event-ID"] = last_id
-        self.conn.request("GET", "/api/events", headers=headers)
+        self.conn.request("GET", "/api/v1/events", headers=headers)
         self.resp = self.conn.getresponse()
         self.status = self.resp.status
 
@@ -188,7 +188,7 @@ class HostTest(unittest.TestCase):
         journald = Journald(os.path.join(self.dir, "journal", "socket"))
         self.addCleanup(journald.close)
         env = dict(os.environ, PATH=bindir,
-                   AGENTBOX_WEB_CONF=conf.name, AGENTBOX_WEB_STATIC=STATIC,
+                   AGENTBOX_WEB_CONF=conf.name,
                    AGENTBOX_WEB_BIND="127.0.0.1", AGENTBOX_WEB_PORT="0", AGENTBOX_WEB_JOURNAL=journald.path,
                    AGENTBOX_WEB_COMMAND=f"{sys.executable} -I {FAKE_AGENTBOX}", FAKE_AGENTBOX_DIR=self.dir,
                    FAKE_NVIDIA_SMI_DIR=self.dir,
@@ -291,17 +291,17 @@ class HostTest(unittest.TestCase):
             conn.close()
 
     def login(self):
-        status, _, resp = self.request("POST", "/api/login", {"password": PASSWORD})
+        status, _, resp = self.request("POST", "/api/v1/session", {"password": PASSWORD})
         self.assertEqual(status, 200)
         self.cookie = resp.getheader("Set-Cookie").split(";")[0]
 
     def host(self):
-        status, obj, _ = self.request("GET", "/api/host")
+        status, obj, _ = self.request("GET", "/api/v1/host")
         self.assertEqual(status, 200)
         return obj
 
     def until(self, check, timeout=10):
-        """GET /api/host until check(answer) holds; the answer."""
+        """GET /api/v1/host until check(answer) holds; the answer."""
         deadline = time.monotonic() + timeout
         while True:
             obj = self.host()
@@ -606,8 +606,8 @@ class AccessTest(HostTest):
     """#16: readings and the live stream need a session, like every other API."""
 
     def test_host_requires_session(self):
-        self.assertEqual(self.request("GET", "/api/host")[:2], (401, {"error": "not signed in"}))
-        self.assertEqual(self.request("GET", "/api/host", cookie="agentbox=bogus")[0], 401)
+        self.assertEqual(self.request("GET", "/api/v1/host")[:2], (401, UNAUTHENTICATED))
+        self.assertEqual(self.request("GET", "/api/v1/host", cookie="agentbox=bogus")[:2], (401, UNAUTHENTICATED))
 
     def test_events_require_session(self):
         for cookie in ("", "agentbox=bogus"):
@@ -615,14 +615,14 @@ class AccessTest(HostTest):
                 stream = Stream(self, cookie=cookie or "x=y")
                 self.addCleanup(stream.close)
                 self.assertEqual(stream.status, 401)
-                self.assertEqual(json.loads(stream.resp.read()), {"error": "not signed in"})
+                self.assertEqual(json.loads(stream.resp.read()), UNAUTHENTICATED)
 
     def test_logout_ends_the_live_stream(self):
         self.login()
         stream = Stream(self)
         self.addCleanup(stream.close)
         stream.event("host")
-        self.assertEqual(self.request("POST", "/api/logout", {})[0], 200)
+        self.assertEqual(self.request("DELETE", "/api/v1/session")[0], 200)
         with self.assertRaises(EOFError):
             for _ in range(100):
                 stream.block()
@@ -633,7 +633,7 @@ class AccessTest(HostTest):
 
 
 class EventsTest(HostTest):
-    """#16 and #12: GET /api/events is the backend's Server-Sent Events stream."""
+    """#16 and #12: GET /api/v1/events is the backend's Server-Sent Events stream."""
 
     def setUp(self):
         super().setUp()
@@ -720,8 +720,9 @@ class EventsTest(HostTest):
         for s in streams:
             self.assertEqual(s.status, 200)
             s.event("hello")
-        status, obj, resp = self.request("GET", "/api/events")
-        self.assertEqual((status, obj), (503, {"error": "too many live connections"}))
+        status, obj, resp = self.request("GET", "/api/v1/events")
+        self.assertEqual((status, obj), (503, {"error": {"code": "too_many_streams",
+                                                         "message": "Too many live connections, try again later"}}))
         self.assertEqual(resp.getheader("Retry-After"), "10")
         # readings stay available meanwhile
         self.assertTrue(self.sampled()["readings"])

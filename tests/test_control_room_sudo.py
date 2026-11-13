@@ -28,7 +28,7 @@ from agentbox import cli, paths  # noqa: E402
 SERVER = os.path.join(REPO, "web", "agentbox-web")
 SUDOERS = os.path.join(REPO, "rpm", "agentbox-web.sudoers")
 # the backend's functions that run agentbox with the command as their first argument
-RUNNERS = ("agentbox", "agentbox_json", "run", "run_json")
+RUNNERS = ("run", "run_json")
 
 
 def backend_commands():
@@ -262,8 +262,10 @@ class CallerTest(ActivityTest):
         self.assertEqual(self.through_sudo("agentbox-web", "close-web", f"--actor={FIREFOX}", "work")[0], 0)
         self.assertEqual([(e["AGENTBOX_ACTION"], e["AGENTBOX_ACTOR"]) for e in self.entries()],
                          [("allow", FIREFOX), ("close-web", FIREFOX)])
-        # without arguments: status
-        self.assertEqual(self.through_sudo("agentbox-web")[0], 0)
+        # without arguments: status, which the Control Room does not run
+        code, _, err = self.through_sudo("agentbox-web")
+        self.assertEqual(code, 1, err)
+        self.assertIn("status is not for the Control Room", err)
 
     def test_anyone_else_through_sudo_is_not_limited(self):
         code, _, err = self.through_sudo("alice", "allow", "work", "evil.example", "--force")

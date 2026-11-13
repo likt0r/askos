@@ -479,7 +479,7 @@ class Sampler:
             self._publish(sample)
 
     def snapshot(self):
-        """Current readings, thresholds and history, as GET /api/host returns them."""
+        """Current readings, thresholds and history, as GET /api/v1/host returns them."""
         with self._lock:
             latest, history = self._latest, list(self._history)
         return {"interval": self.interval, "history_seconds": self.window, "thresholds": dict(THRESHOLDS),

@@ -98,9 +98,8 @@ install -m 0755 proxy/agentbox-proxy proxy/agentbox-suspicious proxy/agentbox-fe
 # loaded by agentbox-web from next to it, not run
 install -m 0644 web/agentbox-readings %{buildroot}%{_libexecdir}/
 
-# the Control Room's pages: the old UI, the new one in ui/
+# the Control Room UI
 install -d -m 0755 %{buildroot}%{_datadir}/agentbox/web/ui
-install -m 0644 web/static/* %{buildroot}%{_datadir}/agentbox/web/
 cp -R web/ui/dist/. %{buildroot}%{_datadir}/agentbox/web/ui/
 
 # the Base image's build context (ADR 0010): what vm/Containerfile copies, at the same paths

@@ -9,7 +9,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_control_room  # noqa: E402
-from test_control_room import ControlRoomTest  # noqa: E402
+from test_control_room import ControlRoomTest, failure  # noqa: E402
 
 # the throwaway certificate and password of the harness
 setUpModule = test_control_room.setUpModule
@@ -21,6 +21,7 @@ ENTRIES = [
     {"domain": "docs.rs", "scope": "priv", "expires": 1793703600, "note": "Rust", "added": 1793700000,
      "added_by": "Firefox/Linux (192.0.2.23)", "expired": False, "remaining": 3540, "uses_24h": 3},
 ]
+ENTRY = ENTRIES[1]
 
 
 class AllowlistTest(ControlRoomTest):
@@ -28,9 +29,8 @@ class AllowlistTest(ControlRoomTest):
         super().setUp()
         self.login()
 
-    def action(self, path, body):
-        status, obj, _ = self.post(path, body)
-        return status, obj
+    def allow(self, body):
+        return self.request("POST", "/api/v1/allowlist", body)[:2]
 
     def assert_never_forced(self):
         for argv in self.raw_calls():
@@ -41,77 +41,75 @@ class AllowlistTest(ControlRoomTest):
 class ListTest(AllowlistTest):
     def test_every_entry(self):
         self.respond(ENTRIES)
-        self.assertEqual(self.get("/api/allowlist"), (200, ENTRIES))
+        self.assertEqual(self.get("/api/v1/allowlist"), (200, ENTRIES))
         self.assertEqual(self.calls(), [["allowlist", "--json"]])
 
     def test_filter_by_vm_or_all(self):
         self.respond(ENTRIES)
-        self.assertEqual(self.get("/api/allowlist?vm=priv")[0], 200)
-        self.assertEqual(self.get("/api/allowlist?vm=all")[0], 200)
-        self.assertEqual(self.get("/api/allowlist?vm=")[0], 200)
+        self.assertEqual(self.get("/api/v1/allowlist?vm=priv")[0], 200)
+        self.assertEqual(self.get("/api/v1/allowlist?vm=all")[0], 200)
+        self.assertEqual(self.get("/api/v1/allowlist?vm=")[0], 200)
         self.assertEqual(self.calls(), [["allowlist", "priv", "--json"], ["allowlist", "all", "--json"],
                                         ["allowlist", "--json"]])
 
     def test_odd_filters_never_reach_agentbox(self):
-        for query in ("vm=--force", "vm=Priv", "vm=priv&vm=work", "vm=a&b=c&d=e"):
+        for query, status in (("vm=--force", 404), ("vm=Priv", 404), ("vm=a", 404), ("vm=priv&vm=work", 400)):
             with self.subTest(query=query):
-                self.assertEqual(self.get(f"/api/allowlist?{query}")[0], 400)
+                self.assertEqual(self.get(f"/api/v1/allowlist?{query}")[0], status)
         self.assertEqual(self.calls(), [])
-
-    def test_the_vms_own_domains_for_the_current_ui(self):
-        self.respond(ENTRIES)
-        self.assertEqual(self.get("/api/priv/allowlist"), (200, ["docs.rs"]))
-        self.assertEqual(self.calls(), [["allowlist", "priv", "--json"]])
 
     def test_needs_a_session(self):
         self.cookie = None
-        self.assertEqual(self.get("/api/allowlist")[0], 401)
+        self.assertError(self.request("GET", "/api/v1/allowlist"), 401, "unauthenticated")
         self.assertEqual(self.calls(), [])
 
 
 class AllowTest(AllowlistTest):
-    def test_permanent_as_before(self):
-        self.respond("work: example.org freigegeben")
-        self.assertEqual(self.action("/api/work/allow", {"domain": " Example.org "}),
-                         (200, {"ok": True, "message": "work: example.org freigegeben"}))
-        self.assertEqual(self.calls(), [["allow", "work", "example.org"]])
+    def test_permanent_by_default(self):
+        self.respond(ENTRY)
+        self.assertEqual(self.allow({"scope": "work", "domain": " Example.org "}), (201, ENTRY))
+        self.assertEqual(self.calls(), [["allow", "work", "example.org", "--json"]])
 
     def test_for_all_vms_with_duration_and_note(self):
-        self.respond("alle VMs: example.org freigegeben bis 14:05")
-        self.action("/api/all/allow", {"domain": "example.org", "duration": "8h", "note": "Doku"})
-        self.action("/api/all/allow", {"domain": "example.org", "duration": "permanent", "note": ""})
-        self.assertEqual(self.calls(), [["allow", "all", "example.org", "--for=8h", "--note=Doku"],
-                                        ["allow", "all", "example.org", "--note="]])
+        self.respond(ENTRY)
+        self.allow({"scope": "all", "domain": "example.org", "duration": "8h", "note": "Doku"})
+        self.allow({"scope": "all", "domain": "example.org", "duration": "permanent", "note": ""})
+        self.assertEqual(self.calls(), [["allow", "all", "example.org", "--for=8h", "--note=Doku", "--json"],
+                                        ["allow", "all", "example.org", "--note=", "--json"]])
 
     def test_a_blocked_domain_with_a_duration_or_the_default(self):
-        self.respond("priv: blocked.example freigegeben bis 14:05")
+        self.respond(ENTRY)
         for duration in ("15min", "1h", "8h", "7d"):
-            self.action("/api/priv/allow", {"domain": "blocked.example", "duration": duration})
-        self.action("/api/priv/allow", {"domain": "blocked.example", "duration": "default"})
-        self.assertEqual(self.calls(), [["allow", "priv", "blocked.example", f"--for={d}"]
+            self.allow({"scope": "priv", "domain": "blocked.example", "duration": duration})
+        self.allow({"scope": "priv", "domain": "blocked.example", "duration": "default"})
+        self.assertEqual(self.calls(), [["allow", "priv", "blocked.example", f"--for={d}", "--json"]
                                         for d in ("15min", "1h", "8h", "7d")]
-                         + [["allow", "priv", "blocked.example", "--temporary"]])
+                         + [["allow", "priv", "blocked.example", "--temporary", "--json"]])
 
     def test_strong_signals_are_refused_with_the_explanation(self):
-        self.respond("", stderr="agentbox: evil.example is suspicious (exfil). Allowing it only with --force",
-                     exitcode=1)
-        self.assertEqual(self.action("/api/priv/allow", {"domain": "evil.example", "duration": "1h"}),
-                         (400, {"ok": False,
-                                "message": "evil.example is suspicious (exfil). Allowing it only with --force"}))
+        reason = "evil.example is suspicious (exfil). Allowing it only with --force"
+        self.respond("", stderr=failure("domain_suspicious", reason, domain="evil.example"), exitcode=1)
+        answer = self.request("POST", "/api/v1/allowlist", {"scope": "priv", "domain": "evil.example",
+                                                            "duration": "1h"})
+        self.assertError(answer, 409, "domain_suspicious")
+        self.assertEqual(answer[1]["error"]["detail"], reason)
+        self.assert_never_forced()
 
     def test_never_forced(self):
-        self.respond("ok")
-        for body in ({"domain": "evil.example", "force": True}, {"domain": "evil.example", "--force": True},
-                     {"domain": "evil.example", "note": "--force"}, {"domain": "evil.example", "note": " --force"},
-                     {"domain": "evil.example", "options": ["--force"]}):
+        self.respond(ENTRY)
+        for body in ({"force": True}, {"--force": True}, {"note": "--force"}, {"note": " --force"},
+                     {"options": ["--force"]}):
             with self.subTest(body=body):
-                self.action("/api/priv/allow", body)
-        for path, body in (("/api/priv/extend", {"domain": "evil.example", "duration": "1h", "force": True}),
-                           ("/api/priv/make-permanent", {"domain": "evil.example", "force": True}),
-                           ("/api/priv/set-note", {"domain": "evil.example", "note": "--force"})):
-            self.action(path, body)
-        self.assertEqual(len(self.raw_calls()), 8)
-        self.assertEqual(self.calls()[2], ["allow", "priv", "evil.example", "--note=--force"])
+                self.allow({"scope": "priv", "domain": "evil.example", **body})
+        for method, path, body in (("POST", "/api/v1/allowlist/priv/evil.example/extend",
+                                    {"duration": "1h", "force": True}),
+                                   ("POST", "/api/v1/allowlist/priv/evil.example/make-permanent", {"force": True}),
+                                   ("PUT", "/api/v1/allowlist/priv/evil.example/note", {"note": "--force"}),
+                                   ("POST", "/api/v1/allowlist/priv/regex/make-permanent?regex=--force",
+                                    {"force": True})):
+            self.request(method, path, body)
+        self.assertEqual(len(self.raw_calls()), 9)
+        self.assertEqual(self.calls()[2], ["allow", "priv", "evil.example", "--note=--force", "--json"])
         self.assert_never_forced()
 
     def test_odd_values_are_rejected_not_converted(self):
@@ -120,47 +118,54 @@ class AllowTest(AllowlistTest):
                      {"domain": "a.example", "duration": ["1h"]}, {"domain": "a.example", "duration": True},
                      {"domain": "a.example", "note": 5}, {"domain": "a.example", "note": ["x"]}):
             with self.subTest(body=body):
-                status, obj = self.action("/api/priv/allow", body)
-                self.assertEqual(status, 400)
-                self.assertFalse(obj["ok"])
+                self.assertError(self.request("POST", "/api/v1/allowlist", {"scope": "priv", **body}), 400,
+                                 "invalid_field")
         self.assertEqual(self.calls(), [])
 
 
 class ChangeTest(AllowlistTest):
     def test_extend(self):
-        self.respond("priv: docs.rs freigegeben bis 15:05")
-        self.assertEqual(self.action("/api/priv/extend", {"domain": "docs.rs", "duration": "1h"}),
-                         (200, {"ok": True, "message": "priv: docs.rs freigegeben bis 15:05"}))
-        self.assertEqual(self.calls(), [["extend", "priv", "docs.rs", "--for=1h"]])
+        self.respond(ENTRY)
+        self.assertEqual(self.request("POST", "/api/v1/allowlist/priv/docs.rs/extend", {"duration": "1h"})[:2],
+                         (200, ENTRY))
+        self.assertEqual(self.calls(), [["extend", "priv", "docs.rs", "--for=1h", "--json"]])
 
     def test_extend_needs_a_duration(self):
         for duration in (None, "permanent", "default", "1d"):
             with self.subTest(duration=duration):
-                self.assertEqual(self.action("/api/priv/extend", {"domain": "docs.rs", "duration": duration})[0], 400)
+                self.assertError(self.request("POST", "/api/v1/allowlist/priv/docs.rs/extend", {"duration": duration}),
+                                 400, "invalid_field")
         self.assertEqual(self.calls(), [])
 
     def test_make_permanent_and_remove(self):
-        self.respond("ok")
-        self.action("/api/all/make-permanent", {"domain": "docs.rs"})
-        self.action("/api/all/disallow", {"domain": "docs.rs"})
-        self.assertEqual(self.calls(), [["make-permanent", "all", "docs.rs"], ["disallow", "all", "docs.rs"]])
+        self.respond(ENTRY)
+        self.request("POST", "/api/v1/allowlist/all/docs.rs/make-permanent", {})
+        self.request("DELETE", "/api/v1/allowlist/all/docs.rs")
+        self.assertEqual(self.calls(), [["make-permanent", "all", "docs.rs", "--json"],
+                                        ["disallow", "all", "docs.rs", "--json"]])
 
     def test_set_note(self):
-        self.respond("ok")
-        self.action("/api/priv/set-note", {"domain": "docs.rs", "note": "Rust-Doku"})
-        self.action("/api/priv/set-note", {"domain": "docs.rs", "note": ""})
-        self.assertEqual(self.calls(), [["set-note", "priv", "docs.rs", "--note=Rust-Doku"],
-                                        ["set-note", "priv", "docs.rs", "--note="]])
-        self.assertEqual(self.action("/api/priv/set-note", {"domain": "docs.rs"})[0], 400)
+        self.respond(ENTRY)
+        self.request("PUT", "/api/v1/allowlist/priv/docs.rs/note", {"note": "Rust-Doku"})
+        self.request("PUT", "/api/v1/allowlist/priv/docs.rs/note", {"note": ""})
+        self.assertEqual(self.calls(), [["set-note", "priv", "docs.rs", "--note=Rust-Doku", "--json"],
+                                        ["set-note", "priv", "docs.rs", "--note=", "--json"]])
+        self.assertError(self.request("PUT", "/api/v1/allowlist/priv/docs.rs/note", {}), 400, "invalid_field")
         self.assertEqual(len(self.calls()), 2)
 
-    def test_actions_need_a_session_and_the_header(self):
+    def test_changes_need_a_session_and_the_header(self):
+        changes = (("POST", "/api/v1/allowlist", {"scope": "priv", "domain": "docs.rs"}),
+                   ("POST", "/api/v1/allowlist/priv/docs.rs/extend", {"duration": "1h"}),
+                   ("POST", "/api/v1/allowlist/priv/docs.rs/make-permanent", {}),
+                   ("PUT", "/api/v1/allowlist/priv/docs.rs/note", {"note": "x"}),
+                   ("DELETE", "/api/v1/allowlist/priv/docs.rs", None))
+        for method, path, body in changes:
+            with self.subTest(path=path, method=method):
+                self.assertError(self.request(method, path, None, header=False), 403, "csrf_header_missing")
         self.cookie = None
-        for action in ("allow", "extend", "make-permanent", "set-note", "disallow"):
-            with self.subTest(action=action):
-                self.assertEqual(self.action(f"/api/priv/{action}", {"domain": "docs.rs"})[0], 401)
-        self.login()
-        self.assertEqual(self.post("/api/priv/allow", raw=b"", header=False)[0], 403)
+        for method, path, body in changes:
+            with self.subTest(path=path, method=method):
+                self.assertError(self.request(method, path, body), 401, "unauthenticated")
         self.assertEqual(self.calls(), [])
 
 

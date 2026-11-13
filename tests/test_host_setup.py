@@ -23,7 +23,6 @@ from test_registry import PRIV_UUID, RegistryTest  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SERVER = os.path.join(ROOT, "web", "agentbox-web")
-STATIC = os.path.join(ROOT, "web", "static")
 
 
 class RegenerateHostSetupTest(RegistryTest):
@@ -123,7 +122,7 @@ class BackendHostSetupTest(unittest.TestCase):
             with open(self.setup_path, "w") as f:
                 f.write(setup if isinstance(setup, str) else json.dumps(setup))
         env = {k: v for k, v in os.environ.items() if not k.startswith("AGENTBOX_WEB_")}
-        env.update(AGENTBOX_WEB_CONF=self.conf.name, AGENTBOX_WEB_STATIC=STATIC, AGENTBOX_WEB_HOST_SETUP=self.setup_path)
+        env.update(AGENTBOX_WEB_CONF=self.conf.name, AGENTBOX_WEB_HOST_SETUP=self.setup_path)
         proc = subprocess.Popen([sys.executable, "-I", SERVER], env=env, text=True,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         self.addCleanup(self.stop, proc)

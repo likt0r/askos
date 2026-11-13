@@ -101,9 +101,9 @@ class InstalledTest(RegistryTest):
             loader = importlib.machinery.SourceFileLoader("agentbox_web", sys.argv[1])
             web = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
             loader.exec_module(web)
-            print(json.dumps([web.AGENTBOX, web.STATIC, web.UI, web.release()]))
+            print(json.dumps([web.AGENTBOX, web.UI, web.release()]))
             """, backend], capture_output=True, text=True, env=env, timeout=60, check=True).stdout
-        self.assertEqual(json.loads(out), [["sudo", "-n", "/usr/bin/agentbox"], f"{self.root}/usr/share/agentbox/web",
+        self.assertEqual(json.loads(out), [["sudo", "-n", "/usr/bin/agentbox"],
                                            f"{self.root}/usr/share/agentbox/web/ui", RELEASE])
 
 
@@ -171,8 +171,8 @@ class SystemTest(unittest.TestCase):
             sys.path.insert(0, sys.argv[1])
             from agentbox import paths
             print(json.dumps({name: getattr(paths, name) for name in (
-                "PREFIX", "CLI", "PROXY", "TOKEND", "FEEDS_PROGRAM", "SUSPICIOUS", "WEB_BACKEND", "WEB_STATIC",
-                "WEB_UI", "VM_SOURCE", "SEED_LISTS", "VERSION", "CONF", "STATE", "SYSTEMD")}))
+                "PREFIX", "CLI", "PROXY", "TOKEND", "FEEDS_PROGRAM", "SUSPICIOUS", "WEB_BACKEND", "WEB_UI",
+                "VM_SOURCE", "SEED_LISTS", "VERSION", "CONF", "STATE", "SYSTEMD")}))
             """, REPO], capture_output=True, text=True, env={"PATH": os.environ["PATH"], **env}, timeout=60,
                              check=True).stdout
         return json.loads(out)
@@ -181,8 +181,7 @@ class SystemTest(unittest.TestCase):
         root = "/tmp/agentbox-test-root"
         moved = self.paths(AGENTBOX_ROOT=root)
         system = self.paths()
-        for name in ("SUSPICIOUS", "WEB_BACKEND", "WEB_STATIC", "WEB_UI", "VM_SOURCE", "SEED_LISTS", "CONF", "STATE",
-                     "SYSTEMD"):
+        for name in ("SUSPICIOUS", "WEB_BACKEND", "WEB_UI", "VM_SOURCE", "SEED_LISTS", "CONF", "STATE", "SYSTEMD"):
             self.assertEqual(moved[name], root + system[name], name)
         for name in ("PREFIX", "CLI", "PROXY", "TOKEND", "FEEDS_PROGRAM", "VERSION"):
             self.assertEqual(moved[name], system[name], name)

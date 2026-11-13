@@ -183,8 +183,8 @@ CONTROL_ROOM_USER = "agentbox-web"
 # Watchlist cannot be read or replaces a Host setup is the CLI's at the Host (ADR 0009).
 CONTROL_ROOM_COMMANDS = frozenset({
     # VMs
-    "status", "describe", "create", "delete", "start", "pause", "restart", "reset", "focus", "set-memory",
-    "set-env", "set-image", "set-owners", "set-container-image-cleanup", "owners", "logs", "blocked", "alerts", "mark-seen",
+    "describe", "create", "delete", "start", "pause", "restart", "reset", "focus", "set-memory",
+    "set-env", "set-image", "set-owners", "set-container-image-cleanup", "logs", "blocked", "alerts", "mark-seen",
     "open-web", "close-web", "pair", "pairings", "unpair", "revoke-pairings", "set-claude-token",
     "github-tokens",
     # Allowlist, Watchlist, Legitimate domains, Harmless marks
