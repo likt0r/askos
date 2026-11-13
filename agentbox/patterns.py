@@ -23,9 +23,7 @@ closed until it is removed. It is listed with the reason (refused) and removed b
 the other entries keep working. Commands take the pattern with --regex PATTERN where they take a domain,
 and remove or change an entry by the same value.
 """
-import types
-
-from . import paths
+from . import paths, scripts
 from .errors import die
 from .sanitize import clean
 
@@ -37,18 +35,7 @@ def rules():
     it; no bytecode is written next to it)."""
     global _rules
     if _rules is None:
-        path = paths.SUSPICIOUS
-        module = types.ModuleType("agentbox_suspicious")
-        module.__file__ = path
-        try:
-            with open(path, encoding="utf-8") as f:
-                code = compile(f.read(), path, "exec")
-            exec(code, module.__dict__)
-        except FileNotFoundError:
-            die(f"{path} is missing", 127, error="action_failed")
-        except (OSError, SyntaxError, ValueError) as e:
-            die(f"{path} cannot be loaded ({type(e).__name__})", error="action_failed")
-        _rules = module
+        _rules = scripts.load(paths.SUSPICIOUS, "agentbox_suspicious")
     return _rules
 
 

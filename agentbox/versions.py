@@ -28,7 +28,7 @@ two parts, so that nothing from the internet is parsed as root:
              package_min_age_days ago, the `latest` tag when it is old enough, as npm
              picks it with --before (vm/Containerfile)
   orca       the release a Build would install now (#113): from GitHub's list of Orca's
-             releases (api.github.com, ORCA_REPO), the highest version that is no draft and
+             releases (api.github.com, stablyai/orca), the highest version that is no draft and
              no prerelease and was published at least package_min_age_days ago, or exactly
              orca_version of the Settings when it is set; by the rule of the Build's
              vm/build/orca-release, and only one whose x86_64 RPM GitHub lists with a SHA-256.
@@ -61,7 +61,7 @@ import subprocess
 import sys
 import time
 
-from . import paths, safeguards, settings, state_files
+from . import paths, safeguards, scripts, settings, state_files
 from .errors import Fail, die
 from .sanitize import clean
 
@@ -72,10 +72,6 @@ NPM = {"claude-code": "@anthropic-ai/claude-code", "codex": "@openai/codex", "op
 VERSION = safeguards.VERSION
 SEMVER = re.compile(r"v?(\d{1,9})\.(\d{1,9})\.(\d{1,9})(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?")
 IMAGE_ORCA = "/usr/lib/orca"                     # where vm/Containerfile installs it
-ORCA_REPO = "stablyai/orca"                      # Orca's releases on GitHub (vm/build/orca-release)
-ORCA_PAGES, ORCA_PER_PAGE = 3, 100               # as vm/build/orca-release
-ORCA_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
-ORCA_MAX_RPM = 1 << 30
 ASAR = "resources/app.asar"
 RECORD = os.path.join(paths.STATE, "versions.json")
 AVAILABLE_DIR = os.path.join(paths.STATE, "available")      # agentbox-feeds' (StateDirectory)
@@ -297,116 +293,55 @@ def _orca_version(v):
     return v if isinstance(v, str) and settings.ORCA_VERSION.fullmatch(v) else None
 
 
-def orca_version_of(release):
-    """The version of a published release in GitHub's list (tag vX.Y.Z, no draft, no
-    prerelease), else None."""
-    if not isinstance(release, dict) or release.get("draft") is not False or release.get("prerelease") is not False:
-        return None
-    tag = release.get("tag_name")
-    return _orca_version(tag[1:]) if isinstance(tag, str) and tag.startswith("v") else None
+def orca_rules():
+    """vm/build/orca-release of the installed Release as a module (loaded once): the Build
+    container chooses Orca's release with it, and the fetch by the same functions. Only its
+    rules run here; GitHub's answers are read by the fetch as agentbox-feeds, never by root."""
+    global _orca
+    if _orca is None:
+        _orca = scripts.load(os.path.join(paths.VM_SOURCE, "vm", "build", "orca-release"), "orca_release")
+    return _orca
 
 
-def _orca_published(release):
-    """When the release was published (epoch seconds), None when unknown."""
-    return _orca_stamp(release.get("published_at"))
-
-
-def _orca_stamp(stamp):
-    """A timestamp from GitHub (ISO 8601 with a time zone) as epoch seconds, else None."""
-    if not isinstance(stamp, str):
-        return None
-    try:
-        when = datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return when.timestamp() if when.tzinfo is not None else None
-
-
-def orca_asset_ok(release, version, cutoff, pinned=False):
-    """Whether the release's RPM was not created or replaced recently (vm/build/orca-release,
-    asset_ok): created_at and updated_at of the asset up to `cutoff`; when pinned (orca_version
-    takes a young release too) at most an hour after the release was published if that is
-    later. A release without the asset passes (orca_rpm says); a missing or unreadable
-    timestamp counts as too young."""
-    name = f"orca-ide-{version}.x86_64.rpm"
-    assets = release.get("assets")
-    found = [a for a in assets if isinstance(a, dict) and a.get("name") == name] if isinstance(assets, list) else []
-    if len(found) != 1:
-        return True
-    if pinned:
-        when = _orca_published(release)
-        cutoff = max(cutoff, when + 3600) if when is not None else float("-inf")
-    for key in ("created_at", "updated_at"):
-        when = _orca_stamp(found[0].get(key))
-        if when is None or when > cutoff:
-            return False
-    return True
-
-
-def orca_choose(releases, cutoff, pin=None):
-    """The release a Build takes from GitHub's list (vm/build/orca-release, choose): with pin
-    the published release of that version, else the highest version among the published
-    releases that came out up to `cutoff` (epoch seconds). None when there is none."""
-    found = []
-    for release in releases if isinstance(releases, list) else []:
-        version = orca_version_of(release)
-        if version is None:
-            continue
-        if pin is not None:
-            if version == pin:
-                return release
-            continue
-        when = _orca_published(release)
-        if when is not None and when <= cutoff and orca_asset_ok(release, version, cutoff):
-            found.append((tuple(int(p) for p in version.split(".")), len(found), release))
-    return max(found)[2] if found else None
-
-
-def orca_rpm(release, version):
-    """Whether the release has the x86_64 RPM a Build downloads, with a SHA-256 to check it
-    by (vm/build/orca-release, rpm_asset)."""
-    name = f"orca-ide-{version}.x86_64.rpm"
-    assets = release.get("assets")
-    found = [a for a in assets if isinstance(a, dict) and a.get("name") == name] if isinstance(assets, list) else []
-    if len(found) != 1:
-        return False
-    asset = found[0]
-    size, digest = asset.get("size"), asset.get("digest")
-    return asset.get("state") == "uploaded" and isinstance(digest, str) and bool(ORCA_DIGEST.fullmatch(digest)) \
-        and isinstance(size, int) and not isinstance(size, bool) and 0 < size <= ORCA_MAX_RPM
+_orca = None
 
 
 def orca_newest(cutoff, pin=None):
     """(version, error) of Orca as a Build would install it now: the release of orca_version
-    (pin), else the newest published at least as old as cutoff (orca_choose)."""
-    api = f"{GITHUB_API}{ORCA_REPO}/releases"
+    (pin), else the newest published at least as old as cutoff (orca-release's choose)."""
+    rules = orca_rules()        # without it the fetch fails: there is no rule to choose by
+    api = f"{GITHUB_API}{rules.REPO}/releases"
     if pin is not None:
         status, release = _get(f"{api}/tags/v{pin}", "application/vnd.github+json")
         if status == 0:
             return None, "GitHub not reachable"
         if status not in (200, 404) or (status == 200 and not isinstance(release, dict)):
             return None, f"GitHub answered {status}"
-        release = orca_choose([release], cutoff, pin) if status == 200 else None
+        release = rules.choose([release], cutoff, pin) if status == 200 else None
         if release is None:
             return None, "no release of the version in orca_version"
-        if not orca_asset_ok(release, pin, cutoff, pinned=True):
+        if not rules.asset_ok(release, pin, cutoff, pinned=True):
             return None, "RPM of the version in orca_version replaced only recently"
     else:
         everything = []
-        for page in range(1, ORCA_PAGES + 1):
-            status, releases = _get(f"{api}?per_page={ORCA_PER_PAGE}&page={page}", "application/vnd.github+json")
+        for page in range(1, rules.PAGES + 1):
+            status, releases = _get(f"{api}?per_page={rules.PER_PAGE}&page={page}", "application/vnd.github+json")
             if status == 0:
                 return None, "GitHub not reachable"
             if status != 200 or not isinstance(releases, list):
                 return None, f"GitHub answered {status}"
             everything += releases
-            if len(releases) < ORCA_PER_PAGE:
+            if len(releases) < rules.PER_PAGE:
                 break
-        release = orca_choose(everything, cutoff)      # only after all pages: the highest version
+        release = rules.choose(everything, cutoff)      # only after all pages: the highest version
         if release is None:
             return None, "no matching version found"
-    version = orca_version_of(release)
-    return (version, None) if orca_rpm(release, version) else (None, "no x86_64 RPM with a SHA-256 in the release")
+    version = rules.version_of(release)
+    try:
+        rules.rpm_asset(release, version)
+    except rules.Failed:
+        return None, "no x86_64 RPM with a SHA-256 in the release"
+    return version, None
 
 
 def _remove_container(name):

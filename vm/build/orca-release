@@ -1,6 +1,9 @@
 #!/usr/bin/python3
 """Orca fuer das Base image, im Build-Container (vm/Containerfile, #113). Laeuft nur dort, nie
 auf dem Host: GitHubs Antworten und die Downloads liest kein Prozess von root auf dem Host.
+agentbox fetch-versions (als agentbox-feeds) laedt diese Datei als Modul und waehlt das
+Release mit choose, asset_ok, version_of und rpm_asset von hier (agentbox/versions.py,
+orca_rules); main laeuft dabei nicht, und keine Funktion hier darf beim Laden etwas tun.
 
   orca-release rpm ZIEL --min-age-days N [--version X.Y.Z]
       waehlt ein Release von Orca auf GitHub (stablyai/orca): mit --version genau dieses
@@ -17,9 +20,7 @@ auf dem Host: GitHubs Antworten und die Downloads liest kein Prozess von root au
       Orcas Vorlage (orcad-template/targets/linux-x64-glibc/.runtime-node). Legt es nach
       ZIEL/node-<SHA-256>/bin/node, wo guest-setup es fuer den Agenten abholt.
 
-Jeder Fehler endet mit Exit 1 und einer Zeile auf stderr, und damit der Build. agentbox
-fetch-versions waehlt das Release nach derselben Regel (agentbox/versions.py; die Tests
-vergleichen beide, tests/test_orca_release.py).
+Jeder Fehler endet mit Exit 1 und einer Zeile auf stderr, und damit der Build.
 """
 import datetime
 import hashlib
