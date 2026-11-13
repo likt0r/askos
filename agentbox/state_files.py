@@ -127,7 +127,7 @@ def directory(path, mode, gid=-1, *, only_new=False):
     them its own way."""
     new = not os.path.isdir(path)
     if new:
-        os.makedirs(path, exist_ok=True)
+        os.makedirs(path, mode=mode & 0o700, exist_ok=True)     # nobody else in it before the chmod
     if new or not only_new:
         os.chmod(path, mode)
         if gid != -1:

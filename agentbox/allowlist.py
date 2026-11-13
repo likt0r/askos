@@ -373,8 +373,7 @@ def preview(scope, pattern):
     rows = [{"host": h, **counts[h], "signals": [str(s) for s in rep["hosts"][h]["signals"]],
              "strong": rep["hosts"][h]["strong"]} for h in shown]
     truncated = len(log) >= PREVIEW_LINES
-    stamps = [int(e["__REALTIME_TIMESTAMP"]) // 10**6 for e in log
-              if str(e.get("__REALTIME_TIMESTAMP", "")).isdigit()] if truncated else []
+    stamps = [u // 10**6 for u in map(times.journal_usec, log) if u is not None and u >= 0] if truncated else []
     return {"hosts": rows, "more": len(hosts) - len(shown),
             "watchlist_unreadable": clean(rep["watchlist_unreadable"], False)[:300]
             if rep["watchlist_unreadable"] else None, "truncated": truncated,

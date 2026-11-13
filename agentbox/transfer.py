@@ -482,10 +482,9 @@ def _create_locked(ctx):
 
 
 def _delete(tar):
+    """Remove the tar file if it is there; a failure is only a warning."""
     try:
-        os.unlink(tar)
-    except FileNotFoundError:
-        pass
+        state_files.remove(tar, fail=False)
     except OSError as e:
         print(f"agentbox: {tar}: {e.strerror}", file=sys.stderr)
 

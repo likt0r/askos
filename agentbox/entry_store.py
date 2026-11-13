@@ -138,13 +138,10 @@ def find(entries, ref, **fields):
 def legacy_lines(path):
     """The lines of a text list as (what comes before #, the comment), None when the file is
     missing."""
-    try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            lines = f.read().splitlines()
-    except FileNotFoundError:
+    data = state_files.read(path, None)
+    if data is None:
         return None
-    except OSError as e:
-        die(f"{path}: {e.strerror}", error="action_failed")
+    lines = data.decode("utf-8", "replace").splitlines()
     return [(body, comment) for body, _, comment in (line.partition("#") for line in lines)]
 
 
