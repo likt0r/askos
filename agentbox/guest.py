@@ -79,31 +79,78 @@ def ping(ctx, seconds=3):
     return isinstance(answer, dict) and "return" in answer
 
 
-def run_in_vm(ctx, argv, wrapper=JOURNAL, limit=VM_TIMEOUT):
-    """Run a wrapper of the Image in the VM (journalctl by default) with these
-    arguments; returns (stdout, truncated)."""
-    if virsh.state(ctx) != "running":
-        die(f"{ctx}: the VM is not running (agentbox start {ctx})", 3, error="vm_not_running", vm=ctx)
-    started = agent(ctx, {"execute": "guest-exec", "arguments": {
-        "path": wrapper, "arg": argv, "capture-output": True}})
-    pid = started.get("pid") if isinstance(started, dict) else None
-    if not isinstance(pid, int):
+def execute(ctx, wrapper, argv, wait, *, missing=None, answer=None):
+    """Run a wrapper of the Image in the VM through the guest agent (guest-exec) and wait
+    up to `wait` seconds for it to end, asking after 0.2 s at first and every 2 s at most:
+    (exit code, stdout, stderr, truncated). A wrapper stopped by a signal, or one that has
+    not ended by then, gives exit code 124.
+
+    missing: called when the VM's Build has no such wrapper (and expected to raise);
+    without it, that is a guest agent that does not answer. answer: stdout is the wrapper's
+    answer of at most that many characters, decoded strictly (base64, UTF-8); None instead
+    of it when it is anything else, longer or truncated, and stderr is not read (None).
+    Without answer both are decoded leniently, undecodable UTF-8 replaced."""
+    r = virsh.run("qemu-agent-command", dom(ctx), json.dumps({"execute": "guest-exec", "arguments": {
+        "path": wrapper, "arg": argv, "capture-output": True}}), "--timeout", "10")
+    if r.returncode != 0:
+        if missing and "No such file or directory" in r.stderr:
+            missing()
+        die(f"{ctx}: the guest agent does not answer (" + clean(r.stderr.strip(), False)[:200] + ")", 4,
+            error="guest_agent_unavailable", vm=ctx)
+    try:
+        pid = json.loads(r.stdout)["return"]["pid"]
+    except (ValueError, KeyError, TypeError, RecursionError):
+        pid = None
+    if type(pid) is not int:
         die(f"{ctx}: unexpected answer from the guest agent", 4, error="guest_agent_unavailable", vm=ctx)
-    deadline = time.monotonic() + limit + 10
+    deadline, pause = time.monotonic() + wait, 0.2
     while True:
         res = agent(ctx, {"execute": "guest-exec-status", "arguments": {"pid": pid}})
-        if isinstance(res, dict) and res.get("exited"):
+        if isinstance(res, dict) and res.get("exited") is True:
             break
         if time.monotonic() > deadline:
-            die(f"{ctx}: the query takes too long", 5, error="vm_query_timeout", vm=ctx)
-        time.sleep(0.2)
+            return 124, "", "", False
+        time.sleep(pause)
+        pause = min(pause * 2, 2)
+    code = 124 if res.get("signal") is not None else res.get("exitcode")
+    truncated = bool(res.get("out-truncated") or res.get("err-truncated"))
+    if answer is not None:
+        data = res.get("out-data", "")
+        try:
+            if not isinstance(data, str) or len(data) > answer * 2 or res.get("out-truncated"):
+                raise ValueError
+            out = base64.b64decode(data, validate=True).decode("utf-8")
+            if len(out) > answer:
+                raise ValueError
+        except (ValueError, TypeError):
+            out = None
+        return code, out, None, truncated
     try:
         out = base64.b64decode(res.get("out-data", "")).decode("utf-8", "replace")
         err = base64.b64decode(res.get("err-data", "")).decode("utf-8", "replace")
     except (ValueError, TypeError):
         die(f"{ctx}: unexpected answer from the guest agent", 4, error="guest_agent_unavailable", vm=ctx)
-    code = res.get("exitcode")
-    if code == 124 or res.get("signal") is not None:
+    return code, out, err, truncated
+
+
+def numbers(out, keys, below):
+    """The whole numbers 0 <= n < below under these keys of a wrapper's JSON answer, which
+    comes from the VM: untrusted. None when it is anything else."""
+    try:
+        found = json.loads(out)
+        found = [found[k] for k in keys]
+    except (ValueError, KeyError, TypeError, RecursionError):
+        return None
+    return found if all(type(n) is int and 0 <= n < below for n in found) else None
+
+
+def run_in_vm(ctx, argv, wrapper=JOURNAL, limit=VM_TIMEOUT):
+    """Run a wrapper of the Image in the VM (journalctl by default) with these
+    arguments; returns (stdout, truncated)."""
+    if virsh.state(ctx) != "running":
+        die(f"{ctx}: the VM is not running (agentbox start {ctx})", 3, error="vm_not_running", vm=ctx)
+    code, out, err, truncated = execute(ctx, wrapper, argv, limit + 10)
+    if code == 124:
         die(f"{ctx}: query in the VM stopped after {limit} s, narrow the filters", 5, error="vm_query_timeout",
             vm=ctx, seconds=limit)
     # journalctl --grep without a match ends with 1 and no output
@@ -111,7 +158,7 @@ def run_in_vm(ctx, argv, wrapper=JOURNAL, limit=VM_TIMEOUT):
         program = "journalctl" if wrapper == JOURNAL else os.path.basename(wrapper)
         die(f"{ctx}: {program} fails in the VM: " + (clean(err.strip(), False)[:300] or f"exit {code}"), 6,
             error="vm_journal_failed" if wrapper == JOURNAL else "action_failed", vm=ctx)
-    return out, bool(res.get("out-truncated") or res.get("err-truncated"))
+    return out, truncated
 
 
 def _number(v):

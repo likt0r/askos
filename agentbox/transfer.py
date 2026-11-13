@@ -26,7 +26,6 @@ lifecycle lock is held from the attach to the deletion of the tar file, so no Re
 Pause or delete comes in between. The wrapper's answer is untrusted: only two whole numbers
 are taken from it, and its error output is cleaned.
 """
-import base64
 import fcntl
 import json
 import os
@@ -39,7 +38,7 @@ import sys
 import tarfile
 import time
 
-from . import activity, guest, lifecycle, paths, responding, state_files, virsh
+from . import activity, guest, lifecycle, paths, programs, responding, state_files, virsh
 from .errors import Fail, die
 from .registry import check, dom
 from .sanitize import clean
@@ -362,8 +361,7 @@ def _attach(ctx, tar):
     r = virsh.run("attach-disk", dom(ctx), tar, TARGET_DEV, "--live", "--mode", "readonly", "--targetbus", "virtio",
                   "--driver", "qemu", "--subdriver", "raw", "--serial", SERIAL)
     if r.returncode != 0:
-        why = clean(" ".join(r.stderr.split()), False)[-300:] or f"exit {r.returncode}"
-        die(f"{ctx}: the folder cannot be attached to the VM: {why}", error="import_failed", vm=ctx)
+        die(f"{ctx}: the folder cannot be attached to the VM: {programs.summary(r)}", error="import_failed", vm=ctx)
 
 
 def _detach(ctx):
@@ -371,43 +369,20 @@ def _detach(ctx):
     r = virsh.run("detach-disk", dom(ctx), TARGET_DEV, "--live")
     if r.returncode == 0:
         return None
-    return clean(" ".join(r.stderr.split()), False)[-300:] or f"exit {r.returncode}"
+    return programs.summary(r)
+
+
+def _missing(ctx):
+    die(f"{ctx}: the VM's Build has no agentbox-inbox; build its Image and reset the VM first "
+        f"(agentbox build <image> --reset {ctx})", error="inbox_missing", vm=ctx)
 
 
 def _receive(ctx, target):
-    """Run agentbox-inbox in the VM; (exit code, stdout, stderr) once it ended."""
-    r = virsh.run("qemu-agent-command", dom(ctx), json.dumps({"execute": "guest-exec", "arguments": {
-        "path": INBOX, "arg": ["receive", DEVICE, target], "capture-output": True}}), "--timeout", "10")
-    if r.returncode != 0:
-        if "No such file or directory" in r.stderr:
-            die(f"{ctx}: the VM's Build has no agentbox-inbox; build its Image and reset the VM first "
-                f"(agentbox build <image> --reset {ctx})", error="inbox_missing", vm=ctx)
-        die(f"{ctx}: the guest agent does not answer (" + clean(r.stderr.strip(), False)[:200] + ")", 4,
-            error="guest_agent_unavailable", vm=ctx)
-    try:
-        pid = json.loads(r.stdout)["return"]["pid"]
-    except (ValueError, KeyError, TypeError):
-        pid = None
-    if not isinstance(pid, int) or isinstance(pid, bool):
-        die(f"{ctx}: unexpected answer from the guest agent", 4, error="guest_agent_unavailable", vm=ctx)
+    """Run agentbox-inbox in the VM; (exit code, stdout, stderr) once it ended, 124 when it
+    did not within the limit."""
     limit = paths.tunable("AGENTBOX_IMPORT_SECONDS", VM_LIMIT + 60)
-    deadline, pause = time.monotonic() + limit, 0.2
-    while True:
-        res = guest.agent(ctx, {"execute": "guest-exec-status", "arguments": {"pid": pid}})
-        if isinstance(res, dict) and res.get("exited"):
-            break
-        if time.monotonic() > deadline:
-            die(f"{ctx}: unpacking in the VM takes longer than {limit} s", error="import_failed", vm=ctx)
-        time.sleep(pause)
-        pause = min(pause * 2, 2)
-    try:
-        out = base64.b64decode(res.get("out-data", "")).decode("utf-8", "replace")
-        err = base64.b64decode(res.get("err-data", "")).decode("utf-8", "replace")
-    except (ValueError, TypeError):
-        die(f"{ctx}: unexpected answer from the guest agent", 4, error="guest_agent_unavailable", vm=ctx)
-    code = res.get("exitcode")
-    if res.get("signal") is not None:
-        code = 124
+    code, out, err, _ = guest.execute(ctx, INBOX, ["receive", DEVICE, target], limit,
+                                      missing=lambda: _missing(ctx))
     return code, out, err
 
 
@@ -421,15 +396,11 @@ def _result(ctx, target, code, out, err):
         die(f"{ctx}: the VM refuses the target ~/code/{target}: {why}", 2, error="invalid_argument", vm=ctx,
             argument="target")
     if code == 124:
-        die(f"{ctx}: unpacking in the VM stopped after its time limit", error="import_failed", vm=ctx)
+        die(f"{ctx}: unpacking in the VM did not end within its time limit", error="import_failed", vm=ctx)
     if code != 0:
         die(f"{ctx}: unpacking in the VM fails: {why}", error="import_failed", vm=ctx)
-    try:
-        answer = json.loads(out)
-        numbers = [answer[k] for k in ("files", "bytes")]
-    except (ValueError, KeyError, TypeError, RecursionError):
-        numbers = None
-    if not numbers or not all(type(n) is int and 0 <= n < MAX_NUMBER for n in numbers):
+    numbers = guest.numbers(out, ("files", "bytes"), MAX_NUMBER)
+    if not numbers:
         die(f"{ctx}: unexpected answer from agentbox-inbox in the VM", error="import_failed", vm=ctx)
     return {"files": numbers[0], "bytes": numbers[1]}
 
