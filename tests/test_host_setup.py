@@ -10,6 +10,7 @@ Run from the repo root: python3 -m unittest discover -s tests
 import json
 import os
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -105,6 +106,8 @@ class BackendHostSetupTest(unittest.TestCase):
                         "-nodes", "-days", "1", "-subj", "/CN=t",
                         "-keyout", os.path.join(cls.conf.name, "key.pem"),
                         "-out", os.path.join(cls.conf.name, "cert.pem")], check=True, capture_output=True)
+        with open(os.path.join(cls.conf.name, "cert.pem")) as f:
+            cls.cert = ssl.PEM_cert_to_DER_cert(f.read())
 
     @classmethod
     def tearDownClass(cls):
@@ -138,10 +141,10 @@ class BackendHostSetupTest(unittest.TestCase):
         proc.stderr.close()
 
     def serve(self, setup_for, address, hold_loopback=False):
-        """The backend listening on the port of the record, which the Host setup cannot leave to the kernel (port 0
-        is no valid web_port): it takes a free port, and if another test running at the same time has taken it by
-        the time the backend binds, another one. hold_loopback keeps 127.0.0.1 on that port bound without
-        listen(), so nothing else can answer there meanwhile."""
+        """The backend listening on the port of the record, which the Host setup cannot leave to the
+        kernel (port 0 is no valid web_port): it takes a free port, and if another test running at
+        the same time has taken it by the time the backend binds, another one. hold_loopback keeps
+        127.0.0.1 on that port bound without listen(), so nothing else can answer there meanwhile."""
         for _ in range(10):
             holder = socket.socket()
             self.addCleanup(holder.close)
@@ -152,23 +155,29 @@ class BackendHostSetupTest(unittest.TestCase):
             proc = self.start(setup_for(self.port))
             if self.listens(proc, address) is not None:
                 return proc
-        self.fail("no free port for the backend after 10 attempts")
+        self.fail("the backend found its port in use 10 times"
+                  + (" next to 127.0.0.1 held on it, as one that binds every address does" if hold_loopback else "")
+                  + ": " + self.in_use)
 
     def listens(self, proc, address):
-        """True once the backend answers on address and the port, False when it never does, None when it exited
+        """True once the backend answers on address and the port (with its certificate: another
+        test's server on that port is not it), False when it never does, None when it exited
         because the port is in use."""
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
             if proc.poll() is not None:
                 err = proc.stderr.read()
                 if "Address already in use" in err:
+                    self.in_use = err
                     return None
                 self.fail("server exited early: " + err)
             try:
-                socket.create_connection((address, self.port), timeout=1).close()
-                return True
+                served = ssl.get_server_certificate((address, self.port), timeout=1)
+                if ssl.PEM_cert_to_DER_cert(served) == self.cert:
+                    return True
             except OSError:
-                time.sleep(0.05)
+                pass
+            time.sleep(0.05)
         return False
 
     def fails(self, setup):

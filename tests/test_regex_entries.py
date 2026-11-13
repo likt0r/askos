@@ -231,12 +231,12 @@ class AllowlistProxyTest(allowlist_tests.ProxyTest):
         self.assertNotIn("CLOSED", self.log())
 
     def test_an_expired_pattern_stops_new_connections_only(self):
-        self.store(rx(MIRRORS, "work"))
+        self.store()
         self.start()
-        t = self.tunnel("mirror1.vendor.example")
-        expires = int(time.time()) + 2
+        expires = int(time.time()) + 3      # written once the proxy is ready, however long its start took
         self.store(rx(MIRRORS, "work", expires=expires))
-        time.sleep(max(expires + 0.5 - time.time(), allowlist_tests.SETTLE))
+        t = self.tunnel("mirror1.vendor.example")
+        time.sleep(max(expires + 0.5 - time.time(), SETTLE))
         self.assertTrue(self.refused("mirror2.vendor.example"))
         # the timer removes the expired entry: nothing is closed
         self.store()
