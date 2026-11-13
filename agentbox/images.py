@@ -69,7 +69,7 @@ from .sanitize import SECRET, clean, entry
 
 BASE = "base"
 NAME = settings.IMAGE                                  # also the names of default_image
-BUILD_ID = re.compile(r"\d{8}(?:-\d{4}(?:\d{2})?)?")      # new: YYYYMMDD-HHMMSS; before: YYYYMMDD-HHMM
+BUILD_ID = settings.BUILD_ID
 DISK = re.compile(rf"({NAME.pattern})-({BUILD_ID.pattern})\.qcow2")
 RECORD = re.compile(rf"({NAME.pattern})-({BUILD_ID.pattern})\.json")
 USABLE = ("ok", "migrated")

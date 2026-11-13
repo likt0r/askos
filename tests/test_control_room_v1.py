@@ -305,11 +305,10 @@ class SessionLanguageTest(V1Test):
     read from the file like session_hours, so the UI needs no GET /settings (a sudo call)."""
 
     def setUp(self):
-        settings_dir = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, settings_dir, True)
-        self.settings = os.path.join(settings_dir, "settings.json")
-        self.ENV = {"AGENTBOX_WEB_SETTINGS": self.settings}       # never the Host's file
         super().setUp()
+        # read as agentbox reads it, under AGENTBOX_ROOT: never the Host's file
+        self.settings = os.path.join(self.dir, "root", "etc", "agentbox", "settings.json")
+        os.makedirs(os.path.dirname(self.settings), exist_ok=True)
 
     def settings_file(self, text):
         with open(self.settings, "w") as f:
@@ -929,6 +928,26 @@ class ErrorTest(V1Test):
         self.assertError(self.request("GET", "/api/v1/vms"), 502, "bad_agentbox_answer")
 
 
+class PackageTest(unittest.TestCase):
+    """The backend reads agentbox's files with the package's own readers, through its leaf
+    modules only: never one that pulls in the CLI's commands (activity, images, github)."""
+
+    LEAVES = {"agentbox", "agentbox.errors", "agentbox.paths", "agentbox.state_files", "agentbox.sanitize",
+              "agentbox.hostsetup", "agentbox.settings", "agentbox.version", "agentbox.registry",
+              "agentbox.vmenv", "agentbox.safeguards", "agentbox.journal"}
+
+    def test_it_imports_only_leaf_modules(self):
+        code = ("import importlib.machinery, importlib.util, sys\n"
+                "loader = importlib.machinery.SourceFileLoader('agentbox_web', sys.argv[1])\n"
+                "loader.exec_module(importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader)))\n"
+                "print(' '.join(m for m in sys.modules if m == 'agentbox' or m.startswith('agentbox.')))")
+        out = subprocess.run([sys.executable, "-I", "-c", code, SERVER], capture_output=True, text=True,
+                             check=True, timeout=30).stdout
+        loaded = set(out.split())
+        self.assertIn("agentbox.hostsetup", loaded)
+        self.assertLessEqual(loaded, self.LEAVES)
+
+
 class ErrorTableTest(unittest.TestCase):
     """The codes agentbox raises, the web service's table, the UI's translations and the
     API docs name the same codes."""
@@ -962,14 +981,6 @@ class ErrorTableTest(unittest.TestCase):
                     self.assertEqual(len(error), 1, "no error= code")
                     codes |= literal(error[0])
         return codes
-
-    def test_the_name_of_a_vm_variable_is_the_same_everywhere(self):
-        sys.path.insert(0, ROOT)
-        from agentbox import vmenv
-        for name in ("A", "_", "a_B9", "A" * 64, "A" * 65, "9A", "A-B", "A=B", "--x", "", "\u00c4"):
-            with self.subTest(name=name):
-                self.assertEqual(bool(self.web.ENV_NAME.fullmatch(name)),
-                                 bool(vmenv.NAME.fullmatch(name)) and len(name) <= vmenv.MAX_NAME)
 
     def test_every_code_agentbox_raises_has_a_status(self):
         raised = self.raised_codes()

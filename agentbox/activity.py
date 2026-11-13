@@ -45,14 +45,12 @@ import json
 import os
 import pwd
 import re
-import socket
-import struct
 import subprocess
 import sys
 import threading
 import time
 
-from . import options, paths, registry, settings, vmenv
+from . import journal, options, paths, registry, settings, vmenv
 from .errors import Fail, die
 from .guest import TIME
 from .sanitize import clean, field, message_text, redact
@@ -154,45 +152,20 @@ def terminal_user():
 
 # --- recording -----------------------------------------------------------------
 
-def _encode(fields):
-    """One entry in the native journal protocol (systemd's journal-native(7))."""
-    out = bytearray()
-    for key, value in fields.items():
-        data = value.encode("utf-8", "replace")
-        if b"\n" in data:
-            out += key.encode() + b"\n" + struct.pack("<Q", len(data)) + data + b"\n"
-        else:
-            out += key.encode() + b"=" + data + b"\n"
-    return bytes(out)
-
-
 def _send(data):
     """To the namespace's journal, else (not set up) the default journal. Nothing
     when no journal is there at all (tests without one); a warning when it refuses,
     and when the namespace does not let this user write: then nowhere else either."""
-    error = None
-    for path in SOCKETS:
-        if not os.path.exists(path):
-            continue
-        try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
-                s.sendto(data, path)
-            return
-        except PermissionError as e:
-            if path != SOCKETS[0]:
-                error = e
-                continue
-            global _refused
-            if not _refused:          # once per call, however many entries it records
-                _refused = True
-                print(f"agentbox: Activity not recorded: only root and the group {JOURNAL_GROUP} write into "
-                      f"the journal (the members of libvirt, after agentbox setup and logging in again)",
-                      file=sys.stderr)
-            return
-        except OSError as e:
-            error = e
-    if error:
-        print(f"agentbox: Activity not recorded in the journal ({error.strerror or error})", file=sys.stderr)
+    result = journal.send(data, SOCKETS)
+    if result == journal.REFUSED:
+        global _refused
+        if not _refused:          # once per call, however many entries it records
+            _refused = True
+            print(f"agentbox: Activity not recorded: only root and the group {JOURNAL_GROUP} write into "
+                  f"the journal (the members of libvirt, after agentbox setup and logging in again)",
+                  file=sys.stderr)
+    elif isinstance(result, OSError):
+        print(f"agentbox: Activity not recorded in the journal ({result.strerror or result})", file=sys.stderr)
 
 
 def _value(v):
@@ -248,7 +221,7 @@ def record(kind, action, description, vm=None, outcome="ok", actor=None, params=
         out[f"AGENTBOX_{key}"] = redact(value)[:limit]
     message = (f"{out.get('AGENTBOX_VM', '-')} {out['AGENTBOX_ACTION']} {out['AGENTBOX_OUTCOME']} "
                f"({out['AGENTBOX_ACTOR']}): {out.get('AGENTBOX_DESCRIPTION', '')}")
-    _send(_encode({"MESSAGE": message, "PRIORITY": "5" if outcome == "ok" else "4",
+    _send(journal.encode({"MESSAGE": message, "PRIORITY": "5" if outcome == "ok" else "4",
                    "SYSLOG_IDENTIFIER": IDENTIFIER, **out}))
 
 
@@ -283,8 +256,6 @@ _DURATIONS = {"15min": "15 minutes", "1h": "1 hour", "8h": "8 hours", "7d": "7 d
 # The Watchlist's categories, as the classifier's CATEGORIES (tests/test_lists.py checks
 # that): a description names only one of these, never what a request passed as --category.
 WATCH_CATEGORIES = ("exfil", "c2", "tunnel", "paste", "phishing", "blockchain", "payload")
-# a Build's name, as images.BUILD_ID (images imports this module)
-_BUILD = re.compile(r"\d{8}(?:-\d{4}(?:\d{2})?)?")
 
 
 def _positional(args):
@@ -478,7 +449,7 @@ def _import(a):
 def _set_image(a):
     image, build = _arg(a, 1), _opt(a, "--build")
     return _said(f"Image {image}, " + (f"pinned to Build {build}" if build else "always its current Build")
-                 + ", from the next Reset", image=_name(image, settings.IMAGE), build=_name(build, _BUILD))
+                 + ", from the next Reset", image=_name(image, settings.IMAGE), build=_name(build, settings.BUILD_ID))
 
 
 # What a command was asked to do, for its entry (works for either outcome): the English

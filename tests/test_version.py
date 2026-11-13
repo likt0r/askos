@@ -56,6 +56,21 @@ class CliVersionTest(unittest.TestCase):
         self.assertEqual(self.run_agentbox("version", "--bogus")[0], 2)
 
 
+class ReleaseReaderTest(unittest.TestCase):
+    def test_a_file_that_is_no_utf8_is_a_clear_failure(self):
+        sys.path.insert(0, ROOT)
+        from agentbox import version
+        from agentbox.errors import Fail
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "VERSION")
+            with open(path, "wb") as f:
+                f.write(b"\xff\xfe1.0.0\n")
+            with self.assertRaises(Fail) as caught:
+                version.release(path)
+        self.assertEqual((caught.exception.error, caught.exception.message),
+                         ("action_failed", f"{path}: not UTF-8 text"))
+
+
 class RepositoryLinkTest(unittest.TestCase):
     """Where a Release's files are in the repository (#67): its tag v<release>, links only."""
 
@@ -111,8 +126,8 @@ class ReleaseFileTest(V1Test):
         cls.tmp = tempfile.TemporaryDirectory()
         cls.path = os.path.join(cls.tmp.name, "VERSION")
         if cls.CONTENT is not None:
-            with open(cls.path, "w") as f:
-                f.write(cls.CONTENT)
+            with open(cls.path, "wb") as f:
+                f.write(cls.CONTENT if isinstance(cls.CONTENT, bytes) else cls.CONTENT.encode())
         cls.ENV = {"AGENTBOX_WEB_RELEASE_FILE": cls.path}
 
     @classmethod
@@ -129,6 +144,14 @@ class ReleaseFileTest(V1Test):
 
 class MalformedReleaseFileTest(ReleaseFileTest):
     CONTENT = "banana\n"
+
+    def test_reads_that_file(self):
+        self.assertIsNone(self.release())
+
+
+class UndecodableReleaseFileTest(ReleaseFileTest):
+    # no UTF-8: no Release, not a failure of the request
+    CONTENT = b"\xff\xfe1.0.0\n"
 
     def test_reads_that_file(self):
         self.assertIsNone(self.release())

@@ -5,8 +5,8 @@ the Control Room, the home network, the certificate name and the
 owner user. It changes only on the Host (never through the Control Room), so it cannot
 widen what the Control Room is reachable from. A Host without a record is Local-only.
 
-The Control Room backend reads the same file with its own small reader
-(web/agentbox-web, host_setup()); it runs without this package. Keep the two in step.
+The Control Room backend (web/agentbox-web) takes its address and port from load() too, so
+it starts on exactly the records the CLI accepts and stops on the others.
 """
 import ipaddress
 import json

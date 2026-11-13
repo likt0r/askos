@@ -741,11 +741,11 @@ class RegistryLookupTest(RegistryTest):
         self.assertIn("the name off is reserved", err)
 
     def test_name_pattern_is_the_same_everywhere(self):
+        # the Control Room imports registry.NAME; the token service runs without the package
         sys.path.insert(0, REPO)
         from agentbox import registry
-        for program in (TOKEND, os.path.join(REPO, "web", "agentbox-web")):
-            with self.subTest(program=program), open(program) as f:
-                self.assertIn(f're.compile(r"{registry.NAME.pattern}")', f.read())
+        with open(TOKEND) as f:
+            self.assertIn(f're.compile(r"{registry.NAME.pattern}")', f.read())
 
 
 class TokenServiceTest(unittest.TestCase):

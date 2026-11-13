@@ -184,7 +184,7 @@ UI (`errors.*`); `tests/test_control_room_v1.py` checks that they agree.
 | `GET /version` | | `200 {"api": 1, "version": "<16 hex>"\|null, "ui": "nuxt"\|null, "installed": "<time>"\|null, "release": "<MAJOR.MINOR.PATCH>"\|null}` (`version` is the UI build, which open pages compare to offer a reload; `version`, `ui` and `installed` are `null` while no UI build is installed; `release` is the Release of Agent Box, the same as `agentbox version`) |
 
 `default_language` is the Setting as the backend reads `/etc/agentbox/settings.json` at
-that request (`browser` when the file has no valid value), so the UI knows it right after
+that request (`browser` when the file has no valid value or agentbox refuses the file), so the UI knows it right after
 sign-in and on every page load without `GET /settings`.
 
 Sign-ins, failures, refusals by the brake and sign-outs are Activity entries (codes

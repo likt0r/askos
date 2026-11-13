@@ -4,18 +4,17 @@ test_control_room.py.
 
 Run from the repo root: python3 -m unittest discover -s tests
 """
-import importlib.machinery
-import importlib.util
-import json
 import os
 import re
-import subprocess
+import shutil
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_control_room  # noqa: E402
-from test_control_room import ControlRoomTest, SERVER, failure  # noqa: E402
+from test_control_room import ControlRoomTest, failure  # noqa: E402
 
 setUpModule = test_control_room.setUpModule
 tearDownModule = test_control_room.tearDownModule
@@ -84,30 +83,15 @@ class SettingsApiTest(ControlRoomTest):
                          "unauthenticated")
         self.assertEqual(self.calls(), [])
 
-    def test_the_known_keys_are_the_ones_of_agentbox(self):
-        loader = importlib.machinery.SourceFileLoader("agentbox_web", SERVER)
-        module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
-        loader.exec_module(module)
-        env = dict(os.environ, AGENTBOX_ROOT=self.dir)       # never the real /etc/agentbox
-        agentbox = os.path.join(os.path.dirname(os.path.dirname(SERVER)), "bin", "agentbox")
-        out = subprocess.run([sys.executable, agentbox, "settings", "--json"],
-                             capture_output=True, text=True, env=env, check=True).stdout
-        cli_keys = set(json.loads(out)["settings"])
-        cleanup_keys = {"default_container_image_cleanup", "default_container_image_cleanup_days"}
-        self.assertEqual(set(module.SETTING_KEYS), cli_keys | cleanup_keys)
-        # GET /session reads default_language itself: the same values, the default first
-        language = json.loads(out)["settings"]["default_language"]
-        self.assertEqual(module.LANGUAGES[0], language["default"])
-        self.assertEqual("one of " + ", ".join(module.LANGUAGES), language["allowed"])
-
-
 class SessionLengthTest(ControlRoomTest):
     def setUp(self):
-        self.settings = os.path.join(test_control_room.conf.name, "settings.json")
-        os.environ["AGENTBOX_WEB_SETTINGS"] = self.settings
-        self.addCleanup(os.environ.pop, "AGENTBOX_WEB_SETTINGS", None)
-        self.addCleanup(lambda: os.path.exists(self.settings) and os.remove(self.settings))
-        super().setUp()
+        # the server reads the Settings as agentbox does, under AGENTBOX_ROOT: never the Host's file
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        self.settings = os.path.join(root, "etc", "agentbox", "settings.json")
+        os.makedirs(os.path.dirname(self.settings))
+        with mock.patch.dict(os.environ, AGENTBOX_ROOT=root):
+            super().setUp()
 
     def max_age(self):
         cookie = self.request("POST", "/api/v1/session", {"password": test_control_room.PASSWORD})[2] \
@@ -128,11 +112,25 @@ class SessionLengthTest(ControlRoomTest):
         self.assertEqual(self.max_age(), 24 * 3600)
 
     def test_unusable_settings_fall_back_to_the_default(self):
+        # a file agentbox refuses, also for another key, is no file of Settings
         for text in ("kaputt", "[]", '{"session_hours": 0}', '{"session_hours": "5"}', '{"session_hours": true}',
-                     '{"session_hours": 169}'):
+                     '{"session_hours": 169}', '{"session_hours": 3, "bogus": 1}',
+                     '{"session_hours": 3, "builds_kept": 0}'):
             with self.subTest(text=text):
                 self.write(text)
                 self.assertEqual(self.max_age(), 12 * 3600)
+
+
+class DocumentedKeysTest(unittest.TestCase):
+    def test_the_api_docs_list_the_keys_the_control_room_may_change(self):
+        # the backend takes them from settings.SPEC: a new Setting is changeable through
+        # PATCH /settings at once, so the docs name it too
+        sys.path.insert(0, test_control_room.ROOT)
+        from agentbox import settings
+        with open(os.path.join(test_control_room.ROOT, "docs", "control-room-api.md")) as f:
+            text = f.read()
+        listed = text.split("Settings keys the Control Room may change:", 1)[1].split("The password", 1)[0]
+        self.assertEqual(sorted(re.findall(r"`([a-z_]+)`", listed)), sorted(settings.SPEC))
 
 
 if __name__ == "__main__":
