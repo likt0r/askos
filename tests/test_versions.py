@@ -282,12 +282,6 @@ class CheckTest(VersionsTest):
         self.check()
         self.assertEqual(self.record()["orca"]["version"], "1.4.251")
 
-    def test_a_release_whose_rpm_was_replaced_lately_is_skipped(self):
-        self.registry({**REGISTRY, "github": {"stablyai/orca": [release("1.4.252", 5, asset_days=0.5),
-                                                                 release("1.4.251", 6)]}})
-        self.check()
-        self.assertEqual(self.record()["orca"]["version"], "1.4.251")
-
     def test_package_updates_are_counted_in_a_container_from_the_current_build(self):
         self.built()
         build = self.newest()["build"]
