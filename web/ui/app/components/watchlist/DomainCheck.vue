@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // Checks a domain against the Watchlist, the Feeds and the patterns: its Signals and why,
-// what that means (Alert, blocked in Open web, only the CLI can allow it), and a Harmless
+// what that means (Alert, blocked also on the Allowlist, only lifting the Signal lets it through), and a Harmless
 // mark for a false positive.
 import type { DomainCheck, HarmlessMark } from '~/utils/access'
 
@@ -37,7 +37,7 @@ const consequences = computed(() => {
   const out: string[] = []
   if (r.alert) out.push(t('watchlist.check.raisesAlerts'))
   else if (r.signals.length && r.harmless) out.push(t('watchlist.check.noAlerts'))
-  if (r.strong) out.push(t('watchlist.check.blockedInOpenWeb'), t('watchlist.check.onlyCli'))
+  if (r.strong) out.push(t('watchlist.check.blocked'), t('watchlist.check.onlyLift'))
   return out
 })
 

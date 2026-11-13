@@ -13,8 +13,7 @@ seconds), null for a permanent one; added and added_by say when and by whom
 
 A Regex entry (ADR 0013, patterns.py) has a pattern, "regex": "^mirror[0-9]+\\.example\\.org$",
 in place of the domain, and the commands take it with --regex PATTERN. It allows the hosts
-the pattern matches, but the proxy checks every connection: never one with strong Signals,
-and nothing while the Watchlist cannot be read, so --force does not apply to it. Adding one
+the pattern matches; --force does not apply to it (Strong Signals, below). Adding one
 shows which hosts of the scope's proxy log of the last 7 days it would allow, and needs
 --confirm-pattern. Scope, expiry, notes, uses and closing tunnels work as for a domain.
 
@@ -30,12 +29,15 @@ Before allowlist.json, the Allowlist was <CONF>/allowlist (all VMs) and
 (<file>.migrated). Until then the proxy and the read-only commands use them,
 and the first change through agentbox migrates them.
 
-Strong Signals. allow, extend and make-permanent refuse destinations the
-classifier calls strongly suspicious unless given --force; the Control Room
-never passes --force. While the hand-maintained Watchlist cannot be read they
-refuse every destination without --force: which Signals are strong is unknown
-then, and the proxy, which keeps Open web closed for that reason, lets
-Allowlist entries through.
+Strong Signals (ADR 0018). The proxy checks every connection: a destination
+with strong Signals is blocked whatever entry allows it, and while the
+hand-maintained Watchlist cannot be read nothing passes. So allow, extend and
+make-permanent refuse a destination the classifier calls strongly suspicious,
+also with --force, and say how to lift the Signal instead (the Watchlist and
+Legitimate-domain commands, lists.py): the Allowlist never holds an entry that
+cannot work. While the Watchlist cannot be read they refuse every domain unless
+given --force, which stores the entry unchecked: the proxy checks it once the
+Watchlist is repaired. The Control Room never passes --force.
 """
 import contextlib
 import json
@@ -188,18 +190,24 @@ def classify(domain):
 
 
 def _signals(domain, opts):
-    """Strongly suspicious destinations only with --force, and while the Watchlist cannot
-    be read every destination."""
+    """Never a destination with strong Signals, also not with --force: the proxy would block it
+    all the same (ADR 0018), so the message says how to lift the Signal. While the Watchlist
+    cannot be read every destination only with --force (it cannot be checked); without a
+    classifier none (the proxy lets nothing through then either)."""
     from .lists import UNREADABLE
     tags, suspicious, unreadable = classify(domain)
-    if "force" in opts:
-        return
     if unreadable is not None:
+        if "force" in opts:
+            return
         die(f"{UNREADABLE}: {unreadable or 'reason unknown'}; whether {domain} is strongly suspicious cannot be "
             f"checked. Allowing it only with --force", error="watchlist_unreadable", domain=domain)
     if suspicious:
-        die(f"{domain} is suspicious ({tags}). Allowing it only with --force", error="domain_suspicious",
-            domain=domain)
+        die(f"{domain} has strong Signals ({tags or 'unknown: no classifier'}), which block it whatever the "
+            f"Allowlist says, also with --force. To let it through, lift the Signal on the Host: agentbox "
+            f"check-domain {domain} names where it comes from; a Watchlist entry goes with watch-remove --force, a "
+            f"Feed hit or a lookalike name with legitimate-add --force (not below github.io, githubusercontent.com "
+            f"or claudeusercontent.com); nothing lifts the blockchain pattern, raw IPs or metadata addresses",
+            error="domain_suspicious", domain=domain)
 
 
 def scope_text(scope):
@@ -531,8 +539,8 @@ def show(args):
 def allow(args):
     """agentbox allow <vm|all> <domain> [--for 15min|1h|8h|7d | --temporary] [--note TEXT]
     [--force] [--json]: a new entry, or an existing one widened but never
-    shortened (a permanent one stays permanent); strongly suspicious
-    destinations only with --force. With --regex PATTERN in place of the domain a Regex
+    shortened (a permanent one stays permanent); never a strongly suspicious
+    destination, and while the Watchlist cannot be read only with --force. With --regex PATTERN in place of the domain a Regex
     entry: refused unless it keeps the rules (patterns.py), and without --confirm-pattern it
     only shows which hosts of the proxy log it would allow (preview)."""
     positional, opts = _parse(args, {"for": True, "temporary": False, "note": True, "force": False, "regex": True,

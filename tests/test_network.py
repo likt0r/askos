@@ -234,12 +234,16 @@ class BlockedTest(NetworkTest):
                      "(suspicious: exfil,raw-ip)\n"
                      "1793701300.000002 titan agentbox-proxy-work[812]: [work] BLOCKED b.example "
                      "(Watchlist unreadable, Open web closed)\n"
-                     "1793701300.000003 titan agentbox-proxy-work[812]: [work] BLOCKED c.example (something new)\n")
+                     "1793701300.000003 titan agentbox-proxy-work[812]: [work] BLOCKED c.example (something new)\n"
+                     # nothing passes while the Watchlist cannot be read (ADR 0018)
+                     "1793701300.000004 titan agentbox-proxy-work[812]: [work] BLOCKED d.example "
+                     "(Watchlist unreadable)\n")
         rows = json.loads(self.run_agentbox("blocked", "work", "--json")[1])
         self.assertEqual({r["domain"]: (r["code"], r["params"]) for r in rows}, {
             "a.example": ("suspicious", {"signals": "exfil, raw-ip"}),
             "b.example": ("watchlist-unreadable", {}),
-            "c.example": (None, {})})
+            "c.example": (None, {}),
+            "d.example": ("watchlist-unreadable", {})})
 
     def test_reads_the_last_24_hours_of_the_vms_proxy(self):
         self.journal(JOURNAL)

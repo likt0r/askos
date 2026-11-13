@@ -372,10 +372,20 @@ flowchart LR
   migrate-allowlist` (run by `agentbox setup`) took over the earlier files
   `/etc/agentbox/allowlist` and `allowlist-<vm>`, every entry of them, and moved them aside
   as `*.migrated`; until then the proxy reads those.
-- Destinations with strong **Signals** can be allowed, extended or made permanent only with
-  `--force` on the CLI; the Control Room never passes it and refuses them with the reason.
-  While the hand-maintained Watchlist cannot be read, every destination needs `--force`:
-  which Signals are strong is unknown then, and Allowlist entries pass the proxy.
+- Strong **Signals** always block ([ADR 0018](docs/adr/0018-strong-signals-always-block.md)):
+  the proxy classifies every destination on every connection and checks its Signals before
+  the Allowlist and Open web, so a destination with a strong Signal is blocked whatever would
+  allow it, a domain entry (also one added with `--force`), a Regex entry or Open web
+  (`BLOCKED <host> (suspicious: <signals>)`, after its `ALERT` line). A Feed update or a new
+  Watchlist entry counts from the next connection on. Only lifting the Signal lets such a
+  destination through: removing or lowering its Watchlist entry, or adding a Legitimate domain,
+  each with `--force` ([Detection](#detection)). `allow`, `extend` and `make-permanent` refuse
+  a destination with strong Signals, also with `--force`, and say how to lift the Signal; the
+  Control Room shows the same. While the hand-maintained Watchlist cannot be read, the proxy
+  lets nothing through, Allowlist entries included (`BLOCKED <host> (Watchlist unreadable)`):
+  which Signals are strong is unknown then. `allow`, `extend` and `make-permanent` need
+  `--force` for every destination then, which stores the entry unchecked; the proxy checks it
+  once the Watchlist can be read again.
 - **Regex entries** ([ADR 0013](docs/adr/0013-regex-entries-in-every-list.md)): every list
   (the Allowlist, the Watchlist, the Legitimate domains, the Harmless marks) can hold a
   regular expression in place of a domain (`regex` instead of `domain` in a record, the line
@@ -389,10 +399,9 @@ flowchart LR
   most two quantifiers in a row that can take the same characters (the host comes from the
   VM, so no host may make a pattern backtrack for long), and, except on the Watchlist, it
   matches none of a fixed sample of unrelated hosts (`BREADTH_SAMPLE`: `.*\.com` is refused).
-  Patterns are compiled whenever a list is read again, not per connection. A regex Allowlist
-  entry never allows a destination with strong Signals, checked on every connection the way
-  Open web does it (`--force` does not apply to it), and allows nothing while the Watchlist
-  cannot be read; domain entries are checked only when they are added. `allow --regex` first
+  Patterns are compiled whenever a list is read again, not per connection. Like every entry,
+  a regex Allowlist entry never allows a destination with strong Signals (`--force` does not
+  apply to it), and allows nothing while the Watchlist cannot be read. `allow --regex` first
   shows which hosts of the scope's proxy log of the last 7 days (`ALLOWED` and `BLOCKED`
   lines) the pattern would allow, each with whether strong Signals keep it blocked, and adds
   it only with `--confirm-pattern`; `agentbox check-regex` answers the same for a pattern
@@ -401,8 +410,8 @@ flowchart LR
   and says first, with how far back it reaches, when a VM filled its log beyond them. A stored
   pattern the rules refuse (a hand edit, or a later Release with stricter rules or a larger
   sample) counts as nothing while the other entries keep working: it allows, silences or lifts
-  nothing; on the Watchlist it keeps Open web and regex Allowlist entries closed until it is
-  removed. The CLI lists it with the reason (`refused`) and removes it by its pattern.
+  nothing; on the Watchlist it makes the Watchlist unreadable, so nothing passes the proxy
+  until it is removed. The CLI lists it with the reason (`refused`) and removes it by its pattern.
 - **Open web** lets a VM reach any public domain for a limited time. Destinations with strong
   **Signals** stay blocked, which includes **Watchlist** entries of a strong category and
   those of the threat-intelligence list; a `payload` entry only raises an Alert. While the
@@ -414,12 +423,18 @@ flowchart LR
   allowed are closed unless another valid entry (or Open web still open) allows their
   destination. An expired entry stops new connections only; tunnels it allowed keep
   running, also after `agentbox expire-allowlist` (a timer, every minute) removes it and
-  records the expiry in Activity.
+  records the expiry in Activity. A tunnel whose destination gains a strong Signal (a Feed
+  update, a new Watchlist entry) is closed within the same second, whatever allowed it
+  (`CLOSED <host> (suspicious: <signals>)`, after an `ALERT` line), and while the Watchlist
+  cannot be read every tunnel is closed (`CLOSED <host> (Watchlist unreadable)`,
+  [ADR 0018](docs/adr/0018-strong-signals-always-block.md)); a weak Signal closes nothing. The
+  proxy classifies an open tunnel's destination again only when a file its Signals come from
+  has changed (the Watchlist, the Legitimate domains, the Feeds), each host once per change.
 - Every connection is logged per VM, into the journald namespace of Activity:
   `ALLOWED <host> (allowlist <domain> <scope>)`, `(allowlist regex <pattern> <scope>)` or
   `(open web)` (of several entries the most specific domain, else a pattern),
-  `BLOCKED <host> (<reason>)` (for a destination only Open web or a regex entry would let
-  through, `suspicious: <signals>` or `Watchlist unreadable, ... closed`),
+  `BLOCKED <host> (<reason>)` (`not on the Allowlist`, `suspicious: <signals>` for strong
+  Signals, `Watchlist unreadable`),
   `ALERT <host> [<signals>]`, `CLOSED <host> (<reason>)` for a tunnel the proxy closed, and
   `BLOCKED <client address> (not a TLS handshake)` or `(no server name)` for a connection
   it took no destination from. `agentbox allowlist` counts each entry's uses of the last 24
@@ -449,8 +464,8 @@ there. Three of the built-in ones are hosts of arbitrary user content,
 `github.io`, `githubusercontent.com` and `claudeusercontent.com` (anyone's GitHub Pages site,
 GitHub's raw-content hosts, the artifacts anyone shares from claude.ai): they keep the pattern
 Signals off the brand as well, but Feed hits on their subdomains count, so a known phishing or
-payload site there stays blocked in Open web unless an Allowlist entry covers it (see [What it
-does not protect against](#what-it-does-not-protect-against); #59). The domains themselves keep
+payload site there stays blocked, also below an Allowlist entry such as `claudeusercontent.com`
+([ADR 0018](docs/adr/0018-strong-signals-always-block.md)). The domains themselves keep
 their treatment, as do
 the brands' own domains such as `github.com`, `claude.ai`, `claude.com` and `anthropic.com`. No
 Legitimate entry lifts those Feed hits again, also not one of the Host at or below a
@@ -466,7 +481,7 @@ into the classifier (`GENUINE`), the rest are kept on the Host
 (`/etc/agentbox/legitimate.json`). A Legitimate domain that is a Regex entry lifts only weak
 Signals (the young Feed, unusual TLDs, random-looking labels, many labels): which strong ones
 a pattern would lift cannot be checked when it is added, so it needs no `--force` and never
-makes a destination with strong Signals reachable in Open web.
+makes a destination with strong Signals reachable.
 
 Both hand-kept lists are records on the Host, like the Allowlist
 ([ADR 0009](docs/adr/0009-watchlist-and-legitimate-domains-live-on-the-host.md)):
@@ -475,17 +490,18 @@ Both hand-kept lists are records on the Host, like the Allowlist
 - The classifier re-reads a record when it changes. For the Signals a broken record keeps
   its last good state. A Watchlist that cannot be read (`watchlist.json` broken, also in a
   single entry such as an unknown category, or missing without the text file from before)
-  closes Open web, also when the proxy still holds an
-  older state: the proxy logs `BLOCKED <host> (Watchlist unreadable, Open web closed)`, and
-  only Allowlist entries let anything through. The Watchlist commands and `open-web` refuse
+  closes the proxy, also when it still holds an
+  older state: it logs `BLOCKED <host> (Watchlist unreadable)`, lets nothing through, Allowlist
+  entries included, and closes every tunnel until the file is repaired, without a restart
+  ([ADR 0018](docs/adr/0018-strong-signals-always-block.md)). The Watchlist commands and `open-web` refuse
   with the reason until it is fixed, and `agentbox watchlist` shows it in place of the
-  entries; only `watch-add --force` on the CLI creates a missing one (it opens Open web again, so the
+  entries; only `watch-add --force` on the CLI creates a missing one (it opens the proxy again, so the
   Control Room cannot), and `agentbox setup` does not refill it from
   the Release. A broken record of the Legitimate domains, also in a single entry, only adds
   Signals, so the proxy keeps its last good state (without one, only the built-in domains count);
   the self-test fails on it, `agentbox` refuses the Legitimate-domain commands with the reason,
   and `migrate-lists` with nothing to migrate only warns.
-- A change that would make a destination with strong Signals reachable in Open web needs
+- A change that would make a destination with strong Signals reachable needs
   `--force`, which the Control Room never passes. That covers removing or weakening a strong
   Watchlist entry, and adding a Legitimate domain with strong Signals of its own (a Feed entry
   above it included) or threat-intelligence entries at or below it, also those a Legitimate
@@ -500,8 +516,8 @@ Both hand-kept lists are records on the Host, like the Allowlist
   `migrate-lists` on the Host, which names them; a change from the Control Room refuses then. A record
   lost after the migration stays missing, and setup says how to restore it (from a
   backup, or the state of the migration from the `*.migrated` file): the repository's list
-  would be stale and open Open web again. Where neither the Watchlist record nor its text file
-  exists, `migrate-lists` creates no Watchlist, because an empty one would open Open web with
+  would be stale and open the proxy again. Where neither the Watchlist record nor its text file
+  exists, `migrate-lists` creates no Watchlist, because an empty one would open the proxy with
   nothing on it.
 
 The feeds come from HaGeZi's repositories on GitHub
@@ -528,8 +544,8 @@ imitated brand or name, ...), which it words in its language
 domain or pattern.
 A **Harmless mark** (`agentbox mark-harmless`,
 root-owned `/etc/agentbox/harmless`, a domain per line or `regex <pattern>`) stops Alerts for
-a false positive and its subdomains (or the hosts its pattern matches), but nothing else: a destination with strong Signals stays blocked in Open web and can only
-be allowed with `--force`, so marking a domain harmless never opens a way out. Signals
+a false positive and its subdomains (or the hosts its pattern matches), but nothing else: a destination with strong Signals stays blocked, also on the
+Allowlist, so marking a domain harmless never opens a way out. Signals
 that do not depend on the name (raw IP, metadata address) still raise Alerts.
 
 `agentbox setup` runs a self-test of the detection before it changes anything
@@ -538,6 +554,8 @@ with the Host's lists plus test entries and small test lists (for each list its 
 before the migration its text file, on a fresh Host the Release's), sends TLS ClientHellos and checks the Alerts and blocks it logs, without
 resolving any name. Besides its own test entries it checks one real Watchlist entry of the
 Host, so a list that does not load is noticed, and that a broken Watchlist closes Open web.
+A domain entry on its Allowlist lets neither a destination with strong Signals through (a Feed
+hit below it) nor anything while the Watchlist cannot be read.
 Its cases use names under `.example` besides the built-in Legitimate domains, and a Host
 entry covering one of them is expected as well, so ordinary entries cannot fail it. One case
 is a Feed hit on a `github.io` subdomain, another on a `claudeusercontent.com` subdomain, both
@@ -1278,9 +1296,8 @@ attacks on the laptops.
   misses the sample passes. The preview before `--confirm-pattern` lists only the hosts of the
   scope's proxy log of the last 7 days, not the ones a VM has not tried yet
   ([Network](#network), [ADR 0013](docs/adr/0013-regex-entries-in-every-list.md)). Mitigation: a
-  regex Allowlist entry never allows a destination with strong Signals, checked on every
-  connection, and allows nothing while the Watchlist cannot be read; a domain entry where one
-  will do.
+  no Allowlist entry allows a destination with strong Signals, checked on every connection,
+  and nothing passes while the Watchlist cannot be read; a domain entry where one will do.
 - **A VM can make its own proxy match slowly.** The VM chooses the host names its proxy matches
   against the patterns of every list that applies to it. The rules for patterns keep a host
   crafted to make one backtrack to about 60 to 150 ms for a pattern at the limit of the rules
@@ -1288,14 +1305,16 @@ attacks on the laptops.
   ([ADR 0013](docs/adr/0013-regex-entries-in-every-list.md)). The proxy matches in its event
   loop, so this slows only that VM's proxy, but the time is spent on the Host. Mitigation: the
   rules for patterns; few patterns.
-- **User content below an Allowlist entry.** A domain entry is checked for strong Signals only
-  when it is added (see [What detection sees](#what-detection-sees) below), and the Allowlist a
-  new Host starts with has `githubusercontent.com` and `claudeusercontent.com` (so claude.ai
-  artifacts load in every VM without Open web). A subdomain the threat-intelligence Feed lists
-  there passes the proxy; it raises an Alert, because Feed hits on the built-in user-content
-  hosts count ([Detection](#detection)), but is not blocked. Mitigation: an owner who prefers
-  the block removes the entry (`agentbox disallow all claudeusercontent.com`): artifacts then
-  need Open web or an entry of their own, and Open web keeps Feed-listed ones blocked.
+- **User content below an Allowlist entry.** The Allowlist a new Host starts with has
+  `githubusercontent.com` and `claudeusercontent.com` (so claude.ai artifacts load in every VM
+  without Open web), and anyone can publish below them. A subdomain the threat-intelligence
+  Feed lists is blocked all the same, since strong Signals always block
+  ([ADR 0018](docs/adr/0018-strong-signals-always-block.md)); one the Feed does not list yet
+  passes. The reverse is a false positive: a Feed entry on such a host (say
+  `objects.githubusercontent.com`) blocks it in every VM until the Feed drops it, since no
+  Legitimate domain lifts Feed hits there and there is no override. Mitigation: the Feeds are
+  fetched every `feed_interval_hours`; a hand-maintained Watchlist entry for what an incident
+  brings to light.
 - **Domain fronting, connection coalescing and Encrypted Client Hello.** The proxy resolves the
   name itself, so a VM cannot pick the address, but it checks the server name of the TLS
   handshake only; what goes on inside the connection it cannot see ([Network](#network)). An
@@ -1338,12 +1357,11 @@ attacks on the laptops.
   (`github.io`, `githubusercontent.com`, `claudeusercontent.com`). Mitigation: the
   hand-maintained Watchlist, whose Regex entries can cover a family of names, for what an
   incident brings to light.
-- **Signals do not stop a domain entry, and Alerts stop nothing.** Strong Signals are checked
-  when a domain entry is added, extended or made permanent (`--force`); a destination that
-  turns up on the Watchlist or a Feed after that still passes the proxy through its entry, with
-  an Alert for each connection ([Network](#network)). Only a Regex entry is checked on every
-  connection. No Alert pauses, resets or cuts off a VM on its own ([VMs](#vms)); someone has to
-  look. Mitigation: Alerts in the Control Room; `agentbox disallow` closes the entry's tunnels.
+- **Weak Signals and Alerts stop nothing.** Strong Signals block on every connection and close
+  running tunnels ([Network](#network)), but weak ones (`young`, `payload`, random-looking
+  labels, unusual TLDs) only raise Alerts, also for a destination on the Allowlist, and no
+  Alert pauses, resets or cuts off a VM on its own ([VMs](#vms)); someone has to look.
+  Mitigation: Alerts in the Control Room; `agentbox disallow` closes an entry's tunnels.
 
 ### Credentials in a VM
 

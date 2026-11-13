@@ -66,7 +66,7 @@ describe('why a destination was blocked', () => {
     expect(blockedReason(blocked({ code: 'suspicious', params: { signals: 'exfil, raw-ip, roh-ip' } }), EN))
       .toBe('strong Signals: Exfiltration, Raw IP address, roh-ip')
     // also a regex Allowlist entry that matched but does not allow it (ADR 0013)
-    expect(blockedReason(blocked({ code: 'watchlist-unreadable', params: {} }), EN)).toBe('the Watchlist cannot be read (Open web and Regex entries closed)')
+    expect(blockedReason(blocked({ code: 'watchlist-unreadable', params: {} }), EN)).toBe('the Watchlist cannot be read (nothing passes the proxy)')
     // a connection the proxy took no destination from
     expect(blockedReason(blocked({ code: 'not-tls', params: {} }), DE)).toBe('kein TLS-Handshake (die VM hat etwas anderes als HTTPS gesendet)')
     expect(blockedReason(blocked({ code: 'no-server-name', params: {} }), EN)).toBe('no server name in the TLS handshake')

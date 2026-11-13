@@ -162,7 +162,7 @@ async function submit() {
           <UInput v-model="note" :placeholder="t('allowlist.add.notePlaceholder')" class="w-full" data-testid="add-note" />
         </UFormField>
 
-        <AllowlistRefusal v-if="refused" :domain="refused.domain" :scope="refused.scope" />
+        <AllowlistRefusal v-if="refused" :domain="refused.domain" />
         <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(error)" role="alert" data-testid="add-error" />
         <button type="submit" class="hidden" />
       </form>

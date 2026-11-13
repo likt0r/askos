@@ -69,7 +69,7 @@ const row = (description: string) => ENTRIES.indexOf(entry(description))
 
 const EN = [
   'Allow pypi.org for all VMs for 1 hour',
-  'Allow evil.example temporarily: This destination has strong Signals and can only be allowed on the Host.',
+  'Allow evil.example temporarily: This destination has strong Signals, which block it whatever the Allowlist says; only lifting the Signal on the Host lets it through.',
   'Extend the Allowlist entry a.example for all VMs by 8 hours with --force',
   'Automatic Reset onto Build base-20261101 postponed (a device is connected)',
   'Update: Build base-20261109-120000 done (Release 0.3.0), old Builds removed: 2',
@@ -90,7 +90,7 @@ const EN = [
 
 const DE = [
   'Freigabe pypi.org für alle VMs für 1 Stunde',
-  'Freigabe evil.example vorübergehend: Dieses Ziel hat starke Signale und kann nur auf dem Host erlaubt werden.',
+  'Freigabe evil.example vorübergehend: Dieses Ziel hat starke Merkmale, die es sperren, was immer die Allowlist sagt; nur wenn das Merkmal auf dem Host aufgehoben wird, kommt es durch.',
   'Freigabe a.example für alle VMs verlängern um 8 Stunden mit --force',
   'Automatischer Reset auf Build base-20261101 verschoben (ein Gerät ist verbunden)',
   'Update: Build base-20261109-120000 fertig (Release 0.3.0), alte Builds entfernt: 2',

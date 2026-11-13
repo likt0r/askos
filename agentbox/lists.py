@@ -3,11 +3,11 @@
 
 Storage. Two root-owned files that the classifier (agentbox-suspicious, which the
 proxy loads) reads directly and re-reads whenever they change; for the Signals a
-broken file leaves its last good state in effect there. A Watchlist that cannot be
+broken file leaves its last good state in effect there. While the Watchlist cannot be
 read (the record broken, also in a single entry, or missing without the legacy file)
-closes Open web in the proxy, whatever state it holds; the commands here and `open-web` refuse then with
+the proxy lets nothing through, whatever state it holds (ADR 0018); the commands here and `open-web` refuse then with
 UNREADABLE and the reason (`watchlist` shows it in place of the entries), except that
-watch-add --force creates a missing record (which opens Open web again, so the
+watch-add --force creates a missing record (which opens the proxy again, so the
 Control Room cannot):
 
     <CONF>/watchlist.json   {"entries": [{"domain": "webhook.site", "category": "exfil",
@@ -39,15 +39,14 @@ Before these records, both lists were text files (<CONF>/suspicious-domains,
 classifier and the read-only commands use them, and the first change through
 agentbox migrates them, recorded in Activity as a migration of its own. Where
 neither watchlist.json nor its text file exists, migrate-lists creates no
-Watchlist, so Open web stays closed until the first watch-add --force creates it;
+Watchlist, so the proxy lets nothing through until the first watch-add --force creates it;
 an empty record of the Legitimate domains is safe, it only adds Signals.
 
-Strong Signals. Outside Open web nothing here opens anything: only the Allowlist
-allows. In Open web a destination without strong Signals is reachable, so
+Strong Signals. A destination with strong Signals is blocked whatever the Allowlist
+or Open web says (ADR 0018), so lifting a Signal is the only way to let one through:
 removing a Watchlist entry of a strong category, lowering an entry to a weak one,
 and adding a Legitimate domain that would lift strong Signals (its own, or Feed
-entries at or below it) need --force, which the Control Room never passes, as for
-allow. The Feeds are stored as fetched (Legitimate domains lift their hits only when
+entries at or below it) need --force, which the Control Room never passes. The Feeds are stored as fetched (Legitimate domains lift their hits only when
 the classifier classifies), so the check sees every entry, also those a Legitimate
 domain of the Host lifts now and the new one would keep lifted once that one goes. So
 does an addition that cannot be checked: any without the threat-intelligence list. A
@@ -75,7 +74,7 @@ LEGITIMATE = {"title": "Legitimate domains", "file": "legitimate.json", "legacy"
 # what migrate-lists says when there is nothing to take over
 NOTHING_TO_MIGRATE = "Watchlist and Legitimate domains: nothing to take over"
 # what an unreadable Watchlist means (the Control Room answers watchlist_unreadable)
-UNREADABLE = "Watchlist unreadable, Open web closed"
+UNREADABLE = "Watchlist unreadable, nothing passes the proxy"
 # and an unreadable record of the Legitimate domains (legitimate_unreadable); the classifier
 # then counts only the built-in ones, which only adds Signals
 LEGITIMATE_UNREADABLE = "Legitimate domains unreadable"
@@ -84,7 +83,7 @@ LEGITIMATE_UNREADABLE = "Legitimate domains unreadable"
 class Unreadable(Fail):
     """The Watchlist cannot be read; ends a command with UNREADABLE and why. error: the code,
     watchlist_unreadable, or watchlist_recreate_force_required where --force would create it
-    again (which reopens Open web)."""
+    again (which opens the proxy again)."""
 
     def __init__(self, why, error="watchlist_unreadable"):
         super().__init__(f"{UNREADABLE}: {why}", error=error)
@@ -198,8 +197,8 @@ def _problem(kind, e):
 
 def _valid(kind, entries, path):
     """The entries; ends the command at a broken or duplicate one. Such a record is
-    unreadable for the classifier as well: for the Watchlist the proxy keeps Open web
-    closed, for the Legitimate domains it counts only the built-in ones."""
+    unreadable for the classifier as well: for the Watchlist the proxy lets nothing
+    through, for the Legitimate domains it counts only the built-in ones."""
     seen = set()
     for e in entries:
         why = _problem(kind, e)
@@ -289,7 +288,7 @@ def _load(kind, create=False):
     legacy file or None when that is missing too). Ends the command when the record
     cannot be read. For the Watchlist that, and a missing record without a legacy file,
     is what the classifier calls unreadable (watchlist_unreadable): the proxy lets
-    nothing through Open web then, and the message says so. Only a command that
+    nothing through then, and the message says so. Only a command that
     creates the record (create, watch-add) goes on without one. The reasons are the
     classifier's, byte for byte (see _problem)."""
     path = record_file(kind)
@@ -335,14 +334,14 @@ def _refused(kind, e):
 def refused_watchlist(entries):
     """Why the Watchlist counts as unreadable for a Regex entry the rules refuse, as the
     classifier says it (its _watchlist_record), else None: it raises no Signal, so the proxy
-    keeps Open web closed until it is removed."""
+    lets nothing through until it is removed."""
     why = next((w for w in (_refused(WATCHLIST, e) for e in entries) if w), None)
-    return why and f"{record_file(WATCHLIST)}: {why}; Open web stays closed until it is removed " \
+    return why and f"{record_file(WATCHLIST)}: {why}; the proxy lets nothing through until it is removed " \
                    f"(agentbox watch-remove --regex)"
 
 
 def readable_watchlist():
-    """Ends the command while the proxy keeps Open web closed for an unreadable Watchlist
+    """Ends the command while the proxy lets nothing through for an unreadable Watchlist
     (agentbox open-web), also for a broken entry or a Regex entry the rules refuse."""
     why = refused_watchlist(read(WATCHLIST)[0])
     if why:
@@ -403,8 +402,7 @@ def watchlist(args):
     """agentbox watchlist [--json]: the hand-maintained Watchlist and the state of the
     Feeds (when each was last fetched, entries, the last error). While the Watchlist
     cannot be read, why (unreadable) in place of its entries; the Feeds still show. A Regex
-    entry the rules refuse is listed (refused) and makes it unreadable for Open web, as for
-    the proxy, until it is removed."""
+    entry the rules refuse is listed (refused) and makes it unreadable, as for the proxy, until it is removed."""
     positional, opts = _parse(args, {"json": False})
     if positional:
         die("too many arguments: " + clean(positional[0], False)[:60], error="invalid_argument")
@@ -434,7 +432,7 @@ def watch_add(args):
     """agentbox watch-add <domain>|--regex PATTERN --category C [--source S] [--note N] [--force]
     [--json]: a new Watchlist entry, or an existing one changed (lowering a strong category to a
     weak one only with --force). On a Host without any Watchlist (no record, no text
-    file from before) it creates the record, which opens Open web again: only with
+    file from before) it creates the record, which opens the proxy again: only with
     --force, so the Control Room can never recreate a deleted Watchlist. A pattern needs
     no breadth check here."""
     positional, opts = _parse(args, {"category": True, "source": True, "note": True, "force": False,
@@ -452,7 +450,7 @@ def watch_add(args):
         path = record_file(WATCHLIST)
         if "force" not in opts and not os.path.exists(path) and not os.path.exists(legacy_file(WATCHLIST)):
             raise Unreadable(f"{path} is missing; agentbox watch-add with --force on the Host creates it again "
-                             f"and so opens Open web again. Creating it again only with --force",
+                             f"and so lets the proxy pass anything again. Creating it again only with --force",
                              error="watchlist_recreate_force_required")
         e = find(entries, ref)
         if e is None:
@@ -643,7 +641,7 @@ def migrate(args):
     the text files of before the records, every entry; the files are moved aside
     (<file>.migrated), and the lines that cannot be carried over are named. Running it
     again changes nothing. Without a text file and a record of the Watchlist it creates
-    none and says so: Open web stays closed. Each migration, and an empty record of the
+    none and says so: the proxy lets nothing through. Each migration, and an empty record of the
     Legitimate domains it creates, is an Activity entry of its own. With nothing to
     migrate, a record that cannot be read is a warning (agentbox setup goes on)."""
     positional, opts = _parse(args, {"json": False})
@@ -664,11 +662,11 @@ def migrate(args):
             entries = read(kind)[0] if exists else []
             found, skipped = _from_legacy(kind, legacy, int(time.time()))
             added = [e for e in found if not find(entries, patterns.key(e))]
-            # without a source an empty Watchlist would open Open web with nothing on it:
-            # it stays missing, and Open web closed, until watch-add creates it
+            # without a source an empty Watchlist would open the proxy with nothing on it:
+            # it stays missing, and the proxy closed, until watch-add creates it
             if kind is WATCHLIST and not exists and not had_legacy:
                 notes.append(f"{kind['title']}: neither {kind['file']} nor {kind['legacy']}, nothing created "
-                             f"(Open web stays closed until the first agentbox watch-add --force)")
+                             f"(the proxy lets nothing through until the first agentbox watch-add --force)")
             elif had_legacy or not exists:
                 _write(kind, entries + added, legacy if had_legacy else None)
                 if not had_legacy:

@@ -25,8 +25,11 @@ ALERT = re.compile(r"\[[a-z0-9-]+\] ALERT (\S+) \[(.*)\]")
 LOG_WINDOW = 86400
 # why the proxy blocked a destination (the reasons of its BLOCKED lines, proxy/agentbox-proxy, part
 # of the log format) as a stable code the Control Room words (docs/control-room-api.md)
-BLOCK_REASONS = {"not on the Allowlist": "not-allowed", "Watchlist unreadable, Open web closed": "watchlist-unreadable",
-                 # a Regex entry matched, but allows nothing while the Watchlist cannot be read
+BLOCK_REASONS = {"not on the Allowlist": "not-allowed",
+                 # nothing passes while the Watchlist cannot be read (ADR 0018)
+                 "Watchlist unreadable": "watchlist-unreadable",
+                 # the same in lines of proxies before ADR 0018, which closed only Open web and Regex entries
+                 "Watchlist unreadable, Open web closed": "watchlist-unreadable",
                  "Watchlist unreadable, regex entries closed": "watchlist-unreadable",
                  "does not resolve to a public address": "not-public",
                  # a connection the proxy took no destination from: the line names the client
@@ -154,7 +157,7 @@ def alerts(args):
 
 def open_web(args):
     """agentbox open-web <vm> <minutes> [--json]: any public domain, for a while; not
-    while the Watchlist is unreadable, because the proxy keeps Open web closed then"""
+    while the Watchlist is unreadable, because the proxy lets nothing through then"""
     from .lists import readable_watchlist
     ctx = check(args[0] if args else "")
     arg = args[1] if len(args) > 1 else ""

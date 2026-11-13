@@ -328,11 +328,35 @@ class UnresolvableTest(unittest.TestCase):
                     await proxy.handle("work", proxy.Allowlist("work"), reader, writer)
                     theirs.settimeout(5)
                     return theirs.recv(100)
+            # no Signals: the destination passes them (refusal) and gets as far as resolving
             with mock.patch.object(proxy, "CONF_DIR", conf), mock.patch.object(proxy, "suspicious", None), \
+                    mock.patch.object(proxy, "refusal", lambda tags: None), \
                     mock.patch.object(proxy, "resolve_public", unencodable), \
                     mock.patch.object(proxy, "log", lambda ctx, msg: said.append(msg)):
                 self.assertEqual(asyncio.run(run()), ACCESS_DENIED)
         self.assertEqual(said, ["BLOCKED example.org (does not resolve to a public address)"])
+
+    def test_without_the_classifier_nothing_passes(self):
+        # the Signals cannot be checked without agentbox-suspicious, so no entry lets anything
+        # through (ADR 0018)
+        with tempfile.TemporaryDirectory() as conf:
+            with open(os.path.join(conf, "allowlist.json"), "w") as f:
+                json.dump({"entries": [entry("example.org", "all")]}, f)
+            said = []
+
+            async def run():
+                ours, theirs = socket.socketpair()
+                with ours, theirs:
+                    reader, writer = await asyncio.open_connection(sock=ours)
+                    theirs.sendall(client_hello("example.org"))
+                    theirs.shutdown(socket.SHUT_WR)
+                    await proxy.handle("work", proxy.Allowlist("work"), reader, writer)
+                    theirs.settimeout(5)
+                    return theirs.recv(100)
+            with mock.patch.object(proxy, "CONF_DIR", conf), mock.patch.object(proxy, "suspicious", None), \
+                    mock.patch.object(proxy, "log", lambda ctx, msg: said.append(msg)):
+                self.assertEqual(asyncio.run(run()), ACCESS_DENIED)
+        self.assertEqual(said, ["BLOCKED example.org (no agentbox-suspicious)"])
 
 
 class RefusalTest(allowlist_tests.ProxyTest):
