@@ -8,7 +8,6 @@ world (VM state, journal, Build records) and close stdin to end it.
 Run from the repo root: python3 -m unittest discover -s tests
 """
 import datetime
-import fcntl
 import json
 import os
 import queue
@@ -712,9 +711,35 @@ NONE = {"count": 0, "last": None, "address": None}
 SILENT = "agentbox: work: Orca in the VM does not answer\n"
 
 
+class Hold:
+    """One program's calls of a virsh command, each waiting for the test (FAKE_VIRSH_HOLD in
+    fake_virsh.py): env is for that program, reached(n) says that it has come to its nth
+    such call, go(n) lets that call go on, go() every call from now on."""
+
+    def __init__(self, directory, command):
+        os.makedirs(directory)
+        self.dir = directory
+        # virsh's own time limit does not end a call the test holds
+        self.env = {"FAKE_VIRSH_HOLD": f"{command}:{directory}", "AGENTBOX_VIRSH_TIMEOUT": str(WAIT)}
+
+    def reached(self, n):
+        return os.path.exists(os.path.join(self.dir, str(n)))
+
+    def go(self, n=None):
+        open(os.path.join(self.dir, "go" if n is None else f"{n}.go"), "w").close()
+
+
 class RespondingTest(WatchTest):
     """A VM libvirt reports as running whose Orca does not answer (#54): `starting` after
-    its start, `not_responding` after the wake time limit, what answers, failed wakes."""
+    its start, `not_responding` after the wake time limit, what answers, failed wakes.
+
+    The programs here (watch, wakes, a Restart) run at the same time and take as long to
+    start as the Host is busy, so no test relies on one being faster than another, or than
+    a time limit: where one has to act before another, the other's next call of virsh waits
+    for the test (hold), and what watch is to find within a time limit happens as watch asks
+    for it (start_work). Time limits that only have to be over are short, those that must
+    not run out are long, and how long something took is read from the times in the wakes
+    file and the fakes' records, not from the test's clock."""
 
     def qemu(self, vm, ago):
         """The VM's QEMU process, started `ago` seconds ago; its start (whole seconds)."""
@@ -730,38 +755,103 @@ class RespondingTest(WatchTest):
     def wake(self, address, vm="work"):
         return self.run_agentbox(f"--actor=Orca ({address})", "wake", vm)
 
-    def wake_in_background(self, address, vm="work"):
-        """A wake that waits while the test goes on; wait() gives (exit code, stderr)."""
-        p = subprocess.Popen([AGENTBOX, f"--actor=Orca ({address})", "wake", vm], env=self.env(),
-                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    def hold(self, command):
+        """A Hold of this virsh command for one program; whatever still waits goes on when
+        the test ends."""
+        self.holds = getattr(self, "holds", 0) + 1
+        hold = Hold(os.path.join(self.dir, f"hold-{self.holds}"), command)
+        self.addCleanup(hold.go)
+        return hold
+
+    def in_background(self, *args, **env):
+        """agentbox with these arguments, running while the test goes on; wait() gives (exit
+        code, stderr)."""
+        p = subprocess.Popen([AGENTBOX, *args], env={**self.env(), **env}, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.PIPE, text=True)
         self.addCleanup(lambda: p.poll() is None and p.kill())
 
         def wait():
-            _, err = p.communicate(timeout=60)
+            _, err = p.communicate(timeout=WAIT)
             return p.returncode, err
         wait.process = p
         return wait
 
-    def wake_waiting(self, address, vm="work"):
-        """wake_in_background, once the wake has checked the VM under its lifecycle lock (so a
-        Restart or Reset started now does not come first) and waits for Orca."""
-        lock = self.path(f"var/lib/agentbox/locks/lifecycle-{vm}.lock")
-        if os.path.exists(lock):
-            os.unlink(lock)
-        wait = self.wake_in_background(address, vm)
-        held, deadline = False, time.monotonic() + 3
-        while time.monotonic() < deadline:
-            if os.path.exists(lock):
-                with open(lock) as f:
-                    try:
-                        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                        if held:
-                            break                 # taken by the wake (around virsh) and given back
-                    except BlockingIOError:
-                        held = True
-            time.sleep(0.005)
-        time.sleep(0.5)                           # it reads the VM's start right after
+    def wake_in_background(self, address, vm="work", held=False, **env):
+        """A wake that waits while the test goes on; wait() gives (exit code, stderr). held:
+        when it gives up, it stops before its look at the VM (a wake asks virsh for the VM's
+        state twice: before it waits for Orca, and when it gave up, before it counts its
+        failure): wait.gave_up() waits until it is there, having waited its whole time limit,
+        and wait.go() lets it go on. So the test says what happens before the wake's
+        failure is counted, without a time limit long enough for it."""
+        hold = self.hold("domstate") if held else None
+        if held:
+            hold.go(1)
+            env = {**hold.env, **env}
+        wait = self.in_background(f"--actor=Orca ({address})", "wake", vm, **env)
+        if held:
+            wait.gave_up = lambda: self.until(lambda: hold.reached(2), "the wake does not give up")
+            wait.go = lambda: hold.go(2)
         return wait
+
+    def vm_starts(self, vm="work"):
+        """Wait until libvirt has started the VM's QEMU process (for a wake in the background)."""
+        self.until(lambda: os.path.exists(self.path(f"run/libvirt/qemu/agentbox-{vm}.pid")), "the VM is not started")
+
+    def observer(self, vm="work"):
+        """An Observer of the VM: a look that finds Orca answering then asks it for the agents,
+        a call fake_orca.py records, so that looks() counts these looks too."""
+        fake(self.path("opt/Orca/resources/bin/orca-ide"), "fake_orca.py")
+        os.makedirs(self.path(f"var/lib/agentbox/observer-{vm}"))
+
+    def looks(self):
+        """How many of watch's looks at a running VM have left a call by now: one that finds
+        Orca silent asks the guest agent, one that finds it answering asks the Observer."""
+        return len(self.calls("guest-ping")) + len(self.calls("orca"))
+
+    def more_looks(self, n=2):
+        """Wait until watch has looked n more times, from beginning to end. Its looks come one
+        after the other and each leaves its call on the way (looks()): the first call from
+        now on may be of a look that began before, and a look is over once the next has left
+        its call."""
+        seen = self.looks()
+        self.until(lambda: self.looks() >= seen + n + 2, "watch does not look")
+
+    def polled(self):
+        """Wait until watch has polled once more, from beginning to end, so that what its looks
+        found before is sent (a poll begins with systemctl list-units)."""
+        def polls():
+            return len([c for c in self.calls("systemctl") if c["argv"][0] == "list-units"])
+        seen = polls()
+        self.until(lambda: polls() >= seen + 2, "watch does not poll")
+
+    def wakes(self):
+        """work's wakes file as it is written."""
+        with open(self.wakes_file()) as f:
+            return json.load(f)
+
+    def clock(self):
+        """Now, on the clock agentbox counts on (responding.clock)."""
+        return time.clock_gettime(time.CLOCK_BOOTTIME)
+
+    def shown(self, iso_time):
+        """A time agentbox shows (whole seconds on the wall clock, via the boot time of the
+        fake /proc), on clock()."""
+        with open(self.path("proc/stat")) as f:
+            boot = int(re.search(r"^btime (\d+)$", f.read(), re.MULTILINE).group(1))
+        return epoch(iso_time) - boot
+
+    def began(self):
+        """When work's QEMU process started, on clock(), from the start named in the wakes file."""
+        return int(self.wakes()["start"].rpartition(":")[2]) / os.sysconf("SC_CLK_TCK")
+
+    def silent_until_recorded(self):
+        """Seconds from the first failure known to the incident's Activity entry, as the wakes
+        file has them: silent_since, and the file's own time (it is written right after the
+        entry, and not again while the VM stays silent)."""
+        written = os.stat(self.wakes_file()).st_mtime
+        known = self.wakes()
+        self.assertIs(known["recorded"], True)
+        return (self.clock() - known["silent_since"]) - (time.time() - written)
 
     def failed_wakes(self):
         return self.describe()["failed_wakes"]
@@ -861,13 +951,17 @@ class RespondingTest(WatchTest):
         self.assertEqual(self.wake("192.0.2.36"), (0, "", ""))
         self.orca_silent()
         self.assertEqual(self.describe()["state"], "running")
-        waiting = int(time.time())
+        called = self.clock()
         self.assertEqual(self.wake("192.0.2.41"), (1, "", SILENT))
+        ended = self.clock()
         work = self.describe()
         self.assertEqual((work["state"], work["responding"]["orca"], work["failed_wakes"]["count"]),
                          ("not_responding", False, 1))
-        # since the wake began to wait (shown on the wall clock via the boot time, to a second)
-        self.assertLessEqual(abs(epoch(work["responding"]["since"]) - waiting), 2)
+        # since the wake began to wait (shown on the wall clock via the boot time, to a second):
+        # after it was called, and the time limit before it ended
+        since = self.shown(work["responding"]["since"])
+        self.assertGreater(since, called - 1)
+        self.assertLessEqual(since, ended - 2)
 
     def test_only_libvirts_qemu_process_counts(self):
         """Any local user can name a process like the VM's QEMU process; the start comes from
@@ -882,14 +976,34 @@ class RespondingTest(WatchTest):
 
     # --- watch: looks every few seconds and remembers ---------------------------------
 
-    def start_work(self, **scenario):
-        """watch runs, then work starts: its first object once Orca was asked."""
-        self.scenario(vms={"work": {"state": "shut off"}, "priv": {"state": "shut off", "managed_save": True}},
-                      systemctl_units=UNITS, **scenario)
-        self.start()
+    def start_watch(self):
+        """watch, with its guest-pings held from the second on: after its first look that finds
+        Orca silent, the next one ends only after go() of the Hold given back, when the test
+        has seen what the first one made of the VM."""
+        pings = self.hold("qemu-agent-command")
+        pings.go(1)
+        self.start(**pings.env)
+        return pings
+
+    def work_starts(self, **scenario):
+        """watch runs (start_watch), then work starts. watch looks at it within any time limit,
+        however busy the Host: the VM starts at the moment watch asks libvirt for its state
+        (start_waits), and it is the only VM, so that watch's look follows without another
+        program to start."""
+        os.unlink(self.path("etc/agentbox/vms/priv.json"))
+        self.scenario(vms={"work": {"state": "shut off", "start_waits": True}}, systemctl_units=UNITS, **scenario)
+        pings = self.start_watch()
         self.event("vms")
+        self.extra["AGENTBOX_VIRSH_TIMEOUT"] = str(WAIT)          # the start waits for watch's next poll
         self.assertEqual(self.run_agentbox("start", "work")[0], 0)
-        return self.event("vm", lambda v: self.is_vm("starting")(v) and v["responding"] is not None)
+        return pings
+
+    def start_work(self, **scenario):
+        """watch runs, then work starts (work_starts): its first object once Orca was asked."""
+        pings = self.work_starts(**scenario)
+        work = self.event("vm", lambda v: self.is_vm("starting")(v) and v["responding"] is not None)
+        pings.go()
+        return work
 
     def test_watch_starting_then_running(self):
         work = self.start_work()
@@ -900,7 +1014,7 @@ class RespondingTest(WatchTest):
         self.assertEqual(work["responding"], {"guest_agent": None, "orca": True, "since": None})
 
     def test_watch_starting_then_not_responding_system_up(self):
-        self.extra["AGENTBOX_WAKE_SECONDS"] = "3"
+        self.extra["AGENTBOX_WAKE_SECONDS"] = "2"
         starting = self.start_work()
         work = self.event("vm", self.is_vm("not_responding"))
         self.assertEqual((work["responding"]["orca"], work["responding"]["guest_agent"]), (False, True))
@@ -908,53 +1022,56 @@ class RespondingTest(WatchTest):
         self.assertEqual(work["responding"]["since"], starting["responding"]["since"])
 
     def test_watch_starting_then_not_responding_system_not_booted(self):
-        self.extra["AGENTBOX_WAKE_SECONDS"] = "3"
+        self.extra["AGENTBOX_WAKE_SECONDS"] = "2"
         self.start_work(agent_down=True)
         work = self.event("vm", self.is_vm("not_responding"))
         self.assertEqual((work["responding"]["orca"], work["responding"]["guest_agent"]), (False, False))
 
     def test_watch_one_failed_check_does_not_make_a_vm_not_responding(self):
-        self.extra["AGENTBOX_WAKE_SECONDS"] = "3"
+        self.extra["AGENTBOX_WAKE_SECONDS"] = "2"
         self.qemu("work", 300)
         self.orca_answers()
-        self.start()
+        pings = self.start_watch()
         self.assertEqual(self.event("vms")["vms"][0]["state"], "running")
-        self.event("vm", lambda v: v["name"] == "work" and (v["responding"] or {}).get("orca") is True)
+        self.event("vm", self.answering)
         self.orca_silent()
-        failing = time.monotonic()
-        work = self.event("vm", lambda v: v["name"] == "work" and (v["responding"] or {}).get("orca") is False)
+        work = self.event("vm", self.silent)
         self.assertEqual(work["state"], "running")
+        pings.go()
         self.event("vm", self.is_vm("not_responding"))
-        self.assertGreater(time.monotonic() - failing, 2.5)
+        # only once Orca was silent for the time limit, from the first failed check
+        self.assertGreater(self.silent_until_recorded(), 1.9)
 
     def test_watch_after_a_restart_the_vm_is_starting_again(self):
         """What watch knows of a VM's answers belongs to one start: after a Restart between two
         looks at Orca the VM is `starting`, not `running` on the earlier start's answer."""
-        self.extra["AGENTBOX_WATCH_AGENTS_MS"] = "10000"
+        self.extra["AGENTBOX_WATCH_AGENTS_MS"] = "600000"         # no second round of looks in this test
         self.qemu("work", 300)
         self.orca_answers()
         self.start()
         self.event("vms")
-        self.event("vm", lambda v: self.is_vm("running")(v) and (v["responding"] or {}).get("orca") is True)
+        self.event("vm", lambda v: self.is_vm("running")(v) and self.answering(v))
         self.assertEqual(self.run_agentbox("restart", "work")[0], 0)
-        work = self.event("vm", self.is_vm("starting"), timeout=5)
+        work = self.event("vm", self.is_vm("starting"))
         self.assertEqual((work["responding"], work["agents"]), (None, None))
 
     def test_watch_needs_a_failed_check_after_the_time_limit(self):
         """A slow round of checks (several Orca CLIs that hang) does not let the time limit run
         out on one failed check: the next check has to fail too."""
-        self.extra.update(AGENTBOX_WAKE_SECONDS="2", AGENTBOX_WATCH_AGENTS_MS="5000")
+        self.extra.update(AGENTBOX_WAKE_SECONDS="1", AGENTBOX_WATCH_AGENTS_MS="2000")
         self.qemu("work", 300)
         self.orca_answers()
-        self.start()
-        self.event("vm", lambda v: v["name"] == "work" and (v["responding"] or {}).get("orca") is True)
+        pings = self.start_watch()
+        self.event("vm", self.answering)
         self.orca_silent()
-        work = self.event("vm", lambda v: v["name"] == "work" and (v["responding"] or {}).get("orca") is False)
+        work = self.event("vm", self.silent)
         self.assertEqual(work["state"], "running")
-        # the time limit runs out before the next check
-        later = [e["data"]["state"] for e in self.events(3.5) if e["event"] == "vm" and e["data"]["name"] == "work"]
-        self.assertNotIn("not_responding", later)
-        self.event("vm", self.is_vm("not_responding"), timeout=10)
+        pings.go()
+        # the time limit runs out before the next check, 2 s after the first: not responding
+        # only with that one, which asked the guest agent as the first did
+        self.event("vm", self.is_vm("not_responding"))
+        self.assertGreaterEqual(len(self.calls("guest-ping")), 2)
+        self.assertGreater(self.silent_until_recorded(), 1.9)
 
     def test_watch_takes_a_wake_that_reached_orca_before_its_own_look(self):
         """Before watch looked at a start (its first objects), a wake that reached Orca
@@ -969,12 +1086,17 @@ class RespondingTest(WatchTest):
     def test_watch_looks_again_when_the_time_limit_of_a_start_runs_out(self):
         """A VM whose Orca comes up late in the time limit is not shown as not responding
         until the next round of looks: watch looks again when the limit runs out."""
-        self.extra.update(AGENTBOX_WAKE_SECONDS="3", AGENTBOX_WATCH_AGENTS_MS="6000")
-        self.start_work()
+        # no next round in this test; and watch's first look (with its guest-ping) is over
+        # well before the time limit, or watch would leave the VM to that next round
+        self.extra.update(AGENTBOX_WAKE_SECONDS="4", AGENTBOX_WATCH_AGENTS_MS="600000")
+        pings = self.work_starts()
+        self.until(lambda: self.calls("guest-ping"), "watch does not look at the VM that starts")
         self.orca_answers()
-        states = [e["data"]["state"] for e in self.events(5) if e["event"] == "vm" and e["data"]["name"] == "work"]
-        self.assertNotIn("not_responding", states)
-        self.assertEqual(states[-1:], ["running"])
+        pings.go()
+        work = self.event("vm", lambda v: v["name"] == "work" and v["state"] != "starting")
+        self.assertEqual((work["state"], work["responding"]["orca"]), ("running", True))
+        # found answering by the look when the limit ran out
+        self.assertGreaterEqual(self.wakes()["answered"] - self.began(), 4)
 
     def test_watch_shows_a_wake_that_gave_up(self):
         self.extra["AGENTBOX_WAKE_SECONDS"] = "1"
@@ -988,12 +1110,12 @@ class RespondingTest(WatchTest):
     def test_watch_looks_at_once_at_a_vm_that_starts(self):
         """A VM resumed from a Pause with Start (no wake) is looked at right away, not after the
         next round of looks: its Orca answers at once, so it is running, not starting."""
-        self.extra["AGENTBOX_WATCH_AGENTS_MS"] = "10000"
+        self.extra["AGENTBOX_WATCH_AGENTS_MS"] = "600000"         # the next round of looks: not in this test
         self.orca_answers()
         self.start()
         self.event("vms")
         self.assertEqual(self.run_agentbox("start", "priv")[0], 0)
-        priv = self.event("vm", lambda v: v["name"] == "priv" and v["state"] == "running", timeout=5)
+        priv = self.event("vm", lambda v: v["name"] == "priv" and v["state"] == "running")
         self.assertEqual(priv["responding"], {"guest_agent": None, "orca": True, "since": None})
 
     def test_watch_keeps_what_it_knows_while_libvirt_suspends_a_vm(self):
@@ -1006,26 +1128,35 @@ class RespondingTest(WatchTest):
         self.orca_silent()
         self.start()
         self.event("vms")
-        self.event("vm", self.is_vm("not_responding"), timeout=15)
+        before = self.event("vm", self.is_vm("not_responding"))
         self.domains(lambda d: d.setdefault("agentbox-work", {}).update(state="paused"))
         self.event("vm", self.is_vm("suspended"))
         time.sleep(1)
         self.domains(lambda d: d["agentbox-work"].update(state="running"))
-        states = [e["data"]["state"] for e in self.events(4) if e["event"] == "vm" and e["data"]["name"] == "work"]
-        self.assertEqual(states[:1], ["not_responding"])
-        self.assertNotIn("running", states)
+        # as before, with what watch's last look found, before it looks again
+        work = self.event("vm", lambda v: v["name"] == "work" and v["state"] != "suspended")
+        self.assertEqual((work["state"], work["responding"]), ("not_responding", before["responding"]))
+        # and after more looks at it
+        self.more_looks()
+        self.polled()
+        self.assertNotIn("running", [e["data"]["state"] for e in self.events()
+                                     if e["event"] == "vm" and e["data"]["name"] == "work"])
 
     def test_watch_takes_a_wake_that_gave_up_before_its_own_look(self):
         self.extra["AGENTBOX_WAKE_SECONDS"] = "1"
         self.qemu("work", 300)
-        waiting = time.time()
+        called = self.clock()
         self.assertEqual(self.wake("192.0.2.36"), (1, "", SILENT))
+        ended = self.clock()
         self.start()
         [work] = [v for v in self.event("vms")["vms"] if v["name"] == "work"]
         self.assertEqual((work["state"], work["responding"]["guest_agent"], work["responding"]["orca"]),
                          ("not_responding", None, False))
-        # silent since the wake began to wait: nobody looked at the VM before
-        self.assertLessEqual(abs(epoch(work["responding"]["since"]) - waiting), 2)
+        # silent since the wake began to wait (after it was called, the time limit before it
+        # ended): nobody looked at the VM before
+        since = self.shown(work["responding"]["since"])
+        self.assertGreater(since, called - 1)
+        self.assertLessEqual(since, ended - 1)
 
     # --- failed wakes -------------------------------------------------------------------
 
@@ -1033,13 +1164,16 @@ class RespondingTest(WatchTest):
         self.extra["AGENTBOX_WAKE_SECONDS"] = "1"
         self.qemu("work", 300)
         self.assertEqual(self.wake("192.0.2.36"), (1, "", SILENT))
+        called = time.time()
         self.assertEqual(self.wake("192.0.2.41"), (1, "", SILENT))
+        ended = time.time()
         work = self.describe()
         self.assertEqual(work["state"], "not_responding")
         wakes = work["failed_wakes"]
         self.assertEqual((wakes["count"], wakes["address"]), (2, "192.0.2.41"))
-        self.assertLess(abs(datetime.datetime.strptime(wakes["last"], "%Y-%m-%dT%H:%M:%SZ")
-                            .replace(tzinfo=datetime.timezone.utc).timestamp() - time.time()), 10)
+        # when the last one gave up (to a second): the time limit after it was called, before it ended
+        self.assertGreaterEqual(epoch(wakes["last"]), int(called) + 1)
+        self.assertLessEqual(epoch(wakes["last"]), ended)
         code, out, _ = self.run_agentbox("describe", "work")
         self.assertIn(f"  Wakes:        2 failed, last {wakes['last']} (192.0.2.41)\n", out)
         # a new start of the VM (another QEMU process, e.g. at the Host's boot) counts afresh
@@ -1091,54 +1225,64 @@ class RespondingTest(WatchTest):
     def hung(self):
         """work runs for 300 s without answering and ignores a shutdown; the incident's entry
         is recorded."""
-        self.extra.update(AGENTBOX_WAKE_SECONDS="2", AGENTBOX_SHUTDOWN_SECONDS="5")
+        self.extra.update(AGENTBOX_WAKE_SECONDS="1", AGENTBOX_SHUTDOWN_SECONDS="1")
         self.scenario(vms={"priv": {"state": "shut off", "managed_save": True}, "work": {"shutdown": "ignored"}},
                       systemctl_units=UNITS)
         self.qemu("work", 300)
         self.assertEqual(self.wake("192.0.2.36"), (1, "", SILENT))
         self.assertEqual(self.actions(), ["wake.not-responding"])
 
-    def test_a_wake_that_gives_up_while_a_restart_shuts_the_vm_down_is_no_new_incident(self):
+    def shutting_down(self, *command):
+        """A wake of the hung VM that gives up while this Restart or Reset shuts the VM down:
+        after the shutdown was asked for, and before the VM is forced off (the destroy waits
+        for the wake to end). The command's (exit code, stderr)."""
         self.hung()
-        waiting = self.wake_waiting("192.0.2.41")
-        # the wake gives up while the Restart waits up to 5 s for the shutdown
-        code, _, err = self.run_agentbox("restart", "work")
-        self.assertEqual(code, 0, err)
+        waiting = self.wake_in_background("192.0.2.41", held=True)
+        waiting.gave_up()                         # it is past the lifecycle lock, which the command takes
+        destroy = self.hold("destroy")
+        command = self.in_background(*command, **destroy.env)
+        self.until(lambda: self.calls("shutdown"), "no shutdown")
+        waiting.go()
         self.assertEqual(waiting(), (1, SILENT))
+        destroy.go(1)
+        return command()
+
+    def test_a_wake_that_gives_up_while_a_restart_shuts_the_vm_down_is_no_new_incident(self):
+        code, err = self.shutting_down("restart", "work")
+        self.assertEqual(code, 0, err)
         self.assertEqual(self.actions(), ["wake.not-responding", "restart"])
         self.assertEqual(self.failed_wakes(), NONE)
 
     def test_a_reset_without_start_clears_a_wake_that_gave_up_while_the_vm_shut_down(self):
-        self.hung()
-        waiting = self.wake_waiting("192.0.2.41")
-        code, _, err = self.run_agentbox("reset", "work", "--no-start")
+        code, err = self.shutting_down("reset", "work", "--no-start")
         self.assertEqual(code, 0, err)
-        self.assertEqual(waiting(), (1, SILENT))
         work = self.describe()
         self.assertEqual((work["state"], work["failed_wakes"]), ("stopped", NONE))
         self.assertEqual(self.actions(), ["wake.not-responding", "reset"])
 
     def test_a_wake_that_waited_through_a_restart_counts_for_neither_start(self):
-        self.extra["AGENTBOX_WAKE_SECONDS"] = "4"
+        self.extra["AGENTBOX_WAKE_SECONDS"] = "1"
         self.qemu("work", 300)
-        waiting = self.wake_waiting("192.0.2.41")
+        waiting = self.wake_in_background("192.0.2.41", held=True)
+        waiting.gave_up()                         # it waited for the start the Restart ends
         self.assertEqual(self.run_agentbox("restart", "work")[0], 0)
+        waiting.go()
         self.assertEqual(waiting(), (1, SILENT))
         self.assertEqual(self.failed_wakes(), NONE)
         self.assertEqual(self.actions(), ["restart"])
 
     def test_a_wake_that_started_the_vm_is_recorded_when_the_vm_stops_while_it_waits(self):
-        self.extra["AGENTBOX_WAKE_SECONDS"] = "2"
+        self.extra["AGENTBOX_WAKE_SECONDS"] = "1"
         self.scenario(vms={"work": {"state": "shut off"}, "priv": {"state": "shut off", "managed_save": True}},
                       systemctl_units=UNITS)
-        waiting = self.wake_in_background("192.0.2.41")
-        deadline = time.monotonic() + 10
-        while not os.path.exists(self.path("run/libvirt/qemu/agentbox-work.pid")) and time.monotonic() < deadline:
-            time.sleep(0.05)
+        waiting = self.wake_in_background("192.0.2.41", held=True)
+        self.vm_starts()
         self.assertEqual(len(self.calls("start")), 1)
-        # the guest powers off while the wake waits for Orca (after its start's call)
+        # the guest powers off while the wake waits for Orca (after its start's call), before
+        # the wake looks at the VM again
         self.domains(lambda d: d["agentbox-work"].update(state="shut off"))
         fake_proc.gone(self.root, "work")
+        waiting.go()
         self.assertEqual(waiting(), (1, SILENT))
         [e] = self.journald.entries()
         self.assertEqual((e["AGENTBOX_ACTION"], e["AGENTBOX_OUTCOME"], e["AGENTBOX_ACTOR"]),
@@ -1167,10 +1311,7 @@ class RespondingTest(WatchTest):
                       agent_hangs=8)
         self.qemu("work", 300)
         waiting = self.wake_in_background("192.0.2.36")
-        deadline = time.monotonic() + 10
-        pings = os.path.join(self.dir, "calls.jsonl")
-        while not (os.path.exists(pings) and self.calls("guest-ping")) and time.monotonic() < deadline:
-            time.sleep(0.05)
+        self.until(lambda: self.calls("guest-ping"), "the wake does not ask the guest agent")
         waiting.process.terminate()
         waiting()
         self.scenario(vms={"priv": {"state": "shut off", "managed_save": True}}, systemctl_units=UNITS)
@@ -1183,13 +1324,11 @@ class RespondingTest(WatchTest):
         after another one recorded the incident. Its own entry says who caused the start."""
         self.scenario(vms={"work": {"state": "shut off"}, "priv": {"state": "shut off", "managed_save": True}},
                       systemctl_units=UNITS)
-        self.extra["AGENTBOX_WAKE_SECONDS"] = "3"
-        first = self.wake_in_background("192.0.2.36")
-        deadline = time.monotonic() + 10
-        while not os.path.exists(self.path("run/libvirt/qemu/agentbox-work.pid")) and time.monotonic() < deadline:
-            time.sleep(0.05)
         self.extra["AGENTBOX_WAKE_SECONDS"] = "1"
+        first = self.wake_in_background("192.0.2.36", held=True)
+        self.vm_starts()
         self.assertEqual(self.wake("192.0.2.41"), (1, "", SILENT))
+        first.go()                                # its failure is counted after the other's
         self.assertEqual(first(), (1, SILENT))
         self.assertEqual(len(self.calls("start")), 1)
         self.assertEqual(self.recorded(), [("wake.not-responding", "Orca (192.0.2.41)", "failed"),
@@ -1199,13 +1338,13 @@ class RespondingTest(WatchTest):
     def test_a_wake_that_started_the_vm_has_its_own_entry_when_watch_recorded_the_incident(self):
         self.scenario(vms={"work": {"state": "shut off"}, "priv": {"state": "shut off", "managed_save": True}},
                       systemctl_units=UNITS)
-        self.extra["AGENTBOX_WAKE_SECONDS"] = "2"
+        self.extra["AGENTBOX_WAKE_SECONDS"] = "1"
         self.start()
         self.event("vms")
-        # the wake waits longer than watch's time limit: watch notices first
-        self.extra["AGENTBOX_WAKE_SECONDS"] = "4"
-        waiting = self.wake_in_background("192.0.2.36")
+        waiting = self.wake_in_background("192.0.2.36", held=True)
+        # watch notices first: the wake's failure is counted after that
         self.event("vm", self.is_vm("not_responding"))
+        waiting.go()
         self.assertEqual(waiting(), (1, SILENT))
         self.assertEqual(self.recorded(), [("wake.not-responding", "watch", "failed"),
                                            ("wake", "Orca (192.0.2.36)", "failed")])
@@ -1214,21 +1353,25 @@ class RespondingTest(WatchTest):
         """The guest-ping that says what does not answer runs under the wakes file's lock: a
         guest agent or libvirtd that hangs is given up after a few seconds, not virsh's 15 s,
         so other wakes and watch wait no longer."""
-        self.extra["AGENTBOX_WAKE_SECONDS"] = "1"
+        # virsh's limit is 40 s here, so that a busy Host does not make the few seconds look like it
+        self.extra.update(AGENTBOX_WAKE_SECONDS="1", AGENTBOX_VIRSH_TIMEOUT="40")
         self.scenario(vms={"priv": {"state": "shut off", "managed_save": True}}, systemctl_units=UNITS,
-                      agent_hangs=30)
+                      agent_hangs=120)
         self.qemu("work", 300)
-        began = time.monotonic()
         self.assertEqual(self.wake("192.0.2.36"), (1, "", SILENT))
-        self.assertLess(time.monotonic() - began, 10)
+        # from the guest-ping to the wakes file, written right after the incident's entry: 6 s
+        [ping] = self.calls("guest-ping")
+        self.assertLess(os.stat(self.wakes_file()).st_mtime - ping["time"], 20)
         [e] = self.journald.entries()
         self.assertEqual((e["AGENTBOX_ACTION"], e["AGENTBOX_PARAM_REASON"]), ("wake.not-responding", "system-not-booted"))
 
     def test_a_wake_that_gave_up_while_another_reached_orca_is_no_incident(self):
-        self.extra["AGENTBOX_WAKE_SECONDS"] = "2"
+        self.extra["AGENTBOX_WAKE_SECONDS"] = "1"
         self.qemu("work", 300)
-        waiting = self.wake_waiting("192.0.2.36")
-        # another connection's wake reaches Orca meanwhile (its own Orca address answers)
+        waiting = self.wake_in_background("192.0.2.36", held=True)
+        waiting.gave_up()
+        # another connection's wake reaches Orca meanwhile (its own Orca address answers),
+        # before the first one's failure is counted
         other = socket.socket()
         other.bind(("127.0.0.1", 0))
         other.listen(4)
@@ -1237,6 +1380,7 @@ class RespondingTest(WatchTest):
                            text=True, timeout=60,
                            env={**self.env(), "AGENTBOX_ORCA_ADDR": "127.0.0.1:%d" % other.getsockname()[1]})
         self.assertEqual((r.returncode, r.stderr), (0, ""))
+        waiting.go()
         self.assertEqual(waiting(), (1, SILENT))
         self.assertEqual(self.actions(), [])
         self.assertEqual(self.failed_wakes(), NONE)
@@ -1267,9 +1411,7 @@ class RespondingTest(WatchTest):
         # a wake starts it again (and is ended, systemd's time limit); it powers off again
         self.extra["AGENTBOX_WAKE_SECONDS"] = "30"
         waiting = self.wake_in_background("192.0.2.41")
-        deadline = time.monotonic() + 10
-        while not os.path.exists(self.path("run/libvirt/qemu/agentbox-work.pid")) and time.monotonic() < deadline:
-            time.sleep(0.05)
+        self.vm_starts()
         waiting.process.kill()
         waiting()
         powers_off()
@@ -1337,8 +1479,10 @@ class RespondingTest(WatchTest):
 
     def test_describe_and_a_new_watch_know_that_orca_answered(self):
         """watch keeps that Orca answered in this start: for describe and a watch started later,
-        one failed look at a VM that answered is not enough either."""
-        self.extra["AGENTBOX_WAKE_SECONDS"] = "2"
+        one failed look at a VM that answered is not enough either. (The VM started within the
+        time limit: without that answer it would be `starting`. No look of this test is as
+        long after another as the time limit.)"""
+        self.extra["AGENTBOX_WAKE_SECONDS"] = "600"
         self.qemu("work", 300)
         self.orca_answers()
         self.start()
@@ -1374,12 +1518,17 @@ class RespondingTest(WatchTest):
         in vain while Orca answered watch is not counted (as when another wake reached it)."""
         self.extra["AGENTBOX_WAKE_SECONDS"] = "2"
         self.qemu("work", 300)
+        self.observer()
         self.orca_answers()
         self.start()
         self.event("vm", self.answering)
-        r = subprocess.run([AGENTBOX, "--actor=Orca (192.0.2.36)", "wake", "work"], capture_output=True,
-                           text=True, timeout=60, env={**self.env(), "AGENTBOX_ORCA_ADDR": self.silent_orca()})
-        self.assertEqual((r.returncode, r.stderr), (1, SILENT))
+        waiting = self.wake_in_background("192.0.2.36", held=True, AGENTBOX_ORCA_ADDR=self.silent_orca())
+        waiting.gave_up()
+        # watch looks once more: it notes that Orca still answers half the time limit after
+        # it last did, so by now after the wake began to wait
+        self.more_looks(1)
+        waiting.go()
+        self.assertEqual(waiting(), (1, SILENT))
         self.assertEqual(self.actions(), [])
         self.assertEqual(self.failed_wakes(), NONE)
 
@@ -1388,11 +1537,12 @@ class RespondingTest(WatchTest):
         limit while it keeps answering."""
         self.extra["AGENTBOX_WAKE_SECONDS"] = "120"
         self.qemu("work", 300)
+        self.observer()
         self.orca_answers()
         self.start()
         self.event("vm", self.answering)
         written = os.stat(self.wakes_file())
-        self.events(1.5)                          # about ten looks
+        self.more_looks(5)
         now = os.stat(self.wakes_file())
         self.assertEqual((now.st_ino, now.st_mtime_ns), (written.st_ino, written.st_mtime_ns))
 
@@ -1400,8 +1550,9 @@ class RespondingTest(WatchTest):
 
     def test_watch_takes_one_failed_look_at_a_vm_it_did_not_see_start_for_nothing(self):
         """After an update every running VM lacks a wakes file: a first look that fails once (a
-        VM under load) makes it neither not responding nor an entry."""
-        self.extra["AGENTBOX_WAKE_SECONDS"] = "2"
+        VM under load) makes it neither not responding nor an entry. (It ran for longer than
+        the time limit, which does not run out between the looks of this test.)"""
+        self.extra["AGENTBOX_WAKE_SECONDS"] = "60"
         self.qemu("work", 300)
         self.start()
         self.assertEqual(self.event("vm", self.silent)["state"], "running")
@@ -1415,7 +1566,7 @@ class RespondingTest(WatchTest):
         self.extra["AGENTBOX_WAKE_SECONDS"] = "2"
         self.start_work(agent_down=True)
         self.event("vm", self.is_vm("not_responding"))
-        self.events(1.5)                          # more looks at it
+        self.more_looks()
         self.assertEqual(self.actions(), ["start", "wake.not-responding"])
         e = self.journald.entries()[1]
         self.assertEqual({k: e[k] for k in ("AGENTBOX_KIND", "AGENTBOX_VM", "AGENTBOX_ACTOR", "AGENTBOX_OUTCOME",
@@ -1456,7 +1607,7 @@ class RespondingTest(WatchTest):
         self.assertEqual(self.wake("192.0.2.36"), (1, "", SILENT))
         self.start()
         self.event("vm", lambda v: self.silent(v) and v["responding"]["guest_agent"] is True)
-        self.events(1)                            # more looks at it
+        self.more_looks()
         self.assertEqual(self.recorded(), [("wake.not-responding", "Orca (192.0.2.36)", "failed")])
 
     def test_wakes_and_watch_at_the_same_time_record_one_entry(self):
@@ -1466,7 +1617,7 @@ class RespondingTest(WatchTest):
         self.start()
         self.assertEqual([w() for w in waiting], [(1, SILENT)] * 6)
         self.event("vm", self.is_vm("not_responding"))
-        self.events(1)
+        self.more_looks()
         self.assertEqual(self.actions(), ["wake.not-responding"])
         self.assertEqual(self.failed_wakes()["count"], 6)
 
@@ -1478,7 +1629,7 @@ class RespondingTest(WatchTest):
         os.makedirs(os.path.join(self.wakes_file(), "x"))
         self.start()
         self.event("vm", self.is_vm("not_responding"))
-        self.events(1)
+        self.more_looks()
         self.assertEqual(self.actions(), [])
         self.assertEqual(self.stderr().count("wakes-work.json"), 1, self.stderr())
 
