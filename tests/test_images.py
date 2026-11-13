@@ -926,6 +926,52 @@ class StartTest(ImagesTest):
         self.assertIn("a Build of base is running already", err)
         self.assertNotIn("start", [c[0] for c in self.systemctl()])
 
+    # the CLI with `systemctl start` failing as systemctl cannot: not answering in time, or not
+    # startable (a missing or non-executable program would be looked for further on PATH, up to
+    # the Host's own systemctl, so subprocess.run is replaced for that one call instead)
+    BROKEN_START = """
+import subprocess, sys
+sys.path.insert(0, sys.argv[1])
+how, real = sys.argv[2], subprocess.run
+def run(argv, *a, **kw):
+    if argv[:2] == ["systemctl", "start"]:
+        if how == "timeout":
+            raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
+        raise PermissionError(13, "Permission denied")
+    return real(argv, *a, **kw)
+subprocess.run = run
+from agentbox.cli import main
+sys.argv = ["agentbox", "build", "base"]
+sys.exit(main())
+"""
+
+    def broken_start(self, how):
+        env = {"PATH": os.path.join(self.dir, "bin") + ":" + os.environ["PATH"], "FAKE_VIRSH_DIR": self.dir,
+               "FAKE_DIR": self.dir, "AGENTBOX_ROOT": self.root, "LANG": "C.UTF-8", "TZ": "UTC"}
+        r = subprocess.run([sys.executable, "-I", "-c", self.BROKEN_START, REPO, how], capture_output=True,
+                           text=True, env=env, timeout=60)
+        return r.returncode, r.stderr
+
+    def test_a_failed_start_takes_its_request_back_so_the_next_start_works(self):
+        # the request file goes on every failure of the start, so a second start right after is
+        # not refused as "being started already"
+        for how, said in (("timeout", "does not answer within 60 s"), ("unstartable", "cannot be started"),
+                          ("exit code", "failed")):
+            with self.subTest(how=how):
+                if how == "exit code":
+                    self.scenario(systemctl_fails=["start"])
+                    code, _, err = self.run_agentbox("build", "base")
+                else:
+                    code, err = self.broken_start(how)
+                self.assertEqual(code, 1, err)
+                self.assertIn(said, err)
+                self.assertNotIn("being started already", err)
+                self.assertFalse(self.exists("var/lib/agentbox/builds/request-base.json"))
+        self.scenario()
+        out = self.ok("build", "base")
+        self.assertIn("agentbox-build@base.service", out)
+        self.assertTrue(self.exists("var/lib/agentbox/builds/request-base.json"))
+
     def test_invalid_calls_are_refused(self):
         for args in (["build"], ["build", "base", "--all"], ["build", "Base"], ["build", "all"], ["build", "-x"],
                      ["build", "base", "rust"], ["build", "../x"]):

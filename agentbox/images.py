@@ -968,10 +968,15 @@ def start(target, resets=(), **request):
             die(f"a Build of {target} is being started already", error="build_running", image=target)
         state_files.write_atomic(_request_file(target), json.dumps(
             {"actor": activity.actor(), "reset": list(resets), **request}).encode(), 0o600)
-    r = programs.systemctl("start", "--no-block", name, timeout=60, ok=None)
-    if r.returncode != 0:
+    # a start that fails in any way (an exit code, no answer in time, not startable) takes its
+    # request file back, or the next start within a minute would be refused as waiting
+    try:
+        r = programs.systemctl("start", "--no-block", name, timeout=60, ok=None)
+        if r.returncode != 0:
+            programs.fail(r, f"systemctl start {name}", program="systemctl")
+    except BaseException:
         state_files.remove(_request_file(target), fail=False)
-        programs.fail(r, f"systemctl start {name}", program="systemctl")
+        raise
     return name
 
 
