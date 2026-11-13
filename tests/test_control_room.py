@@ -219,6 +219,10 @@ class LogsTest(ControlRoomTest):
     def test_empty_and_blank_filters_are_dropped(self):
         self.assertEqual(self.logs_argv(unit="", grep="   ", since=""), ["logs", "priv", "--json"])
 
+    def test_values_are_forwarded_stripped(self):
+        argv = self.logs_argv(unit="  agentbox-orca.service  ", grep=" error ")
+        self.assertEqual(argv, ["logs", "priv", "--unit=agentbox-orca.service", "--grep=error", "--json"])
+
     def test_unknown_parameters_are_not_forwarded(self):
         argv = self.logs_argv(**{"search": "x", "output": "verbose", "--output": "cat", "after-cursor": "c",
                                  "json": "0", "ctx": "work", "D": "/var/log"})
