@@ -259,6 +259,9 @@ class WatchlistTest(CliTest):
             (record(partial), "broken entry (field note missing or of the wrong type)"),
             (record(watch("a.example", added=True)), "broken entry (field added missing or of the wrong type)"),
             (record(watch("A.example")), "broken entry (invalid domain A.example)"),
+            # unprintable characters as ? in both
+            (record(watch("ex\xa0ample\x01.com")), "broken entry (invalid domain ex?ample?.com)"),
+            (record(watch("a.example", "ex\x01fil")), "broken entry (unknown category ex?fil)"),
             (record(watch("a.example", note="x" * 201)), "broken entry (text too long)"),
             (json.dumps({"entries": ["a.example"]}), "broken entry (not a JSON object)"),
         ]

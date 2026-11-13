@@ -176,7 +176,9 @@ def _category(value):
 
 def _problem(kind, e):
     """What is wrong with an entry, or None. The classifier checks the entries of both
-    records the same way, with the same texts byte for byte (agentbox-suspicious, _problem)."""
+    records the same way, with the same texts byte for byte (agentbox-suspicious, _problem):
+    a value in a text has its unprintable characters shown as ? by the classifier's own
+    _printable."""
     if not isinstance(e, dict):
         return "not a JSON object"
     name = "regex" if "regex" in e else "domain"
@@ -188,9 +190,9 @@ def _problem(kind, e):
         if "domain" in e:
             return "both domain and regex"
     elif not DOMAIN.fullmatch(e["domain"]):
-        return f"invalid domain {clean(e['domain'], False)[:60]}"
+        return f"invalid domain {patterns.rules()._printable(e['domain'], 60)}"
     if "category" in kind["fields"] and e["category"] not in categories():
-        return f"unknown category {clean(e['category'], False)[:20]}"
+        return f"unknown category {patterns.rules()._printable(e['category'], 20)}"
     if len(e["note"]) > MAX_NOTE or len(e.get("source", "")) > MAX_SOURCE:
         return "text too long"
     return None
