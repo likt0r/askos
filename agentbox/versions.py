@@ -299,11 +299,14 @@ def orca_rules():
     rules run here; GitHub's answers are read by the fetch as agentbox-feeds, never by root."""
     global _orca
     if _orca is None:
-        _orca = scripts.load(os.path.join(paths.VM_SOURCE, "vm", "build", "orca-release"), "orca_release")
+        _orca = scripts.load(os.path.join(paths.VM_SOURCE, "vm", "build", "orca-release"), "orca_release",
+                             needs=ORCA_RULES)
     return _orca
 
 
 _orca = None
+# what orca_newest takes from vm/build/orca-release
+ORCA_RULES = ("REPO", "PAGES", "PER_PAGE", "Failed", "choose", "asset_ok", "version_of", "rpm_asset")
 
 
 def orca_newest(cutoff, pin=None):
@@ -483,6 +486,7 @@ def fetch(say):
     """Ask the npm registry and GitHub (as agentbox-feeds) and write AVAILABLE; returns it."""
     days = _min_age_days()
     pin = _orca_pin()
+    orca_rules()                # without the rule nothing is fetched, not even npm's versions
     now = time.time()
     rec = {"fetched": int(now), "package_min_age_days": days, "npm": {}, "orca": {}}
     for tool, package in NPM.items():

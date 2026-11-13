@@ -5,8 +5,8 @@ it, and then to download the Node runtime of Orca's server as the installed Orca
 
 The script runs as the Containerfile runs it (python3 -I), against a fake curl
 (fake_registry_curl.py) that plays GitHub's API, its downloads and nodejs.org; nothing
-reaches the network. `agentbox fetch-versions` picks Orca by the same rule
-(agentbox/versions.py), which ChooseTest holds to the script's.
+reaches the network. `agentbox fetch-versions` picks Orca with this script's own functions
+(agentbox/versions.py loads it), which ChooseTest checks.
 
 Run from the repo root: python3 -m unittest discover -s tests
 """
@@ -570,14 +570,34 @@ class ChooseTest(unittest.TestCase):
         self.assertIn("orca-release is missing", caught.exception.message)
 
     def test_a_script_that_cannot_be_loaded_fails_the_fetch(self):
-        with tempfile.TemporaryDirectory() as source:
-            os.makedirs(os.path.join(source, "vm", "build"))
-            with open(os.path.join(source, "vm", "build", "orca-release"), "w") as f:
-                f.write("def broken(:\n")
-            with mock.patch.object(versions.paths, "VM_SOURCE", source), self.assertRaises(versions.Fail) as caught:
-                versions.orca_newest(time.time())
-        self.assertEqual(caught.exception.error, "action_failed")
-        self.assertIn("cannot be loaded (SyntaxError)", caught.exception.message)
+        for content, why in (("def broken(:\n", "SyntaxError"), ("import no_such_module\n", "ModuleNotFoundError"),
+                             ("raise RuntimeError\n", "RuntimeError"),
+                             ('REPO = "x"\n', "it lacks PAGES, PER_PAGE, Failed, choose, asset_ok, version_of, "
+                                             "rpm_asset")):
+            versions._orca = None
+            with self.subTest(why=why), tempfile.TemporaryDirectory() as source:
+                os.makedirs(os.path.join(source, "vm", "build"))
+                with open(os.path.join(source, "vm", "build", "orca-release"), "w") as f:
+                    f.write(content)
+                with mock.patch.object(versions.paths, "VM_SOURCE", source), \
+                        self.assertRaises(versions.Fail) as caught:
+                    versions.orca_newest(time.time())
+                self.assertEqual(caught.exception.error, "action_failed")
+                self.assertIn(f"cannot be loaded ({why})", caught.exception.message)
+
+    def test_without_the_script_the_fetch_asks_nobody(self):
+        with tempfile.TemporaryDirectory() as empty, mock.patch.object(versions.paths, "VM_SOURCE", empty), \
+                mock.patch.object(versions, "_min_age_days", return_value=2), \
+                mock.patch.object(versions, "_orca_pin", return_value=None), \
+                mock.patch.object(versions, "_get", side_effect=AssertionError("asked")):
+            with self.assertRaises(versions.Fail):
+                versions.fetch(lambda line: None)
+
+    def test_both_take_the_same_versions(self):
+        # orca_version (settings) and what the fetch found are checked with the settings'
+        # pattern; the script decides with its own
+        with mock.patch.object(versions.paths, "VM_SOURCE", REPO):
+            self.assertEqual(versions.orca_rules().VERSION.pattern, versions.settings.ORCA_VERSION.pattern)
 
 
 if __name__ == "__main__":
