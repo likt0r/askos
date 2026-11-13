@@ -344,13 +344,6 @@ class TransportTest(ImportTest):
             self.assertEqual(self.transfers(), ["work-held.tar"])
         self.assertFalse(os.path.exists(orphan))
 
-    def test_detaching_failing_still_records_files_and_bytes_in_activity(self):
-        self.scenario(detach_fails=True)
-        self.failure("work", self.src)
-        [entry] = [e for e in self.entries() if e.get("AGENTBOX_ACTION") == "import"]
-        self.assertEqual((entry["AGENTBOX_OUTCOME"], entry["AGENTBOX_PARAM_FILES"], entry["AGENTBOX_PARAM_BYTES"]),
-                         ("failed", "1", "2"))
-
     def test_detaching_failing_is_an_error_even_when_the_folder_arrived(self):
         self.scenario(detach_fails=True)
         said = self.failure("work", self.src)
@@ -358,7 +351,9 @@ class TransportTest(ImportTest):
         self.assertIn("the folder is in ~/code/foo, but the disk vdc could not be detached", said["message"])
         self.assertTrue(os.path.isfile(self.code("foo", "a.txt")))
         self.assertEqual(self.transfers(), [])
-
+        [entry] = [e for e in self.entries() if e.get("AGENTBOX_ACTION") == "import"]
+        self.assertEqual((entry["AGENTBOX_OUTCOME"], entry["AGENTBOX_PARAM_FILES"], entry["AGENTBOX_PARAM_BYTES"]),
+                         ("failed", "1", "2"))
 
     def test_a_stopped_import_detaches_the_disk_and_the_next_one_works(self):
         self.scenario(attach_signals_parent=True)
