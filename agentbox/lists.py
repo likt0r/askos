@@ -54,14 +54,14 @@ does an addition that cannot be checked: any without the threat-intelligence lis
 Legitimate domain never lifts the blockchain pattern, so that pattern needs no such
 check.
 """
-import contextlib
 import json
 import os
 import time
 
-from . import activity, paths, patterns, settings, state_files
+from . import activity, entry_store, paths, patterns, settings, state_files
 from .allowlist import MAX_NOTE, _parse
 from .detection import _classifier, domain_arg, feed_line
+from .entry_store import given as _given, label, param as _param, text as _text
 from .errors import Fail, die
 from .network import DOMAIN, done
 from .sanitize import clean
@@ -125,44 +125,9 @@ def genuine():
 
 # --- arguments -------------------------------------------------------------------
 
-def _text(value, name, limit):
-    """--source or --note: one line of printable characters (None when not given)."""
-    if value is None:
-        return None
-    text = value.strip()
-    if len(text) > limit or not text.isprintable():
-        die(f"--{name}: at most {limit} printable characters on one line",
-            error="invalid_source" if name == "source" else "invalid_note", option=f"--{name}")
-    return text
-
-
 def _target(positional, opts):
-    """The entry asked for: ("domain", domain) from the positional argument, or ("regex",
-    pattern) from --regex in its place, taken as given (a new one is checked by the caller)."""
-    if "regex" in opts:
-        if positional:
-            die("--regex takes the place of the domain; too many arguments: " + clean(positional[0], False)[:60],
-                error="invalid_argument")
-        return "regex", opts["regex"]
-    domain = domain_arg(positional[0] if positional else "")
-    if len(positional) > 1:
-        die("too many arguments: " + clean(positional[1], False)[:60], error="invalid_argument")
-    return "domain", domain
-
-
-def label(ref):
-    """An entry for people: the domain, or "pattern <regex>"."""
-    return f"pattern {ref[1]}" if ref[0] == "regex" else ref[1]
-
-
-def _given(ref):
-    """The entry asked for as a result's fields: domain and regex, the other null."""
-    return patterns.both({ref[0]: ref[1]})
-
-
-def _param(ref):
-    """The entry asked for as a failure's parameter: domain or regex."""
-    return {ref[0]: ref[1]}
+    """The entry asked for (entry_store.target): a domain name, not an address, or --regex."""
+    return entry_store.target(positional, opts, domain_arg)
 
 
 def _category(value):
@@ -179,41 +144,27 @@ def _problem(kind, e):
     records the same way, with the same texts byte for byte (agentbox-suspicious, _problem):
     a value in a text has its unprintable characters shown as ? by the classifier's own
     printable."""
-    if not isinstance(e, dict):
-        return "not a JSON object"
-    name = "regex" if "regex" in e else "domain"
-    for key, typ in ((name, str), *kind["fields"].items()):
-        if key not in e or isinstance(e[key], bool) or not isinstance(e[key], typ):
-            return f"field {key} missing or of the wrong type"
-    if name == "regex":
-        # a pattern the rules refuse is no broken entry: it counts as nothing (_refused)
-        if "domain" in e:
-            return "both domain and regex"
-    elif not DOMAIN.fullmatch(e["domain"]):
-        return f"invalid domain {patterns.rules().printable(e['domain'], 60)}"
-    if "category" in kind["fields"] and e["category"] not in categories():
-        return f"unknown category {patterns.rules().printable(e['category'], 20)}"
-    if len(e["note"]) > MAX_NOTE or len(e.get("source", "")) > MAX_SOURCE:
-        return "text too long"
-    return None
+    def category_or_text(e):
+        if "category" in kind["fields"] and e["category"] not in categories():
+            return f"unknown category {patterns.rules().printable(e['category'], 20)}"
+        if len(e["note"]) > MAX_NOTE or len(e.get("source", "")) > MAX_SOURCE:
+            return "text too long"
+        return None
+
+    return entry_store.problem(e, kind["fields"], lambda t, n: patterns.rules().printable(t, n), category_or_text)
 
 
 def _valid(kind, entries, path):
     """The entries; ends the command at a broken or duplicate one. Such a record is
     unreadable for the classifier as well: for the Watchlist the proxy keeps Open web
     closed, for the Legitimate domains it counts only the built-in ones."""
-    seen = set()
-    for e in entries:
-        why = _problem(kind, e)
+    def broken(why):
         # the classifier's reasons, byte for byte (see _problem)
-        why = f"broken entry ({why})" if why else f"{patterns.value(e)} listed twice" \
-            if patterns.key(e) in seen else None
-        if why and kind is WATCHLIST:
+        if kind is WATCHLIST:
             raise Unreadable(f"{path}: {why}")
-        if why:
-            die(f"{LEGITIMATE_UNREADABLE}: {path}: {why}", error="legitimate_unreadable")
-        seen.add(patterns.key(e))
-    return entries
+        die(f"{LEGITIMATE_UNREADABLE}: {path}: {why}", error="legitimate_unreadable")
+
+    return entry_store.valid(entries, lambda e: _problem(kind, e), broken)
 
 
 def _entry(kind, domain, now, added_by, category="", source="", note="", ref=None):
@@ -237,22 +188,17 @@ def _from_legacy(kind, path, now):
     records, read as the classifier read it; built-in Legitimate domains are not taken
     over. A Watchlist domain listed twice keeps its strongest category (of equals the
     last line, which the classifier took), so the migration never weakens an entry."""
-    try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            lines = f.read().splitlines()
-    except FileNotFoundError:
+    lines = entry_store.legacy_lines(path)
+    if lines is None:
         return [], []
-    except OSError as e:
-        die(f"{path}: {e.strerror}", error="action_failed")
     entries, skipped, at = [], [], {}
     builtin = genuine() if kind is LEGITIMATE else set()
     strong = categories() if kind is WATCHLIST else {}
-    for line in lines:
-        body, _, comment = line.partition("#")
+    for body, comment in lines:
         parts = body.split()
         if not parts:
             continue
-        domain = parts[0].lower().rstrip(".")
+        domain = entry_store.legacy_domain(parts[0])
         comment = " ".join(comment.split())[:MAX_SOURCE]
         if domain in builtin:
             continue
@@ -353,44 +299,39 @@ def readable_watchlist():
 
 def _write(kind, entries, legacy=None):
     """The record (readable by the proxy's and the Feeds' users), then the legacy file moved aside."""
-    data = json.dumps({"entries": _sorted(entries)}, indent=2, ensure_ascii=False) + "\n"
-    state_files.write_atomic(record_file(kind), data.encode(), 0o644)
-    if legacy:
-        try:
-            os.replace(legacy, legacy + ".migrated")
-        except FileNotFoundError:
-            pass
-        except OSError as e:
-            die(f"{legacy}: {e.strerror}", error="action_failed")
+    entry_store.write(record_file(kind), entries, _sorted, [legacy] if legacy else ())
 
 
-@contextlib.contextmanager
 def changing(kind, create=False):
-    """Read-modify-write of a record under its lock. The list may be changed in
-    place; it is written when it changed or still came from the legacy file. Such a
+    """Read-modify-write of a record under its lock (entry_store.changing). The list may be
+    changed in place; it is written when it changed or still came from the legacy file. Such a
     migration is an Activity entry of its own, also when the command changes nothing.
     A legacy file with lines that cannot be carried over is left to migrate-lists on the
     Host, which names them: a change from the Control Room must not drop them unseen.
     With create a missing Watchlist without a legacy file starts empty (watch-add)."""
-    with state_files.locked(record_file(kind)):
+    migrated = []
+
+    def read_migrating():
         entries, legacy = read(kind, create)
         if legacy:
             skipped = _from_legacy(kind, legacy, 0)[1]
             if skipped:
                 die(f"{legacy}: {_lines(len(skipped))} cannot be taken over ({', '.join(skipped)}); "
                     f"run agentbox migrate-lists on the Host first", error="migration_required")
-        migrated = len(entries)
-        before = json.dumps(_sorted(entries), sort_keys=True)
-        yield entries
-        if legacy or json.dumps(_sorted(entries), sort_keys=True) != before:
-            _write(kind, entries, legacy)
+            migrated.append(len(entries))
+        return entries, legacy
+
+    def write(entries, legacy):
+        _write(kind, entries, legacy)
         if legacy:
-            activity.record("action", "migrate-lists", **_migrated(kind, migrated, []))
+            activity.record("action", "migrate-lists", **_migrated(kind, migrated[0], []))
+
+    return entry_store.changing(record_file(kind), read_migrating, write, _sorted)
 
 
 def find(entries, ref):
     """The entry of ref, ("domain", domain) or ("regex", pattern), else None."""
-    return next((e for e in entries if patterns.key(e) == tuple(ref)), None)
+    return entry_store.find(entries, ref)
 
 
 # --- the Watchlist ------------------------------------------------------------------

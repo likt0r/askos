@@ -37,7 +37,6 @@ refuse every destination without --force: which Signals are strong is unknown
 then, and the proxy, which keeps Open web closed for that reason, lets
 Allowlist entries through.
 """
-import contextlib
 import json
 import os
 import re
@@ -46,7 +45,8 @@ import sys
 import time
 from collections import Counter
 
-from . import activity, options, paths, patterns, registry, settings, state_files
+from . import activity, entry_store, options, paths, patterns, registry, settings, state_files
+from .entry_store import label, param
 from .errors import Fail, die
 from .network import CLIENT_REASONS, DOMAIN, done, valid_domain, when
 from .sanitize import clean, field
@@ -93,31 +93,10 @@ def scope_arg(s):
 
 
 def _target(positional, opts):
-    """Scope and the entry asked for, ("domain", domain) from the first two positional
-    arguments or ("regex", pattern) from --regex. The pattern of an existing entry is taken
-    as given (patterns.checked judges a new one), so an entry the rules no longer accept
-    can still be removed."""
+    """Scope and the entry asked for (entry_store.target): the scope first, then the domain
+    (any valid one) or --regex."""
     scope = scope_arg(positional[0] if positional else "")
-    if "regex" in opts:
-        if len(positional) > 1:
-            die("--regex takes the place of the domain; too many arguments: " + clean(positional[1], False)[:60],
-                error="invalid_argument")
-        return scope, ("regex", opts["regex"])
-    domain = valid_domain(positional[1] if len(positional) > 1 else "")
-    if len(positional) > 2:
-        die("too many arguments: " + clean(positional[2], False)[:60], error="invalid_argument")
-    return scope, ("domain", domain)
-
-
-def label(ref):
-    """An entry for people: the domain, or "pattern <regex>"."""
-    return f"pattern {ref[1]}" if ref[0] == "regex" else ref[1]
-
-
-def _given(ref):
-    """The entry asked for as an entry's fields and a result's parameters: {"domain": d} or
-    {"regex": p}."""
-    return {ref[0]: ref[1]}
+    return scope, entry_store.target(positional[1:], opts, valid_domain)
 
 
 def _no_force(ref, opts):
@@ -141,12 +120,7 @@ def _seconds(opts):
 
 
 def _note(value):
-    if value is None:
-        return None
-    note = value.strip()
-    if len(note) > MAX_NOTE or not note.isprintable():
-        die(f"--note: at most {MAX_NOTE} printable characters on one line", error="invalid_note", option="--note")
-    return note
+    return entry_store.text(value, "note", MAX_NOTE)
 
 
 def classify(domain):
@@ -194,39 +168,33 @@ def _until(t):
 
 # --- storage ---------------------------------------------------------------------
 
-def _problem(e):
-    if not isinstance(e, dict):
-        return "not a JSON object"
-    name = "regex" if "regex" in e else "domain"
-    for key, kind in ((name, str), *FIELDS.items()):
-        if key not in e or isinstance(e[key], bool) or not isinstance(e[key], kind):
-            return f"field {key} missing or of the wrong type"
-    if name == "regex":
-        # a pattern the rules refuse is no broken entry: it allows nothing (patterns.refused)
-        if "domain" in e:
-            return "both domain and regex"
-    elif not DOMAIN.fullmatch(e["domain"]):
-        return f"invalid domain {clean(e['domain'], False)[:60]}"
+def _clipped(text, limit):
+    return clean(text, False)[:limit]
+
+
+def _scope_or_note(e):
+    """The Allowlist's own checks of a stored entry (entry_store.problem)."""
     if e["scope"] != ALL and (not registry.NAME.fullmatch(e["scope"]) or registry.reserved(e["scope"])):
-        return f"invalid scope {clean(e['scope'], False)[:20]}"
+        return f"invalid scope {_clipped(e['scope'], 20)}"
     if len(e["note"]) > MAX_NOTE:
         return "note too long"
     return None
 
 
+def _problem(e):
+    return entry_store.problem(e, FIELDS, _clipped, _scope_or_note)
+
+
 def _valid(data, path):
+    """The entries; ends the command at a broken one, or a second one of a domain or pattern
+    and scope."""
     if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
         die(f"{path}: broken (no list entries)", error="action_failed")
-    seen = set()
-    for e in data["entries"]:
-        why = _problem(e)
-        if why:
-            die(f"{path}: broken entry ({why})", error="action_failed")
-        key = (patterns.key(e), e["scope"])
-        if key in seen:
-            die(f"{path}: {patterns.value(e)} ({e['scope']}) twice", error="action_failed")
-        seen.add(key)
-    return data["entries"]
+
+    def broken(why):
+        die(f"{path}: {why}", error="action_failed")
+    return entry_store.valid(data["entries"], _problem, broken, key=lambda e: (patterns.key(e), e["scope"]),
+                             twice=lambda e: f"{patterns.value(e)} ({e['scope']}) twice")
 
 
 def legacy_files():
@@ -251,15 +219,8 @@ def _from_legacy(files, now):
     """(entries, lines that are no domain) of the legacy files, read as the proxy read them."""
     entries, skipped, seen = [], [], set()
     for path, scope in files:
-        try:
-            with open(path, encoding="utf-8", errors="replace") as f:
-                lines = f.read().splitlines()
-        except FileNotFoundError:
-            continue
-        except OSError as e:
-            die(f"{path}: {e.strerror}", error="action_failed")
-        for line in lines:
-            domain = line.split("#", 1)[0].strip().lower().rstrip(".")
+        for body, _ in entry_store.legacy_lines(path) or ():
+            domain = entry_store.legacy_domain(body.strip())
             if not domain or (domain, scope) in seen:
                 continue
             if not DOMAIN.fullmatch(domain):
@@ -277,7 +238,7 @@ def entry(domain, scope, expires, note, added, added_by):
 
 def _new(ref, scope, expires, note, added, added_by):
     """A new entry for a domain or, ref ("regex", pattern), a Regex entry."""
-    return {**_given(ref), "scope": scope, "expires": expires, "note": note, "added": added, "added_by": added_by}
+    return {**param(ref), "scope": scope, "expires": expires, "note": note, "added": added, "added_by": added_by}
 
 
 def read():
@@ -303,41 +264,25 @@ def _order(entries):
 
 
 def _write(entries, legacy=()):
-    """allowlist.json (readable by the proxy's user), then the legacy files moved aside."""
-    data = json.dumps({"entries": _order(entries)}, indent=2, ensure_ascii=False) + "\n"
-    state_files.write_atomic(store_file(), data.encode(), 0o644)
-    for path, _ in legacy:
-        try:
-            os.replace(path, path + ".migrated")
-        except FileNotFoundError:
-            pass
-        except OSError as e:
-            die(f"{path}: {e.strerror}", error="action_failed")
+    """allowlist.json, then the legacy files ((path, scope)) moved aside."""
+    entry_store.write(store_file(), entries, _order, [path for path, _ in legacy])
 
 
-@contextlib.contextmanager
 def changing():
-    """Read-modify-write of the entries under the store's lock. The list may be
-    changed in place; it is written when it changed or still came from the
-    legacy files (the first change migrates them)."""
-    with state_files.locked(store_file()):
-        entries, legacy = read()
-        before = json.dumps(_order(entries), sort_keys=True)
-        yield entries
-        if legacy or json.dumps(_order(entries), sort_keys=True) != before:
-            _write(entries, legacy)
+    """Read-modify-write of the entries under the store's lock (entry_store.changing)."""
+    return entry_store.changing(store_file(), read, _write, _order)
 
 
 def find(entries, ref, scope):
     """The entry of ref, ("domain", domain) or ("regex", pattern), and scope, else None."""
-    return next((e for e in entries if patterns.key(e) == tuple(ref) and e["scope"] == scope), None)
+    return entry_store.find(entries, ref, scope=scope)
 
 
 def _existing(entries, ref, scope):
     e = find(entries, ref, scope)
     if e is None:
         die(f"{scope_text(scope)}: {label(ref)} is not on the Allowlist", error="allowlist_entry_not_found",
-            scope=scope, **_given(ref))
+            scope=scope, **param(ref))
     return e
 
 
@@ -555,7 +500,7 @@ def disallow(args):
         e = find(entries, ref, scope)
         if e is not None:
             entries.remove(e)
-    given = patterns.both(_given(ref))
+    given = entry_store.given(ref)
     if e is None:
         activity.unchanged()
         hint = ""
@@ -579,14 +524,14 @@ def extend(args):
     _no_force(ref, opts)
     if _existing(read()[0], ref, scope)["expires"] is None:
         die(f"{scope_text(scope)}: {label(ref)} is allowed permanently", error="allowlist_entry_permanent",
-            scope=scope, **_given(ref))
+            scope=scope, **param(ref))
     if ref[0] == "domain":
         _signals(ref[1], opts)
     with changing() as entries:
         e = _existing(entries, ref, scope)
         if e["expires"] is None:
             die(f"{scope_text(scope)}: {label(ref)} is allowed permanently", error="allowlist_entry_permanent",
-                scope=scope, **_given(ref))
+                scope=scope, **param(ref))
         e["expires"] = max(e["expires"], int(time.time())) + seconds
     done("json" in opts, f"{scope_text(scope)}: {label(ref)} allowed until {_until(e['expires'])}",
          **patterns.both(e))

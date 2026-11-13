@@ -21,6 +21,7 @@ import time
 
 from . import patterns, paths, state_files
 from .allowlist import _parse
+from .entry_store import given, label
 from .errors import die
 from .network import DOMAIN, done, valid_domain, when
 from .registry import check
@@ -204,10 +205,6 @@ def harmless(args):
                   + (f"  [{refused}; it silences nothing]" if refused else ""))
 
 
-def _shown(ref):
-    return f"pattern {ref[1]}" if ref[0] == "regex" else ref[1]
-
-
 def mark_harmless(args):
     """agentbox mark-harmless <domain>|--regex PATTERN [--json]: no more Alerts for it (a
     false positive); blocking in Open web and allow --force stay as they are"""
@@ -228,7 +225,7 @@ def mark_harmless(args):
             if data and not data.endswith(b"\n"):
                 data += b"\n"
             state_files.write_atomic(f, data + line + b"\n", 0o644)
-    done(as_json, f"{_shown(ref)} marked harmless", **patterns.both({ref[0]: ref[1]}))
+    done(as_json, f"{label(ref)} marked harmless", **given(ref))
 
 
 def unmark_harmless(args):
@@ -245,7 +242,7 @@ def unmark_harmless(args):
             entry = _mark_line(ref)
             if entry in state_files.lines(data):
                 state_files.write_atomic(f, b"".join(l + b"\n" for l in state_files.lines(data) if l != entry), 0o644)
-    done(as_json, f"{_shown(ref)} no longer marked harmless", **patterns.both({ref[0]: ref[1]}))
+    done(as_json, f"{label(ref)} no longer marked harmless", **given(ref))
 
 
 # --- Alerts marked as seen ----------------------------------------------------
