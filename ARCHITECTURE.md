@@ -423,7 +423,7 @@ flowchart LR
   `ALERT <host> [<signals>]`, `CLOSED <host> (<reason>)` for a tunnel the proxy closed, and
   `BLOCKED <client address> (not a TLS handshake)` or `(no server name)` for a connection
   it took no destination from. `agentbox allowlist` counts each entry's uses of the last 24
-  hours from the `ALLOWED` lines. Lines with the earlier German keywords are ignored entirely.
+  hours from the `ALLOWED` lines.
 
 ### Detection
 `proxy/agentbox-suspicious` classifies each destination by:

@@ -738,9 +738,8 @@ CHECKS = {
     "search": lambda v: 0 < len(v) <= 200 and clean(v, False) == v,
     "lines": lambda v: re.fullmatch(r"\d{1,4}", v) and 1 <= int(v) <= 5000,
 }
-# Alerts as the proxy logs them (lines with the older German VERDACHT are ignored),
-# and the token service's lines (github-app/agentbox-gh-tokend; its older German lines
-# are ignored as well)
+# Alerts as the proxy logs them, and the token service's lines
+# (github-app/agentbox-gh-tokend)
 ALERT = re.compile(r"\[[a-z0-9-]+\] ALERT (\S+) \[([^\]]*)\]")
 TOKEN = re.compile(r"\[[a-z0-9-]+\] (token for|refused:|error:) (.*)")
 GITHUB = {"token for": ("github.token", "ok"), "refused:": ("github.refused", "failed"),

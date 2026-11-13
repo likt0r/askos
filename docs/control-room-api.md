@@ -420,7 +420,6 @@ first:
 - `code`: the entry's stable code, the same as `action` (ADR 0012). The UI words the entry
   from it and `params` in its language. Entries recorded before Release 0.3.0 have no code
   and German text; the UI shows their `description`, as for any code it does not know.
-  The token service's lines from before are not read at all.
 - `params`: the action's parameters (table below), all text: a flag is `"true"` when set and
   missing otherwise, a list is joined with `", "`. Some come from what was asked for (a
   domain, the GitHub owners); a few only when they are a known name: the App ID only when
