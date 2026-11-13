@@ -96,6 +96,7 @@ export default {
     method_not_allowed: 'Diese Aktion gibt es hier nicht.',
     too_many_attempts: 'Zu viele Fehlversuche. Nächster Versuch in {seconds} s.',
     too_many_streams: 'Zu viele Live-Verbindungen sind offen. Schließe andere Tabs des Control Rooms.',
+    settings_unreadable: 'Die Settings auf dem Host sind nicht lesbar; der Control Room ist gestoppt, bis sie dort repariert sind.',
     readings_unavailable: 'Die Messwerte des Hosts sind nicht verfügbar.',
     bad_agentbox_answer: 'agentbox hat eine unlesbare Antwort gegeben.',
     timeout: 'agentbox ist nicht rechtzeitig fertig geworden.',
