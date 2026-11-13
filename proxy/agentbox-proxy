@@ -376,13 +376,15 @@ def granting(host, tags, lists, now):
 
 
 def open_until(ctx):
-    """Offenes Web auf Zeit: /etc/agentbox/open-<ctx> enthaelt das Ende (Epoch)."""
+    """End of the VM's Open web (epoch seconds) from /etc/agentbox/open-<ctx>, or 0 when the
+    web is not open. Reads the file as agentbox does (state_files.open_until): whole seconds,
+    a fraction cut off, anything else (inf, 1e20, nan) counts as closed."""
     try:
         with open(f"{CONF_DIR}/open-{ctx}") as f:
-            until = float(f.read().strip())
-    except (OSError, ValueError):
+            u = f.read().strip().split(".")[0]
+    except OSError:
         return 0
-    return until if until > time.time() else 0
+    return int(u) if re.fullmatch(r"\d+", u) and int(u) > time.time() else 0
 
 
 def strong(tags):

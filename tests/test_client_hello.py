@@ -32,6 +32,9 @@ from client_hello import (ACCESS_DENIED, INTERNAL_ERROR, UNRECOGNIZED_NAME, answ
                           raw_client_hello, server_name)
 from test_allowlist import PROXY, entry  # noqa: E402
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from agentbox import paths, state_files  # noqa: E402
+
 
 def load_proxy():
     """The proxy as a module, the way it loads the classifier."""
@@ -188,6 +191,32 @@ class ParserTest(unittest.TestCase):
                 self.fail(f"{tried}: {e!r}")
             else:
                 self.assertTrue(result is None or isinstance(result, str), f"{tried}: {result!r}")
+
+
+class OpenUntilTest(unittest.TestCase):
+    """The proxy reads the end of Open web as agentbox does (state_files.open_until), so
+    the proxy never lets through what the CLI and the Control Room show as closed."""
+
+    def test_the_proxy_and_agentbox_read_the_same_end(self):
+        future = int(time.time()) + 3600
+        contents = [f"{future}\n", f"{future}.75", "1000", "inf", "-inf", "1e20", "nan", "Infinity",
+                    f" {future} ", f"+{future}", f"{future}x", "", "garbage", "4102444800.5.1"]
+        with tempfile.TemporaryDirectory() as conf, \
+                mock.patch.object(proxy, "CONF_DIR", conf), mock.patch.object(paths, "CONF", conf):
+            for content in contents:
+                with self.subTest(content=content):
+                    with open(os.path.join(conf, "open-work"), "w") as f:
+                        f.write(content)
+                    self.assertEqual(proxy.open_until("work"), state_files.open_until("work"))
+            self.assertEqual(proxy.open_until("priv"), 0)       # no file
+
+    def test_a_far_end_that_is_no_whole_number_keeps_the_web_closed(self):
+        with tempfile.TemporaryDirectory() as conf, mock.patch.object(proxy, "CONF_DIR", conf):
+            for content in ("inf", "1e20", "nan"):
+                with self.subTest(content=content):
+                    with open(os.path.join(conf, "open-work"), "w") as f:
+                        f.write(content)
+                    self.assertEqual(proxy.open_until("work"), 0)
 
 
 class HelloProxyTest(allowlist_tests.ProxyTest):
