@@ -96,7 +96,7 @@ export default {
     method_not_allowed: 'This action is not available here.',
     too_many_attempts: 'Too many failed attempts. Try again in {seconds} s.',
     too_many_streams: 'Too many live connections are open. Close other Control Room tabs.',
-    settings_unreadable: 'The Settings on the Host cannot be read; the Control Room stopped until they are fixed there.',
+    settings_unreadable: 'agentbox refuses the Settings on the Host; the Control Room stopped until they are fixed there.',
     readings_unavailable: 'Host readings are not available.',
     bad_agentbox_answer: 'agentbox gave an answer that could not be read.',
     timeout: 'agentbox did not finish in time.',

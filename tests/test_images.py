@@ -22,9 +22,11 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vm_records  # noqa: E402
@@ -985,6 +987,40 @@ sys.exit(main())
         code, out, err = self.run_agentbox("build", "base")
         self.assertEqual(code, 1)
         self.assertIn("run agentbox regenerate first", err)
+
+
+class TakeBackTest(unittest.TestCase):
+    """A failed start takes its request file back only while it is still its own and no unit of
+    the target runs to take it (images._take_back)."""
+
+    def setUp(self):
+        sys.path.insert(0, REPO)
+        from agentbox import images, paths
+        self.images = images
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.file = os.path.join(tmp.name, "request-base.json")
+        for args in ((paths, "STATE", tmp.name), (images, "REQUEST_LOCK", os.path.join(tmp.name, "lock")),
+                     (images, "_request_file", lambda t: self.file)):
+            patcher = mock.patch.object(*args)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def take_back(self, content, active=False):
+        with open(self.file, "wb") as f:
+            f.write(content)
+        with mock.patch.object(self.images, "_active", return_value=active):
+            self.images._take_back("base", "agentbox-build@base.service", b"mine")
+        return os.path.exists(self.file)
+
+    def test_its_own_request_goes(self):
+        self.assertFalse(self.take_back(b"mine"))
+
+    def test_another_caller_s_request_stays(self):
+        self.assertTrue(self.take_back(b"theirs"))
+
+    def test_a_unit_that_runs_after_all_keeps_it(self):
+        self.assertTrue(self.take_back(b"mine", active=True))
 
 
 class UpdateTest(ImagesTest):
