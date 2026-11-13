@@ -24,6 +24,7 @@ import tarfile
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_registry import REPO, fake  # noqa: E402
@@ -325,10 +326,11 @@ class RpmTest(ScriptTest):
         build.MAX_NODE_ARCHIVE = 3 << 20
         self.known["downloads"][NODE_URL] = {"flood": True}
         self.save()
-        os.environ["FAKE_DIR"], path = self.dir, os.path.join(self.dir, "x")
-        old = os.environ["PATH"]
-        os.environ["PATH"] = os.path.join(self.dir, "bin") + ":" + old
-        self.addCleanup(os.environ.__setitem__, "PATH", old)
+        path = os.path.join(self.dir, "x")
+        env = mock.patch.dict(os.environ, {"FAKE_DIR": self.dir,
+                                           "PATH": os.path.join(self.dir, "bin") + ":" + os.environ["PATH"]})
+        env.start()
+        self.addCleanup(env.stop)
         with self.assertRaises(build.Failed) as e:
             build.download(NODE_URL, path, build.MAX_NODE_ARCHIVE)
         self.assertIn(f"more than {3 << 20} bytes", str(e.exception))
