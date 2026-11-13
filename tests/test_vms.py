@@ -684,6 +684,16 @@ class SetMemoryTest(VmsTest):
         # the definition matches the record: regenerate has nothing left to do
         self.assertEqual(self.json("regenerate")["vms"], {"work": [], "priv": []})
 
+    def test_a_host_updated_without_regenerate_gets_the_opencode_key_placeholder(self):
+        """An RPM update runs no regenerate: the definition names the OpenCode key's file,
+        which must exist, or QEMU refuses to start the VM."""
+        os.remove(self.path("etc/agentbox/secrets/opencode-work"))
+        self.json("set-memory", "work", "16384")
+        self.assertEqual(self.read("etc/agentbox/secrets/opencode-work"), "none\n")
+        self.assertEqual(self.mode("etc/agentbox/secrets/opencode-work"), 0o640)
+        xml = [c["xml"] for c in self.virsh("define") if c["dom"] == "agentbox-work"][-1]
+        self.assertIn(f"entry5.file={self.path('etc/agentbox/secrets/opencode-work')}", unescape(xml))
+
     def test_text_output(self):
         self.assertEqual(self.ok("set-memory", "work", "32768"),
                          "work: memory limit 26624 -> 32768 MiB, applies from the next Restart "

@@ -491,7 +491,7 @@ class SetOpencodeKeyTest(CredentialsTest):
         os.remove(self.path("secrets", "opencode-priv"))
         missing = os.path.join(self.dir, "etc/agentbox/secrets/opencode-priv")
         self.assertEqual(self.set_key("--no-prompt"),
-                         (1, "", f"agentbox: {missing} is missing, run agentbox setup first\n"))
+                         (1, "", f"agentbox: {missing} is missing, run sudo agentbox regenerate first\n"))
         self.assertEqual(self.curl_calls(), [])
 
     def test_the_claude_token_stays_as_it_is(self):

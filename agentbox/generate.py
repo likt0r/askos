@@ -609,6 +609,10 @@ def domain(rec):
     paused: its saved memory belongs to the old definition. "domain",
     "domain-postponed" or None (unchanged). Callers hold state_files.locked(paths.REGISTRY)."""
     vm = rec["name"]
+    # QEMU refuses to start with an fw_cfg file missing: set-memory and set-env define the VM
+    # again on a Host updated from a Release without the OpenCode key, where no regenerate ran
+    _claude_token(rec)
+    _opencode_key(rec)
     r = virsh.run("domuuid", dom(vm))
     uuid = r.stdout.strip() if r.returncode == 0 and UUID.fullmatch(r.stdout.strip()) else None
     xml = _run(["virt-install", *virt_install_args(rec, uuid)], f"{vm}: virt-install")

@@ -951,7 +951,7 @@ of `'self'` plus the sha256 hashes of the inline scripts and styles of that `ind
 computed when it is loaded; a changed `index.html` is a new version, sent to open pages as a
 `version` event. Without a new build the old UI is served as before; with one, it stays at
 `/legacy/`. The backend also serves the Activity timeline (`GET /api/activity` with the filters of `agentbox activity`) and
-credentials: `POST /api/<vm>/claude-token`, `PUT /api/v1/vms/<vm>/opencode-key`, `POST /api/github-app` (App ID and private key:
+credentials: `POST /api/<vm>/claude-token`, `POST /api/github-app` (App ID and private key:
 adds the App or replaces its key), `GET /api/github-app` (every App's installations and missing
 GitHub owners) and
 `GET /api/<vm>/github-tokens`. Tokens and keys travel only in the request body and on to

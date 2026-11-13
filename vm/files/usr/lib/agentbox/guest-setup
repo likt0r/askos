@@ -92,11 +92,12 @@ done
 chown agent:agent "$HOME_DIR"/.config "$HOME_DIR"/.claude "$HOME_DIR"/.codex "$HOME_DIR"/.cargo \
   "$HOME_DIR"/.local "$HOME_DIR"/.local/share "$HOME_DIR"/.local/state
 # Logins made in the VM land next to opencode's sessions (auth.json, mcp-auth.json, login
-# tables in opencode.db): they do not outlive the start after it, like Codex's login, which
-# stays on the System disk. The key comes from the Host (OPENCODE_API_KEY). As the agent, so
-# opencode.db and its journal stay the agent's; a failure is reported, never fatal.
-runuser -u agent -- /usr/lib/agentbox/opencode-forget-logins "$DATA/home/.local/share/opencode" \
-  || echo "guest-setup: opencode logins not removed" >&2
+# tables in opencode.db), and so do approvals saved as "always": they do not outlive the
+# start after it, like Codex's login, which stays on the System disk, and agent settings. The
+# key comes from the Host (OPENCODE_API_KEY). As the agent, so opencode.db and its journal
+# stay the agent's; a failure is reported, never fatal.
+runuser -u agent -- /usr/lib/agentbox/opencode-forget "$DATA/home/.local/share/opencode" \
+  || echo "guest-setup: opencode logins and approvals not removed" >&2
 
 # Der Android-Emulator (SwiftShader) braucht ausfuehrbaren Heap. Die Grenze
 # ist hier die VM, nicht SELinux in ihr; gilt nur bis zum naechsten Start.

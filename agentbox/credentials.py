@@ -117,12 +117,12 @@ def token_verdict(answer):
     return "valid" if kind in TOKEN_ACCEPTED else "unknown"
 
 
-def _secret_file(ctx, f):
+def _secret_file(ctx, f, fix="agentbox setup"):
     """The stat of the VM's secret file, which agentbox regenerate creates."""
     try:
         return os.stat(f)
     except FileNotFoundError:
-        die(f"{f} is missing, run agentbox setup first", error="not_set_up", vm=ctx)
+        die(f"{f} is missing, run {fix} first", error="not_set_up", vm=ctx)
     except OSError as e:
         die(f"{f}: {e.strerror}", error="action_failed")
 
@@ -208,7 +208,8 @@ def set_opencode_key(args):
     ctx = check(args[0] if args else "")
     as_json = "--json" in args[1:]
     f = opencode_key_file(ctx)
-    before = _secret_file(ctx, f)
+    # a Host updated from a Release without the OpenCode key has none until regenerate
+    before = _secret_file(ctx, f, "sudo agentbox regenerate")
     key = _read_secret(ctx, as_json, args, "Paste the API key from opencode.ai")
     if key.startswith(b"sk-ant-"):
         die("this is a Claude token or key; OpenCode needs an API key from opencode.ai",

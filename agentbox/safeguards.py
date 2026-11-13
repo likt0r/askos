@@ -47,6 +47,7 @@ HOOKS = "/usr/lib/agentbox/hooks"
 BUNFIG = "/usr/lib/agentbox/bunfig.toml"
 GUEST_SETUP = "/usr/lib/agentbox/guest-setup"
 FWCFG_ENV = "/usr/lib/agentbox/fwcfg-env"     # guest-setup writes the VM variables with it
+OPENCODE_FORGET = "/usr/lib/agentbox/opencode-forget"   # guest-setup removes opencode's logins with it
 NPM = "/usr/lib/node_modules/npm"
 NPM_DEFAULT = "/usr/etc/npmrc"        # npm with prefix /usr reads this unless its builtin config names another
 QGA = "/usr/libexec/qemu-ga/fsfreeze-hook.d"
@@ -74,8 +75,8 @@ MIN_NPM = 12
 
 # The files that make up the safeguards: a derived Image must leave each as the Base has it.
 FILES = ("/etc/npmrc", NPM_DEFAULT, f"{NPM}/npmrc", "/etc/uv/uv.toml", "/etc/gitconfig", BUNFIG, GUEST_SETUP, FWCFG_ENV,
-         "/usr/lib/agentbox/package-safeguards", "/usr/lib/systemd/system/agentbox-guest-setup.service",
-         "/usr/lib/systemd/system.conf.d/agentbox.conf", "/usr/lib/systemd/system.conf.d/agentbox-packages.conf",
+         OPENCODE_FORGET, "/usr/lib/agentbox/package-safeguards",
+         "/usr/lib/systemd/system/agentbox-guest-setup.service", "/usr/lib/systemd/system.conf.d/agentbox.conf", "/usr/lib/systemd/system.conf.d/agentbox-packages.conf",
          NM_CONF, PROFILE)
 # Directories a derived Image must leave exactly as they are.
 SEALED = (HOOKS, QGA)

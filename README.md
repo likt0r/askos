@@ -424,7 +424,11 @@ one minimal request to Anthropic and replaces the VM's token only if Anthropic a
 for an API key from the opencode.ai console (OpenCode Go or Zen; a Claude subscription
 token does not work in opencode), checked by listing OpenCode Go's models with it; opencode
 in the VM gets it as `OPENCODE_API_KEY`, and its sessions stay on the Data disk across
-Resets like Claude Code's. `agentbox set-github-app <APP_ID>` takes an
+Resets like Claude Code's (logins made in the VM and approvals saved as "always" do not).
+**After updating from a Release without it, run `sudo agentbox regenerate` once**: it
+creates each VM's placeholder for the key and defines the VMs again with it (they get it
+from their next start); until then `set-opencode-key` says so. The VMs need a Build of their
+Image from this Release and a Reset for opencode to read the key and keep its sessions. `agentbox set-github-app <APP_ID>` takes an
 App's private key (`.pem`) the same way, adding the App or replacing its key.
 `agentbox github-app` lists every App's installations with the VMs whose GitHub owners rely
 on each, the owners of VMs where no App is installed, and each App's link for installing it.
