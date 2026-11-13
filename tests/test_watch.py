@@ -734,12 +734,15 @@ class RespondingTest(WatchTest):
     its start, `not_responding` after the wake time limit, what answers, failed wakes.
 
     The programs here (watch, wakes, a Restart) run at the same time and take as long to
-    start as the Host is busy, so no test relies on one being faster than another, or than
-    a time limit: where one has to act before another, the other's next call of virsh waits
-    for the test (hold), and what watch is to find within a time limit happens as watch asks
-    for it (start_work). Time limits that only have to be over are short, those that must
-    not run out are long, and how long something took is read from the times in the wakes
-    file and the fakes' records, not from the test's clock."""
+    start as the Host is busy, so no test relies on one program being faster than another:
+    where one has to act before another, the other's next call of virsh waits for the test
+    (hold), and what watch is to find within a time limit happens as watch asks for it
+    (work_starts). Time limits that only have to be over are short, those that must not run
+    out are long, and how long something took is read from the times in the wakes file and
+    the fakes' records, not from the test's clock. What still rests on time: watch's first
+    look at a started VM within its 2 s limit (work_starts), its first round within the 4 s
+    of test_watch_looks_again_when_the_time_limit_of_a_start_runs_out, and a held guest-ping,
+    which the production gives up after 6 s."""
 
     def qemu(self, vm, ago):
         """The VM's QEMU process, started `ago` seconds ago; its start (whole seconds)."""
@@ -787,9 +790,15 @@ class RespondingTest(WatchTest):
         if held:
             hold.go(1)
             env = {**hold.env, **env}
+        limit = float({**self.env(), **env}.get("AGENTBOX_WAKE_SECONDS", "0"))
+        began = time.monotonic()
         wait = self.in_background(f"--actor=Orca ({address})", "wake", vm, **env)
         if held:
-            wait.gave_up = lambda: self.until(lambda: hold.reached(2), "the wake does not give up")
+            def gave_up():
+                self.until(lambda: hold.reached(2), "the wake does not give up")
+                # the second look comes after the whole limit: no other look of the wake's took its place
+                self.assertGreaterEqual(time.monotonic() - began, limit)
+            wait.gave_up = gave_up
             wait.go = lambda: hold.go(2)
         return wait
 
@@ -978,8 +987,9 @@ class RespondingTest(WatchTest):
 
     def start_watch(self):
         """watch, with its guest-pings held from the second on: after its first look that finds
-        Orca silent, the next one ends only after go() of the Hold given back, when the test
-        has seen what the first one made of the VM."""
+        Orca silent, the next one ends only after go() of the Hold given back (or when the
+        production gives a guest-ping up, after 6 s), when the test has seen what the first one
+        made of the VM."""
         pings = self.hold("qemu-agent-command")
         pings.go(1)
         self.start(**pings.env)
@@ -1361,7 +1371,8 @@ class RespondingTest(WatchTest):
         self.assertEqual(self.wake("192.0.2.36"), (1, "", SILENT))
         # from the guest-ping to the wakes file, written right after the incident's entry: 6 s
         [ping] = self.calls("guest-ping")
-        self.assertLess(os.stat(self.wakes_file()).st_mtime - ping["time"], 20)
+        # (virsh's own limit is 15 s)
+        self.assertLess(os.stat(self.wakes_file()).st_mtime - ping["time"], 12)
         [e] = self.journald.entries()
         self.assertEqual((e["AGENTBOX_ACTION"], e["AGENTBOX_PARAM_REASON"]), ("wake.not-responding", "system-not-booted"))
 
