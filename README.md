@@ -404,15 +404,16 @@ An interrupted delete is finished by running it again. To bring an archived Data
 create the VM again and, before its first start, move the archived file over
 `/var/lib/agentbox/vms/<name>-data.qcow2`.
 
-In the Control Room API, `POST /api/<name>/create` takes `image`, `memory_mib`,
-`data_disk_gib`, `github_owners` and `copy_allowlist_from`; `POST /api/<name>/delete` needs
+In the Control Room API, `POST /api/v1/vms` takes `name`, `image`, `memory_mib`,
+`data_disk_gib`, `github_owners` and `copy_allowlist_from`; `DELETE /api/v1/vms/<name>` needs
 `{"confirm": "<name>"}` and takes `"delete_data_disk": true`. Both answer with the JSON of
 `agentbox create|delete --json`.
 
-Pairings in the API: `POST /api/<name>/pairings` answers with the JSON of `agentbox pairings
---json`; `POST /api/<name>/revoke-pairings` needs `{"confirm": "<name>"}`; `POST /api/<name>/unpair`
-takes `{"device": "<id>"}` and is always refused (see above); `POST /api/<name>/pair` reveals
-the Pairing code only with `{"confirm": true}`.
+Pairings in the API: `GET /api/v1/vms/<name>/pairings` answers with the JSON of `agentbox
+pairings --json`; `POST /api/v1/vms/<name>/pairings/revoke` needs `{"confirm": "<name>"}`;
+`POST /api/v1/vms/<name>/pairings/remove` takes `{"device": "<id>"}` and is always refused (see
+above); `POST /api/v1/vms/<name>/pairing-code` reveals the Pairing code only with
+`{"confirm": true}`.
 
 Credentials are read from stdin by the CLI and from the request body by the Control Room,
 and never shown again: not in output, error messages, logs or Activity.
@@ -427,20 +428,20 @@ as installed nowhere: its owners show as missing until it is fixed, and the toke
 refuses there too. `agentbox github-tokens <vm>` lists, per
 repository, the tokens the VM got and its refused requests with the reason; it takes
 `--since`, `--until` and `--lines` (default 1000) like `activity`. In the Control Room API,
-`POST /api/<vm>/claude-token` takes `{"token": "..."}` and answers with a message;
-`POST /api/github-app` takes `{"app_id": "123456", "private_key": "-----BEGIN ..."}`, and
-it, `GET /api/github-app` and `GET /api/<vm>/github-tokens?since=-7d&lines=200` answer with
-the JSON of the command.
+`PUT /api/v1/vms/<vm>/claude-token` takes `{"token": "..."}`, `PUT /api/v1/github-app` takes
+`{"app_id": "123456", "private_key": "-----BEGIN ..."}`, and they, `GET /api/v1/github-app` and
+`GET /api/v1/vms/<vm>/github-tokens?since=-7d&lines=200` answer with the JSON of the command.
 
-The Allowlist in the Control Room API: `GET /api/allowlist` lists every entry (`?vm=<vm>`:
-those that apply to a VM, `?vm=all`: those for all VMs) as `agentbox allowlist --json` does,
-with `scope`, `expires`, `remaining`, `expired`, `note`, `added`, `added_by` and `uses_24h`.
-`POST /api/<vm|all>/allow` takes `domain`, `duration` (`15min`, `1h`, `8h`, `7d`, `default`
-for the default temporary duration, or `permanent`, the default) and `note`; this is also how
-a blocked domain is allowed from a VM's blocked list. `POST /api/<vm|all>/extend` takes
-`domain` and `duration`, `make-permanent` and `disallow` take `domain`, `set-note` takes
-`domain` and `note`. Destinations with strong Signals are refused with the reason (HTTP 400);
-only the CLI can allow them, with `--force`.
+The Allowlist in the Control Room API: `GET /api/v1/allowlist` lists every entry
+(`?vm=<vm>`: those that apply to a VM, `?vm=all`: those for all VMs) as `agentbox allowlist
+--json` does, with `scope`, `expires`, `remaining`, `expired`, `note`, `added`, `added_by` and
+`uses_24h`. `POST /api/v1/allowlist` takes `scope` (a VM or `all`), `domain`, `duration`
+(`15min`, `1h`, `8h`, `7d`, `default` for the default temporary duration, or `permanent`, the
+default) and `note`; this is also how a blocked domain is allowed from a VM's blocked list.
+Under `/api/v1/allowlist/<scope>/<domain>`, `POST .../extend` takes `duration`,
+`POST .../make-permanent` takes nothing, `PUT .../note` takes `note`, and `DELETE` removes the
+entry. Destinations with strong Signals are refused with the reason (HTTP 409,
+`domain_suspicious`); only the CLI can allow them, with `--force`.
 
 ### Viewing a dev server
 
@@ -566,12 +567,12 @@ from, and on request its text from the installed Release (`agentbox containerfil
 which the next Build takes. Nothing is fetched for it; without a known Release or commit the
 path stays plain text.
 
-In the Control Room API: `GET /api/images` answers with `agentbox images --json` (each
+In the Control Room API: `GET /api/v1/images` answers with `agentbox images --json` (each
 Image's Builds with status, tool versions, `used_by`, `pinned_by`, and a running Build
-with its step, and what is `available`); `GET /api/images/<image>/log?build=&after_cursor=&lines=`
-with the Build's log; `POST /api/build` takes `{"image": "<image>"}` or `{"image": "all"}`;
-`POST /api/<vm>/set-image` takes `{"image": "...", "build": null or "<build>"}`. For live
-progress the UI polls the log with `after_cursor` while `GET /api/images` shows a Build running.
+with its step, and what is `available`); `GET /api/v1/images/<image>/log?build=&after_cursor=&lines=`
+with the Build's log; `POST /api/v1/builds` takes `{"image": "<image>"}` or `{"image": "all"}`;
+`PUT /api/v1/vms/<vm>/image` takes `{"image": "...", "build": null or "<build>"}`. Live progress
+comes as `build` and `build-log` events on `GET /api/v1/events`; the log endpoint fills gaps.
 
 #### Tool versions
 
@@ -713,7 +714,7 @@ no longer counts; the next change writes the file without both.
 | `session_hours` | 12 | 1–168 (next sign-in) |
 | `default_language` | browser | browser, en, de: the Control Room's language after sign-in in a browser whose language switch is on Automatic (at once in the browser that saves it, elsewhere at the next sign-in or page load); `browser` is the browser's language, English if it offers neither. It does not apply on the sign-in page |
 
-The Control Room API has `GET /api/settings` and `POST /api/settings` with a JSON object of
+The Control Room API has `GET /api/v1/settings` and `PATCH /api/v1/settings` with a JSON object of
 changes (only these keys; anything else is refused). Password, home network and ports are
 not Settings and cannot be changed from the browser.
 
@@ -722,10 +723,8 @@ names who caused it in Activity (the Control Room passes the browser's device an
 timers pass `timer`; without it, the user who ran `sudo`). Commands other than `logs` and `pair`
 need root.
 
-The Control Room offers the same in the browser; creating and deleting VMs, the GitHub
-App, the token list, the Allowlist with scope and temporary entries, and Images and Builds
-only through its API until the new UI has views for them. The new UI talks to the
-versioned API `/api/v1`, described with its errors and live events in
+The Control Room offers the same in the browser. Its UI talks to the API `/api/v1`,
+described with its errors and live events in
 [docs/control-room-api.md](docs/control-room-api.md); `agentbox describe [<vm>] --json`
 shows a VM as the Control Room does, and `agentbox watch` is the root helper whose events
 the backend streams to every browser.
@@ -745,12 +744,10 @@ python3 -m unittest discover -s tests          # fallback: the same tests one af
 Working on one Host. VMs are described in a registry instead of a fixed pair (`work`,
 `priv`) and are created and deleted with the CLI or the Control Room API. Images other than
 the Base image can be added in `vm/images/`; every Build is checked for the Safeguards and
-built weekly from the installed Release. The Control Room
-is being rebuilt with Nuxt UI. Its backend already collects the Host's readings (CPU, GPU,
-memory, NVMe temperatures, memory per VM) with 30 minutes of history and streams them live,
-together with VM state, Activity, Alerts, GitHub tokens, Build progress, a needed Host
-reboot, notifications and the installed UI's version. The new UI (source in `web/ui/`,
-built in CI and not committed, see [web/ui/README.md](web/ui/README.md)) has sign-in, the
-live VM list with the connection state, English and German; its other views are
-placeholders that the next steps fill. Each Release brings its build. See the ADRs and
+built weekly from the installed Release. The Control Room's
+backend collects the Host's readings (CPU, GPU, memory, NVMe temperatures, memory per VM) with
+30 minutes of history and streams them live, together with VM state, Activity, Alerts, GitHub
+tokens, Build progress, a needed Host reboot, notifications and the installed UI's version.
+Its UI is built with Nuxt UI, in English and German (source in `web/ui/`, built in CI and not
+committed, see [web/ui/README.md](web/ui/README.md)); each Release brings its build. See the ADRs and
 ARCHITECTURE.md for what is in place.

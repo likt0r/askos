@@ -1,9 +1,8 @@
 # Control Room API v1
 
-The backend (`web/agentbox-web`) serves the new Control Room UI and this API on
-`https://<host>:8800`. Every path below starts with `/api/v1`. The unversioned endpoints
-(`/api/status`, `/api/<vm>/<action>`, ...) stay for the old UI until the new one replaces
-it; new code uses only v1.
+The backend (`web/agentbox-web`) serves the Control Room UI and this API on
+`https://<host>:8800`. Every path below starts with `/api/v1`; any other path under `/api/`
+is `404 not_found` (`401 unauthenticated` without a session).
 
 Vocabulary as in [GLOSSARY.md](../GLOSSARY.md). How the backend works:
 [ARCHITECTURE.md](../ARCHITECTURE.md#control-room).
@@ -182,7 +181,7 @@ UI (`errors.*`); `tests/test_control_room_v1.py` checks that they agree.
 | `POST /session` | `{"password": "..."}` | `200 {"authenticated": true, "expires": "<time>", "default_language": "browser"\|"en"\|"de"}` and the cookie; `401 wrong_password`, `429 too_many_attempts` |
 | `GET /session` | | `200 {"authenticated": true, "expires": "<time>", "default_language": "browser"\|"en"\|"de"}`, else `401 unauthenticated` |
 | `DELETE /session` | | `200 {"authenticated": false}`, cookie cleared, live streams of the session end |
-| `GET /version` | | `200 {"api": 1, "version": "<16 hex>", "ui": "nuxt"\|"legacy", "installed": "<time>"\|null, "release": "<MAJOR.MINOR.PATCH>"\|null}` (`version` is the UI build, which open pages compare to offer a reload; `release` is the Release of Agent Box, the same as `agentbox version`) |
+| `GET /version` | | `200 {"api": 1, "version": "<16 hex>"\|null, "ui": "nuxt"\|null, "installed": "<time>"\|null, "release": "<MAJOR.MINOR.PATCH>"\|null}` (`version` is the UI build, which open pages compare to offer a reload; `version`, `ui` and `installed` are `null` while no UI build is installed; `release` is the Release of Agent Box, the same as `agentbox version`) |
 
 `default_language` is the Setting as the backend reads `/etc/agentbox/settings.json` at
 that request (`browser` when the file has no valid value), so the UI knows it right after
@@ -568,7 +567,7 @@ Progress arrives live as `build` and `build-log` events; the log endpoint fills 
 
 | Method and path | Body | agentbox call, response |
 |---|---|---|
-| `GET /github-app` | | `github-app`: `{"apps": [{"id", "slug", "name", "owner", "html_url", "install_url", "installations": [{"id", "account", "type", "repository_selection", "suspended", "html_url", "vms"}], "error"}], "missing": [{"owner", "vms"}]}`, every App ascending by App ID; `error` is `null`, or `{"error", "message", "params"}` for an App whose key or GitHub's answer for it is no use (`invalid_private_key`, `github_app_rejected`, `github_unavailable`), listed without installations and counting as installed nowhere (its owners are in `missing` until it is fixed; the token service refuses there as well); `missing`: GitHub owners of VMs that no App is installed on; the old UI's unversioned `GET /api/github-app` answers with the same; `409 github_app_missing` without any App, `502 github_unavailable` when GitHub cannot be reached |
+| `GET /github-app` | | `github-app`: `{"apps": [{"id", "slug", "name", "owner", "html_url", "install_url", "installations": [{"id", "account", "type", "repository_selection", "suspended", "html_url", "vms"}], "error"}], "missing": [{"owner", "vms"}]}`, every App ascending by App ID; `error` is `null`, or `{"error", "message", "params"}` for an App whose key or GitHub's answer for it is no use (`invalid_private_key`, `github_app_rejected`, `github_unavailable`), listed without installations and counting as installed nowhere (its owners are in `missing` until it is fixed; the token service refuses there as well); `missing`: GitHub owners of VMs that no App is installed on; `409 github_app_missing` without any App, `502 github_unavailable` when GitHub cannot be reached |
 | `PUT /github-app` | `{"app_id": 123456, "private_key": "-----BEGIN ..."}` | `set-github-app` (key on stdin, checked with GitHub first): adds the App, or replaces the key of the App with this ID; the other Apps stay. The App as in `GET`, without installations, plus `"stored": true` and `"added"` (whether it is a new App) |
 | `DELETE /github-app/<app_id>` | | `remove-github-app`: `{"id", "removed": true}`; the token service no longer asks the App, its key is deleted; `404 github_app_not_found` |
 | `GET /settings` | | `settings`: `{"settings": {"<key>": {"value", "default", "is_default", "applies_later", "allowed"}}}` |
@@ -596,7 +595,7 @@ least `package_min_age_days` old, a version such as `"1.4.250"` pins that releas
 
 ## Live events
 
-`GET /events` (the old `/api/events` is the same stream) is a Server-Sent Events stream
+`GET /events` is a Server-Sent Events stream
 (`text/event-stream`). Use `EventSource("/api/v1/events")`; the browser sends the cookie
 and, after a drop, `Last-Event-ID`.
 
@@ -616,7 +615,7 @@ and, after a drop, `Last-Event-ID`.
 |---|---|---|
 | `hello` | `{"stream", "resumed"}` | first, on every connect |
 | `host` | as `GET /host` without `history`, `interval`, `thresholds`: `{"time", "readings", "vms"}` | every sample (5 s) |
-| `version` | `{"version": "<16 hex>", "ui": "nuxt"\|"legacy", "installed": "<time>"\|null}` | on connect, and when a new UI build is installed: if `version` differs from the page's own (`GET /version` when it loaded), offer to reload |
+| `version` | `{"version": "<16 hex>"\|null, "ui": "nuxt"\|null, "installed": "<time>"\|null}` (as in `GET /version`) | on connect, and when a UI build is installed or removed: if `ui` is `nuxt` and `version` differs from the page's own (`GET /version` when it loaded), offer to reload |
 | `watch` | `{"running": bool, "since": "<time>"\|null, "restarts": n, "last_exit": n\|null}` | the root helper `agentbox watch` started or ended; while `running` is false, VM state and the events below may be stale |
 | `state` | `{"vms": [<VM>...], "problems": [{"vm", "problem"}]}` | on connect, and when a VM appears or goes (render the VM list from it) |
 | `vm` | `<VM>` | one VM's object changed (state, agents, devices, System disk, Image, ...); replace that VM |
@@ -678,5 +677,5 @@ A changed `index.html` reaches open pages as a `version` event.
   blocked; styles set through the DOM (`el.style`, Vue's `:style`) are fine. Configure Nuxt
   UI and modules so their CSS ends up in files (or in `index.html` at build time).
 - The version is the first 16 hex characters of the sha256 of `index.html`.
-- Until a build is installed, the old UI is served as before; once one is, the old UI stays
-  reachable at `/legacy/`.
+- Without an installed build every path outside `/api/` is `503` with a plain-text note
+  that the UI is not installed; the API works as usual.
