@@ -87,7 +87,7 @@ else `500 action_failed`, with the message in `detail`:
 | 409 | `vm_not_running` | the VM is not running (logs) |
 | 409 | `vm_paused` | the VM is paused: start it first (changing the memory limit) |
 | 400 | `invalid_cleanup_days` | the days of the Container image cleanup are not a whole number from 1 to 365 (`field`: `days`) |
-| 400 | `invalid_memory` | memory limit not a whole number from 1024 MiB to the Host's memory (`field`: `memory_mib`), when changing the limit or creating a VM (`POST /vms` formerly answered `invalid_argument` for this) |
+| 400 | `invalid_memory` | memory limit not a whole number from 1024 MiB to the Host's memory (`field`: `memory_mib`), when changing the limit or creating a VM |
 | 500 | `memory_not_applied` | the new memory limit is saved, but the VM could not be defined again; `agentbox regenerate` finishes it |
 | 500 | `env_not_applied` | the VM variables are saved, but the VM could not be defined again (a domain from before VM variables lacks their fw_cfg entry); `agentbox regenerate` finishes it |
 | 400 | `invalid_env_name` | the name of a VM variable is not `^[A-Za-z_][A-Za-z0-9_]*$` of at most 64 characters (`field`: `env`); the backend refuses such a name itself, before agentbox |
