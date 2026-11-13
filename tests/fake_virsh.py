@@ -4,6 +4,12 @@
 Environment:
   FAKE_VIRSH_DIR   directory holding scenario.json; calls are recorded in calls.jsonl,
                    the VMs' changing state in domains.json
+  FAKE_VIRSH_HOLD  "<command>:<directory>", set for one program (a wake, a Restart, watch):
+                   each of its calls of that command takes the next number n (from 1, the
+                   file <directory>/<n>) and goes on once <directory>/<n>.go or
+                   <directory>/go exists. So a test sees that the program has come to that
+                   call and lets it go on when something else has happened, however long
+                   either takes.
 
 scenario.json:
   state       domstate of every VM before any change (default "running")
@@ -16,6 +22,10 @@ scenario.json:
                               as if something else started it (default false)
                 start_fails   `start` fails with libvirt's error (default false); "active":
                               with "domain is already active"
+                start_waits   `start` of the stopped VM waits until another call asks for
+                              its state (domstate), and that call's answer waits for the
+                              start: whoever polls the VMs sees the start as it happens,
+                              not a poll later (default false; only where something polls)
                 pinned_backing  the backing file the VM runs on after `start` (default: the
                               one in its System disk's header then, as libvirt fixes it)
                 defined       the domain exists in libvirt (default true)
@@ -62,28 +72,26 @@ changes the VMs, networks and pools (changing), and their files are replaced who
 (save), so no call reads half a file or undoes another's change. A test that changes
 them while virsh may be called does the same (with changing(dir) and save(name, data, dir)).
 
-Recorded: guest-exec, guest-ping, attach-disk, detach-disk and the commands that change a VM (start, shutdown,
-destroy, managedsave, managedsave-remove), each with the domain; define,
+Recorded: guest-exec, guest-ping (with the time it was asked; a held one when it goes on),
+attach-disk, detach-disk and the commands that change a VM (start, shutdown, destroy, managedsave,
+managedsave-remove), each with the domain; define,
 net-define and pool-define with the XML they were given; net-autostart,
 net-start, net-destroy, net-undefine, pool-autostart and pool-start; undefine
 with its flags.
 """
-import base64
 import contextlib
 import fcntl
 import json
 import os
 import re
-import shutil
-import signal
-import subprocess
 import sys
-import tempfile
 import time
-import uuid
-from xml.sax.saxutils import quoteattr
 
 import fake_proc
+
+# watch asks virsh several times per poll, and a test waits for what it finds: the modules
+# only some commands need (xml.sax.saxutils alone takes longer to import than all the rest)
+# are imported where they are used
 
 DIR = os.environ.get("FAKE_VIRSH_DIR", "")      # unset where a test imports this module
 ROOT = os.environ.get("AGENTBOX_ROOT", "")
@@ -125,8 +133,8 @@ def save(name, data, directory=None):
     """Replace a state file whole: a call that reads it meanwhile gets the old or the new
     one, not an empty or half-written file."""
     d = directory or DIR
-    fd, tmp = tempfile.mkstemp(dir=d, prefix=f".{name}.")
-    with os.fdopen(fd, "w") as f:
+    tmp = os.path.join(d, f".{name}.{os.getpid()}")
+    with open(tmp, "w") as f:
         json.dump(data, f)
     os.replace(tmp, os.path.join(d, name))
 
@@ -145,9 +153,16 @@ def domain_state(scenario, domain):
     conf = vm_config(scenario, domain)
     initial = {"state": conf.get("state", scenario.get("state", "running")),
                "managed_save": conf.get("managed_save", False), "defined": conf.get("defined", True),
-               "disks": conf.get("disks") or {},
-               "uuid": conf.get("uuid", str(uuid.uuid5(uuid.NAMESPACE_DNS, domain)))}
-    return {**initial, **load("domains.json", {}).get(domain, {})}
+               "disks": conf.get("disks") or {}}
+    st = {**initial, **load("domains.json", {}).get(domain, {})}
+    if "uuid" not in st:
+        st["uuid"] = conf.get("uuid") or derived_uuid(domain)
+    return st
+
+
+def derived_uuid(name):
+    import uuid
+    return str(uuid.uuid5(uuid.NAMESPACE_DNS, name))
 
 
 def no_domain(domain):
@@ -176,7 +191,7 @@ def networks(scenario):
 
 def net_uuid(net, name):
     m = re.search(r"<uuid>([^<]+)</uuid>", net.get("xml", ""))
-    return net.get("uuid") or (m.group(1) if m else str(uuid.uuid5(uuid.NAMESPACE_DNS, name)))
+    return net.get("uuid") or (m.group(1) if m else derived_uuid(name))
 
 
 def network(scenario, cmd, arg):
@@ -270,6 +285,7 @@ def header_backing(domain):
 
 
 def dumpxml(scenario, domain):
+    from xml.sax.saxutils import quoteattr
     st = domain_state(scenario, domain)
     if not st["defined"]:
         return no_domain(domain)
@@ -413,13 +429,58 @@ def pool(scenario, cmd, rest):
     return 0
 
 
+def hold(cmd):
+    """FAKE_VIRSH_HOLD: a call of its command takes the next number and waits for its turn."""
+    command, _, directory = os.environ.get("FAKE_VIRSH_HOLD", "").partition(":")
+    if command != cmd:
+        return
+    n = 1
+    while True:
+        try:
+            os.close(os.open(os.path.join(directory, str(n)), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            break
+        except FileExistsError:
+            n += 1
+    # (a directory that is gone: the test is over)
+    while os.path.isdir(directory) and not any(os.path.exists(os.path.join(directory, go))
+                                               for go in (f"{n}.go", "go")):
+        time.sleep(0.01)
+
+
+def meeting(scenario, cmd, domain):
+    """start_waits: `start` and a `domstate` of the stopped VM meet. The start leaves a
+    note that it waits, a domstate one that it asks; under the lock of changing(), the start
+    goes ahead once someone asks, and who asks answers only when no start waits. So the
+    start is over before the answer, and nothing but the answer lies between the two."""
+    waits = os.path.join(DIR, f"start-waits-{domain}")
+    asks = os.path.join(DIR, f"asks-{domain}.{os.getpid()}")
+    if cmd == "domstate":
+        open(asks, "w").close()
+    while True:
+        with changing():
+            if cmd == "domstate" and not os.path.exists(waits):
+                os.unlink(asks)
+                return libvirt(scenario, cmd, [domain])
+            if cmd == "start":
+                asked = any(f.startswith(f"asks-{domain}.") for f in os.listdir(DIR))
+                if asked or domain_state(scenario, domain)["state"] == "running":
+                    if os.path.exists(waits):
+                        os.unlink(waits)
+                    return libvirt(scenario, cmd, [domain])
+                open(waits, "w").close()
+        time.sleep(0.005)
+
+
 def main(args):
     while args and args[0] in ("-q", "-c"):
         args = args[2:] if args[0] == "-c" else args[1:]
     cmd, rest = args[0], args[1:]
     scenario = load("scenario.json", {})
+    hold(cmd)
     if cmd == "qemu-agent-command":
         return guest_agent(scenario, rest)       # may hang (agent_hangs): not one at a time
+    if cmd in ("start", "domstate") and vm_config(scenario, rest[0]).get("start_waits"):
+        return meeting(scenario, cmd, rest[0])
     with changing():
         return libvirt(scenario, cmd, rest)
 
@@ -479,6 +540,7 @@ def disks(scenario, cmd, rest):
                   else f"error: Failed to attach disk\nerror: Cannot access storage file '{source}': "
                        "No such file or directory", file=sys.stderr)
             return 1
+        import shutil
         serial = options[options.index("--serial") + 1] if "--serial" in options else None
         os.makedirs(os.path.join(DIR, "attached"), exist_ok=True)
         shutil.copyfile(source, os.path.join(DIR, "attached", os.path.basename(source)))
@@ -487,6 +549,7 @@ def disks(scenario, cmd, rest):
         print("Disk attached successfully")
         sys.stdout.flush()
         if scenario.get("attach_signals_parent"):
+            import signal
             os.kill(os.getppid(), signal.SIGTERM)
             time.sleep(0.5)
         return 0
@@ -508,6 +571,7 @@ def guest_root(domain):
 
 def run_inbox(scenario, domain, argv):
     """The real agentbox-inbox in the VM's own root, its device the disk attached as agentbox-inbox."""
+    import subprocess
     root = guest_root(domain)
     device = root + INBOX_DEVICE
     os.makedirs(os.path.dirname(device), exist_ok=True)
@@ -526,6 +590,7 @@ def run_inbox(scenario, domain, argv):
 
 def run_container_images(domain, argv):
     """The real agentbox-container-images in the VM's own root, with the fake podman there."""
+    import subprocess
     root = guest_root(domain)
     podman = os.path.join(root, "usr", "bin", "podman")
     os.makedirs(os.path.dirname(podman), exist_ok=True)
@@ -544,7 +609,7 @@ def guest_agent(scenario, rest):
     request = json.loads(rest[1])
     if request["execute"] == "guest-ping":
         # "domain", not "dom": not a change to the VM
-        record({"cmd": "guest-ping", "domain": rest[0], "argv": rest[2:]})
+        record({"cmd": "guest-ping", "domain": rest[0], "argv": rest[2:], "time": time.time()})
     time.sleep(scenario.get("agent_hangs", 0))
     if scenario.get("agent_down"):
         print("error: Guest agent is not responding: QEMU guest agent is not connected", file=sys.stderr)
@@ -570,6 +635,7 @@ def guest_agent(scenario, rest):
         print(json.dumps({"return": {"pid": pid}}))
         return 0
     if request["execute"] == "guest-exec-status":
+        import base64
         if scenario.get("still_running"):
             print(json.dumps({"return": {"exited": False}}))
             return 0

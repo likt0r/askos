@@ -7,7 +7,6 @@ fake_virsh adds a VM's process on `start` and removes it when the VM stops; test
 with a start of their choosing (qemu) where the scenario has the VM running already.
 """
 import os
-import shutil
 import time
 
 # boot time of the fake Host (epoch seconds): the real one, so that a process's start in
@@ -92,4 +91,5 @@ def gone(root, vm):
     except OSError:
         return
     if pid.isdigit():
+        import shutil                    # not for every call of fake_virsh, which imports this module
         shutil.rmtree(os.path.join(_proc(root), pid), ignore_errors=True)
