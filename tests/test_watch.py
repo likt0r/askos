@@ -741,8 +741,11 @@ class RespondingTest(WatchTest):
     out are long, and how long something took is read from the times in the wakes file and
     the fakes' records, not from the test's clock. What still rests on time: watch's first
     look at a started VM within its 2 s limit (work_starts), its first round within the 4 s
-    of test_watch_looks_again_when_the_time_limit_of_a_start_runs_out, and a held guest-ping,
-    which the production gives up after 6 s."""
+    of test_watch_looks_again_when_the_time_limit_of_a_start_runs_out, a held guest-ping,
+    which the production gives up after 6 s, a wake ended within those 6 s
+    (test_a_wake_ended_before_it_recorded_the_incident_leaves_it_to_the_next), and the 12 s a
+    wake may take from its guest-ping to the wakes file
+    (test_a_hanging_guest_agent_holds_up_the_wakes_file_only_briefly)."""
 
     def qemu(self, vm, ago):
         """The VM's QEMU process, started `ago` seconds ago; its start (whole seconds)."""
@@ -1274,7 +1277,8 @@ class RespondingTest(WatchTest):
         self.extra["AGENTBOX_WAKE_SECONDS"] = "1"
         self.qemu("work", 300)
         waiting = self.wake_in_background("192.0.2.41", held=True)
-        waiting.gave_up()                         # it waited for the start the Restart ends
+        # it waited for the start the Restart ends, and counts its failure only after the Restart
+        waiting.gave_up()
         self.assertEqual(self.run_agentbox("restart", "work")[0], 0)
         waiting.go()
         self.assertEqual(waiting(), (1, SILENT))
@@ -1324,6 +1328,7 @@ class RespondingTest(WatchTest):
         self.until(lambda: self.calls("guest-ping"), "the wake does not ask the guest agent")
         waiting.process.terminate()
         waiting()
+        self.assertEqual(self.actions(), [])     # ended before it recorded the incident
         self.scenario(vms={"priv": {"state": "shut off", "managed_save": True}}, systemctl_units=UNITS)
         self.assertEqual(self.wake("192.0.2.41"), (1, "", SILENT))
         self.assertEqual(self.actions(), ["wake.not-responding"])

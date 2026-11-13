@@ -72,8 +72,9 @@ changes the VMs, networks and pools (changing), and their files are replaced who
 (save), so no call reads half a file or undoes another's change. A test that changes
 them while virsh may be called does the same (with changing(dir) and save(name, data, dir)).
 
-Recorded: guest-exec, guest-ping (with the time it was asked), attach-disk, detach-disk and the commands that
-change a VM (start, shutdown, destroy, managedsave, managedsave-remove), each with the domain; define,
+Recorded: guest-exec, guest-ping (with the time it was asked; a held one when it goes on),
+attach-disk, detach-disk and the commands that change a VM (start, shutdown, destroy, managedsave,
+managedsave-remove), each with the domain; define,
 net-define and pool-define with the XML they were given; net-autostart,
 net-start, net-destroy, net-undefine, pool-autostart and pool-start; undefine
 with its flags.
