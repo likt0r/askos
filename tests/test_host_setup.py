@@ -115,15 +115,24 @@ class BackendHostSetupTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.setup_path = os.path.join(tmp.name, "host.json")
+        # the backend reads the Host setup as the CLI does, under AGENTBOX_ROOT
+        self.root = tmp.name
+        self.setup_path = os.path.join(self.root, "etc", "agentbox", "host.json")
+        os.makedirs(os.path.dirname(self.setup_path))
+
+    def env(self):
+        env = {k: v for k, v in os.environ.items() if not k.startswith("AGENTBOX_WEB_")}
+        env.update(AGENTBOX_WEB_CONF=self.conf.name, AGENTBOX_ROOT=self.root)
+        return env
+
+    def write(self, setup):
+        with open(self.setup_path, "w") as f:
+            f.write(setup if isinstance(setup, str) else json.dumps(setup))
 
     def start(self, setup):
         if setup is not None:
-            with open(self.setup_path, "w") as f:
-                f.write(setup if isinstance(setup, str) else json.dumps(setup))
-        env = {k: v for k, v in os.environ.items() if not k.startswith("AGENTBOX_WEB_")}
-        env.update(AGENTBOX_WEB_CONF=self.conf.name, AGENTBOX_WEB_HOST_SETUP=self.setup_path)
-        proc = subprocess.Popen([sys.executable, "-I", SERVER], env=env, text=True,
+            self.write(setup)
+        proc = subprocess.Popen([sys.executable, "-I", SERVER], env=self.env(), text=True,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         self.addCleanup(self.stop, proc)
         return proc
@@ -139,24 +148,19 @@ class BackendHostSetupTest(unittest.TestCase):
             proc.wait()
         proc.stderr.close()
 
-    def serve(self, setup_for, address, hold_loopback=False):
+    def serve(self, setup_for, address):
         """The backend listening on the port of the record, which the Host setup cannot leave to the
         kernel (port 0 is no valid web_port): it takes a free port, and if another test running at
-        the same time has taken it by the time the backend binds, another one. hold_loopback keeps
-        127.0.0.1 on that port bound without listen(), so nothing else can answer there meanwhile."""
+        the same time has taken it by the time the backend binds, another one."""
         for _ in range(10):
             holder = socket.socket()
-            self.addCleanup(holder.close)
             holder.bind(("127.0.0.1", 0))
             self.port = holder.getsockname()[1]
-            if not hold_loopback:
-                holder.close()
+            holder.close()
             proc = self.start(setup_for(self.port))
             if self.listens(proc, address) is not None:
                 return proc
-        self.fail("the backend found its port in use 10 times"
-                  + (" next to 127.0.0.1 held on it, as one that binds every address does" if hold_loopback else "")
-                  + ": " + self.in_use)
+        self.fail("the backend found its port in use 10 times: " + self.in_use)
 
     def listens(self, proc, address):
         """True once the backend answers on address and the port (with its certificate: another
@@ -191,28 +195,49 @@ class BackendHostSetupTest(unittest.TestCase):
         proc = self.serve(lambda port: {"mode": "local", "web_port": port}, "127.0.0.1")
         self.assertTrue(self.listens(proc, "127.0.0.1"))
 
+    def address(self, setup):
+        """(address, port) the backend takes from this record (its bind_port(), loaded but not
+        started): Network mode needs the Host's address in the home network, which a test cannot
+        bind."""
+        if setup is not None:
+            self.write(setup)
+        code = ("import importlib.machinery, importlib.util, json, sys\n"
+                "loader = importlib.machinery.SourceFileLoader('agentbox_web', sys.argv[1])\n"
+                "web = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))\n"
+                "loader.exec_module(web)\n"
+                "print(json.dumps(web.bind_port()))")
+        r = subprocess.run([sys.executable, "-I", "-c", code, SERVER], capture_output=True, text=True,
+                           env=self.env(), timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return tuple(json.loads(r.stdout))
+
     def test_network_mode_listens_on_the_bind_address(self):
-        # any address in 127.0.0.0/8 is local on Linux, so this stands in for the Host's LAN address
-        proc = self.serve(lambda port: {"mode": "network", "bind": "127.0.0.2", "web_port": port,
-                                        "home_network": "127.0.0.0/8"}, "127.0.0.2", hold_loopback=True)
-        self.assertTrue(self.listens(proc, "127.0.0.2"))
-        with self.assertRaises(OSError):
-            socket.create_connection(("127.0.0.1", self.port), timeout=1).close()
+        self.assertEqual(self.address({"mode": "network", "bind": "192.0.2.8", "web_port": 8443,
+                                       "home_network": "192.0.2.0/24"}), ("192.0.2.8", 8443))
+
+    def test_local_only_without_a_record_and_with_every_field(self):
+        self.assertEqual(self.address(None), ("127.0.0.1", 8800))
+        self.assertEqual(self.address({}), ("127.0.0.1", 8800))
+        self.assertEqual(self.address({"mode": "local", "bind": "127.0.0.5", "web_port": 9000, "cert_name": "box.lan",
+                                       "owner_user": "alice"}), ("127.0.0.5", 9000))
 
     def test_a_broken_record_stops_the_server(self):
+        # the CLI's checks, with its message and without a traceback
         for name, setup in {"not json": "{", "local on a LAN address": {"mode": "local", "bind": "192.0.2.8"},
-                            "bad port": {"web_port": 70000}}.items():
+                            "bad port": {"web_port": 70000}, "unknown field": {"mode": "local", "port": 8800},
+                            "network without home_network": {"mode": "network", "bind": "192.0.2.8"},
+                            "network on loopback": {"mode": "network", "bind": "127.0.0.2",
+                                                    "home_network": "127.0.0.0/8"}}.items():
             with self.subTest(name):
                 code, err = self.fails(setup)
                 self.assertNotEqual(code, 0)
-                self.assertIn("Host setup", err)
+                self.assertTrue(err.startswith(f"agentbox-web: Host setup {self.setup_path}: "), err)
+                self.assertNotIn("Traceback", err)
 
     def test_hashing_a_password_does_not_need_a_valid_record(self):
-        with open(self.setup_path, "w") as f:
-            f.write("{")
-        env = dict(os.environ, AGENTBOX_WEB_HOST_SETUP=self.setup_path)
+        self.write("{")
         r = subprocess.run([sys.executable, "-I", SERVER, "--hash-password"], input="x" * 16 + "\n",
-                           capture_output=True, text=True, env=env)
+                           capture_output=True, text=True, env=self.env())
         self.assertEqual(r.returncode, 0, r.stderr)
 
 
