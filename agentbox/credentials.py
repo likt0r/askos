@@ -47,6 +47,8 @@ CHECK_BODY = '{"model":"claude-haiku-5-5","max_tokens":5,"messages":[{"role":"us
 WHITESPACE = b" \t\n\r\v\f\0"
 # sk-ant-oat01-... from `claude setup-token`: nothing that could end a header line
 CLAUDE_TOKEN = re.compile(rb"sk-ant-[A-Za-z0-9_-]{1,500}")
+# Without an Authorization header this answers the model list as well: the check means
+# something only because the key goes with it (test_checks_the_key_with_opencode_go_models)
 OPENCODE_MODELS = "https://opencode.ai/inference/go/openai/v1/models"
 # an API key from the OpenCode console: the same characters, so nothing can end a header line
 OPENCODE_KEY = re.compile(rb"sk-[A-Za-z0-9_-]{1,500}")

@@ -21,8 +21,12 @@ settings, nothing planted there survives a Reset. So it removes
 Only opencode.db: a database opencode is pointed at otherwise (OPENCODE_DB, another
 release channel) is not looked at.
 
-A table opencode does not have (yet) is skipped. Whatever fails is reported on
-stderr; the exit status is 0 all the same, so a broken file never stops the VM.
+A table opencode does not have (yet) is skipped. Each step stands on its own, and
+afterwards the database is checked afresh: when anything of the above is still there
+(a planted constraint made a step fail, the file is no database), opencode.db is set
+aside as opencode.db.unclean and opencode starts with a new one, without the sessions.
+Whatever fails is reported on stderr; the exit status is 0 all the same, so a broken
+file never stops the VM.
 """
 import os
 import shutil
@@ -43,6 +47,59 @@ def remove(path):
         os.remove(path)
 
 
+def _quoted(name):
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _clean(con):
+    """Each step on its own, so one that fails (a planted constraint, say) undoes no other."""
+    problems = []
+
+    def step(sql):
+        try:
+            with con:
+                con.execute(sql)
+        except sqlite3.Error as e:
+            problems.append(f"opencode.db: {e}")
+
+    # opencode has no triggers or views: any there was planted, to put rows back, to stand
+    # in for a table, or to keep this from ending
+    for kind, name in con.execute("SELECT type, name FROM sqlite_master WHERE type IN ('trigger', 'view')").fetchall():
+        step(f"DROP {kind.upper()} IF EXISTS {_quoted(name)}")
+    have = {n for (n,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    for table in TABLES:
+        if table in have:
+            step(f"DELETE FROM {_quoted(table)}")
+    for table, column in COLUMNS:
+        if table in have and column in {r[1] for r in con.execute(f"PRAGMA table_info({_quoted(table)})")}:
+            step(f"UPDATE {_quoted(table)} SET {_quoted(column)} = NULL")
+    return problems
+
+
+def _left(con):
+    """What of it is still there, checked afresh: none of it may be."""
+    left = [f"{kind} {name}" for kind, name in
+            con.execute("SELECT type, name FROM sqlite_master WHERE type IN ('trigger', 'view')")]
+    have = {n for (n,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    for table in TABLES:
+        if table in have and con.execute(f"SELECT count(*) FROM {_quoted(table)}").fetchone()[0]:
+            left.append(f"rows in {table}")
+    for table, column in COLUMNS:
+        if table not in have or column not in {r[1] for r in con.execute(f"PRAGMA table_info({_quoted(table)})")}:
+            continue
+        if con.execute(f"SELECT count(*) FROM {_quoted(table)} WHERE {_quoted(column)} IS NOT NULL").fetchone()[0]:
+            left.append(f"{table}.{column}")
+    return left
+
+
+def _set_aside(db):
+    """opencode starts with a new database; the old one stays as <name>.unclean (replacing an
+    earlier one), its journal files with it, for the owner to look at or delete."""
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        if os.path.lexists(db + suffix):
+            os.replace(db + suffix, db + ".unclean" + suffix)
+
+
 def forget(folder):
     problems = []
     for name in FILES:
@@ -51,27 +108,25 @@ def forget(folder):
         except OSError as e:
             problems.append(f"{name}: {e.strerror}")
     db = os.path.join(folder, "opencode.db")
-    if os.path.isfile(db):
+    if not os.path.isfile(db):
+        return problems
+    try:
+        con = sqlite3.connect(db, timeout=10)
         try:
-            con = sqlite3.connect(db, timeout=10)
-            try:
-                with con:
-                    # opencode has no triggers or views: any there was planted, to put rows
-                    # back, to stand in for a table, or to keep this from ending
-                    planted = con.execute("SELECT type, name FROM sqlite_master WHERE type IN ('trigger', 'view')")
-                    for kind, name in planted.fetchall():
-                        con.execute(f'DROP {kind.upper()} IF EXISTS "{name.replace(chr(34), chr(34) * 2)}"')
-                    have = {n for (n,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-                    for table in TABLES:
-                        if table in have:
-                            con.execute(f'DELETE FROM "{table}"')
-                    for table, column in COLUMNS:
-                        if table in have and column in {r[1] for r in con.execute(f'PRAGMA table_info("{table}")')}:
-                            con.execute(f'UPDATE "{table}" SET "{column}" = NULL')
-            finally:
-                con.close()
-        except sqlite3.Error as e:
-            problems.append(f"opencode.db: {e}")
+            problems += _clean(con)
+            left = _left(con)
+        finally:
+            con.close()
+    except sqlite3.Error as e:
+        problems.append(f"opencode.db: {e}")
+        left = ["an unreadable database"]
+    if left:
+        # whatever kept it from being cleaned, opencode does not get it back
+        try:
+            _set_aside(db)
+            problems.append(f"opencode.db set aside as opencode.db.unclean ({', '.join(left)})")
+        except OSError as e:
+            problems.append(f"opencode.db could not be set aside: {e.strerror}")
     return problems
 
 

@@ -171,8 +171,11 @@ flowchart LR
   disk. So do approvals saved as "always" (`opencode.db`'s `permission` table and each
   session's own rules) and the commands opencode runs when it creates a worktree
   (`project.commands`, `workspace.extra`), like agent settings; triggers and views, which
-  opencode never makes, are dropped first, so none can put the rows back. A file it cannot
-  remove is reported, and a run past 60 seconds is ended: neither stops the start. This
+  opencode never makes, are dropped first, so none can put the rows back. Each step stands
+  alone, and the database is checked afterwards: when any of it is still there (a planted
+  constraint made a step fail, the file is no database), `opencode.db` is set aside as
+  `opencode.db.unclean` and opencode starts with a new one, without the sessions. A file it
+  cannot remove is reported, and a run past 60 seconds is ended: neither stops the start. This
   covers `opencode.db` only, not a database opencode is pointed at otherwise (`OPENCODE_DB`,
   another release channel). The token and the VM
   variables are files QEMU reads (`root:qemu`, mode 0640, in directories of mode 0750),

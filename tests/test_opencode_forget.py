@@ -152,13 +152,43 @@ CREATE TRIGGER stall BEFORE DELETE ON credential BEGIN
         self.assertEqual(self.run_script(os.path.join(self.tmp.name, "missing")), (0, "", ""))
         self.assertFalse(os.path.exists(self.db))         # never creates a database
 
-    def test_a_broken_database_is_reported_and_stops_nothing(self):
+    def test_a_broken_database_is_set_aside_and_stops_nothing(self):
         self.write("opencode.db", "this is not a database")
         self.write("auth.json")
         code, out, err = self.run_script()
         self.assertEqual((code, out), (0, ""))
-        self.assertRegex(err, r"^opencode-forget: opencode\.db: .+\n$")
-        self.assertFalse(os.path.exists(os.path.join(self.dir, "auth.json")))
+        self.assertRegex(err, r"^opencode-forget: opencode\.db: .+\n"
+                              r"opencode-forget: opencode\.db set aside as opencode\.db\.unclean "
+                              r"\(an unreadable database\)\n$")
+        self.assertEqual(sorted(os.listdir(self.dir)), ["opencode.db.unclean"])
+
+    def test_a_planted_constraint_undoes_nothing_else_and_the_database_goes(self):
+        """One step that fails (here a CHECK on project.commands) neither rolls back the other
+        steps nor leaves the logins to opencode: what is left makes the database go aside."""
+        self.make_db(SCHEMA.replace("commands text);", "commands text CHECK (commands IS NOT NULL OR id <> 'prj1'));")
+                     + LOGINS + SESSIONS)
+        with open(self.db + "-wal", "w"):
+            pass
+        code, out, err = self.run_script()
+        self.assertEqual((code, out), (0, ""))
+        self.assertIn("opencode-forget: opencode.db: CHECK constraint failed", err)
+        self.assertIn("opencode-forget: opencode.db set aside as opencode.db.unclean (project.commands)\n", err)
+        self.assertFalse(os.path.exists(self.db))
+        self.assertFalse(os.path.exists(self.db + "-wal"))
+        aside = self.db + ".unclean"
+        con = sqlite3.connect(aside)
+        try:
+            # the other steps took effect all the same
+            self.assertEqual(con.execute("SELECT count(*) FROM account").fetchone()[0], 0)
+            self.assertEqual(con.execute("SELECT count(*) FROM permission").fetchone()[0], 0)
+        finally:
+            con.close()
+
+    def test_a_clean_run_sets_nothing_aside(self):
+        self.make_db()
+        self.assertEqual(self.run_script(), (0, "", ""))
+        self.assertTrue(os.path.exists(self.db))
+        self.assertFalse(os.path.exists(self.db + ".unclean"))
 
     def test_needs_the_folder(self):
         code, _, err = self.run_script("a", "b")
