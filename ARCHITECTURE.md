@@ -168,7 +168,9 @@ flowchart LR
   (`auth.json` from `opencode auth login`, `mcp-auth.json` with MCP servers' OAuth tokens,
   the login tables of `opencode.db`); `guest-setup` deletes them at every start, keeping the
   sessions, so none outlives the next one, like a Codex login, which stays on the System
-  disk. A file it cannot remove is reported and does not stop the start. The token and the VM
+  disk. So do approvals saved as "always" (`opencode.db`'s `permission` table) and the
+  commands opencode runs when it creates a worktree (`project.commands`, `workspace.extra`),
+  like agent settings. A file it cannot remove is reported and does not stop the start. The token and the VM
   variables are files QEMU reads (`root:qemu`, mode 0640, in directories of mode 0750),
   never values in virt-install's `--sysinfo`, which it splits at commas: the VM variables
   are `/var/lib/agentbox/vm-env/<vm>.env`, entry `opt/agentbox/env`, one line

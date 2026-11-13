@@ -568,6 +568,8 @@ class SecretTest(ActivityTest):
         self.run_agentbox("--actor=x sk-Oc12AbCdEf_34-ghiJKLmn. sk-learn sk-hynix-semiconductor.com",
                           "close-web", "work")
         self.assertEqual(self.entries()[-1]["AGENTBOX_ACTOR"], "x [hidden]. sk-learn sk-hynix-semiconductor.com")
+        self.run_agentbox("--actor=x sk-Oc12AbCdEf_34-ghiJKLmn.Retry sk-Oc12AbCdEf_34-ghiJKLmn.5", "close-web", "work")
+        self.assertEqual(self.entries()[-1]["AGENTBOX_ACTOR"], "x [hidden].Retry [hidden].5")
         for secret in (b"Ab3_x-9", b"sk-ant", b"ghs_", b"Oc12AbCdEf"):
             self.assertNotIn(secret, self.raw())
 

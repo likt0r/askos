@@ -625,6 +625,40 @@ class GuestTest(unittest.TestCase):
             code = [line for line in f if not line.lstrip().startswith("#")]
         self.assertFalse(any(re.search(r"\beval\b|\bsource\b|^\s*\.\s", line) for line in code))
 
+    def opencode_key_in_guest(self, entry):
+        """Run guest-setup's lines for the OpenCode key with the fw_cfg entry `entry` (bytes, or
+        None when the domain has none); what they append to env and agent-env."""
+        with open(GUEST_SETUP) as f:
+            lines = f.read().splitlines()
+        start = next(i for i, line in enumerate(lines) if line.startswith("key=$(fwcfg opencode_key"))
+        end = next(i for i in range(start, len(lines)) if lines[i] == "fi")
+        block = "\n".join(lines[start:end + 1])
+        block = block.replace("/run/agentbox/agent-env", self.agent_env).replace("/run/agentbox/env", self.env)
+        raw = os.path.join(self.dir, "opencode_key")
+        if entry is None:
+            if os.path.exists(raw):
+                os.remove(raw)
+        else:
+            with open(raw, "wb") as f:
+                f.write(entry)
+        script = ("set -euo pipefail\n"
+                  f'fwcfg() {{ [ -r "{raw}" ] || {{ echo missing >&2; exit 1; }}; cat "{raw}"; }}\n' + block + "\n")
+        for path in (self.env, self.agent_env):
+            open(path, "w").close()
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return self.read(self.env), self.read(self.agent_env)
+
+    def test_guest_setup_passes_on_only_an_opencode_key(self):
+        key = "sk-Oc12AbCdEf_34-ghiJKLmn"
+        # wrapped and padded as the Host never writes it: whitespace goes, the key stays
+        self.assertEqual(self.opencode_key_in_guest(b" sk-Oc12AbCdEf_34-\nghiJKLmn\n"),
+                         (f"OPENCODE_API_KEY={key}\n", f"export OPENCODE_API_KEY={key}\n"))
+        for entry in (None, b"none\n", b"", b"sk-ant-oat01-AbCdEf\n", b"sk-\n", b"sk-a=b\n", b"sk-a;id\n",
+                      b"sk-$(id)\n", b"sk-`id`\n", b"sk-a'b\n", b"sk-a\"b\n", b"sk-a\\nX=1\n", b"x sk-abc\n"):
+            with self.subTest(entry=entry):
+                self.assertEqual(self.opencode_key_in_guest(entry), ("", ""))
+
     def test_guest_setup_puts_the_fixed_values_after_the_variables(self):
         with open(GUEST_SETUP) as f:
             lines = [line.rstrip("\n") for line in f]
