@@ -1031,9 +1031,9 @@ reloaded and its timer restarted (a restarted Feeds timer fetches the lists at o
 other readers take the file at the moment they need it: `create` (defaults for new VMs),
 `open-web` (longest Open web), the Maintenance window (`rebuild_day`; its Reset check
 `reset_age_days`, `auto_update`), `check-versions` (`auto_update`) and the Control Room
-(`session_hours`, read at every sign-in; a missing or unusable value means 12 hours;
-`default_language`, read at every `GET` and `POST /session` and passed to the UI, which
-applies it before a page shows; a missing or unusable value means `browser`), the Builds
+(`session_hours`, read at every sign-in; a missing or unusable value, or a file agentbox
+refuses, means 12 hours; `default_language`, read at every `GET` and `POST /session` and
+passed to the UI, which applies it before a page shows; likewise `browser`), the Builds
 (`package_min_age_days`, `orca_version`, `builds_kept`) and temporary Allowlist entries
 (`temporary_entry_default`). The Control Room API (`GET`/`PATCH /api/v1/settings`) passes every change to `agentbox set-settings`, accepts
 only the known keys, and so cannot change the password, the home network or the ports, which

@@ -163,10 +163,11 @@ def setting(key):
     """A value of the Settings as agentbox reads them (settings.load(); the file is world-readable),
     read anew each time: session_hours at every sign-in, default_language for GET and POST /session,
     which the UI needs after signing in without GET /settings (a call of agentbox with sudo). The
-    default when the file cannot be used, as agentbox refuses it then."""
+    default when the file cannot be used, as agentbox refuses it then, with the reason in the log."""
     try:
         return settings.load()[key]
-    except Fail:
+    except Fail as f:
+        log(f"Settings unusable, {key} is its default: {f.message}")
         return settings.DEFAULTS[key]
 
 

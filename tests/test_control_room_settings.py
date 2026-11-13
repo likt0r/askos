@@ -121,5 +121,17 @@ class SessionLengthTest(ControlRoomTest):
                 self.assertEqual(self.max_age(), 12 * 3600)
 
 
+class DocumentedKeysTest(unittest.TestCase):
+    def test_the_api_docs_list_the_keys_the_control_room_may_change(self):
+        # the backend takes them from settings.SPEC: a new Setting is changeable through
+        # PATCH /settings at once, so the docs name it too
+        sys.path.insert(0, test_control_room.ROOT)
+        from agentbox import settings
+        with open(os.path.join(test_control_room.ROOT, "docs", "control-room-api.md")) as f:
+            text = f.read()
+        listed = text.split("Settings keys the Control Room may change:", 1)[1].split("The password", 1)[0]
+        self.assertEqual(sorted(re.findall(r"`([a-z_]+)`", listed)), sorted(settings.SPEC))
+
+
 if __name__ == "__main__":
     unittest.main()
