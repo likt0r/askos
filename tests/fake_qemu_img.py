@@ -6,6 +6,8 @@ Environment:
   FAKE_DIR   calls are recorded in calls.jsonl as {"cmd": "qemu-img", "argv": [...]}
   FAKE_QEMU_IMG_CREATE_SECONDS   `create` with a backing file takes this long before it
              writes the disk (default 0)
+  FAKE_QEMU_IMG_CREATE_FAILS     `create` with a backing file writes nothing, prints this to
+             stderr and exits 1
 
   qemu-img info -U --output=json <disk>
   qemu-img create -q -f qcow2 -F qcow2 -b <base> <disk>   writes the fake disk
@@ -43,6 +45,9 @@ def main(args):
         return 0
     if args[:6] == ["create", "-q", "-f", "qcow2", "-F", "qcow2"] and args[6] == "-b" and len(args) == 9:
         time.sleep(float(os.environ.get("FAKE_QEMU_IMG_CREATE_SECONDS", "0")))
+        if os.environ.get("FAKE_QEMU_IMG_CREATE_FAILS"):
+            print(os.environ["FAKE_QEMU_IMG_CREATE_FAILS"], file=sys.stderr)
+            return 1
         try:
             with open(disk, "w") as f:
                 json.dump({"backing-filename": args[7]}, f)

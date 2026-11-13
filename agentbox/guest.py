@@ -89,7 +89,8 @@ def execute(ctx, wrapper, argv, wait, *, missing=None, answer=None):
     without it, that is a guest agent that does not answer. answer: stdout is the wrapper's
     answer of at most that many characters, decoded strictly (base64, UTF-8); None instead
     of it when it is anything else, longer or truncated, and stderr is not read (None).
-    Without answer both are decoded leniently, undecodable UTF-8 replaced."""
+    Without answer both are decoded leniently, undecodable UTF-8 replaced. A wrapper the Host
+    stopped waiting for has no output: (124, "", "", False)."""
     r = virsh.run("qemu-agent-command", dom(ctx), json.dumps({"execute": "guest-exec", "arguments": {
         "path": wrapper, "arg": argv, "capture-output": True}}), "--timeout", "10")
     if r.returncode != 0:
@@ -151,8 +152,9 @@ def run_in_vm(ctx, argv, wrapper=JOURNAL, limit=VM_TIMEOUT):
         die(f"{ctx}: the VM is not running (agentbox start {ctx})", 3, error="vm_not_running", vm=ctx)
     code, out, err, truncated = execute(ctx, wrapper, argv, limit + 10)
     if code == 124:
-        die(f"{ctx}: query in the VM stopped after {limit} s, narrow the filters", 5, error="vm_query_timeout",
-            vm=ctx, seconds=limit)
+        hint = ", narrow the filters" if wrapper == JOURNAL else ""
+        die(f"{ctx}: query in the VM stopped after {limit} s{hint}", 5, error="vm_query_timeout", vm=ctx,
+            seconds=limit)
     # journalctl --grep without a match ends with 1 and no output
     if code != 0 and not (code == 1 and not out.strip() and not err.strip() and wrapper == JOURNAL):
         program = "journalctl" if wrapper == JOURNAL else os.path.basename(wrapper)

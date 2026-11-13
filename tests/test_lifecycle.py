@@ -385,6 +385,15 @@ class ResetTest(LifecycleTest):
                          (1, "", "agentbox: no Build of Image base, run agentbox build base first\n"))
         self.assertEqual(self.calls("qemu-img"), [])
 
+    def test_a_failing_qemu_img_fails_the_reset_with_its_summary(self):
+        self.scenario(state="shut off")
+        code, out, err = self.run_agentbox("reset", "work", "--json",
+                                           FAKE_QEMU_IMG_CREATE_FAILS="qemu-img: Could not open\n  the base\x1b[31m")
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(json.loads(err), {"error": "action_failed",
+                                           "message": "qemu-img create failed: qemu-img: Could not open the base[31m",
+                                           "params": {"program": "qemu-img", "vm": "work"}})
+
     def test_start_failure_fails_the_reset(self):
         # the Bash version exited 0 with virsh's message on stderr (#52)
         self.scenario(vms={"work": {"start_fails": True}})
