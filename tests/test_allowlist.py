@@ -404,6 +404,7 @@ class CliTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
+        self.env = {}           # more environment for agentbox
         self.dir = os.path.realpath(tmp.name)
         self.root = os.path.join(self.dir, "root")
         self.conf = os.path.join(self.root, "etc", "agentbox")
@@ -425,7 +426,7 @@ class CliTest(unittest.TestCase):
 
     def run_agentbox(self, *args):
         env = {"PATH": os.path.join(self.dir, "bin") + ":" + os.environ["PATH"], "FAKE_DIR": self.dir,
-               "AGENTBOX_ROOT": self.root, "LANG": "C.UTF-8", "TZ": "UTC", "AGENTBOX_CLASSIFIER_SECONDS": "1"}
+               "AGENTBOX_ROOT": self.root, "LANG": "C.UTF-8", "TZ": "UTC", **self.env}
         r = subprocess.run([AGENTBOX, *args], capture_output=True, text=True, env=env, timeout=60)
         return r.returncode, r.stdout, r.stderr
 
@@ -561,6 +562,7 @@ class AllowTest(CliTest):
         self.assertEqual(self.ok("allow", "work", "evil.example", "--force"), "work: evil.example allowed\n")
 
     def test_a_classifier_that_does_not_answer_counts_as_strong_suspicion(self):
+        self.env["AGENTBOX_CLASSIFIER_SECONDS"] = "1"
         started = time.monotonic()
         self.assertEqual(self.refused("allow", "work", "slow.example"),
                          "slow.example is suspicious (agentbox-suspicious does not answer). "
