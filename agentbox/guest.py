@@ -15,7 +15,7 @@ import re
 import sys
 import time
 
-from . import options, paths, state_files, virsh
+from . import options, paths, state_files, times, virsh
 from .registry import check, dom
 from .errors import Fail, die
 from .sanitize import clean, entry, pairing_codes
@@ -24,12 +24,11 @@ JOURNAL = "/usr/libexec/qemu-ga/fsfreeze-hook.d/agentbox-journal"
 VM_TIMEOUT = 20                      # time limit of the wrapper inside the VM
 HOST_TIMEOUT = VM_TIMEOUT + 10
 PRIORITIES = ("emerg", "alert", "crit", "err", "warning", "notice", "info", "debug")
-TIME = re.compile(r"(today|yesterday|now|-\d{1,6}(s|min|h|d|w)|\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?)?)")
 CHECKS = {
     "unit": lambda v: re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9:_.@-]{0,127}", v),
     "priority": lambda v: v in PRIORITIES or re.fullmatch(r"[0-7]", v),
-    "since": TIME.fullmatch,
-    "until": TIME.fullmatch,
+    "since": times.TIME.fullmatch,
+    "until": times.TIME.fullmatch,
     "boot": lambda v: v in ("current", "all"),
     "grep": lambda v: 0 < len(v) <= 200 and clean(v, False) == v,
     "lines": lambda v: re.fullmatch(r"\d{1,4}", v) and 1 <= int(v) <= 5000,
@@ -43,13 +42,10 @@ ORDER = (("__SEQNUM", "__SEQNUM_ID"), ("__MONOTONIC_TIMESTAMP", "_BOOT_ID"), ("_
 
 def to_vm_time(v):
     """Absolute time (Host local time) goes to the VM as UTC; relative stays as is."""
-    m = re.fullmatch(r"(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2}(?::\d{2})?))?", v)
-    if not m:
+    local = times.date_time(v)
+    if local is None:
         return v
-    t = m.group(2) or "00:00"
-    fmt = "%Y-%m-%d %H:%M:%S" if t.count(":") == 2 else "%Y-%m-%d %H:%M"
-    local = datetime.datetime.strptime(f"{m.group(1)} {t}", fmt).astimezone()
-    return local.astimezone(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    return local.astimezone().astimezone(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
 def agent(ctx, cmd):
@@ -225,11 +221,8 @@ def logs(args):
                           "truncated": truncated}, ensure_ascii=False))
     else:
         for e in entries:
-            try:
-                t = datetime.datetime.fromisoformat(e["time"].replace("Z", "+00:00")).astimezone()
-                when = t.strftime("%b %d %H:%M:%S")
-            except (AttributeError, ValueError):
-                when = "?"
+            t = times.parse(e["time"])
+            when = t.astimezone().strftime("%b %d %H:%M:%S") if t else "?"
             pid = f"[{e['_pid']}]" if e["_pid"] else ""
             print(f"{when} {e['_host'] or '-'} {e['identifier'] or '-'}{pid}: {e['message'] or ''}")
     if truncated:

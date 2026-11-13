@@ -237,8 +237,7 @@ def save(changes):
         now = {**DEFAULTS, **kept}
         diff = {k: (old[k], now[k]) for k in new if old[k] != now[k]}
         if diff or removed:
-            data = json.dumps(dict(sorted(kept.items())), indent=2) + "\n"
-            state_files.write_atomic(SETTINGS, data.encode(), 0o644)
+            state_files.write_json(SETTINGS, dict(sorted(kept.items())))
         return diff
 
 

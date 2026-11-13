@@ -51,7 +51,6 @@ a Reset. The fetch needs HTTPS to registry.npmjs.org and api.github.com, the cou
 container the Fedora mirrors. versions.json from before #113 named the Host's Orca and the
 newest release instead (orca.host, orca.release): Orca is unknown in it.
 """
-import datetime
 import json
 import os
 import re
@@ -61,7 +60,7 @@ import subprocess
 import sys
 import time
 
-from . import paths, programs, safeguards, scripts, settings, state_files
+from . import paths, programs, safeguards, scripts, settings, state_files, times
 from .errors import Fail, die
 from .sanitize import clean
 
@@ -240,28 +239,19 @@ def _get(url, accept):
         return int(status), None
 
 
-def _epoch(stamp):
-    if not isinstance(stamp, str):
-        return None
-    try:
-        return datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
-    except ValueError:
-        return None
-
-
 def pick(metadata, cutoff):
     """The version npm installs from a package's metadata when it may take only versions
     published up to `cutoff` (epoch seconds; npm's --before, npm-pick-manifest): the
     `latest` tag when it is that old and not deprecated, else the newest such release,
     deprecated ones last. Engines are not considered. None when there is none."""
-    versions, times = metadata.get("versions"), metadata.get("time")
+    versions, published_at = metadata.get("versions"), metadata.get("time")
     tags = metadata.get("dist-tags")
     if not isinstance(versions, dict):
         return None
-    times = times if isinstance(times, dict) else {}
+    published_at = published_at if isinstance(published_at, dict) else {}
 
     def old_enough(v):
-        published = _epoch(times.get(v))
+        published = times.epoch(published_at.get(v))
         return published is None or published <= cutoff         # npm takes one without a time
 
     def deprecated(v):
@@ -384,12 +374,7 @@ def count_updates(image, tag):
 
 def load():
     """What the last check found (versions.json), or None when there was none or it is unreadable."""
-    try:
-        with open(RECORD, encoding="utf-8") as f:
-            rec = json.load(f)
-    except (OSError, ValueError):
-        return None
-    return rec if isinstance(rec, dict) else None
+    return state_files.json_object(RECORD)
 
 
 def _part(rec, *keys):
@@ -413,7 +398,7 @@ def available(rec=None, pin=None):
         tools["orca"] = _orca_version(_part(rec, "orca", "version"))
     checked = _part(rec, "checked")
     days = _part(rec, "package_min_age_days")
-    return {"checked": _iso(checked), "package_min_age_days": days if isinstance(days, int) else None,
+    return {"checked": times.iso(checked), "package_min_age_days": days if isinstance(days, int) else None,
             "tools": tools, "orca_version": pin}
 
 
@@ -435,12 +420,6 @@ def package_updates(image, build, rec=None):
         return None
     n = found.get("updates")
     return n if isinstance(n, int) and not isinstance(n, bool) and n >= 0 else None
-
-
-def _iso(epoch):
-    if not isinstance(epoch, (int, float)) or isinstance(epoch, bool):
-        return None
-    return datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def text(tools):
@@ -491,7 +470,7 @@ def fetch(say):
     rec["orca"] = {"version": version, "error": error, "pin": pin}
     say(_orca_line(rec["orca"], days))
     os.makedirs(AVAILABLE_DIR, exist_ok=True)
-    state_files.write_atomic(AVAILABLE, (json.dumps(rec, indent=2) + "\n").encode(), 0o644)
+    state_files.write_json(AVAILABLE, rec)
     return rec
 
 
@@ -594,7 +573,7 @@ def _check(say):
         say(f"Package updates for {image}-{build}: " + (str(n) if n is not None else "unknown")
             + (f" ({error})" if error else ""))
     os.makedirs(paths.STATE, exist_ok=True)
-    state_files.write_atomic(RECORD, (json.dumps(rec, indent=2, ensure_ascii=False) + "\n").encode(), 0o644)
+    state_files.write_json(RECORD, rec, ensure_ascii=False)
     return rec
 
 

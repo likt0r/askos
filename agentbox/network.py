@@ -7,11 +7,10 @@ keywords ALLOWED, BLOCKED and ALERT (and CLOSED, ERROR). Lines the VM's proxy
 did not write are ignored (activity.trusted).
 """
 import json
-import os
 import re
 import time
 
-from . import activity, settings, state_files
+from . import activity, settings, state_files, times
 from .registry import check
 from .errors import die
 from .sanitize import field
@@ -64,11 +63,9 @@ def proxy_journal(ctx):
                                 grep=r"^\[[a-z0-9-]+\] (ALERT|BLOCKED) ")
     lines = []
     for e in reversed(entries):
-        try:
-            t = int(e["__REALTIME_TIMESTAMP"]) // 10**6
-        except (KeyError, TypeError, ValueError):
-            continue
-        lines.append((t, field(e, "MESSAGE", limit=None) or ""))
+        usec = times.journal_usec(e)
+        if usec is not None:
+            lines.append((usec // 10**6, field(e, "MESSAGE", limit=None) or ""))
     return lines
 
 
@@ -120,10 +117,6 @@ def alert_rows(log):
     return sorted(seen.values(), key=lambda e: -e["last"])
 
 
-def when(t):
-    return time.strftime("%Y-%m-%d %H:%M", time.localtime(t))
-
-
 def blocked(args):
     """agentbox blocked <vm> [--json]: blocked domains of the last 24 hours"""
     ctx = check(args[0] if args else "")
@@ -133,7 +126,7 @@ def blocked(args):
         return
     for e in rows:
         flag = ("  ALERT: " + ",".join(e["suspicious"])) if e["suspicious"] else ""
-        print("%-40s %4dx  last %s  (%s)%s" % (e["domain"], e["count"], when(e["last"]), e["reason"], flag))
+        print("%-40s %4dx  last %s  (%s)%s" % (e["domain"], e["count"], times.local(e["last"]), e["reason"], flag))
 
 
 def alerts(args):
@@ -146,7 +139,7 @@ def alerts(args):
         print(json.dumps(rows))
         return
     for e in rows:
-        print("%-40s %4dx  last %s  %s%s" % (e["domain"], e["count"], when(e["last"]), ",".join(e["tags"]),
+        print("%-40s %4dx  last %s  %s%s" % (e["domain"], e["count"], times.local(e["last"]), ",".join(e["tags"]),
                                               "  (seen)" if e["seen"] else ""))
 
 
@@ -173,12 +166,7 @@ def close_web(args):
     """agentbox close-web <vm> [--json]"""
     ctx = check(args[0] if args else "")
     f = open_web_file(ctx)
-    try:
-        os.unlink(f)
-    except FileNotFoundError:
-        pass
-    except OSError as e:
-        die(f"{f}: {e.strerror}", error="action_failed")
+    state_files.remove(f)
     done("--json" in args[1:], f"{ctx}: Open web closed", vm=ctx)
 
 

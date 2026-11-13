@@ -26,7 +26,7 @@ import json
 import os
 import sys
 
-from . import activity, generate, guest, paths, registry, state_files, virsh
+from . import activity, generate, guest, paths, registry, state_files, times, virsh
 from .errors import Fail, die
 from .sanitize import clean
 
@@ -34,13 +34,6 @@ WRAPPER = "/usr/libexec/qemu-ga/fsfreeze-hook.d/agentbox-container-images"
 LIMIT = 300                   # seconds for the wrapper in one VM (it stops itself a little before)
 MAX_ANSWER = 1024             # characters of the wrapper's answer taken at all
 MAX_NUMBER = 1 << 63
-
-
-def _size(n):
-    for unit in ("bytes", "KiB", "MiB", "GiB", "TiB"):
-        if n < 1024 or unit == "TiB":
-            return f"{n} bytes" if unit == "bytes" else f"{n:.1f} {unit}"
-        n /= 1024
 
 
 def _missing(ctx):
@@ -111,7 +104,7 @@ def _one(rec, say):
     if not removed:
         say(f"{ctx}: nothing to remove")
         return _result(ctx, "nothing", removed=0, freed=freed)
-    text = f"removed {removed} Container image{'s' if removed != 1 else ''} ({_size(freed)}) not used for " \
+    text = f"removed {removed} Container image{'s' if removed != 1 else ''} ({times.size(freed)}) not used for " \
            f"more than {days} days"
     say(f"{ctx}: {text}")
     activity.record("action", "container-image-cleanup.removed", f"Container image cleanup {text}", ctx,

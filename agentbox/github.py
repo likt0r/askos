@@ -29,7 +29,6 @@ import binascii
 import datetime
 import json
 import os
-import pwd
 import re
 import subprocess
 import sys
@@ -151,13 +150,7 @@ def _app(answer, app_id):
 
 def _service_user():
     """(uid, gid) of the token service's user when running as root, else (-1, -1)."""
-    if os.geteuid() != 0:
-        return -1, -1
-    try:
-        pw = pwd.getpwnam(SERVICE_USER)
-    except KeyError:
-        die(f"user {SERVICE_USER} is missing (the package creates it)", error="action_failed", user=SERVICE_USER)
-    return pw.pw_uid, pw.pw_gid
+    return state_files.user_ids(SERVICE_USER, "the package creates it")
 
 
 def _private_key(raw):
@@ -181,13 +174,7 @@ def _private_key(raw):
 
 def _read_conf():
     """(App IDs app.conf names, ascending, as text; its other lines)."""
-    try:
-        with open(CONF_FILE, "rb") as f:
-            lines = state_files.lines(f.read())
-    except FileNotFoundError:
-        lines = []
-    except OSError as e:
-        die(f"{CONF_FILE}: {e.strerror}", error="action_failed", path=CONF_FILE)
+    lines = state_files.lines(state_files.read(CONF_FILE, b"", path=CONF_FILE))
     ids = {l[len(b"APP_ID="):].strip().decode("ascii", "replace") for l in lines if l.startswith(b"APP_ID=")}
     return (sorted((i for i in ids if APP_ID.fullmatch(i)), key=int),
             [l for l in lines if l and not l.startswith(b"APP_ID=")])
@@ -269,12 +256,7 @@ def remove_github_app(args):
         # app.conf first: the token service never asks an App whose key is gone
         if app_id in ids:
             _write_conf([i for i in ids if i != app_id], others, gid)
-        try:
-            os.unlink(path)
-        except FileNotFoundError:
-            pass
-        except OSError as e:
-            die(f"{path}: {e.strerror}", error="action_failed", path=path)
+        state_files.remove(path, path=path)
     if "--json" in args:
         print(json.dumps({"id": int(app_id), "removed": True}))
     else:

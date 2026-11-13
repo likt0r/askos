@@ -61,20 +61,6 @@ SHUTDOWN_TIMEOUT=60
 """
 
 
-def _write_if_changed(path, data, mode=0o644):
-    """Replace the file when its content or mode differs; True when it did."""
-    try:
-        with open(path, "rb") as f:
-            if f.read() == data and stat.S_IMODE(os.fstat(f.fileno()).st_mode) == mode:
-                return False
-    except FileNotFoundError:
-        pass
-    except OSError as e:
-        die(f"{path}: {e.strerror}", error="action_failed", path=path)
-    state_files.write_atomic(path, data, mode)
-    return True
-
-
 # --- users and groups ----------------------------------------------------------------
 
 def _getent(*args):
@@ -387,8 +373,8 @@ def vm_rules():
 
 
 def libvirt_guests():
-    said = [f"{paths.LIBVIRT_GUESTS} written"] if _write_if_changed(paths.LIBVIRT_GUESTS,
-                                                                         LIBVIRT_GUESTS.encode()) else []
+    written = state_files.write_if_changed(paths.LIBVIRT_GUESTS, LIBVIRT_GUESTS.encode(), path=paths.LIBVIRT_GUESTS)
+    said = [f"{paths.LIBVIRT_GUESTS} written"] if written else []
     return said + enable(LIBVIRT_GUESTS_UNIT)
 
 

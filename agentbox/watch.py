@@ -38,7 +38,6 @@ token, key and Pairing-code patterns once more on the way out.
 watch ends when stdin is a pipe that closes (the backend went away), on SIGTERM, or
 when nobody reads its stdout any more.
 """
-import datetime
 import json
 import os
 import re
@@ -49,7 +48,7 @@ import sys
 import threading
 import time
 
-from . import activity, describe, images, lifecycle, maintenance, paths, registry, responding
+from . import activity, describe, images, lifecycle, maintenance, paths, registry, responding, times
 from .errors import Fail, die
 from .sanitize import PAIR_ANY, SECRET, entry as journal_entry, field
 
@@ -68,10 +67,6 @@ _lock = threading.Lock()             # stdout and the child processes
 _children = set()
 
 
-def _now():
-    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-
-
 def _scrub(v):
     """Every string without anything that looks like a token, key or Pairing code."""
     if isinstance(v, str):
@@ -84,7 +79,7 @@ def _scrub(v):
 
 
 def emit(event, data):
-    line = json.dumps({"event": event, "time": _now(), "data": _scrub(data)})
+    line = json.dumps({"event": event, "time": times.iso(time.time()), "data": _scrub(data)})
     with _lock:
         try:
             sys.stdout.write(line + "\n")
@@ -123,8 +118,8 @@ def _public(e):
 
 def _build_view(rec):
     return {"image": rec.get("image"), "build": rec.get("build"), "status": rec.get("status"),
-            "step": rec.get("step"), "started": images._iso(rec.get("started")),
-            "finished": images._iso(rec.get("finished")), "release": rec.get("release"),
+            "step": rec.get("step"), "started": times.iso(rec.get("started")),
+            "finished": times.iso(rec.get("finished")), "release": rec.get("release"),
             "commit": rec.get("commit"), "base_build": rec.get("base_build"), "error": rec.get("error"),
             "problems": rec.get("problems") or [], "actor": rec.get("actor"), "unit": rec.get("unit")}
 
@@ -402,7 +397,7 @@ def reboot_loop():
     while True:
         found = reboot_needed()
         if found != last:
-            emit("host-reboot", {**found, "checked": _now()})
+            emit("host-reboot", {**found, "checked": times.iso(time.time())})
             last = found
         time.sleep(REBOOT)
 

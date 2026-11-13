@@ -4,9 +4,10 @@ Control, format and line-separator characters could steer a terminal or fake
 log lines; colour sequences are noise; pairing codes grant full access to a VM
 and must never show up in log output.
 """
-import datetime
 import re
 import unicodedata
+
+from .times import journal_time
 
 MAX_MESSAGE = 8192
 MAX_FIELD = 256                      # every field except the message
@@ -70,14 +71,10 @@ def entry(e):
     msg = field(e, "MESSAGE", True, limit=None)
     if msg is not None and len(msg) > MAX_MESSAGE:
         msg = msg[:MAX_MESSAGE] + " ... [truncated]"
-    try:
-        t = datetime.datetime.fromtimestamp(int(e["__REALTIME_TIMESTAMP"]) / 1e6, datetime.timezone.utc)
-        when = t.isoformat(timespec="microseconds").replace("+00:00", "Z")
-    except (KeyError, TypeError, ValueError, OverflowError, OSError):
-        when = None
+    when = journal_time(e)
     prio = field(e, "PRIORITY")
     return {
-        "time": when,
+        "time": when[1] if when else None,
         "unit": field(e, "_SYSTEMD_UNIT") or field(e, "_SYSTEMD_USER_UNIT"),
         "identifier": field(e, "SYSLOG_IDENTIFIER") or field(e, "_COMM"),
         "priority": int(prio) if prio and re.fullmatch(r"[0-7]", prio) else None,

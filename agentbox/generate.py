@@ -14,15 +14,13 @@ the Settings; what is left of the timers the Maintenance window replaced goes. R
 again changes nothing unless a record or the retention changed. What was written but not applied
 when a run failed (firewall rules, units) is applied by the next run.
 """
-import datetime
 import json
 import os
-import pwd
 import re
-import subprocess
 import tempfile
+import time
 
-from . import activity, hostsetup, lifecycle, paths, programs, registry, settings, state_files, virsh, vmenv
+from . import activity, hostsetup, lifecycle, paths, programs, registry, settings, state_files, times, virsh, vmenv
 from .errors import die
 from .registry import bridge, dom, guest_ip, host_ip, mac
 
@@ -56,13 +54,6 @@ def legacy_owners_file(name):
     return os.path.join(paths.CONF, "github", f"owners-{name}")
 
 
-def _remove(path):
-    try:
-        os.remove(path)
-    except FileNotFoundError:
-        pass
-
-
 # --- migrate -----------------------------------------------------------------
 
 def _memory_mib(name):
@@ -76,10 +67,8 @@ def _memory_mib(name):
 
 def _disk_gib(path):
     try:
-        r = subprocess.run(["qemu-img", "info", "-U", "--output=json", path], capture_output=True, text=True,
-                           timeout=30)
-        return max(1, json.loads(r.stdout)["virtual-size"] // 2**30)
-    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError):
+        return max(1, programs.disk_info(path)["virtual-size"] // 2**30)
+    except (KeyError, TypeError):            # no answer (None), no size
         return DEFAULT_DATA_DISK_GIB
 
 
@@ -102,7 +91,7 @@ def _migrate_one(name, network):
         "build": None, "memory_mib": memory or DEFAULT_MEMORY_MIB,
         "data_disk_gib": _disk_gib(data_disk(name)) if os.path.exists(data_disk(name)) else DEFAULT_DATA_DISK_GIB,
         "github_owners": _legacy_owners(name),
-        "created": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "created": times.iso(time.time()),
     })
     return "migrated"
 
@@ -115,7 +104,7 @@ def migrate(args):
         with state_files.locked(registry.record_file(name)):
             action = _migrate_one(name, network)
             # from now on the record holds the owners
-            _remove(legacy_owners_file(name))
+            state_files.remove(legacy_owners_file(name), fail=False)
         results.append({"vm": name, "action": action})
         if "--json" not in args:
             print(f"{name}: " + {"migrated": f"taken over into the registry (network {network}, "
@@ -321,24 +310,14 @@ def _pending(what):
 
 
 def _mark(pending):
-    if not os.path.isdir(os.path.dirname(_pending(pending))):
-        os.makedirs(os.path.dirname(_pending(pending)))
-        os.chmod(os.path.dirname(_pending(pending)), 0o700)
+    state_files.directory(os.path.dirname(_pending(pending)), 0o700, only_new=True)
     open(_pending(pending), "w").close()
 
 
 def _write_if_changed(path, data, mode, pending):
     """Write when different; the pending marker comes first, so a run that dies
     before applying leaves it for the next run."""
-    try:
-        with open(path, "rb") as f:
-            if f.read() == data and os.stat(path).st_mode & 0o7777 == mode:
-                return False
-    except FileNotFoundError:
-        pass
-    _mark(pending)
-    state_files.write_atomic(path, data, mode)
-    return True
+    return state_files.write_if_changed(path, data, mode, before=lambda: _mark(pending), fail=False)
 
 
 def delete_marker(name):
@@ -351,22 +330,13 @@ def delete_marker(name):
 def being_deleted():
     """The markers of VMs being deleted; dies on a broken one."""
     folder = os.path.dirname(_pending(""))
-    try:
-        files = sorted(os.listdir(folder))
-    except FileNotFoundError:
-        return []
     markers = []
-    for f in files:
+    for f in state_files.listdir(folder, fail=False):
         m = re.fullmatch(r"delete-(.+)\.json", f)
         if not m:
             continue
-        try:
-            with open(os.path.join(folder, f), encoding="utf-8") as fh:
-                marker = json.load(fh)
-            broken = not isinstance(marker, dict) or registry.problem(marker.get("record"), m.group(1))
-        except (OSError, ValueError):
-            broken = True
-        if broken:
+        marker = state_files.json_object(os.path.join(folder, f))
+        if marker is None or registry.problem(marker.get("record"), m.group(1)):
             die(f"{os.path.join(folder, f)}: broken marker", error="action_failed", path=os.path.join(folder, f))
         markers.append(marker)
     return markers
@@ -394,11 +364,8 @@ def _virsh_define(cmd, xml, what):
 
 
 def _qemu():
-    try:
-        q = pwd.getpwnam("qemu")
-    except KeyError:
-        die("user qemu is missing (is libvirt installed?)", error="action_failed", user="qemu")
-    return q.pw_uid, q.pw_gid
+    """(uid, gid) of QEMU's user as root, else (-1, -1)."""
+    return state_files.user_ids("qemu", "is libvirt installed?")
 
 
 def _network_matches(rec):
@@ -527,19 +494,16 @@ def _data_disk(rec):
         return False
     programs.run(["qemu-img", "create", "-q", "-f", "qcow2", path, f"{rec['data_disk_gib']}G"], 120,
                  what=f"{rec['name']}: create Data disk", c_locale=True)
-    if os.geteuid() == 0:
-        os.chown(path, *_qemu())
+    uid, gid = _qemu()
+    if uid != -1:
+        os.chown(path, uid, gid)
     return True
 
 
 def _claude_token(rec):
     """QEMU refuses empty fw_cfg files, so a VM without token gets "none"."""
-    secrets = os.path.dirname(state_files.claude_token_file(rec["name"]))
-    os.makedirs(secrets, exist_ok=True)
-    os.chmod(secrets, 0o750)
-    gid = _qemu()[1] if os.geteuid() == 0 else -1
-    if os.geteuid() == 0:
-        os.chown(secrets, 0, gid)
+    gid = _qemu()[1]
+    state_files.directory(os.path.dirname(state_files.claude_token_file(rec["name"])), 0o750, gid)
     if os.path.exists(state_files.claude_token_file(rec["name"])):
         return False
     state_files.write_atomic(state_files.claude_token_file(rec["name"]), b"none\n", 0o640, gid)
@@ -550,21 +514,9 @@ def fw_cfg_file(path, data):
     """Write a file QEMU passes into a VM as an fw_cfg entry, when its content or mode differ:
     owner root, group qemu, mode 0640, in a directory of the same group with mode 0750 (the
     Claude token's way). Whether it was written."""
-    folder = os.path.dirname(path)
-    os.makedirs(folder, exist_ok=True)
-    os.chmod(folder, 0o750)
-    gid = _qemu()[1] if os.geteuid() == 0 else -1
-    if os.geteuid() == 0:
-        os.chown(folder, 0, gid)
-    try:
-        with open(path, "rb") as f:
-            st = os.fstat(f.fileno())
-            if f.read() == data and st.st_mode & 0o7777 == 0o640 and gid in (-1, st.st_gid):
-                return False
-    except FileNotFoundError:
-        pass
-    state_files.write_atomic(path, data, 0o640, gid)
-    return True
+    gid = _qemu()[1]
+    state_files.directory(os.path.dirname(path), 0o750, gid)
+    return state_files.write_if_changed(path, data, 0o640, gid, fail=False)
 
 
 def vm_env(rec):
@@ -574,12 +526,7 @@ def vm_env(rec):
 
 
 def _observer(rec):
-    path = lifecycle.observer_dir(rec["name"])
-    if os.path.isdir(path):
-        return False
-    os.makedirs(path)
-    os.chmod(path, 0o700)
-    return True
+    return state_files.directory(lifecycle.observer_dir(rec["name"]), 0o700, only_new=True)
 
 
 def domain(rec):
@@ -602,9 +549,7 @@ def domain(rec):
     if uuid and lifecycle.has_save(vm):
         return "domain-postponed"
     _virsh_define("define", xml, f"{vm}: define VM")
-    if not os.path.isdir(os.path.dirname(saved)):
-        os.makedirs(os.path.dirname(saved))
-        os.chmod(os.path.dirname(saved), 0o700)
+    state_files.directory(os.path.dirname(saved), 0o700, only_new=True)
     state_files.write_atomic(saved, xml.encode(), 0o600)
     return "domain"
 
@@ -882,7 +827,7 @@ def _maintenance(values):
         programs.systemctl("daemon-reload")
     if service:
         os.remove(_pending("maintenance"))
-    _remove(_pending("versions-timer"))             # a marker of a retired timer
+    state_files.remove(_pending("versions-timer"), fail=False)      # a marker of a retired timer
     programs.systemctl("enable", "--now", f"{MAINTENANCE}.timer")
     return _retire() or timer or service
 
@@ -898,7 +843,7 @@ def _retire():
     if timers:
         programs.systemctl("disable", "--now", *timers)
     for name in timers + services:
-        _remove(os.path.join(paths.SYSTEMD, name))
+        state_files.remove(os.path.join(paths.SYSTEMD, name), fail=False)
     programs.systemctl("daemon-reload")
     return True
 

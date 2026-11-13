@@ -21,13 +21,12 @@ Observer, and every message passes through sanitize.clean.
 
 Exit codes: those of guest.py; 2 invalid usage.
 """
-import datetime
 import json
 import os
 import re
 import subprocess
 
-from . import guest, lifecycle, options, paths
+from . import guest, lifecycle, options, paths, state_files, times
 from .errors import die
 from .registry import check
 from .sanitize import clean
@@ -42,10 +41,9 @@ def _iso(ms):
     if not ms:
         return None
     try:
-        t = datetime.datetime.fromtimestamp(ms / 1000, datetime.timezone.utc)
+        return times.iso(ms / 1000)
     except (OverflowError, OSError, ValueError):
         return None
-    return t.isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def observer_ids(ctx):
@@ -66,11 +64,7 @@ def observer_ids(ctx):
         elif isinstance(v, list):
             for x in v:
                 walk(x)
-    try:
-        with open(os.path.join(d, "orca-environments.json")) as f:
-            walk(json.load(f))
-    except (OSError, ValueError):
-        pass
+    walk(state_files.read_json(os.path.join(d, "orca-environments.json")))
     return ids
 
 

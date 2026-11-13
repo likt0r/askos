@@ -45,9 +45,9 @@ import sys
 import time
 from collections import Counter
 
-from . import activity, entry_store, options, paths, patterns, registry, settings, state_files
+from . import activity, entry_store, options, paths, patterns, registry, settings, state_files, times
 from .errors import Fail, die
-from .network import CLIENT_REASONS, DOMAIN, done, valid_domain, when
+from .network import CLIENT_REASONS, DOMAIN, done, valid_domain
 from .sanitize import clean, field
 
 ALL = "all"
@@ -161,7 +161,7 @@ def scope_text(scope):
 def _until(t):
     """End of a temporary entry for people: the time, with the day unless it is today."""
     today = time.strftime("%Y-%m-%d ", time.localtime())
-    text = when(t)
+    text = times.local(t)
     return text[len(today):] if text.startswith(today) else text
 
 
@@ -198,14 +198,8 @@ def _valid(data, path):
 
 def legacy_files():
     """The Allowlist files from before allowlist.json, as (path, scope)."""
-    try:
-        names = sorted(os.listdir(paths.CONF))
-    except FileNotFoundError:
-        return []
-    except OSError as e:
-        die(f"{paths.CONF}: {e.strerror}", error="action_failed")
     out = []
-    for n in names:
+    for n in state_files.listdir(paths.CONF):
         vm = n[len("allowlist-"):] if n.startswith("allowlist-") else None
         if n == "allowlist":
             out.append((os.path.join(paths.CONF, n), ALL))
@@ -291,12 +285,7 @@ def _remove_legacy(name):
     """A legacy file of the VM, and its migrated copy, go as well."""
     path = os.path.join(paths.CONF, f"allowlist-{name}")
     for p in (path, path + ".migrated"):
-        try:
-            os.remove(p)
-        except FileNotFoundError:
-            pass
-        except OSError as e:
-            die(f"{p}: {e.strerror}", error="action_failed")
+        state_files.remove(p)
 
 
 def start_vm(name, source=None):
@@ -384,12 +373,11 @@ def preview(scope, pattern):
     rows = [{"host": h, **counts[h], "signals": [str(s) for s in rep["hosts"][h]["signals"]],
              "strong": rep["hosts"][h]["strong"]} for h in shown]
     truncated = len(log) >= PREVIEW_LINES
-    times = [int(e["__REALTIME_TIMESTAMP"]) // 10**6 for e in log
-             if str(e.get("__REALTIME_TIMESTAMP", "")).isdigit()] if truncated else []
+    stamps = [u // 10**6 for u in map(times.journal_usec, log) if u is not None and u >= 0] if truncated else []
     return {"hosts": rows, "more": len(hosts) - len(shown),
             "watchlist_unreadable": clean(rep["watchlist_unreadable"], False)[:300]
             if rep["watchlist_unreadable"] else None, "truncated": truncated,
-            "reaches_back": min(times) if times else now - PREVIEW_DAYS * 86400, "log_unreadable": unreadable}
+            "reaches_back": min(stamps) if stamps else now - PREVIEW_DAYS * 86400, "log_unreadable": unreadable}
 
 
 def preview_text(scope, pattern, p):
@@ -402,7 +390,7 @@ def preview_text(scope, pattern, p):
              + f" of the proxy log of the last {PREVIEW_DAYS} days" + (":" if p["hosts"] else "")]
     if p["truncated"]:
         lines.insert(0, f"WARNING: the proxy log of these {PREVIEW_DAYS} days has more lines than the newest "
-                        f"{PREVIEW_LINES} read, which reach back only to {when(p['reaches_back'])}: hosts seen "
+                        f"{PREVIEW_LINES} read, which reach back only to {times.local(p['reaches_back'])}: hosts seen "
                         f"only before then are missing below.")
     for h in p["hosts"]:
         seen = f"allowed {h['allowed']}x, blocked {h['blocked']}x"
@@ -582,7 +570,7 @@ def expire(args):
         kind, value = patterns.key(e)
         activity.record("allowlist", "allowlist.expired",
                         f"Temporary Allowlist entry {patterns.shown(e)}{' for all VMs' if everywhere else ''} "
-                        f"expired ({when(e['expires'])})", None if everywhere else e["scope"],
+                        f"expired ({times.local(e['expires'])})", None if everywhere else e["scope"],
                         params={kind: value, "scope": e["scope"]}, expired=e["expires"])
     if "json" in opts:
         print(json.dumps({"expired": [patterns.both(e) for e in _order(gone)]}, ensure_ascii=False))

@@ -18,11 +18,11 @@ import os
 import re
 import time
 
-from . import patterns, paths, programs, state_files
+from . import patterns, paths, programs, state_files, times
 from .allowlist import _parse
 from .entry_store import given, label
 from .errors import die
-from .network import DOMAIN, done, valid_domain, when
+from .network import DOMAIN, done, valid_domain
 from .registry import check
 from .sanitize import clean
 
@@ -158,7 +158,7 @@ def feed_line(feeds):
             continue
         text = f"{name} {f.get('entries', '?')} entries"
         if isinstance(f.get("updated"), int):
-            text += f", as of {when(f['updated'])}"
+            text += f", as of {times.local(f['updated'])}"
         if f.get("error"):
             text += f", last fetch failed ({str(f['error'])[:120]})"
         parts.append(text)
@@ -205,13 +205,7 @@ def mark_harmless(args):
     f = harmless_file()
     line = _mark_line(ref)
     with state_files.locked(f):
-        try:
-            with open(f, "rb") as fh:
-                data = fh.read()
-        except FileNotFoundError:
-            data = HARMLESS_HEADER
-        except OSError as e:
-            die(f"{f}: {e.strerror}", error="action_failed")
+        data = state_files.read(f, HARMLESS_HEADER)
         if line not in state_files.lines(data):
             if data and not data.endswith(b"\n"):
                 data += b"\n"
@@ -225,11 +219,7 @@ def unmark_harmless(args):
     f = harmless_file()
     if os.path.isfile(f):
         with state_files.locked(f):
-            try:
-                with open(f, "rb") as fh:
-                    data = fh.read()
-            except OSError as e:
-                die(f"{f}: {e.strerror}", error="action_failed")
+            data = state_files.read(f)
             entry = _mark_line(ref)
             if entry in state_files.lines(data):
                 state_files.write_atomic(f, b"".join(l + b"\n" for l in state_files.lines(data) if l != entry), 0o644)
@@ -239,13 +229,7 @@ def unmark_harmless(args):
 # --- Alerts marked as seen ----------------------------------------------------
 
 def seen_marks(ctx):
-    try:
-        with open(seen_file(ctx), encoding="utf-8") as f:
-            marks = json.load(f)
-    except (OSError, ValueError):
-        return {}
-    if not isinstance(marks, dict):
-        return {}
+    marks = state_files.json_object(seen_file(ctx), {})
     return {k: v for k, v in marks.items() if isinstance(k, str) and isinstance(v, int) and not isinstance(v, bool)}
 
 
@@ -278,7 +262,7 @@ def mark_seen(args):
     with state_files.locked(f):
         marks = {k: v for k, v in seen_marks(ctx).items() if k == "*" or v > now - SEEN_KEEP}
         marks[domain or "*"] = now
-        state_files.write_atomic(f, (json.dumps(marks, sort_keys=True) + "\n").encode(), 0o644)
+        state_files.write_json(f, marks, indent=None, sort_keys=True)
     done("--json" in opts, f"{ctx}: Alerts {'for ' + domain + ' ' if domain else ''}marked as seen",
          vm=ctx, domain=domain, seen=now)
 

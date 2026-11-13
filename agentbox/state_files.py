@@ -1,8 +1,19 @@
-"""Small per-VM state files that several commands read."""
+"""Small per-VM state files that several commands read, and the ways agentbox reads and
+writes its files.
+
+A file that is missing is the usual case and gives a default; any other failure ends the
+command (action_failed, "<path>: <reason>", with the keyword arguments as its parameters,
+path= among them if the caller wants it), or with fail=False is raised (OSError) for the
+caller to handle. Owners are changed only as root: tests run as a normal user.
+"""
 import contextlib
 import fcntl
+import grp
+import json
 import os
+import pwd
 import re
+import stat
 import tempfile
 import time
 
@@ -20,14 +31,131 @@ def lines(data):
 
 def content_lines(path):
     """The lines of a list file without comment and empty lines (bytes); [] when missing."""
+    return [l for l in lines(read(path, b"")) if l and not l.startswith(b"#")]
+
+
+_FAIL = object()
+
+
+def _failed(path, e, fail, params):
+    if not fail:
+        raise e
+    die(f"{path}: {e.strerror}", error="action_failed", **params)
+
+
+def read(path, default=_FAIL, /, **params):
+    """The file's content (bytes); default when it is missing. Without a default a missing
+    file fails like any other failure: the command ends (action_failed, with params)."""
     try:
         with open(path, "rb") as fh:
-            data = fh.read()
+            return fh.read()
+    except FileNotFoundError as e:
+        if default is _FAIL:
+            _failed(path, e, True, params)
+        return default
+    except OSError as e:
+        _failed(path, e, True, params)
+
+
+def read_json(path):
+    """The JSON value in the file (UTF-8); None when it is missing, unreadable or no JSON."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def json_object(path, default=None):
+    """The JSON object (a dict) in the file; default when it is missing, unreadable, no
+    JSON or no object."""
+    value = read_json(path)
+    return value if isinstance(value, dict) else default
+
+
+def write_json(path, value, mode=0o644, *, indent=2, sort_keys=False, ensure_ascii=True):
+    """value as JSON with a final newline, replacing the file atomically (write_atomic).
+    indent, sort_keys and ensure_ascii as json.dumps takes them: each file keeps its own."""
+    data = json.dumps(value, indent=indent, sort_keys=sort_keys, ensure_ascii=ensure_ascii) + "\n"
+    write_atomic(path, data.encode(), mode)
+
+
+def write_if_changed(path, data, mode=0o644, gid=-1, /, *, before=None, fail=True, **params):
+    """Replace the file (write_atomic) when its content (bytes), its mode or, when gid is
+    given, its group differ; whether it did. before() runs first when it writes (a marker,
+    so a run that dies before applying the file leaves it for the next one)."""
+    try:
+        with open(path, "rb") as fh:
+            st = os.fstat(fh.fileno())
+            if fh.read() == data and stat.S_IMODE(st.st_mode) == mode and gid in (-1, st.st_gid):
+                return False
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        _failed(path, e, fail, params)
+    if before:
+        before()
+    write_atomic(path, data, mode, gid)
+    return True
+
+
+def remove(path, /, *, fail=True, **params):
+    """Remove the file if it is there; whether it was."""
+    try:
+        os.remove(path)
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError as e:
+        _failed(path, e, fail, params)
+
+
+def listdir(path, /, *, fail=True, **params):
+    """The names in the directory, sorted; [] when it is missing."""
+    try:
+        return sorted(os.listdir(path))
     except FileNotFoundError:
         return []
     except OSError as e:
-        die(f"{path}: {e.strerror}", error="action_failed")
-    return [l for l in lines(data) if l and not l.startswith(b"#")]
+        _failed(path, e, fail, params)
+
+
+def directory(path, mode, gid=-1, *, only_new=False):
+    """Make path a directory, with any missing parents; True when it was created. It gets
+    mode whatever the umask and, when gid is given, owner root and that group; an existing
+    one gets them again unless only_new. Failures are raised (OSError): each caller reports
+    them its own way."""
+    new = not os.path.isdir(path)
+    if new:
+        os.makedirs(path, mode=mode & 0o700, exist_ok=True)     # nobody else in it before the chmod
+    if new or not only_new:
+        os.chmod(path, mode)
+        if gid != -1:
+            os.chown(path, 0, gid)
+    return new
+
+
+def user_ids(name, missing):
+    """(uid, gid) of the user as root, else (-1, -1). A missing user ends the command;
+    missing says why it should be there ("the package creates it")."""
+    if os.geteuid() != 0:
+        return -1, -1
+    try:
+        pw = pwd.getpwnam(name)
+    except KeyError:
+        die(f"user {name} is missing ({missing})", error="action_failed", user=name)
+    return pw.pw_uid, pw.pw_gid
+
+
+def group_id(name, missing):
+    """gid of the group as root, else -1. A missing group ends the command; missing says why
+    it should be there."""
+    if os.geteuid() != 0:
+        return -1
+    try:
+        return grp.getgrnam(name).gr_gid
+    except KeyError:
+        die(f"the group {name} is missing ({missing})", error="action_failed", group=name)
 
 
 def _lock_fd(path):
