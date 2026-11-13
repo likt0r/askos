@@ -68,22 +68,19 @@ net-define and pool-define with the XML they were given; net-autostart,
 net-start, net-destroy, net-undefine, pool-autostart and pool-start; undefine
 with its flags.
 """
-import base64
 import contextlib
 import fcntl
 import json
 import os
 import re
-import shutil
-import signal
-import subprocess
 import sys
-import tempfile
 import time
-import uuid
-from xml.sax.saxutils import quoteattr
 
 import fake_proc
+
+# watch asks virsh several times per poll, and a test waits for what it finds: the modules
+# only some commands need (xml.sax.saxutils alone takes longer to import than all the rest)
+# are imported where they are used
 
 DIR = os.environ.get("FAKE_VIRSH_DIR", "")      # unset where a test imports this module
 ROOT = os.environ.get("AGENTBOX_ROOT", "")
@@ -125,8 +122,8 @@ def save(name, data, directory=None):
     """Replace a state file whole: a call that reads it meanwhile gets the old or the new
     one, not an empty or half-written file."""
     d = directory or DIR
-    fd, tmp = tempfile.mkstemp(dir=d, prefix=f".{name}.")
-    with os.fdopen(fd, "w") as f:
+    tmp = os.path.join(d, f".{name}.{os.getpid()}")
+    with open(tmp, "w") as f:
         json.dump(data, f)
     os.replace(tmp, os.path.join(d, name))
 
@@ -145,9 +142,16 @@ def domain_state(scenario, domain):
     conf = vm_config(scenario, domain)
     initial = {"state": conf.get("state", scenario.get("state", "running")),
                "managed_save": conf.get("managed_save", False), "defined": conf.get("defined", True),
-               "disks": conf.get("disks") or {},
-               "uuid": conf.get("uuid", str(uuid.uuid5(uuid.NAMESPACE_DNS, domain)))}
-    return {**initial, **load("domains.json", {}).get(domain, {})}
+               "disks": conf.get("disks") or {}}
+    st = {**initial, **load("domains.json", {}).get(domain, {})}
+    if "uuid" not in st:
+        st["uuid"] = conf.get("uuid") or derived_uuid(domain)
+    return st
+
+
+def derived_uuid(name):
+    import uuid
+    return str(uuid.uuid5(uuid.NAMESPACE_DNS, name))
 
 
 def no_domain(domain):
@@ -176,7 +180,7 @@ def networks(scenario):
 
 def net_uuid(net, name):
     m = re.search(r"<uuid>([^<]+)</uuid>", net.get("xml", ""))
-    return net.get("uuid") or (m.group(1) if m else str(uuid.uuid5(uuid.NAMESPACE_DNS, name)))
+    return net.get("uuid") or (m.group(1) if m else derived_uuid(name))
 
 
 def network(scenario, cmd, arg):
@@ -270,6 +274,7 @@ def header_backing(domain):
 
 
 def dumpxml(scenario, domain):
+    from xml.sax.saxutils import quoteattr
     st = domain_state(scenario, domain)
     if not st["defined"]:
         return no_domain(domain)
@@ -479,6 +484,7 @@ def disks(scenario, cmd, rest):
                   else f"error: Failed to attach disk\nerror: Cannot access storage file '{source}': "
                        "No such file or directory", file=sys.stderr)
             return 1
+        import shutil
         serial = options[options.index("--serial") + 1] if "--serial" in options else None
         os.makedirs(os.path.join(DIR, "attached"), exist_ok=True)
         shutil.copyfile(source, os.path.join(DIR, "attached", os.path.basename(source)))
@@ -487,6 +493,7 @@ def disks(scenario, cmd, rest):
         print("Disk attached successfully")
         sys.stdout.flush()
         if scenario.get("attach_signals_parent"):
+            import signal
             os.kill(os.getppid(), signal.SIGTERM)
             time.sleep(0.5)
         return 0
@@ -508,6 +515,7 @@ def guest_root(domain):
 
 def run_inbox(scenario, domain, argv):
     """The real agentbox-inbox in the VM's own root, its device the disk attached as agentbox-inbox."""
+    import subprocess
     root = guest_root(domain)
     device = root + INBOX_DEVICE
     os.makedirs(os.path.dirname(device), exist_ok=True)
@@ -526,6 +534,7 @@ def run_inbox(scenario, domain, argv):
 
 def run_container_images(domain, argv):
     """The real agentbox-container-images in the VM's own root, with the fake podman there."""
+    import subprocess
     root = guest_root(domain)
     podman = os.path.join(root, "usr", "bin", "podman")
     os.makedirs(os.path.dirname(podman), exist_ok=True)
@@ -570,6 +579,7 @@ def guest_agent(scenario, rest):
         print(json.dumps({"return": {"pid": pid}}))
         return 0
     if request["execute"] == "guest-exec-status":
+        import base64
         if scenario.get("still_running"):
             print(json.dumps({"return": {"exited": False}}))
             return 0
