@@ -46,7 +46,6 @@ import time
 from collections import Counter
 
 from . import activity, entry_store, options, paths, patterns, registry, settings, state_files
-from .entry_store import label, param
 from .errors import Fail, die
 from .network import CLIENT_REASONS, DOMAIN, done, valid_domain, when
 from .sanitize import clean, field
@@ -238,7 +237,7 @@ def entry(domain, scope, expires, note, added, added_by):
 
 def _new(ref, scope, expires, note, added, added_by):
     """A new entry for a domain or, ref ("regex", pattern), a Regex entry."""
-    return {**param(ref), "scope": scope, "expires": expires, "note": note, "added": added, "added_by": added_by}
+    return {**entry_store.param(ref), "scope": scope, "expires": expires, "note": note, "added": added, "added_by": added_by}
 
 
 def read():
@@ -281,8 +280,8 @@ def find(entries, ref, scope):
 def _existing(entries, ref, scope):
     e = find(entries, ref, scope)
     if e is None:
-        die(f"{scope_text(scope)}: {label(ref)} is not on the Allowlist", error="allowlist_entry_not_found",
-            scope=scope, **param(ref))
+        die(f"{scope_text(scope)}: {entry_store.label(ref)} is not on the Allowlist", error="allowlist_entry_not_found",
+            scope=scope, **entry_store.param(ref))
     return e
 
 
@@ -488,7 +487,7 @@ def allow(args):
             if note is not None:
                 e["note"] = note
     until = f" until {_until(e['expires'])}" if e["expires"] is not None else ""
-    done("json" in opts, f"{scope_text(scope)}: {label(ref)} allowed{until}", **patterns.both(e))
+    done("json" in opts, f"{scope_text(scope)}: {entry_store.label(ref)} allowed{until}", **patterns.both(e))
 
 
 def disallow(args):
@@ -507,10 +506,10 @@ def disallow(args):
         if scope != ALL and find(read()[0], ref, ALL):
             again = f"--regex {ref[1]}" if ref[0] == "regex" else ref[1]
             hint = f" (applies to all VMs: agentbox disallow all {again})"
-        done("json" in opts, f"{scope_text(scope)}: {label(ref)} is not on the Allowlist{hint}",
+        done("json" in opts, f"{scope_text(scope)}: {entry_store.label(ref)} is not on the Allowlist{hint}",
              scope=scope, **given, removed=False)
         return
-    done("json" in opts, f"{scope_text(scope)}: {label(ref)} removed", scope=scope, **given, removed=True)
+    done("json" in opts, f"{scope_text(scope)}: {entry_store.label(ref)} removed", scope=scope, **given, removed=True)
 
 
 def extend(args):
@@ -523,17 +522,17 @@ def extend(args):
     seconds = _seconds(opts)
     _no_force(ref, opts)
     if _existing(read()[0], ref, scope)["expires"] is None:
-        die(f"{scope_text(scope)}: {label(ref)} is allowed permanently", error="allowlist_entry_permanent",
-            scope=scope, **param(ref))
+        die(f"{scope_text(scope)}: {entry_store.label(ref)} is allowed permanently", error="allowlist_entry_permanent",
+            scope=scope, **entry_store.param(ref))
     if ref[0] == "domain":
         _signals(ref[1], opts)
     with changing() as entries:
         e = _existing(entries, ref, scope)
         if e["expires"] is None:
-            die(f"{scope_text(scope)}: {label(ref)} is allowed permanently", error="allowlist_entry_permanent",
-                scope=scope, **param(ref))
+            die(f"{scope_text(scope)}: {entry_store.label(ref)} is allowed permanently", error="allowlist_entry_permanent",
+                scope=scope, **entry_store.param(ref))
         e["expires"] = max(e["expires"], int(time.time())) + seconds
-    done("json" in opts, f"{scope_text(scope)}: {label(ref)} allowed until {_until(e['expires'])}",
+    done("json" in opts, f"{scope_text(scope)}: {entry_store.label(ref)} allowed until {_until(e['expires'])}",
          **patterns.both(e))
 
 
@@ -551,7 +550,7 @@ def make_permanent(args):
         e["expires"] = None
     if was is None:
         activity.unchanged()
-    done("json" in opts, f"{scope_text(scope)}: {label(ref)} allowed permanently", **patterns.both(e))
+    done("json" in opts, f"{scope_text(scope)}: {entry_store.label(ref)} allowed permanently", **patterns.both(e))
 
 
 def set_note(args):
@@ -565,7 +564,7 @@ def set_note(args):
     with changing() as entries:
         e = _existing(entries, ref, scope)
         e["note"] = note
-    done("json" in opts, f"{scope_text(scope)}: note on {label(ref)} saved", **patterns.both(e))
+    done("json" in opts, f"{scope_text(scope)}: note on {entry_store.label(ref)} saved", **patterns.both(e))
 
 
 def expire(args):

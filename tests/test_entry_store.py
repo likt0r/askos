@@ -149,6 +149,29 @@ class StorageTest(unittest.TestCase):
         self.assertFalse(os.path.exists(old[0]))
         self.assertTrue(os.path.exists(old[0] + ".migrated"))
 
+    def test_write_ends_the_command_when_a_legacy_file_cannot_be_moved(self):
+        old = self.legacy("one", "a.org\n")
+        real = os.replace
+
+        def replace(src, dst):
+            if src == old:
+                raise PermissionError(13, "Permission denied")
+            real(src, dst)
+        with mock.patch.object(entry_store.os, "replace", replace):
+            with self.assertRaises(Fail) as caught:
+                entry_store.write(self.path, [], patterns_sorted, [old])
+        self.assertEqual((caught.exception.error, caught.exception.message),
+                         ("action_failed", f"{old}: Permission denied"))
+        self.assertTrue(os.path.exists(old))
+
+    def test_changing_holds_the_record_s_lock_while_it_runs(self):
+        from agentbox import state_files
+        self.assertFalse(state_files.held(self.path))
+        with entry_store.changing(self.path, lambda: ([], []), lambda es, lg: None, patterns_sorted):
+            # held() asks without waiting, as a second agentbox call would
+            self.assertTrue(state_files.held(self.path))
+        self.assertFalse(state_files.held(self.path))
+
     def changes(self, entries, legacy, change):
         written = []
         with entry_store.changing(self.path, lambda: (entries, legacy), lambda es, lg: written.append((list(es), lg)),

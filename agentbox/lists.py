@@ -61,7 +61,6 @@ import time
 from . import activity, entry_store, paths, patterns, settings, state_files
 from .allowlist import MAX_NOTE, _parse
 from .detection import _classifier, domain_arg, feed_line
-from .entry_store import given as _given, label, param as _param, text as _text
 from .errors import Fail, die
 from .network import DOMAIN, done
 from .sanitize import clean
@@ -388,8 +387,8 @@ def watch_add(args):
     if "category" not in opts:
         die("watch-add needs --category", error="invalid_argument", option="--category")
     category = _category(opts["category"])
-    source = _text(opts.get("source"), "source", MAX_SOURCE)
-    note = _text(opts.get("note"), "note", MAX_NOTE)
+    source = entry_store.text(opts.get("source"), "source", MAX_SOURCE)
+    note = entry_store.text(opts.get("note"), "note", MAX_NOTE)
     strong = categories()
     with changing(WATCHLIST, create=True) as entries:
         path = record_file(WATCHLIST)
@@ -402,11 +401,11 @@ def watch_add(args):
             e = _entry(WATCHLIST, None, int(time.time()), activity.actor(), category=category,
                        source=source or "", note=note or "", ref=ref)
             entries.append(e)
-            message = f"{label(ref)} on the Watchlist ({category})"
+            message = f"{entry_store.label(ref)} on the Watchlist ({category})"
         else:
             if strong[e["category"]] and not strong[category] and "force" not in opts:
-                die(f"{label(ref)} is on the Watchlist as {e['category']}, a strong Signal. "
-                    f"Downgrading to {category} only with --force", error="force_required", **_param(ref),
+                die(f"{entry_store.label(ref)} is on the Watchlist as {e['category']}, a strong Signal. "
+                    f"Downgrading to {category} only with --force", error="force_required", **entry_store.param(ref),
                     category=e["category"])
             before = dict(e)
             e["category"] = category
@@ -416,9 +415,9 @@ def watch_add(args):
                 e["note"] = note
             if e == before:
                 activity.unchanged()
-                message = f"{label(ref)} is on the Watchlist like this already ({category})"
+                message = f"{entry_store.label(ref)} is on the Watchlist like this already ({category})"
             else:
-                message = f"{label(ref)} changed on the Watchlist ({category})"
+                message = f"{entry_store.label(ref)} changed on the Watchlist ({category})"
     done("json" in opts, message, **_shown(e))
 
 
@@ -431,15 +430,15 @@ def watch_remove(args):
         e = find(entries, ref)
         if e is not None:
             if categories()[e["category"]] and "force" not in opts:
-                die(f"{label(ref)} is on the Watchlist as {e['category']}, a strong Signal. "
-                    f"Removing it only with --force", error="force_required", **_param(ref),
+                die(f"{entry_store.label(ref)} is on the Watchlist as {e['category']}, a strong Signal. "
+                    f"Removing it only with --force", error="force_required", **entry_store.param(ref),
                     category=e["category"])
             entries.remove(e)
     if e is None:
         activity.unchanged()
-        done("json" in opts, f"{label(ref)} is not on the Watchlist", **_given(ref), removed=False)
+        done("json" in opts, f"{entry_store.label(ref)} is not on the Watchlist", **entry_store.given(ref), removed=False)
         return
-    done("json" in opts, f"{label(ref)} removed from the Watchlist", **_given(ref), removed=True)
+    done("json" in opts, f"{entry_store.label(ref)} removed from the Watchlist", **entry_store.given(ref), removed=True)
 
 
 def watch_set_note(args):
@@ -449,13 +448,13 @@ def watch_set_note(args):
     ref = _target(positional, opts)
     if "note" not in opts:
         die("watch-set-note needs --note TEXT", error="invalid_argument", option="--note")
-    note = _text(opts["note"], "note", MAX_NOTE)
+    note = entry_store.text(opts["note"], "note", MAX_NOTE)
     with changing(WATCHLIST) as entries:
         e = find(entries, ref)
         if e is None:
-            die(f"{label(ref)} is not on the Watchlist", error="watchlist_entry_not_found", **_param(ref))
+            die(f"{entry_store.label(ref)} is not on the Watchlist", error="watchlist_entry_not_found", **entry_store.param(ref))
         e["note"] = note
-    done("json" in opts, f"Note on {label(ref)} saved", **_shown(e))
+    done("json" in opts, f"Note on {entry_store.label(ref)} saved", **_shown(e))
 
 
 # --- the Legitimate domains ---------------------------------------------------------
@@ -508,7 +507,7 @@ def legitimate_add(args):
     --force. A pattern lifts only weak Signals, so it needs no --force and takes none."""
     positional, opts = _parse(args, {"note": True, "force": False, "regex": True, "json": False})
     ref = _target(positional, opts)
-    note = _text(opts.get("note"), "note", MAX_NOTE)
+    note = entry_store.text(opts.get("note"), "note", MAX_NOTE)
     if ref[0] == "regex":
         if "force" in opts:
             die("--force does not apply to a regex Legitimate domain: it lifts no strong Signals",
@@ -516,7 +515,7 @@ def legitimate_add(args):
         patterns.checked(ref[1])
     elif ref[1] in genuine():
         activity.unchanged()
-        done("json" in opts, f"{ref[1]} is built in and legitimate already", **_given(ref), builtin=True)
+        done("json" in opts, f"{ref[1]} is built in and legitimate already", **entry_store.given(ref), builtin=True)
         return
     with changing(LEGITIMATE) as entries:
         e = find(entries, ref)
@@ -526,13 +525,13 @@ def legitimate_add(args):
                 _refuse_lifts(ref[1])
             e = _entry(LEGITIMATE, None, int(time.time()), activity.actor(), note=note or "", ref=ref)
             entries.append(e)
-            message = f"{label(ref)} added as a Legitimate domain"
+            message = f"{entry_store.label(ref)} added as a Legitimate domain"
         else:
             if note is None or note == e["note"]:
                 activity.unchanged()
             else:
                 e["note"] = note
-            message = f"{label(ref)} is legitimate already"
+            message = f"{entry_store.label(ref)} is legitimate already"
     done("json" in opts, message, **patterns.both(e), builtin=False)
 
 
@@ -552,13 +551,13 @@ def legitimate_remove(args):
         if e is None:
             die(f"{ref[1]} is built in and stays legitimate", error="builtin_entry", domain=ref[1])
         done("json" in opts, f"{ref[1]}: the Host's entry is removed, the domain stays built in and legitimate",
-             **_given(ref), removed=True)
+             **entry_store.given(ref), removed=True)
         return
     if e is None:
         activity.unchanged()
-        done("json" in opts, f"{label(ref)} is not an added Legitimate domain", **_given(ref), removed=False)
+        done("json" in opts, f"{entry_store.label(ref)} is not an added Legitimate domain", **entry_store.given(ref), removed=False)
         return
-    done("json" in opts, f"{label(ref)} no longer legitimate", **_given(ref), removed=True)
+    done("json" in opts, f"{entry_store.label(ref)} no longer legitimate", **entry_store.given(ref), removed=True)
 
 
 def legitimate_set_note(args):
@@ -567,16 +566,16 @@ def legitimate_set_note(args):
     ref = _target(positional, opts)
     if "note" not in opts:
         die("legitimate-set-note needs --note TEXT", error="invalid_argument", option="--note")
-    note = _text(opts["note"], "note", MAX_NOTE)
+    note = entry_store.text(opts["note"], "note", MAX_NOTE)
     if ref[0] == "domain" and ref[1] in genuine():
         die(f"{ref[1]} is built in and stays legitimate", error="builtin_entry", domain=ref[1])
     with changing(LEGITIMATE) as entries:
         e = find(entries, ref)
         if e is None:
-            die(f"{label(ref)} is not an added Legitimate domain", error="legitimate_domain_not_found",
-                **_param(ref))
+            die(f"{entry_store.label(ref)} is not an added Legitimate domain", error="legitimate_domain_not_found",
+                **entry_store.param(ref))
         e["note"] = note
-    done("json" in opts, f"Note on {label(ref)} saved", **patterns.both(e), builtin=False)
+    done("json" in opts, f"Note on {entry_store.label(ref)} saved", **patterns.both(e), builtin=False)
 
 
 # --- migration ------------------------------------------------------------------------
