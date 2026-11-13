@@ -3,9 +3,8 @@ Open web. The Allowlist itself is in allowlist.py.
 
 The proxy writes one journal line per event under the identifier
 agentbox-proxy-<vm>, into the journald namespace of Activity, with the
-keywords ALLOWED, BLOCKED and ALERT (and CLOSED, ERROR). Lines with the older
-German keywords (ERLAUBT, BLOCKIERT, VERDACHT) are ignored entirely, and so are
-lines the VM's proxy did not write (activity.trusted).
+keywords ALLOWED, BLOCKED and ALERT (and CLOSED, ERROR). Lines the VM's proxy
+did not write are ignored (activity.trusted).
 """
 import json
 import os

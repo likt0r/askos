@@ -1125,7 +1125,7 @@ SELFTEST_REGEX_CASES = [
 # Watchlist cannot be read (checked last, with Open web closed)
 SELFTEST_REGEX_BLOCKED = [("y.exfil-selftest.example", "suspicious: exfil")]
 SELFTEST_REGEX_UNREADABLE = ("free1-selftest.example", "Watchlist unreadable, regex entries closed")
-# Zeilen des Proxy-Logs; aeltere deutsche Schluesselwoerter zaehlen nicht
+# Lines of the proxy log
 LOG_ALERT = re.compile(r"\] ALERT (\S+) \[(.*)\]$")
 LOG_BLOCKED = re.compile(r"\] BLOCKED (\S+) \((.*)\)$")
 
