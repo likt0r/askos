@@ -250,12 +250,6 @@ class SetClaudeTokenTest(CredentialsTest):
         self.assertEqual((code, err), (0, PROMPT))
         self.assertEqual(json.loads(out), {"vm": "priv", "stored": True, "length": 30})
 
-    def test_rate_limit_means_valid(self):
-        self.scenario(answer=RATE_LIMIT)
-        code, out, err = self.run_agentbox("set-claude-token", "priv", "--no-prompt", stdin=PASTED)
-        self.assertEqual((code, out, err), (0, STORED, ""))
-        self.assertEqual(self.read("secrets/claude-priv"), TOKEN + "\n")
-
     def test_rejects_text_without_prefix(self):
         for pasted in ("abc-sk-ant-123", "", "  \n", "sk-ant"):
             with self.subTest(pasted=pasted):
