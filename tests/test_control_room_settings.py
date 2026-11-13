@@ -33,14 +33,14 @@ class SettingsApiTest(ControlRoomTest):
 
     def test_get_shows_the_settings_of_agentbox(self):
         self.respond(SHOWN)
-        self.assertEqual(self.get("/api/settings"), (200, SHOWN))
+        self.assertEqual(self.get("/api/v1/settings"), (200, SHOWN))
         self.assertEqual(self.calls(), [["settings", "--json"]])
 
-    def test_post_passes_the_values_to_agentbox(self):
+    def test_patch_passes_the_values_to_agentbox(self):
         self.respond(SAVED)
-        status, obj, _ = self.post("/api/settings", {"maintenance_time": "05:30", "session_hours": 8,
-                                                     "default_language": "browser"})
-        self.assertEqual((status, obj), (200, SAVED))
+        answer = self.request("PATCH", "/api/v1/settings", {"maintenance_time": "05:30", "session_hours": 8,
+                                                            "default_language": "browser"})
+        self.assertEqual(answer[:2], (200, SAVED))
         self.assertEqual(self.calls(), [["set-settings", "maintenance_time=05:30", "session_hours=8",
                                          "default_language=browser", "--json"]])
 
@@ -48,24 +48,24 @@ class SettingsApiTest(ControlRoomTest):
         self.respond("", stderr=failure("invalid_setting",
                                         "maintenance_time: invalid value 99:99 (allowed: time HH:MM)",
                                         setting="maintenance_time"), exitcode=1)
-        status, obj, _ = self.post("/api/settings", {"maintenance_time": "99:99"})
-        self.assertEqual((status, obj), (400, {"ok": False, "message": "maintenance_time: invalid value 99:99 "
-                                                                      "(allowed: time HH:MM)"}))
+        answer = self.request("PATCH", "/api/v1/settings", {"maintenance_time": "99:99"})
+        self.assertError(answer, 400, "invalid_setting")
+        self.assertEqual((answer[1]["error"]["field"], answer[1]["error"]["detail"]),
+                         ("maintenance_time", "maintenance_time: invalid value 99:99 (allowed: time HH:MM)"))
 
     def test_only_known_keys_are_accepted(self):
         for key in ("password", "home_network", "network", "port", "bind", "orca_port", "--json", "x=y",
                     "Maintenance_Time"):
             with self.subTest(key=key):
-                status, obj, _ = self.post("/api/settings", {"maintenance_time": "05:30", key: "x"})
-                self.assertEqual(status, 400)
-                self.assertFalse(obj["ok"])
-                self.assertIn("unknown setting", obj["message"])
+                answer = self.request("PATCH", "/api/v1/settings", {"maintenance_time": "05:30", key: "x"})
+                self.assertError(answer, 400, "unknown_setting")
+                self.assertEqual(answer[1]["error"]["field"], key)
         self.assertEqual(self.calls(), [])
 
     def test_auto_update_takes_true_and_false(self):
         self.respond(SAVED)
-        self.assertEqual(self.post("/api/settings", {"auto_update": False})[0], 200)
-        self.assertEqual(self.post("/api/settings", {"auto_update": "true"})[0], 200)
+        self.assertEqual(self.request("PATCH", "/api/v1/settings", {"auto_update": False})[0], 200)
+        self.assertEqual(self.request("PATCH", "/api/v1/settings", {"auto_update": "true"})[0], 200)
         self.assertEqual(self.calls(), [["set-settings", "auto_update=false", "--json"],
                                         ["set-settings", "auto_update=true", "--json"]])
 
@@ -73,14 +73,15 @@ class SettingsApiTest(ControlRoomTest):
         for body in ({}, {"maintenance_time": True}, {"builds_kept": 1.5}, {"builds_kept": [3]},
                      {"maintenance_time": None}, {"maintenance_time": {"a": 1}}):
             with self.subTest(body=body):
-                self.assertEqual(self.post("/api/settings", body)[0], 400)
+                self.assertError(self.request("PATCH", "/api/v1/settings", body), 400, "invalid_field")
         self.assertEqual(self.calls(), [])
 
     def test_needs_a_session_and_the_csrf_header(self):
-        self.assertEqual(self.post("/api/settings", {}, header=False, raw=b"")[0], 403)
+        self.assertError(self.request("PATCH", "/api/v1/settings", None, header=False), 403, "csrf_header_missing")
         self.cookie = None
-        self.assertEqual(self.get("/api/settings")[0], 401)
-        self.assertEqual(self.post("/api/settings", {"maintenance_time": "05:30"})[0], 401)
+        self.assertError(self.request("GET", "/api/v1/settings"), 401, "unauthenticated")
+        self.assertError(self.request("PATCH", "/api/v1/settings", {"maintenance_time": "05:30"}), 401,
+                         "unauthenticated")
         self.assertEqual(self.calls(), [])
 
     def test_the_known_keys_are_the_ones_of_agentbox(self):
@@ -109,7 +110,8 @@ class SessionLengthTest(ControlRoomTest):
         super().setUp()
 
     def max_age(self):
-        cookie = self.post("/api/login", {"password": test_control_room.PASSWORD})[2]
+        cookie = self.request("POST", "/api/v1/session", {"password": test_control_room.PASSWORD})[2] \
+            .getheader("Set-Cookie")
         return int(re.search(r"Max-Age=(\d+)", cookie).group(1))
 
     def write(self, text):

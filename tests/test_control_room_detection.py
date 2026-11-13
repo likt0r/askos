@@ -5,8 +5,6 @@ Uses the server harness of test_control_room.py.
 
 Run from the repo root: python3 -m unittest discover -s tests
 """
-import http.client
-import json
 import os
 import sys
 import unittest
@@ -33,89 +31,78 @@ class DetectionTest(ControlRoomTest):
         super().setUp()
         self.login()
 
-    def get(self, path):
-        conn = http.client.HTTPSConnection("127.0.0.1", self.port, context=self.ssl, timeout=60)
-        try:
-            conn.request("GET", path, headers={"Cookie": self.cookie} if self.cookie else {})
-            resp = conn.getresponse()
-            return resp.status, json.loads(resp.read())
-        finally:
-            conn.close()
-
 
 class CheckDomainTest(DetectionTest):
     def test_answers_with_the_json_of_agentbox(self):
         self.respond(REPORT)
-        status, obj, _ = self.post("/api/check-domain", {"domain": " Evil.Example "})
-        self.assertEqual((status, obj), (200, REPORT))
+        self.assertEqual(self.get("/api/v1/watchlist/check?domain=%20Evil.Example%20"), (200, REPORT))
         self.assertEqual(self.calls(), [["check-domain", "evil.example", "--json"]])
 
     def test_failure_is_reported(self):
         self.respond("", stderr=failure("invalid_domain", "invalid domain: a_b.example", domain="a_b.example"),
                      exitcode=1)
-        status, obj, _ = self.post("/api/check-domain", {"domain": "a_b.example"})
-        self.assertEqual((status, obj), (400, {"ok": False, "message": "invalid domain: a_b.example"}))
+        answer = self.request("GET", "/api/v1/watchlist/check?domain=a_b.example")
+        self.assertError(answer, 400, "invalid_domain")
+        self.assertEqual(answer[1]["error"]["detail"], "invalid domain: a_b.example")
 
     def test_missing_or_option_like_domains_never_reach_agentbox(self):
-        for body in ({}, {"domain": ""}, {"domain": "  "}, {"domain": "--json"}, {"domain": ["x.example"]},
-                     {"domain": 5}, {"domain": None}):
-            with self.subTest(body=body):
-                status, obj, _ = self.post("/api/check-domain", body)
+        for query in ("", "?domain=", "?domain=%20%20", "?domain=--json", "?domain=a&domain=b"):
+            with self.subTest(query=query):
+                status, obj = self.get("/api/v1/watchlist/check" + query)
                 self.assertEqual(status, 400)
-                self.assertFalse(obj["ok"])
+                self.assertIn(obj["error"]["code"], ("invalid_domain", "invalid_query"))
         self.assertEqual(self.calls(), [])
 
 
 class HarmlessTest(DetectionTest):
     def test_list(self):
         self.respond(["githbu.com"])
-        self.assertEqual(self.get("/api/harmless"), (200, ["githbu.com"]))
+        self.assertEqual(self.get("/api/v1/watchlist/harmless"), (200, ["githbu.com"]))
         self.assertEqual(self.calls(), [["harmless", "--json"]])
 
     def test_mark_and_unmark(self):
-        self.respond("githbu.com als harmlos markiert")
-        status, obj, _ = self.post("/api/mark-harmless", {"domain": "githbu.com"})
-        self.assertEqual((status, obj), (200, {"ok": True, "message": "githbu.com als harmlos markiert"}))
-        self.respond("githbu.com nicht mehr als harmlos markiert")
-        status, obj, _ = self.post("/api/unmark-harmless", {"domain": "githbu.com"})
-        self.assertEqual(status, 200)
+        self.respond({"domain": "githbu.com", "harmless": True})
+        self.assertEqual(self.request("PUT", "/api/v1/watchlist/harmless/Githbu.com")[:2],
+                         (200, {"domain": "githbu.com", "harmless": True}))
+        self.respond({"domain": "githbu.com", "harmless": False})
+        self.assertEqual(self.request("DELETE", "/api/v1/watchlist/harmless/githbu.com")[0], 200)
         # never with --force or other options: the Control Room only silences Alerts
-        self.assertEqual(self.calls(), [["mark-harmless", "githbu.com"], ["unmark-harmless", "githbu.com"]])
-        self.assertIn("- mark-harmless -> ok: githbu.com als harmlos markiert", self.server_log())
+        self.assertEqual(self.calls(), [["mark-harmless", "githbu.com", "--json"],
+                                        ["unmark-harmless", "githbu.com", "--json"]])
+        self.assertIn("- v1 PUT put_harmless -> ok", self.server_log())
 
-    def test_requires_session_and_header(self):
-        self.cookie = None
-        self.assertEqual(self.post("/api/mark-harmless", {"domain": "githbu.com"})[0], 401)
-        self.assertEqual(self.get("/api/harmless")[0], 401)
-        self.login()
-        self.assertEqual(self.post("/api/mark-harmless", raw=b"", header=False)[0], 403)
+    def test_option_like_domains_never_reach_agentbox(self):
+        for method in ("PUT", "DELETE"):
+            with self.subTest(method=method):
+                self.assertError(self.request(method, "/api/v1/watchlist/harmless/--force"), 400, "invalid_field")
         self.assertEqual(self.calls(), [])
 
-    def test_unknown_global_actions(self):
-        for path in ("/api/allow", "/api/harmless", "/api/check-domain/x"):
-            with self.subTest(path=path):
-                self.assertEqual(self.post(path, {"domain": "githbu.com"})[0], 404)
+    def test_requires_session_and_header(self):
+        self.assertError(self.request("PUT", "/api/v1/watchlist/harmless/githbu.com", header=False), 403,
+                         "csrf_header_missing")
+        self.cookie = None
+        self.assertError(self.request("PUT", "/api/v1/watchlist/harmless/githbu.com"), 401, "unauthenticated")
+        self.assertError(self.request("GET", "/api/v1/watchlist/harmless"), 401, "unauthenticated")
         self.assertEqual(self.calls(), [])
 
 
 class MarkSeenTest(DetectionTest):
     def test_all_alerts_of_a_vm(self):
-        self.respond("work: Alerts als gesehen markiert")
+        self.respond({"vm": "work", "marked": 2})
         for body in ({}, {"domain": None}, {"domain": ""}):
             with self.subTest(body=body):
-                status, obj, _ = self.post("/api/work/mark-seen", body)
-                self.assertEqual((status, obj), (200, {"ok": True, "message": "work: Alerts als gesehen markiert"}))
-        self.assertEqual(self.calls(), [["mark-seen", "work"]] * 3)
+                self.assertEqual(self.request("POST", "/api/v1/vms/work/alerts/seen", body)[:2],
+                                 (200, {"vm": "work", "marked": 2}))
+        self.assertEqual(self.calls(), [["mark-seen", "work", "--json"]] * 3)
 
     def test_alerts_of_one_destination(self):
-        self.respond("work: Alerts zu evil.example als gesehen markiert")
-        status, _, _ = self.post("/api/work/mark-seen", {"domain": "evil.example"})
-        self.assertEqual(status, 200)
-        self.assertEqual(self.calls(), [["mark-seen", "work", "evil.example"]])
+        self.respond({"vm": "work", "marked": 1})
+        self.assertEqual(self.request("POST", "/api/v1/vms/work/alerts/seen", {"domain": "evil.example"})[0], 200)
+        self.assertEqual(self.calls(), [["mark-seen", "work", "evil.example", "--json"]])
 
     def test_option_like_domain_is_rejected(self):
-        status, obj, _ = self.post("/api/work/mark-seen", {"domain": "--json"})
-        self.assertEqual(status, 400)
+        self.assertError(self.request("POST", "/api/v1/vms/work/alerts/seen", {"domain": "--json"}), 400,
+                         "invalid_field")
         self.assertEqual(self.calls(), [])
 
 
