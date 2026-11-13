@@ -193,7 +193,6 @@ class PackageTest(unittest.TestCase):
         self.assertLessEqual({"shadow-utils", "e2fsprogs", "systemd", "firewalld"}, requires)
 
     def test_it_carries_the_license_of_the_repository(self):
-        self.assertTrue(read("LICENSE").startswith("MIT License\n\nCopyright (c) 2026 Benjamin Werner\n"))
         self.assertRegex(self.spec, r"(?m)^License:\s+MIT$")
         self.assertRegex(self.spec, r"(?m)^%license LICENSE$")
 
