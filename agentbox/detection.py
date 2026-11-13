@@ -16,10 +16,9 @@ import ipaddress
 import json
 import os
 import re
-import subprocess
 import time
 
-from . import patterns, paths, state_files
+from . import patterns, paths, programs, state_files
 from .allowlist import _parse
 from .entry_store import given, label
 from .errors import die
@@ -106,16 +105,8 @@ def domain_arg(d):
 
 def _classifier(*args):
     """agentbox-suspicious with the files of this Host (or the test root): its JSON answer."""
-    try:
-        r = subprocess.run([paths.SUSPICIOUS, *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                           env=paths.classifier_env(), timeout=paths.CLASSIFIER_SECONDS)
-    except OSError:
-        die(f"{paths.SUSPICIOUS} is missing", 127, error="action_failed")
-    except subprocess.TimeoutExpired:
-        die("agentbox-suspicious does not answer", error="action_failed")
-    if r.returncode != 0:
-        die("agentbox-suspicious failed: " + (r.stderr.decode("utf-8", "replace").strip()[-200:]
-                                              or f"Exit {r.returncode}"), error="action_failed")
+    r = programs.run([paths.SUSPICIOUS, *args], paths.CLASSIFIER_SECONDS, what="agentbox-suspicious",
+                     env=paths.classifier_env())
     try:
         return json.loads(r.stdout)
     except ValueError:

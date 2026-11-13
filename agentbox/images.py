@@ -63,7 +63,7 @@ import subprocess
 import sys
 import time
 
-from . import activity, guest, options, paths, registry, safeguards, settings, state_files, version, versions
+from . import activity, guest, options, paths, programs, registry, safeguards, settings, state_files, version, versions
 from .errors import Fail, die
 from .sanitize import SECRET, clean, entry
 
@@ -357,11 +357,7 @@ def _rmi(tag):
     """Remove a container image; --force also ends a container of it that still runs (the
     version check's count, versions.py), so a Build never waits for one or leaves its
     image behind."""
-    try:
-        subprocess.run(["podman", "rmi", "--force", "--ignore", tag], stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL, timeout=300)
-    except (OSError, subprocess.TimeoutExpired):
-        pass
+    programs.quietly(["podman", "rmi", "--force", "--ignore", tag], 300)
 
 
 def _image_exists(tag):
@@ -466,11 +462,7 @@ def _check(image, tag, days, base):
         except Exception:                # what cannot be read is unknown
             tools = None
     finally:
-        try:
-            subprocess.run(["podman", "image", "unmount", tag], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                           timeout=120)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+        programs.quietly(["podman", "image", "unmount", tag], 120)
     problems += found
     if problems:
         raise _Failed(problems[0] + (f" (and {len(problems) - 1} more)" if len(problems) > 1 else ""),
@@ -759,7 +751,7 @@ def _check_versions(say):
         r = subprocess.run(["systemctl", "start", versions.FETCH_UNIT], capture_output=True, text=True,
                            errors="replace", timeout=20 * 60)
         if r.returncode != 0:
-            say("Fetch failed: " + (clean(r.stderr.strip(), False)[-300:] or f"exit {r.returncode}"))
+            say("Fetch failed: " + programs.summary(r))
     except (OSError, subprocess.TimeoutExpired) as e:
         say(f"Fetch failed: {type(e).__name__}")
     say("== Checking versions: package updates and what a new Build would bring")
@@ -1025,14 +1017,10 @@ def start(target, resets=(), **request):
             die(f"a Build of {target} is being started already", error="build_running", image=target)
         state_files.write_atomic(_request_file(target), json.dumps(
             {"actor": activity.actor(), "reset": list(resets), **request}).encode(), 0o600)
-    try:
-        r = subprocess.run(["systemctl", "start", "--no-block", name], capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.TimeoutExpired) as e:
-        die(f"systemctl start {name}: {e}", error="action_failed")
+    r = programs.systemctl("start", "--no-block", name, timeout=60, ok=None)
     if r.returncode != 0:
         _remove(_request_file(target))
-        die(f"systemctl start {name} failed: " + (clean(r.stderr.strip(), False)[-300:] or f"exit {r.returncode}"),
-            error="action_failed")
+        programs.fail(r, f"systemctl start {name}", program="systemctl")
     return name
 
 

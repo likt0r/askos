@@ -22,7 +22,7 @@ import re
 import subprocess
 import tempfile
 
-from . import activity, hostsetup, lifecycle, paths, registry, settings, state_files, virsh, vmenv
+from . import activity, hostsetup, lifecycle, paths, programs, registry, settings, state_files, virsh, vmenv
 from .errors import die
 from .registry import bridge, dom, guest_ip, host_ip, mac
 
@@ -375,26 +375,15 @@ def being_deleted():
 def _apply_pending(what, *systemctl):
     if not os.path.exists(_pending(what)):
         return False
-    _systemctl(*systemctl)
+    programs.systemctl(*systemctl)
     os.remove(_pending(what))
     return True
-
-
-def _run(argv, what):
-    try:
-        r = subprocess.run(argv, capture_output=True, text=True, errors="replace", timeout=120,
-                           env=dict(os.environ, LC_ALL="C"))
-    except (OSError, subprocess.TimeoutExpired) as e:
-        die(f"{what}: {e}", error="action_failed")
-    if r.returncode != 0:
-        die(f"{what} fails: " + (r.stderr.strip()[-300:] or f"exit {r.returncode}"), error="action_failed")
-    return r.stdout
 
 
 def _virsh(what, *args):
     r = virsh.run(*args)
     if r.returncode != 0:
-        die(f"{what} fails: " + (r.stderr.strip()[-300:] or f"exit {r.returncode}"), error="action_failed")
+        programs.fail(r, what, program="virsh")
 
 
 def _virsh_define(cmd, xml, what):
@@ -509,8 +498,8 @@ def _rebind(rec):
         if not name.endswith(".socket") or not os.path.exists(_pending(f"socket-{name}")):
             continue
         if "Accept=yes" not in text:
-            _systemctl("stop", name[:-len(".socket")] + ".service")
-        _systemctl("restart", name)
+            programs.systemctl("stop", name[:-len(".socket")] + ".service")
+        programs.systemctl("restart", name)
         os.remove(_pending(f"socket-{name}"))
         done = True
     return done
@@ -536,8 +525,8 @@ def _data_disk(rec):
     path = data_disk(rec["name"])
     if os.path.exists(path):
         return False
-    _run(["qemu-img", "create", "-q", "-f", "qcow2", path, f"{rec['data_disk_gib']}G"],
-         f"{rec['name']}: create Data disk")
+    programs.run(["qemu-img", "create", "-q", "-f", "qcow2", path, f"{rec['data_disk_gib']}G"], 120,
+                 what=f"{rec['name']}: create Data disk", c_locale=True)
     if os.geteuid() == 0:
         os.chown(path, *_qemu())
     return True
@@ -601,7 +590,8 @@ def domain(rec):
     vm = rec["name"]
     r = virsh.run("domuuid", dom(vm))
     uuid = r.stdout.strip() if r.returncode == 0 and UUID.fullmatch(r.stdout.strip()) else None
-    xml = _run(["virt-install", *virt_install_args(rec, uuid)], f"{vm}: virt-install")
+    xml = programs.run(["virt-install", *virt_install_args(rec, uuid)], 120, what=f"{vm}: virt-install",
+                       c_locale=True).stdout
     saved = os.path.join(paths.STATE, "domains", f"{vm}.xml")
     try:
         with open(saved) as f:
@@ -619,17 +609,13 @@ def domain(rec):
     return "domain"
 
 
-def _systemctl(*args):
-    _run(["systemctl", *args], "systemctl " + " ".join(args))
-
-
 def _activity_journal(days):
     """The journald namespace of Activity, keeping entries for `days` days; its
     journald picks a changed retention up on restart (it keeps the log streams
     of the services meanwhile). Returns the days when they changed, else None."""
     _write_if_changed(activity.JOURNALD_CONF, activity.journald_conf(days).encode(), 0o644, "journald")
     changed = _apply_pending("journald", "try-restart", f"{JOURNALD}.service")
-    _systemctl("enable", "--now", f"{JOURNALD}.socket")
+    programs.systemctl("enable", "--now", f"{JOURNALD}.socket")
     return days if changed else None
 
 
@@ -837,10 +823,10 @@ def _feeds(values):
         _write_if_changed(os.path.join(paths.SYSTEMD, name), text.encode(), 0o644, "timers")
     changed = os.path.exists(_pending("timers"))
     if changed:
-        _systemctl("daemon-reload")
-        _systemctl("restart", f"{FEEDS}.timer")
+        programs.systemctl("daemon-reload")
+        programs.systemctl("restart", f"{FEEDS}.timer")
         os.remove(_pending("timers"))
-    _systemctl("enable", "--now", f"{FEEDS}.timer")
+    programs.systemctl("enable", "--now", f"{FEEDS}.timer")
     return changed
 
 
@@ -866,8 +852,8 @@ def _versions(values):
         _write_if_changed(os.path.join(paths.SYSTEMD, name), text.encode(), 0o644, "versions")
     changed = os.path.exists(_pending("versions"))
     if changed:
-        _systemctl("daemon-reload")
-        _systemctl("start", "--no-block", f"{VERSIONS}.service")
+        programs.systemctl("daemon-reload")
+        programs.systemctl("start", "--no-block", f"{VERSIONS}.service")
         os.remove(_pending("versions"))
     return changed
 
@@ -884,20 +870,20 @@ def _maintenance(values):
                       MAINTENANCE_TIMER.format(time=values["maintenance_time"]).encode(), 0o644, "maintenance-timer")
     timer, service = os.path.exists(_pending("maintenance-timer")), os.path.exists(_pending("maintenance"))
     if timer:
-        _systemctl("stop", f"{MAINTENANCE}.timer")
-        _systemctl("daemon-reload")
+        programs.systemctl("stop", f"{MAINTENANCE}.timer")
+        programs.systemctl("daemon-reload")
         os.makedirs(os.path.dirname(MAINTENANCE_STAMP), exist_ok=True)
         with open(MAINTENANCE_STAMP, "a"):
             pass
         os.utime(MAINTENANCE_STAMP)
-        _systemctl("start", f"{MAINTENANCE}.timer")
+        programs.systemctl("start", f"{MAINTENANCE}.timer")
         os.remove(_pending("maintenance-timer"))
     elif service:
-        _systemctl("daemon-reload")
+        programs.systemctl("daemon-reload")
     if service:
         os.remove(_pending("maintenance"))
     _remove(_pending("versions-timer"))             # a marker of a retired timer
-    _systemctl("enable", "--now", f"{MAINTENANCE}.timer")
+    programs.systemctl("enable", "--now", f"{MAINTENANCE}.timer")
     return _retire() or timer or service
 
 
@@ -910,10 +896,10 @@ def _retire():
     if not timers and not services:
         return False
     if timers:
-        _systemctl("disable", "--now", *timers)
+        programs.systemctl("disable", "--now", *timers)
     for name in timers + services:
         _remove(os.path.join(paths.SYSTEMD, name))
-    _systemctl("daemon-reload")
+    programs.systemctl("daemon-reload")
     return True
 
 
@@ -997,7 +983,7 @@ def apply():
         if _rebind(rec):
             changes[rec["name"]].append("sockets")
     if records:
-        _systemctl("enable", "--now", *[s for rec in records for s in sockets(rec)])
+        programs.systemctl("enable", "--now", *[s for rec in records for s in sockets(rec)])
     return {"vms": changes, "firewall": firewall, "storage": storage, "retention": retention,
             "timers": timers}
 

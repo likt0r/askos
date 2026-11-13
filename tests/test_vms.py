@@ -338,7 +338,7 @@ class CreateTest(VmsTest):
         self.scenario(virt_install_fails=["agentbox-lab"])
         code, _, err = self.run_agentbox("create", "lab")
         self.assertEqual(code, 1)
-        self.assertIn("lab: virt-install fails", err)
+        self.assertIn("lab: virt-install failed", err)
         self.assertIn("agentbox: lab is registered, but not completely set up: agentbox regenerate finishes it",
                       err)
         # with --json the same lines, without their "agentbox: "
@@ -347,7 +347,7 @@ class CreateTest(VmsTest):
         self.assertEqual((code, out), (1, ""))
         said = json.loads(err)
         self.assertEqual((said["error"], said["params"]["vm"]), ("action_failed", "lab2"))
-        self.assertIn("virt-install fails", said["message"])
+        self.assertIn("virt-install failed", said["message"])
         self.assertIn("\nlab2 is registered, but not completely set up: agentbox regenerate finishes it",
                       said["message"])
         self.assertNotIn("agentbox: ", said["message"])
@@ -754,7 +754,7 @@ class SetMemoryTest(VmsTest):
         code, out, err = self.run_agentbox("set-memory", "work", "16384")
         self.assertEqual((code, out), (1, ""))
         self.assertIn("agentbox: work: memory limit 16384 MiB saved, but the VM was not defined again: "
-                      "work: virt-install fails", err)
+                      "work: virt-install failed", err)
         self.assertTrue(err.endswith("; agentbox regenerate finishes it\n"), err)
         self.assertEqual(vm_records.read(self.root, "work")["memory_mib"], 16384)
         self.scenario()

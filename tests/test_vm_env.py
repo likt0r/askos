@@ -450,7 +450,7 @@ class OlderDomainTest(EnvTest):
         said = json.loads(err)
         self.assertEqual((said["error"], said["params"]), ("env_not_applied", {"vm": "work"}))
         self.assertTrue(said["message"].startswith("work: VM variables saved, but the VM was not defined again: "
-                                                   "work: virt-install fails"), said["message"])
+                                                   "work: virt-install failed"), said["message"])
         self.assertTrue(said["message"].endswith("; agentbox regenerate finishes it"), said["message"])
         self.assertEqual((self.record_env(), self.env_file()), ({"A": "1"}, "A=MQ==\n"))
         self.scenario()

@@ -39,7 +39,7 @@ import re
 import shutil
 
 from . import activity, allowlist, detection, generate, images, lifecycle, paths, registry, responding, settings, state_files
-from . import options, virsh, vmenv
+from . import options, programs, virsh, vmenv
 from .credentials import OWNER
 from .errors import Fail, die
 from .registry import dom
@@ -285,11 +285,11 @@ def _units_off(rec, say):
     files = [os.path.join(paths.SYSTEMD, u) for u in generate.units(rec)]
     present = [s for s in generate.sockets(rec) if os.path.exists(os.path.join(paths.SYSTEMD, s))]
     if present:
-        generate._systemctl("disable", "--now", *present)        # the proxy service stops with its socket
+        programs.systemctl("disable", "--now", *present)        # the proxy service stops with its socket
     # open connections run in instances of their own (patterns: nothing to stop is fine)
-    generate._systemctl("stop", f"agentbox-gui-{name}@*.service", f"agentbox-ghvm-{name}@*.service")
+    programs.systemctl("stop", f"agentbox-gui-{name}@*.service", f"agentbox-ghvm-{name}@*.service")
     removed = [f for f in files if _remove(f)]
-    generate._systemctl("daemon-reload")
+    programs.systemctl("daemon-reload")
     if present or removed:
         say(f"{name}: Orca port, proxy and token service turned off")
 
@@ -302,8 +302,7 @@ def _libvirt(kind, name):
         return r
     if f"failed to get {kind}" in r.stderr:
         return None
-    die(f"{name}: virsh fails: " + (r.stderr.strip()[-300:] or f"exit {r.returncode}"), error="action_failed",
-        vm=name)
+    programs.fail(r, f"{name}: virsh", program="virsh", vm=name)
 
 
 def _domain_off(name, say):

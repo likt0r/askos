@@ -61,7 +61,7 @@ import subprocess
 import sys
 import time
 
-from . import paths, safeguards, scripts, settings, state_files
+from . import paths, programs, safeguards, scripts, settings, state_files
 from .errors import Fail, die
 from .sanitize import clean
 
@@ -347,20 +347,13 @@ def orca_newest(cutoff, pin=None):
     return version, None
 
 
-def _remove_container(name):
-    try:
-        subprocess.run(["podman", "rm", "--force", "--ignore", name], stdin=subprocess.DEVNULL,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-
-
 def count_updates(image, tag):
     """(number of Fedora package updates, error) for the container image `tag` of the
     Image: `dnf check-update` in a container from it, which exits 100 and lists one
     package per line (name.arch, version, repository) when there are updates."""
     name = f"agentbox-check-{image}"
-    _remove_container(name)               # left over from a check that was killed
+    # left over from a check that was killed
+    programs.quietly(["podman", "rm", "--force", "--ignore", name], 120)
     argv = ["podman", "run", "--rm", f"--name={name}", "--pull=never", "--cap-drop=all",
             "--security-opt=no-new-privileges", "--read-only", *(f"--tmpfs={d}" for d in CHECK_TMPFS),
             tag, "dnf", "-q", "check-update"]
@@ -370,7 +363,7 @@ def count_updates(image, tag):
     except FileNotFoundError:
         return None, "podman is missing"
     except (OSError, subprocess.TimeoutExpired):
-        _remove_container(name)
+        programs.quietly(["podman", "rm", "--force", "--ignore", name], 120)
         return None, "dnf check-update: time limit exceeded"
     if r.returncode == 0:
         return 0, None
