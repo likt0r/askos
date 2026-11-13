@@ -1304,13 +1304,9 @@ def _log_entries(info, opts):
 def build_log(args):
     """agentbox build-log <image> [<build>] [--after-cursor C] [--lines N] [--json]: the
     journal of a Build (default: the running one, else the newest)."""
-    positional, opts = options.parse(args, {"after-cursor": True, "lines": True, "json": False})
+    positional, opts = options.parse(args, {**LOG_CHECKS, "json": False})
     if not 1 <= len(positional) <= 2:
         die("build-log <image> [<build>] [--after-cursor C] [--lines N] [--json]", error="invalid_argument")
-    for k in LOG_CHECKS:
-        if k in opts and not LOG_CHECKS[k](opts[k]):
-            die(f"invalid value for --{k}: " + clean(opts[k], False)[:60], 2, error="invalid_argument",
-                option=f"--{k}")
     image = _image_name(positional[0])
     found = builds().get(image, {})
     if len(positional) == 2:

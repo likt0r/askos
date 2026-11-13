@@ -145,7 +145,7 @@ def records(out):
 
 
 def parse(ctx, args):
-    """The filters of `agentbox logs` (and of a Build's log, images.py) and --json."""
+    """The filters of `agentbox logs` with their defaults, and --json."""
     _, opts = options.parse(args, {**CHECKS, "json": False}, positional=False, prefix=f"{ctx}: ")
     as_json = opts.pop("json", False)
     return {"boot": "current", "lines": "200", **opts}, as_json

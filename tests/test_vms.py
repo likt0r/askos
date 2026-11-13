@@ -320,6 +320,20 @@ class CreateTest(VmsTest):
         err = self.refused("create", "lab")
         self.assertIn("lab2.json: broken record", err)
 
+    def test_a_wrong_option_is_named_without_its_value(self):
+        for args, message, option in (
+                (["--colour=red"], "unknown option: --colour=red", "--colour"),
+                (["--json=yes"], "--json takes no value", "--json"),
+                (["--image=base", "--image", "base"], "--image given twice", "--image")):
+            with self.subTest(args=args):
+                before = self.files()
+                code, out, err = self.run_agentbox("create", "lab", *args, "--json")
+                self.assertEqual((code, out), (1, ""))
+                said = json.loads(err)
+                self.assertEqual((said["error"], said["message"], said["params"]),
+                                 ("invalid_argument", message, {"option": option}))
+                self.assertEqual(self.files(), before)
+
     def test_failing_configuration_says_how_to_finish(self):
         self.scenario(virt_install_fails=["agentbox-lab"])
         code, _, err = self.run_agentbox("create", "lab")

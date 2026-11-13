@@ -111,7 +111,8 @@ class PairingsTest(ActivityTest):
         self.assertEqual(self.run_agentbox("unpair", "work", "../x")[0], 2)
 
     def test_revoke_needs_the_confirmation(self):
-        for extra in ([], ["--confirm", "priv"], ["--confirm=WORK"]):
+        # a second --confirm does not override the first (agentbox/options.py)
+        for extra in ([], ["--confirm", "priv"], ["--confirm=WORK"], ["--confirm", "priv", "--confirm", "work"]):
             with self.subTest(extra=extra):
                 self.assertEqual(self.run_agentbox("revoke-pairings", "work", *extra)[0], 2)
         self.assertEqual(self.calls("guest-exec"), [])
