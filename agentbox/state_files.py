@@ -133,18 +133,30 @@ def claude_token_file(ctx):
     return os.path.join(paths.CONF, "secrets", f"claude-{ctx}")
 
 
+def opencode_key_file(ctx):
+    return os.path.join(paths.CONF, "secrets", f"opencode-{ctx}")
+
+
 def vm_env_file(ctx):
     """The VM variables as QEMU passes them in (fw_cfg opt/agentbox/env, vmenv.py)."""
     return os.path.join(paths.STATE, "vm-env", f"{ctx}.env")
 
 
-def claude_token_since(ctx):
-    """When the VM's Claude token was stored (epoch seconds), or 0 when there is none."""
-    f = claude_token_file(ctx)
+def _stored_since(f, prefix):
     try:
         with open(f, "rb") as fh:
-            if fh.read(7) != b"sk-ant-":
+            if fh.read(len(prefix)) != prefix:
                 return 0
         return int(os.stat(f).st_mtime)
     except OSError:
         return 0
+
+
+def claude_token_since(ctx):
+    """When the VM's Claude token was stored (epoch seconds), or 0 when there is none."""
+    return _stored_since(claude_token_file(ctx), b"sk-ant-")
+
+
+def opencode_key_since(ctx):
+    """When the VM's OpenCode key was stored (epoch seconds), or 0 when there is none."""
+    return _stored_since(opencode_key_file(ctx), b"sk-")

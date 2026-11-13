@@ -81,8 +81,8 @@ flowchart LR
   (on or off, and its days).
   `agentbox regenerate` derives everything else from it: the libvirt network and the domain
   (through virt-install), the proxy, token-service and Orca-port units, the nftables rules,
-  the storage pool of the disks, the Data disk, the Claude-token placeholder and the file of
-  its VM variables. Running it again changes nothing; a changed definition applies at the
+  the storage pool of the disks, the Data disk, the placeholders for the Claude token and the
+  OpenCode key and the file of its VM variables. Running it again changes nothing; a changed definition applies at the
   VM's next start, and not while the VM is paused. A VM network whose resolver differs from
   the current definition is defined again and, when active, stopped and started, since
   libvirt's dnsmasq reads its options only when the network starts; a VM running on it has no network until its next
@@ -97,8 +97,8 @@ flowchart LR
   no Allowlist entries of its own (optionally a one-time copy of another VM's own entries,
   [ADR 0001](docs/adr/0001-vm-is-the-unit-of-separation.md)) and a System disk, then runs
   `regenerate`. It refuses names the CLI or the Control Room use themselves and anything an
-  earlier VM of that name left behind (Data disk, Claude token, VM variables, Observer,
-  domain, network), so nothing carries over between VMs. The VM starts on its first `agentbox pair` or Orca
+  earlier VM of that name left behind (Data disk, Claude token, OpenCode key, VM variables,
+  Observer, domain, network), so nothing carries over between VMs. The VM starts on its first `agentbox pair` or Orca
   connection.
 - `agentbox set-memory` changes a VM's memory limit (1024 MiB up to the Host's memory, as
   in `create`): it writes the record and defines the domain again (the `regenerate` step for
@@ -145,8 +145,8 @@ flowchart LR
   anyway.
 - `agentbox delete` needs the name typed again (`--confirm`). It moves the record into a
   marker under `/var/lib/agentbox/pending`, so nothing wakes or regenerates the VM, then
-  stops the VM and removes its domain (with any Pause), network, units, Claude token, VM
-  variables, Observer directory and its own Allowlist entries. The System disk is deleted, the Data disk archived
+  stops the VM and removes its domain (with any Pause), network, units, Claude token, OpenCode
+  key, VM variables, Observer directory and its own Allowlist entries. The System disk is deleted, the Data disk archived
   under `/var/lib/agentbox/archive` unless deleting it is asked for. The VM's nftables rule
   stays until its network is gone; running `delete` again finishes an interrupted run.
   Create, delete and `regenerate` hold one lock, so two creates never get the same network.
@@ -155,13 +155,18 @@ flowchart LR
   with Docker Compose and every **Safeguard**, or an Image built on it.
 - **System disk** is a copy-on-write layer over a **Build** of the VM's Image and is replaced
   on every **Reset**.
-  **Data disk** keeps repositories, Orca's identity and pairings, agent transcripts, build
+  **Data disk** keeps repositories, Orca's identity and pairings, agent transcripts (Claude
+  Code's `~/.claude/projects`, codex's `~/.codex/sessions`, opencode's sessions and chosen
+  model in `~/.local/share/opencode` and `~/.local/state/opencode`), build
   caches and the agent's Podman storage ([ADR 0017](docs/adr/0017-containers-live-on-the-data-disk.md)):
   the VM's containers with their Container images and volumes survive a Reset and come back
   stopped, and nothing else of Podman's user configuration is kept. Agent settings and hooks
   are not kept, so nothing planted there survives a Reset.
-- A VM learns its name, Orca port, Pairing address, Claude token and VM variables from the
-  Host at boot (QEMU fw_cfg); the token never touches the Data disk. The token and the VM
+- A VM learns its name, Orca port, Pairing address, Claude token, OpenCode key and VM
+  variables from the Host at boot (QEMU fw_cfg); neither the token nor the key touches the
+  Data disk. A login made in the VM with `opencode auth login` writes `auth.json` next to
+  opencode's sessions on the Data disk; `guest-setup` deletes it at every start, so it does
+  not outlive the next one, like a Codex login, which stays on the System disk. The token and the VM
   variables are files QEMU reads (`root:qemu`, mode 0640, in directories of mode 0750),
   never values in virt-install's `--sysinfo`, which it splits at commas: the VM variables
   are `/var/lib/agentbox/vm-env/<vm>.env`, entry `opt/agentbox/env`, one line
@@ -586,6 +591,11 @@ sees](#what-detection-sees) below).
   switch it back in Claude Code's user or project settings (`env` in `~/.claude/settings.json`
   or in a repository's `.claude/settings.json`). Either way, it would still need a claude.ai
   login in the VM.
+- **OpenCode:** one **OpenCode key** per VM, an API key from opencode.ai (OpenCode Go, the
+  subscription, or Zen), stored on the Host in `/etc/agentbox/secrets/opencode-<vm>` and
+  passed in at boot (fw_cfg `opt/agentbox/opencode_key`); `guest-setup` hands it to every
+  agent and terminal as `OPENCODE_API_KEY`, which opencode reads for both providers. A
+  Claude subscription token is no use there: Anthropic allows it only in Claude Code.
 - No package-publishing tokens exist anywhere on the box.
 
 Replacing a credential never breaks a working one:
@@ -598,6 +608,13 @@ Replacing a credential never breaks a working one:
   (no answer, overloaded, a page from a proxy) proves nothing and stores nothing. The new
   token replaces the old one in one rename with the file's mode and group, and takes effect
   at the VM's next start.
+- `agentbox set-opencode-key` checks the form (`sk-`, the same characters as a Claude token;
+  a Claude token or key is refused), then asks OpenCode Go's API for its models
+  (`GET https://opencode.ai/inference/go/openai/v1/models`, which uses no quota) with it: a
+  list of models accepts the key, an authentication or permission error refuses it, anything
+  else proves nothing and stores nothing. Whether the account has a Go subscription is not
+  checked. The new key replaces the old one like a Claude token, and takes effect at the
+  VM's next start.
 - `agentbox set-github-app` reads the App's private key from stdin, lets openssl parse it
   (unencrypted RSA only), signs a JWT with it and asks GitHub `GET /app`, whose answer must
   name the given App ID. Only then is the App's key written to `app-<id>.pem` (owner `agentbox-gh`, mode 0400), and
@@ -713,7 +730,7 @@ Host after every Build
   `*HOOKS_PATH`, `*CLAUDEAI*`), what those patterns miss, also in either case
   (`npm_config_before`, which takes npm around the minimum release age), what Agent Box sets
   for the VM or every process reads first (`PATH`, `HOME`, `XDG_RUNTIME_DIR`, `LD_*`, `NODE_OPTIONS`, `BASH_ENV`,
-  `ENV`, `CLAUDE_CODE_OAUTH_TOKEN`, `AGENTBOX_*`, `ORCA_PORT`, `PAIRING_ADDRESS`) and every
+  `ENV`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENCODE_API_KEY`, `AGENTBOX_*`, `ORCA_PORT`, `PAIRING_ADDRESS`) and every
   variable of the Image's `DefaultEnvironment`, held to those files by a test. Neither may a
   VM variable be one bash sets itself (its readonly variables `SHELLOPTS`, `BASHOPTS`, `UID`,
   `EUID`, `PPID`, `BASH_VERSINFO`, on which `export` fails in every login shell, `GROUPS`, and `IFS`, which
@@ -932,7 +949,7 @@ of `'self'` plus the sha256 hashes of the inline scripts and styles of that `ind
 computed when it is loaded; a changed `index.html` is a new version, sent to open pages as a
 `version` event. Without a new build the old UI is served as before; with one, it stays at
 `/legacy/`. The backend also serves the Activity timeline (`GET /api/activity` with the filters of `agentbox activity`) and
-credentials: `POST /api/<vm>/claude-token`, `POST /api/github-app` (App ID and private key:
+credentials: `POST /api/<vm>/claude-token`, `PUT /api/v1/vms/<vm>/opencode-key`, `POST /api/github-app` (App ID and private key:
 adds the App or replaces its key), `GET /api/github-app` (every App's installations and missing
 GitHub owners) and
 `GET /api/<vm>/github-tokens`. Tokens and keys travel only in the request body and on to
@@ -1061,8 +1078,8 @@ One timeline of what happened on the Host and who caused it, kept in journald
   comes from the global option `--actor`, before the command or right after it: the Control
   Room passes device and address after the command, the Maintenance window passes `timer`, a connection to a VM's Orca port that wakes it passes
   `Orca (<address>)`; without it, it is the user who ran `sudo`. `watch` records its
-  entries with the actor `watch`. Setting a Claude token,
-  GitHub owners or the GitHub App is of kind `credentials`, described without the secret.
+  entries with the actor `watch`. Setting a Claude token, an
+  OpenCode key, GitHub owners or the GitHub App is of kind `credentials`, described without the secret.
 - Other events are recorded where they happen: sign-ins by the Control Room, each step of the
   Maintenance window (`maintenance.<step>`) and the automatic
   Resets and postponed ones (with the reason) of its Reset check by `maintenance` (`weekly-check`
@@ -1357,6 +1374,10 @@ attacks on the laptops.
   `ENABLE_CLAUDEAI_MCP_SERVERS=false`, a Safeguard, is a default that code in the VM can switch
   back ([Credentials](#credentials)). Mitigation: one token per VM, so a leak is one token to
   revoke; it never touches the Data disk.
+- **The OpenCode key is in the VM the same way.** Every agent and terminal has it as
+  `OPENCODE_API_KEY`; taken out, it works anywhere on the owner's opencode.ai account until
+  it is deleted there. `agentbox set-opencode-key` revokes nothing. Mitigation: one key per
+  VM, created for that VM in the opencode.ai console; it never touches the Data disk.
 - **GitHub tokens can be taken out of the VM.** Any process in the VM can ask the token service,
   as Git's credential helper and the `gh` wrapper do; the service knows the VM only by the
   network a request comes from ([Credentials](#credentials)). A token taken out works anywhere
@@ -1364,7 +1385,8 @@ attacks on the laptops.
   permission.
 - **Credentials you bring into a VM yourself** get none of this: a Codex or OpenCode login, an
   API key in a project's `.env`. Every agent in the VM can read them, and those on the Data disk
-  outlive a Reset; [Credentials](#credentials) covers GitHub and Claude only. Mitigation: keep
+  outlive a Reset (an OpenCode login only until the next start); [Credentials](#credentials)
+  covers GitHub, Claude and the OpenCode key only. Mitigation: keep
   them out of VMs; no package-publishing token exists on the box unless one is brought in.
 
 ### Inside a VM
@@ -1395,8 +1417,9 @@ attacks on the laptops.
   (their code, a `CLAUDE.md`, a project's `.claude/settings.json`, `.npmrc` or `.git/config`),
   build caches (`target/`, `node_modules` in worktrees) that can carry tampered output, the VM's
   containers with their Container images and volumes, which come back stopped
-  ([ADR 0017](docs/adr/0017-containers-live-on-the-data-disk.md)), and Claude Code's per-project
-  memory, kept with the transcripts under `~/.claude/projects`.
+  ([ADR 0017](docs/adr/0017-containers-live-on-the-data-disk.md)), Claude Code's per-project
+  memory, kept with the transcripts under `~/.claude/projects`, and opencode's sessions under
+  `~/.local/share/opencode`.
   Mitigation: a VM deleted with its Data disk (`--delete-data-disk`) and created again starts
   clean.
 

@@ -1537,6 +1537,9 @@ AGENTBOX_ERRORS = {
     "claude_token_rejected": (422, "Anthropic rejected the token; nothing changed"),
     "anthropic_unavailable": (502, "Anthropic answered unexpectedly; nothing changed, try again later"),
     "invalid_claude_token": (400, "This is not a token from `claude setup-token`"),
+    "opencode_key_rejected": (422, "OpenCode (opencode.ai) rejected the key; nothing changed"),
+    "opencode_unavailable": (502, "OpenCode (opencode.ai) answered unexpectedly; nothing changed, try again later"),
+    "invalid_opencode_key": (400, "This is not an API key from opencode.ai"),
     "github_app_rejected": (422, "GitHub rejected the App ID or key; nothing changed"),
     "github_unavailable": (502, "GitHub is not reachable or answered with an error"),
     "invalid_private_key": (400, "This is not the GitHub App's private key (.pem file)"),
@@ -1994,6 +1997,14 @@ def put_claude_token(h, m, url, body):
     if not isinstance(token, str) or not token.strip():
         raise invalid("token", "token is missing")
     return 200, run_json("set-claude-token", m["vm"], "--no-prompt", "--json", stdin=token, secrets_in=(token,))
+
+
+@route("PUT", VM + "/opencode-key", secret=("key",))
+def put_opencode_key(h, m, url, body):
+    key = body.get("key")
+    if not isinstance(key, str) or not key.strip():
+        raise invalid("key", "key is missing")
+    return 200, run_json("set-opencode-key", m["vm"], "--no-prompt", "--json", stdin=key, secrets_in=(key,))
 
 
 @route("POST", VM + "/open-web")

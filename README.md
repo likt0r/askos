@@ -32,7 +32,8 @@ privately, see [SECURITY.md](SECURITY.md).
   what its projects use)
 - Orca on your laptops, and on the Host (`/opt/Orca`) for the Observer, which reads the agents'
   status (the Images take Orca from its GitHub release, not from the Host)
-- A GitHub App you own (see below) and a Claude subscription or API account
+- A GitHub App you own (see below) and a Claude subscription or API account (for opencode:
+  an API key from opencode.ai, e.g. with OpenCode Go)
 - In Network mode, the Host reachable from your laptops (home network or VPN)
 - Ports 53 (TCP and UDP) and 443 (TCP) not held on all of the Host's addresses by another
   service: the VMs' resolver and proxy listen on the Host's address in each VM network
@@ -246,6 +247,7 @@ agentbox build-log base             # the running or newest Build's log (--json 
 agentbox set-image priv base --build 20261101-1530   # back to an earlier Build at the next Reset
 agentbox set-image priv rust        # another Image, always its current Build, at the next Reset
 agentbox set-claude-token priv      # store a token from `claude setup-token`, checked first
+agentbox set-opencode-key priv      # store an API key from opencode.ai (OpenCode Go), checked first
 agentbox github-app                 # where each GitHub App is installed, owners without one, install links
 agentbox github-tokens priv         # repositories priv got tokens for, refused requests
 agentbox set-github-app 123456 < key.pem   # add an App or replace its key, checked with GitHub first
@@ -418,7 +420,11 @@ Credentials are read from stdin by the CLI and from the request body by the Cont
 and never shown again: not in output, error messages, logs or Activity.
 `agentbox set-claude-token <vm>` takes the token from `claude setup-token`, checks it with
 one minimal request to Anthropic and replaces the VM's token only if Anthropic accepts it
-(it takes effect at the VM's next start). `agentbox set-github-app <APP_ID>` takes an
+(it takes effect at the VM's next start). `agentbox set-opencode-key <vm>` does the same
+for an API key from the opencode.ai console (OpenCode Go or Zen; a Claude subscription
+token does not work in opencode), checked by listing OpenCode Go's models with it; opencode
+in the VM gets it as `OPENCODE_API_KEY`, and its sessions stay on the Data disk across
+Resets like Claude Code's. `agentbox set-github-app <APP_ID>` takes an
 App's private key (`.pem`) the same way, adding the App or replacing its key.
 `agentbox github-app` lists every App's installations with the VMs whose GitHub owners rely
 on each, the owners of VMs where no App is installed, and each App's link for installing it.

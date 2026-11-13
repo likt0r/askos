@@ -97,7 +97,7 @@ export default {
   },
   delete: {
     title: 'Delete {name}?',
-    text: 'The VM, its System disk, network, Claude token and its own Allowlist entries are removed. This cannot be undone.',
+    text: 'The VM, its System disk, network, Claude token, OpenCode key and its own Allowlist entries are removed. This cannot be undone.',
     deleteData: 'Also delete the Data disk',
     archived: 'Unchecked: the Data disk (repositories, Orca data, agent transcripts) is archived on the Host.',
     deleteDataWarning: 'The Data disk with its repositories and unpushed work is deleted for good.',

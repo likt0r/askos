@@ -118,6 +118,7 @@ class CreateTest(VmsTest):
                        "agentbox-gui-priv.socket", "agentbox-proxy-lab.socket", "agentbox-ghvm-lab.socket",
                        "agentbox-gui-lab.socket"], self.systemctl())
         self.assertEqual(self.read("etc/agentbox/secrets/claude-lab"), "none\n")
+        self.assertEqual(self.read("etc/agentbox/secrets/opencode-lab"), "none\n")
         self.assertTrue(os.path.isdir(self.path("var/lib/agentbox/observer-lab")))
 
     def test_new_vm_has_disks_but_is_not_started(self):
@@ -300,6 +301,7 @@ class CreateTest(VmsTest):
         for what, rel in (("Data disk", "var/lib/agentbox/vms/lab-data.qcow2"),
                           ("System disk", "var/lib/agentbox/vms/lab-system.qcow2"),
                           ("Claude token", "etc/agentbox/secrets/claude-lab"),
+                          ("OpenCode key", "etc/agentbox/secrets/opencode-lab"),
                           ("Observer", "var/lib/agentbox/observer-lab/"),
                           ("units", "etc/systemd/system/agentbox-proxy-lab.socket")):
             with self.subTest(what=what):
@@ -560,7 +562,8 @@ class DeleteTest(VmsTest):
                                    "lab: VM stopped and removed", "lab: network agentbox-lab removed",
                                    "lab: System disk deleted"])
         self.assertRegex(out[5], r"^lab: Data disk archived: .*/var/lib/agentbox/archive/lab-data-")
-        self.assertEqual(out[6:], ["lab: Claude token, VM variables, Allowlist entries and Observer removed", "network rules reloaded",
+        self.assertEqual(out[6:], ["lab: Claude token, OpenCode key, VM variables, Allowlist entries and Observer removed",
+                                   "network rules reloaded",
                                    "lab deleted"])
 
     def test_json(self):

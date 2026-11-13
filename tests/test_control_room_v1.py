@@ -603,6 +603,8 @@ class EndpointTest(V1Test):
             ("PUT", "/api/v1/vms/work/image", {"image": "../x"}, "invalid_field"),
             ("PUT", "/api/v1/vms/work/image", {"image": "base", "build": "latest"}, "invalid_field"),
             ("PUT", "/api/v1/vms/work/claude-token", {"token": " "}, "invalid_field"),
+            ("PUT", "/api/v1/vms/work/opencode-key", {"key": " "}, "invalid_field"),
+            ("PUT", "/api/v1/vms/work/opencode-key", {"token": "sk-x"}, "invalid_field"),
             ("POST", "/api/v1/vms/work/open-web", {"minutes": "30; rm"}, "invalid_field"),
             ("POST", "/api/v1/vms/work/pairing-code", {"confirm": "yes"}, "confirmation_required"),
             ("POST", "/api/v1/vms/work/pairings/remove", {"device": "--all"}, "invalid_field"),
@@ -766,6 +768,9 @@ class ErrorTest(V1Test):
             ("containerfile_not_found", "no Containerfile for Image cuda", 1, 404),
             ("invalid_image", "invalid Image: all", 1, 400),
             ("claude_token_rejected", "Anthropic rejects the token: HTTP 401", 1, 422),
+            ("opencode_key_rejected", "opencode.ai rejects the key: Invalid credential", 1, 422),
+            ("opencode_unavailable", "opencode.ai answered unexpectedly, key not stored", 1, 502),
+            ("invalid_opencode_key", "this does not look like an OpenCode key (sk-...)", 1, 400),
             ("github_app_rejected", "GitHub rejects the App ID or key", 1, 422),
             ("github_app_not_found", "GitHub App 777 is not set up", 1, 404),
             ("unpair_unsupported", "work: Orca cannot remove a single device", 1, 501),
@@ -1035,6 +1040,23 @@ class SecretTest(V1Test):
         self.assertNotIn(CLAUDE, json.dumps(answer[1]))
         self.assertNotIn(CLAUDE, self.server_log())
         self.assertNotIn(CLAUDE, json.dumps(self.journald.entries()))
+
+    def test_opencode_key_only_on_stdin(self):
+        key = "sk-OpencodeGeheim_0123456789abcdef"
+        self.respond({"vm": "work", "stored": True, "length": len(key)})
+        status, obj, _ = self.request("PUT", "/api/v1/vms/work/opencode-key", {"key": key})
+        self.assertEqual((status, obj), (200, {"vm": "work", "stored": True, "length": len(key)}))
+        self.assertEqual(self.calls(), [["set-opencode-key", "work", "--no-prompt", "--json"]])
+        self.assertEqual(self.stdin(), [key])
+        # agentbox echoing it in an error: never back, never logged
+        self.respond("", stderr=failure("opencode_key_rejected", f"opencode.ai rejects the key: {key}", vm="work"),
+                     exitcode=1)
+        answer = self.request("PUT", "/api/v1/vms/work/opencode-key", {"key": key})
+        self.assertError(answer, 422, "opencode_key_rejected")
+        self.assertEqual(answer[1]["error"]["detail"], "opencode.ai rejects the key: [hidden]")
+        self.assertNotIn(key, json.dumps(answer[1]))
+        self.assertNotIn(key, self.server_log())
+        self.assertNotIn(key, json.dumps(self.journald.entries()))
 
     def test_github_app_key_only_on_stdin(self):
         self.respond("", stderr=failure("invalid_private_key", f"this is not an RSA key: {PEM.splitlines()[1]}"),

@@ -3,8 +3,8 @@
 One object per VM, shared with `agentbox watch` (watch.py), which sends the same
 objects whenever one changes: the registry record, the state, agents, whether the VM
 answers and its failed wakes, the System disk's age and the Build it was created from,
-the Image with its pin and current Build, Open web, the Claude token's age and the
-devices connected to the VM's Orca port. Memory in use is not part of it; the Control
+the Image with its pin and current Build, Open web, the ages of the Claude token and the
+OpenCode key and the devices connected to the VM's Orca port. Memory in use is not part of it; the Control
 Room reads it without privileges from the VM's QEMU process (host readings).
 
 A VM libvirt reports as running is `starting`, `running` or `not_responding`
@@ -231,6 +231,7 @@ def vm(rec, units, observed, backing, now=None, current=None, starts=None):
         "failed_wakes": {"count": wakes["count"], "last": iso(wakes["last"]), "address": wakes["address"]},
         "open_web_until": iso(open_until),
         "claude_token_since": iso(token_since),
+        "opencode_key_since": iso(state_files.opencode_key_since(name)),
         "devices": found,
     }
 

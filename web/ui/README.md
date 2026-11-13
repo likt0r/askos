@@ -71,7 +71,7 @@ app/
                            OpenWeb, BlockedList (Web tab)
   components/watchlist/    AlertsPanel, DomainCheck, HarmlessList, HandList (Watchlist entries),
                            LegitimateList, Feeds, SignalList, SignalBadges
-  components/access/       GithubOwners, ClaudeToken, GithubTokens (Access tab), ConfirmDialog
+  components/access/       GithubOwners, ClaudeToken, OpencodeKey, GithubTokens (Access tab), ConfirmDialog
   components/settings/     SettingsForm, SettingsField
   components/notifications/  NotificationsPreferences, NotificationsReloadPrompt
   composables/             useSession (with `default_language` from GET/POST /session), useLive

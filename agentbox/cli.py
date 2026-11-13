@@ -63,6 +63,7 @@ Controls the agent VMs on this Host.
   agentbox logs <vm> [--unit U] [--priority P] [--since T] [--until T] [--boot current|all]
                 [--grep TEXT] [--lines N] [--after-cursor C] [--json]   the VM's journal
   agentbox set-claude-token <vm> [--no-prompt] [--json]   token from `claude setup-token` (stdin)
+  agentbox set-opencode-key <vm> [--no-prompt] [--json]   API key from opencode.ai for OpenCode Go (stdin)
   agentbox blocked|alerts <vm> [--json]
   agentbox allowlist [<vm>|all] [--json]             Allowlist entries (all, a VM's, those for all VMs)
                                                      with time left and use in the last 24 hours
@@ -186,7 +187,7 @@ CONTROL_ROOM_COMMANDS = frozenset({
     "status", "describe", "create", "delete", "start", "pause", "restart", "reset", "focus", "set-memory",
     "set-env", "set-image", "set-owners", "set-container-image-cleanup", "owners", "logs", "blocked", "alerts", "mark-seen",
     "open-web", "close-web", "pair", "pairings", "unpair", "revoke-pairings", "set-claude-token",
-    "github-tokens",
+    "set-opencode-key", "github-tokens",
     # Allowlist, Watchlist, Legitimate domains, Harmless marks
     "allowlist", "allow", "disallow", "extend", "make-permanent", "set-note", "check-regex",
     "check-domain", "watchlist", "watch-add", "watch-remove", "watch-set-note", "legitimate",

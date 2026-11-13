@@ -1,5 +1,5 @@
-"""`agentbox owners`, `set-owners` and `set-claude-token` against a temporary root
-and a fake `curl` that stands in for Anthropic.
+"""`agentbox owners`, `set-owners`, `set-claude-token` and `set-opencode-key` against a
+temporary root and a fake `curl` that stands in for Anthropic and opencode.ai.
 
 Run from the repo root: python3 -m unittest discover -s tests
 """
@@ -380,6 +380,124 @@ class SetClaudeTokenTest(CredentialsTest):
 
     def test_unknown_vm(self):
         self.assertEqual(self.run_agentbox("set-claude-token", "test", "--no-prompt", stdin=PASTED),
+                         (1, "", "agentbox: No such VM: test\n"))
+        self.assertEqual(self.curl_calls(), [])
+
+
+OC_KEY = "sk-Oc12AbCdEf_34-ghiJKLmn"
+OC_PASTED = "  sk-Oc12AbC\r\ndEf_34-\n\tghiJKLmn \n"
+OC_MODELS = '{"object":"list","data":[{"id":"glm-5","object":"model","owned_by":"opencode"}]}'
+OC_INVALID = '{"error":{"type":"authentication_error","message":"Invalid credential"}}'
+OC_OLD = "sk-Old-working-key_000"
+OC_PROMPT = "Paste the API key from opencode.ai for priv, then Enter and Ctrl+D:\n"
+OC_STORED = "Key valid and stored (25 characters). Takes effect after: agentbox restart priv\n"
+
+
+class SetOpencodeKeyTest(CredentialsTest):
+    def setUp(self):
+        super().setUp()
+        self.write("secrets/opencode-priv", "none\n", mode=0o640)
+        self.scenario(answer=OC_MODELS)
+
+    def set_key(self, *extra, stdin=OC_PASTED):
+        return self.run_agentbox("set-opencode-key", "priv", *extra, stdin=stdin)
+
+    def test_stores_the_key_without_whitespace(self):
+        self.assertEqual(self.set_key(), (0, OC_PROMPT + OC_STORED, ""))
+        self.assertEqual(self.read("secrets/opencode-priv"), OC_KEY + "\n")
+        self.assertEqual(self.mode("secrets/opencode-priv"), 0o640)
+
+    def test_checks_the_key_with_opencode_go_models(self):
+        self.set_key("--no-prompt")
+        [call] = self.curl_calls()
+        self.assertEqual(call["url"], "https://opencode.ai/inference/go/openai/v1/models")
+        self.assertEqual(call["max_time"], "20")
+        self.assertIsNone(call["data"])          # a GET: listing the models costs nothing
+        self.assertEqual(call["headers"], [f"Authorization: Bearer {OC_KEY}"])
+        self.assertFalse([a for a in call["argv"] if "Oc12" in a], call["argv"])
+
+    def test_json(self):
+        code, out, err = self.set_key("--no-prompt", "--json")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(json.loads(out), {"vm": "priv", "stored": True, "length": 25})
+
+    def test_json_keeps_prompt_off_stdout(self):
+        code, out, err = self.set_key("--json")
+        self.assertEqual((code, err), (0, OC_PROMPT))
+        self.assertEqual(json.loads(out)["stored"], True)
+
+    def test_rejects_what_is_no_opencode_key(self):
+        for pasted, said in (("", "this does not look like an OpenCode key (sk-...)"),
+                             ("abc-sk-123", "this does not look like an OpenCode key (sk-...)"),
+                             ("sk-ant-oat01-Abc", "this is a Claude token or key; OpenCode needs an API key from opencode.ai"),
+                             ("sk-ant-api03-Abc", "this is a Claude token or key; OpenCode needs an API key from opencode.ai"),
+                             ("sk-", "the key holds unexpected characters or is too long"),
+                             ("sk-ab:cd", "the key holds unexpected characters or is too long"),
+                             ("sk-ab\x00cd%0d%0aX-Evil: 1", "the key holds unexpected characters or is too long"),
+                             ("sk-" + "a" * 501, "the key holds unexpected characters or is too long")):
+            with self.subTest(pasted=pasted):
+                self.assertEqual(self.set_key("--no-prompt", stdin=pasted), (1, "", f"agentbox: {said}\n"))
+        self.assertEqual(self.curl_calls(), [])
+        self.assertEqual(self.read("secrets/opencode-priv"), "none\n")
+
+    def test_a_refused_key_keeps_the_working_one(self):
+        self.write("secrets/opencode-priv", OC_OLD + "\n", mode=0o640)
+        for answer in (OC_INVALID, '{"error":{"type":"permission_error","message":"no"}}'):
+            with self.subTest(answer=answer):
+                self.scenario(answer=answer)
+                self.assertEqual(self.set_key("--no-prompt"),
+                                 (1, "", f"agentbox: opencode.ai rejects the key: {answer}\n"))
+                self.assertEqual(self.read("secrets/opencode-priv"), OC_OLD + "\n")
+                self.assertEqual(self.mode("secrets/opencode-priv"), 0o640)
+
+    def test_no_answer_is_a_rejection(self):
+        for answer, exit_code in (("", 0), ('{"object":"li', 28)):
+            with self.subTest(answer=answer):
+                self.scenario(answer=answer, exit=exit_code)
+                self.assertEqual(self.set_key("--no-prompt"),
+                                 (1, "", "agentbox: opencode.ai rejects the key: no answer\n"))
+                self.assertEqual(self.read("secrets/opencode-priv"), "none\n")
+
+    def test_answers_that_prove_nothing_store_nothing(self):
+        self.write("secrets/opencode-priv", OC_OLD + "\n", mode=0o640)
+        for answer in ('{"type":"error","error":{"type":"MissingSessionID","message":"x"}}',
+                       '{"object":"list"}', "<html>502 Bad Gateway</html>", "[]", '{"error":"x"}'):
+            with self.subTest(answer=answer):
+                self.scenario(answer=answer)
+                self.assertEqual(self.set_key("--no-prompt"),
+                                 (1, "", "agentbox: opencode.ai answered unexpectedly, key not stored "
+                                         f"(try again later): {answer}\n"))
+                self.assertEqual(self.read("secrets/opencode-priv"), OC_OLD + "\n")
+
+    def test_renewing_replaces_the_working_key_in_one_rename(self):
+        self.write("secrets/opencode-priv", OC_OLD + "\n", mode=0o640)
+        self.assertEqual(self.set_key("--no-prompt"), (0, OC_STORED, ""))
+        self.assertEqual(self.read("secrets/opencode-priv"), OC_KEY + "\n")
+        self.assertEqual(os.listdir(self.path("secrets")), ["opencode-priv"])
+
+    def test_never_prints_the_key(self):
+        for answer, extra in ((OC_MODELS, ()), (OC_MODELS, ("--json",)), (OC_INVALID, ()),
+                              ('{"error":{"type":"authentication_error","message":"bad ' + OC_KEY + '"}}', ())):
+            with self.subTest(answer=answer, extra=extra):
+                self.scenario(answer=answer)
+                _, out, err = self.set_key(*extra)
+                self.assertNotIn(OC_KEY, out + err)
+                self.assertNotIn("Oc12", out + err)
+
+    def test_secret_file_must_exist(self):
+        os.remove(self.path("secrets", "opencode-priv"))
+        missing = os.path.join(self.dir, "etc/agentbox/secrets/opencode-priv")
+        self.assertEqual(self.set_key("--no-prompt"),
+                         (1, "", f"agentbox: {missing} is missing, run agentbox setup first\n"))
+        self.assertEqual(self.curl_calls(), [])
+
+    def test_the_claude_token_stays_as_it_is(self):
+        self.write("secrets/claude-priv", OLD_TOKEN + "\n", mode=0o640)
+        self.assertEqual(self.set_key("--no-prompt"), (0, OC_STORED, ""))
+        self.assertEqual(self.read("secrets/claude-priv"), OLD_TOKEN + "\n")
+
+    def test_unknown_vm(self):
+        self.assertEqual(self.run_agentbox("set-opencode-key", "test", "--no-prompt", stdin=OC_PASTED),
                          (1, "", "agentbox: No such VM: test\n"))
         self.assertEqual(self.curl_calls(), [])
 
