@@ -13,7 +13,6 @@ the wakes and watch found in the VM's start from its wakes file, so it judges as
 
 `status` stays as it is (its text and JSON are older contracts).
 """
-import datetime
 import json
 import os
 import re
@@ -21,7 +20,7 @@ import subprocess
 import sys
 import time
 
-from . import images, lifecycle, paths, registry, responding, settings, state_files, virsh, vmenv
+from . import images, lifecycle, paths, registry, responding, settings, state_files, times, virsh, vmenv
 from .errors import die
 
 # virsh domstate -> state in the Control Room; "paused" there is a Pause (managed save)
@@ -36,9 +35,8 @@ ACTIVE = ("active", "activating", "reloading")
 
 
 def iso(epoch):
-    if not epoch:
-        return None
-    return datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    """times.iso, with None for 0 as well (never)."""
+    return times.iso(epoch) if epoch else None
 
 
 def list_units(patterns):

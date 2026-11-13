@@ -52,7 +52,6 @@ An Image's definition (#67): `agentbox containerfile <image>` shows its Containe
 installed Release as text; `images` names its path and links it in the repository at the tag
 of the Release (or the commit) its current Build came from. Nothing is fetched for either.
 """
-import datetime
 import json
 import os
 import re
@@ -63,7 +62,8 @@ import subprocess
 import sys
 import time
 
-from . import activity, guest, options, paths, programs, registry, safeguards, settings, state_files, version, versions
+from . import activity, guest, options, paths, programs, registry, safeguards, settings, state_files, times, version
+from . import versions
 from .errors import Fail, die
 from .sanitize import SECRET, clean, entry
 
@@ -115,16 +115,6 @@ def _order(build):
     return re.sub(r"\D", "", build).ljust(14, "0")
 
 
-def _iso(epoch):
-    if not isinstance(epoch, (int, float)) or isinstance(epoch, bool):
-        return None
-    return datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _local(epoch):
-    return time.strftime("%Y-%m-%d %H:%M", time.localtime(epoch)) if isinstance(epoch, (int, float)) else "?"
-
-
 def _image_name(name):
     if not isinstance(name, str) or not NAME.fullmatch(name) or name in TARGETS:
         die("invalid Image: " + clean(str(name), False)[:40], error="invalid_image",
@@ -142,45 +132,20 @@ def _build_id(build):
 # --- what is on the Host --------------------------------------------------------------
 
 def _records():
-    try:
-        names = sorted(os.listdir(paths.BUILDS))
-    except FileNotFoundError:
-        return []
     out = []
-    for n in names:
+    for n in state_files.listdir(paths.BUILDS, fail=False):
         m = RECORD.fullmatch(n)
         if not m:
             continue
-        try:
-            with open(os.path.join(paths.BUILDS, n), encoding="utf-8") as f:
-                rec = json.load(f)
-        except (OSError, ValueError):
-            continue
-        if isinstance(rec, dict) and rec.get("image") == m.group(1) and rec.get("build") == m.group(2):
+        rec = state_files.json_object(os.path.join(paths.BUILDS, n))
+        if rec is not None and rec.get("image") == m.group(1) and rec.get("build") == m.group(2):
             out.append(rec)
     return out
 
 
 def _save(rec):
-    if not os.path.isdir(paths.BUILDS):
-        os.makedirs(paths.BUILDS)
-        os.chmod(paths.BUILDS, 0o700)
-    state_files.write_atomic(record_file(rec["image"], rec["build"]),
-                             (json.dumps(rec, indent=2, ensure_ascii=False) + "\n").encode(), 0o644)
-
-
-def _remove(path):
-    try:
-        os.remove(path)
-    except FileNotFoundError:
-        pass
-
-
-def _listdir(path):
-    try:
-        return sorted(os.listdir(path))
-    except FileNotFoundError:
-        return []
+    state_files.directory(paths.BUILDS, 0o700, only_new=True)
+    state_files.write_json(record_file(rec["image"], rec["build"]), rec, ensure_ascii=False)
 
 
 def current(image):
@@ -195,7 +160,7 @@ def current(image):
 def available():
     """Images with a current Build, which a VM can use."""
     out = []
-    for n in _listdir(paths.IMAGES):
+    for n in state_files.listdir(paths.IMAGES, fail=False):
         if not n.endswith(".qcow2"):
             continue
         name, path = n[:-len(".qcow2")], os.path.join(paths.IMAGES, n)
@@ -211,7 +176,7 @@ def builds():
     out = {}
     for rec in _records():
         out.setdefault(rec["image"], {})[rec["build"]] = dict(rec, file=None, size=None)
-    for n in _listdir(paths.IMAGES):
+    for n in state_files.listdir(paths.IMAGES, fail=False):
         m = DISK.fullmatch(n)
         path = os.path.join(paths.IMAGES, n)
         if not m or os.path.islink(path) or not os.path.isfile(path):
@@ -230,22 +195,16 @@ def builds():
 
 def _backing(disk):
     """Base name of the backing file of a disk; "" without one; None when unreadable."""
-    try:
-        r = subprocess.run(["qemu-img", "info", "-U", "--output=json", disk], capture_output=True, text=True,
-                           errors="replace", timeout=30)
-        if r.returncode != 0:
-            return None
-        backing = json.loads(r.stdout).get("backing-filename", "")
-        return os.path.basename(backing) if isinstance(backing, str) else None
-    except (OSError, subprocess.TimeoutExpired, ValueError, AttributeError):
-        return None
+    info = programs.disk_info(disk)
+    backing = info.get("backing-filename", "") if info is not None else None
+    return os.path.basename(backing) if isinstance(backing, str) else None
 
 
 def in_use():
     """{disk file name: [VMs]} of the Builds System disks are backed by; None when a
     System disk cannot be read (then nothing may be deleted)."""
     used = {}
-    for n in _listdir(paths.VMS):
+    for n in state_files.listdir(paths.VMS, fail=False):
         m = re.fullmatch(r"(.+)-system\.qcow2", n)
         if not m:
             continue
@@ -315,14 +274,14 @@ def prune(image, say):
         for b in disks:
             if b in keep or found[b]["file"] in used or (image, b) in pins:
                 continue
-            _remove(build_file(image, b))
-            _remove(record_file(image, b))
+            state_files.remove(build_file(image, b), fail=False)
+            state_files.remove(record_file(image, b), fail=False)
             removed.append(b)
             say(f"Old Build removed: {image}-{b}")
         failed = sorted((b for b, i in found.items() if i["status"] in ("failed", "rejected")), key=_order,
                         reverse=True)
         for b in failed[kept:]:
-            _remove(record_file(image, b))
+            state_files.remove(record_file(image, b), fail=False)
     return removed
 
 
@@ -390,7 +349,7 @@ def definition(image):
 def derived(src):
     """The Images other than the Base image defined in this source tree."""
     folder = os.path.join(src, "vm", "images")
-    return [n for n in _listdir(folder)
+    return [n for n in state_files.listdir(folder, fail=False)
             if NAME.fullmatch(n) and n != BASE and n not in TARGETS
             and os.path.isfile(os.path.join(folder, n, "Containerfile"))]
 
@@ -476,7 +435,7 @@ def _switch(image, build):
     if os.path.lexists(link) and not os.path.islink(link):
         raise _Failed(f"{link} is a file, not a link; sort it out by hand first")
     tmp = os.path.join(paths.IMAGES, f".{image}.qcow2.new")
-    _remove(tmp)
+    state_files.remove(tmp, fail=False)
     os.symlink(os.path.basename(build_file(image, build)), tmp)
     os.replace(tmp, link)
 
@@ -556,7 +515,7 @@ def _build_one(image, src, release, days, orca, actor, unit_name, say, reason=No
                        container=False)
             _save(rec)
             _rmi(tag)
-            _remove(build_file(image, build))
+            state_files.remove(build_file(image, build), fail=False)
             if f.status == "rejected":
                 say(f"== {image}: Build {build} rejected, a Safeguard is missing or weakened:")
                 for p in f.problems:
@@ -577,7 +536,7 @@ def _build_one(image, src, release, days, orca, actor, unit_name, say, reason=No
             rec.update(status="failed", finished=int(time.time()), error=message, container=False)
             _save(rec)
             _rmi(tag)
-            _remove(build_file(image, build))
+            state_files.remove(build_file(image, build), fail=False)
             say(f"== {image}: Build {build} failed: {message}")
             error = "interrupted" if isinstance(e, KeyboardInterrupt) else e.error if isinstance(e, Fail) else None
             activity.record("build", "build.failed", f"{what}Build {image}-{build} failed: {message}",
@@ -612,7 +571,7 @@ def _build_one(image, src, release, days, orca, actor, unit_name, say, reason=No
 
 def _cleanup(say):
     """Before a Build (holding the run lock): leftovers of an interrupted one."""
-    for n in _listdir(paths.IMAGES):
+    for n in state_files.listdir(paths.IMAGES, fail=False):
         if re.fullmatch(r"\.build-.+|build-\d{8}-\d{4}", n) and os.path.isdir(os.path.join(paths.IMAGES, n)):
             shutil.rmtree(os.path.join(paths.IMAGES, n), ignore_errors=True)
     for rec in _records():
@@ -632,14 +591,10 @@ def _take_request(target):
     picked, and whether an update checks the versions first (agentbox build and update-now
     write them before they start the unit): (actor, [(VM, Image)], check)."""
     path = _request_file(target)
-    try:
-        with open(path, encoding="utf-8") as f:
-            request = json.load(f)
-        actor, resets = request.get("actor"), request.get("reset")
-        picked, check = request.get("images"), request.get("check")
-    except (OSError, ValueError, AttributeError):
-        actor, resets, picked, check = None, None, None, None
-    _remove(path)
+    request = state_files.json_object(path, {})
+    actor, resets = request.get("actor"), request.get("reset")
+    picked, check = request.get("images"), request.get("check")
+    state_files.remove(path, fail=False)
     resets = [v for v in resets if isinstance(v, str) and registry.NAME.fullmatch(v)] \
         if isinstance(resets, list) and target != "all" else []
     resets = list(dict.fromkeys(resets))
@@ -722,9 +677,7 @@ def build_run(args):
     say = lambda line: print(line, flush=True)      # noqa: E731  (the unit's journal)
     signal.signal(signal.SIGTERM, _terminate)        # systemctl stop: clean up like Ctrl+C
     actor, picks, check = _take_request(target)
-    if not os.path.isdir(paths.IMAGES):
-        os.makedirs(paths.IMAGES)
-        os.chmod(paths.IMAGES, 0o711)
+    state_files.directory(paths.IMAGES, 0o711, only_new=True)
     if target == UPDATE:
         _update_run(actor, picks, check, say)
         return
@@ -906,7 +859,7 @@ def building():
     names = dict.fromkeys([*available(), *builds(), *(_defined() or [])])
     if any(_active(unit(t)) for t in (UPDATE, "all", *names)):
         return True
-    for n in _listdir(paths.BUILDS):
+    for n in state_files.listdir(paths.BUILDS, fail=False):
         if not re.fullmatch(r"request-.+\.json", n):
             continue
         try:
@@ -1001,9 +954,7 @@ def start(target, resets=(), **request):
         what = "of all Images" if target == "all" else f"of {target}"
         die(f"a Build {what} is running already (agentbox build-log {BASE if target == 'all' else target})",
             error="build_running", image=target)
-    if not os.path.isdir(paths.BUILDS):
-        os.makedirs(paths.BUILDS)
-        os.chmod(paths.BUILDS, 0o700)
+    state_files.directory(paths.BUILDS, 0o700, only_new=True)
     # two callers at the same time (an automatic start, Update now) must not overwrite each
     # other's request: a request file the unit has not taken yet (younger than a minute) refuses
     with state_files.locked(REQUEST_LOCK):
@@ -1019,7 +970,7 @@ def start(target, resets=(), **request):
             {"actor": activity.actor(), "reset": list(resets), **request}).encode(), 0o600)
     r = programs.systemctl("start", "--no-block", name, timeout=60, ok=None)
     if r.returncode != 0:
-        _remove(_request_file(target))
+        state_files.remove(_request_file(target), fail=False)
         programs.fail(r, f"systemctl start {name}", program="systemctl")
     return name
 
@@ -1068,7 +1019,7 @@ def _public(info, cur, used, pins, offered):
     file = info.get("file")
     tools = versions.of_build(info)
     return {"build": info["build"], "status": info["status"], "step": info.get("step"),
-            "started": _iso(info.get("started")), "finished": _iso(info.get("finished")),
+            "started": times.iso(info.get("started")), "finished": times.iso(info.get("finished")),
             "release": info.get("release"), "commit": info.get("commit"), "base_build": info.get("base_build"),
             "package_min_age_days": info.get("package_min_age_days"), "orca_version": info.get("orca_version"),
             "agents": info.get("agents"),
@@ -1127,7 +1078,7 @@ def overview():
             "in_release": image in defined if defined is not None else None,
             "current": cur, "vms": sorted(users.get(image, [])),
             "running": {"build": running["build"], "step": running.get("step"),
-                        "started": _iso(running.get("started"))} if running else None,
+                        "started": times.iso(running.get("started"))} if running else None,
             "package_updates": packages, "updates": changes, "update": bool(changes) if known else None,
             "containerfile": definition(image),
             "containerfile_url": version.file_url(repository, ref, definition(image)),
@@ -1180,7 +1131,7 @@ def images_cmd(args):
             notes = [n for n in ("current" if b["current"] else "",
                                  f"used by {', '.join(b['used_by'])}" if b["used_by"] else "",
                                  f"pinned for {', '.join(b['pinned_by'])}" if b["pinned_by"] else "") if n]
-            when = _local(datetime.datetime.fromisoformat(b["started"]).timestamp()) if b["started"] else "?"
+            when = times.local(times.epoch(b["started"])) if b["started"] else "?"
             line = f"  {b['build']:<16} {STATUS.get(b['status'], b['status']):<12} {when}"
             if b["release"]:
                 line += f"  Release {b['release']}"
@@ -1198,7 +1149,7 @@ def images_cmd(args):
     tools = offered["tools"]
     parts = [f"{versions.NAMES[t]} {tools[t] or '?'}" for t in ("orca", *versions.NPM)]
     if offered["checked"]:
-        when = _local(datetime.datetime.fromisoformat(offered["checked"].replace("Z", "+00:00")).timestamp())
+        when = times.local(times.epoch(offered["checked"]))
         pin = f"; Orca pinned to {offered['orca_version']} (orca_version)" if offered["orca_version"] else ""
         print(f"Available (checked {when}, at least {offered['package_min_age_days']} days old{pin}): "
               + ", ".join(parts))
@@ -1320,10 +1271,8 @@ def build_log(args):
     print(f"Build {image}-{info['build']}: {STATUS.get(info['status'], info['status'])}"
           + (f" ({info['error']})" if info.get("error") else ""))
     for e in entries:
-        try:
-            when = datetime.datetime.fromisoformat(e["time"].replace("Z", "+00:00")).astimezone().strftime("%H:%M:%S")
-        except (AttributeError, ValueError):
-            when = "?"
+        t = times.parse(e["time"])
+        when = t.astimezone().strftime("%H:%M:%S") if t else "?"
         print(f"{when} {e['message'] or ''}")
     if truncated:
         print("agentbox: output truncated (raise --lines)", file=sys.stderr)

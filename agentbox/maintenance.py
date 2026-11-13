@@ -151,12 +151,7 @@ def turn_ran(now, at, last):
 
 
 def _read():
-    try:
-        with open(RECORD, encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        return {}
+    return state_files.json_object(RECORD, {})
 
 
 def _recorded(key, data=None):
@@ -195,7 +190,7 @@ def _update(**values):
             out[key] = (datetime.datetime.fromtimestamp(when).astimezone().isoformat(timespec="seconds")
                         if key == "timer_window" else datetime.date.fromtimestamp(when).isoformat())
         os.makedirs(paths.STATE, exist_ok=True)
-        state_files.write_atomic(RECORD, (json.dumps(out, sort_keys=True) + "\n").encode(), 0o644)
+        state_files.write_json(RECORD, out, indent=None, sort_keys=True)
 
 
 def rebuild_day_changed():

@@ -38,7 +38,6 @@ or the VM starts again. A wake that waited while the VM stopped or started again
 Orca answered a wake or watch, counts for nothing.
 """
 import collections
-import json
 import os
 import re
 import socket
@@ -257,12 +256,8 @@ def _read(name, start, any_start=False):
     """The wakes record of this start of the VM ({} when there is none, or it belongs to
     another start; start None: a start that could not be read); any_start: the record of
     whichever start was last (a VM that does not run)."""
-    try:
-        with open(wakes_file(name)) as f:
-            rec = json.load(f)
-    except (OSError, ValueError):
-        return {}
-    if not isinstance(rec, dict) or (not any_start and rec.get("start") != _id(start)):
+    rec = state_files.json_object(wakes_file(name))
+    if rec is None or (not any_start and rec.get("start") != _id(start)):
         return {}
     return rec
 
@@ -291,7 +286,7 @@ def wakes(name, start, any_start=False):
 
 
 def _write(name, rec):
-    state_files.write_atomic(wakes_file(name), (json.dumps(rec) + "\n").encode(), mode=0o644)
+    state_files.write_json(wakes_file(name), rec, indent=None)
 
 
 def _news(known, at):

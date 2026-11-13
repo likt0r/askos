@@ -97,14 +97,9 @@ def _awk_number(s):
 
 def _backing(ctx, missing):
     """File name of the Image Build the System disk was created from; None if unreadable."""
-    try:
-        r = subprocess.run(["qemu-img", "info", "-U", "--output=json", system_disk(ctx)],
-                           capture_output=True, text=True, errors="replace", timeout=30)
-        if r.returncode != 0:
-            return None
-        return os.path.basename(json.loads(r.stdout).get("backing-filename", missing))
-    except Exception:
-        return None
+    info = programs.disk_info(system_disk(ctx))
+    backing = info.get("backing-filename", missing) if info is not None else None
+    return os.path.basename(backing) if isinstance(backing, str) else None
 
 
 def _disk_mtime(ctx):
@@ -629,8 +624,7 @@ def observe(args):
     wake(ctx)
     d = observer_dir(ctx)
     try:
-        os.makedirs(d, exist_ok=True)
-        os.chmod(d, 0o700)
+        state_files.directory(d, 0o700)
     except OSError as e:
         die(f"{d}: {e.strerror}", error="action_failed", vm=ctx)
     orca_cli(ctx, "environment", "rm", "--environment", ctx,

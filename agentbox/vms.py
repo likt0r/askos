@@ -37,9 +37,10 @@ import json
 import os
 import re
 import shutil
+import time
 
 from . import activity, allowlist, detection, generate, images, lifecycle, paths, registry, responding, settings, state_files
-from . import options, programs, virsh, vmenv
+from . import options, programs, times, virsh, vmenv
 from .credentials import OWNER
 from .errors import Fail, die
 from .registry import dom
@@ -53,17 +54,6 @@ CREATE_OPTIONS = {"image": True, "memory-mib": True, "data-disk-gib": True, "own
                   "container-image-cleanup": True, "container-image-cleanup-days": True,
                   "copy-allowlist-from": True, "json": False}
 DELETE_OPTIONS = {"confirm": True, "delete-data-disk": False, "json": False}
-
-
-def _remove(path):
-    """Remove a file if it is there; whether it was."""
-    try:
-        os.remove(path)
-        return True
-    except FileNotFoundError:
-        return False
-    except OSError as e:
-        die(f"{path}: {e.strerror}", error="action_failed")
 
 
 # --- create ------------------------------------------------------------------
@@ -208,13 +198,13 @@ def create(args):
         rec = {"name": name, "network": n, "orca_port": registry.ORCA_BASE + n, "image": image, "build": None,
                "memory_mib": memory, "data_disk_gib": disk, "container_image_cleanup": cleanup,
                "container_image_cleanup_days": cleanup_days, "github_owners": owners,
-               "created": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+               "created": times.iso(time.time())}
         left = _leftovers(rec)
         if left:
             die(f"{name}: leftovers of an earlier VM exist ({', '.join(left)}), remove them first",
                 error="vm_leftovers", vm=name, leftovers=left)
         copied = allowlist.start_vm(name, source)
-        _remove(state_files.open_web_file(name))
+        state_files.remove(state_files.open_web_file(name))
         registry.save(rec)
         say(f"{name}: entered into the registry (network {n}, Orca port {rec['orca_port']})")
         if source:
@@ -254,10 +244,8 @@ def _archive_path(name):
 
 def _write_marker(name, marker):
     path = generate.delete_marker(name)
-    if not os.path.isdir(os.path.dirname(path)):
-        os.makedirs(os.path.dirname(path))
-        os.chmod(os.path.dirname(path), 0o700)
-    state_files.write_atomic(path, (json.dumps(marker, indent=2) + "\n").encode(), 0o600)
+    state_files.directory(os.path.dirname(path), 0o700, only_new=True)
+    state_files.write_json(path, marker, 0o600)
 
 
 def _begin(name, say):
@@ -274,7 +262,7 @@ def _begin(name, say):
         # a record that came back (migrate, by hand) means its network may be back as well
         marker = {"archive": _archive_path(name), **(marker or {}), "record": rec, "network_removed": False}
         _write_marker(name, marker)
-        _remove(record)
+        state_files.remove(record)
     say(f"{name}: removed from the registry")
     return marker, False
 
@@ -288,7 +276,7 @@ def _units_off(rec, say):
         programs.systemctl("disable", "--now", *present)        # the proxy service stops with its socket
     # open connections run in instances of their own (patterns: nothing to stop is fine)
     programs.systemctl("stop", f"agentbox-gui-{name}@*.service", f"agentbox-ghvm-{name}@*.service")
-    removed = [f for f in files if _remove(f)]
+    removed = [f for f in files if state_files.remove(f)]
     programs.systemctl("daemon-reload")
     if present or removed:
         say(f"{name}: Orca port, proxy and token service turned off")
@@ -327,7 +315,7 @@ def _network_off(name, say):
 
 def _disks(name, archive, delete_data, say):
     """System disk deleted; Data disk archived or deleted. Returns (what, archive path)."""
-    if _remove(lifecycle.system_disk(name)):
+    if state_files.remove(lifecycle.system_disk(name)):
         say(f"{name}: System disk deleted")
     data = generate.data_disk(name)
     if not os.path.lexists(data):
@@ -336,13 +324,11 @@ def _disks(name, archive, delete_data, say):
             return "archived", archive
         return "missing", None
     if delete_data:
-        _remove(data)
+        state_files.remove(data)
         say(f"{name}: Data disk deleted")
         return "deleted", None
     try:
-        if not os.path.isdir(paths.ARCHIVE):
-            os.makedirs(paths.ARCHIVE)
-            os.chmod(paths.ARCHIVE, 0o700)
+        state_files.directory(paths.ARCHIVE, 0o700, only_new=True)
         if os.path.lexists(archive):
             die(f"{archive} exists already", error="action_failed", vm=name)
         os.rename(data, archive)
@@ -354,7 +340,7 @@ def _disks(name, archive, delete_data, say):
 
 def _files(name, say):
     responding.clear(name)           # bookkeeping only, never fails (the stop removed it already)
-    gone = [_remove(f) for f in (state_files.claude_token_file(name), state_files.vm_env_file(name),
+    gone = [state_files.remove(f) for f in (state_files.claude_token_file(name), state_files.vm_env_file(name),
                                  state_files.open_web_file(name),
                                  generate.legacy_owners_file(name), detection.seen_file(name),
                                  os.path.join(paths.STATE, "domains", f"{name}.xml"))]
@@ -395,7 +381,7 @@ def delete(args):
         _files(name, say)
         for line in generate.report(generate.apply()):
             say(line)
-        _remove(generate.delete_marker(name))
+        state_files.remove(generate.delete_marker(name))
     say(f"{name} deleted")
     if "json" in opts:
         print(json.dumps({"vm": name, "data_disk": data, "archive": archive, "resumed": resumed,

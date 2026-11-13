@@ -33,7 +33,6 @@ only what differs, so a second run changes nothing. One that fails stops setup w
 naming it; every file is replaced whole, and the Host setup is written only after the steps
 before it succeeded.
 """
-import grp
 import json
 import os
 import re
@@ -147,12 +146,7 @@ def _hash(pw):
 
 def _web_gid():
     """Group of the Control Room's files (root only; tests run as a normal user)."""
-    if os.geteuid() != 0:
-        return -1
-    try:
-        return grp.getgrnam(WEB_GROUP).gr_gid
-    except KeyError:
-        return die(f"the group {WEB_GROUP} is missing (the package creates it)", error="action_failed", group=WEB_GROUP)
+    return state_files.group_id(WEB_GROUP, "the package creates it")
 
 
 def _certificate(setup, gid):
@@ -324,10 +318,7 @@ def setup(args):
     def certificate_and_password():
         nonlocal created
         try:
-            os.makedirs(paths.WEB_CONF, exist_ok=True)
-            os.chmod(paths.WEB_CONF, 0o750)
-            if gid != -1:
-                os.chown(paths.WEB_CONF, 0, gid)
+            state_files.directory(paths.WEB_CONF, 0o750, gid)
         except OSError as e:
             die(f"{paths.WEB_CONF}: {e.strerror}", error="action_failed", path=paths.WEB_CONF)
         created = _certificate(new, gid)
@@ -343,7 +334,7 @@ def setup(args):
     def host_setup_and_regenerate():
         with state_files.locked(paths.REGISTRY):
             if record is not None:
-                state_files.write_atomic(hostsetup.PATH, (json.dumps(record, indent=2) + "\n").encode(), 0o644)
+                state_files.write_json(hostsetup.PATH, record)
                 steps.written = True
             # the Orca ports of existing VMs follow the mode
             result = generate.apply()

@@ -38,7 +38,7 @@ import sys
 import tarfile
 import time
 
-from . import activity, guest, lifecycle, paths, programs, responding, state_files, virsh
+from . import activity, guest, lifecycle, paths, programs, responding, state_files, times, virsh
 from .errors import Fail, die
 from .registry import check, dom
 from .sanitize import clean
@@ -490,13 +490,6 @@ def _delete(tar):
         print(f"agentbox: {tar}: {e.strerror}", file=sys.stderr)
 
 
-def _size(n):
-    for unit in ("bytes", "KiB", "MiB", "GiB"):
-        if n < 1024 or unit == "GiB":
-            return f"{n} bytes" if unit == "bytes" else f"{n:.1f} {unit}"
-        n /= 1024
-
-
 def _interrupted(signum, frame):
     raise KeyboardInterrupt
 
@@ -508,8 +501,7 @@ def import_cmd(args):
     if lifecycle.has_save(ctx):
         die(f"{ctx}: the VM is paused; start it first (agentbox start {ctx})", error="vm_paused", vm=ctx)
     try:
-        os.makedirs(paths.TRANSFERS, 0o711, exist_ok=True)
-        os.chmod(paths.TRANSFERS, 0o711)          # QEMU must reach the file (it runs as qemu)
+        state_files.directory(paths.TRANSFERS, 0o711)      # QEMU must reach the file (it runs as qemu)
         _sweep()
         tar, fd = _create_locked(ctx)
     except OSError as e:
@@ -537,7 +529,7 @@ def import_cmd(args):
         print(json.dumps({"vm": ctx, "folder": shown, "target": target, "path": f"{CODE}/{target}", **result,
                           "skipped": skipped, "skipped_count": packed["skipped_count"]}, ensure_ascii=False))
         return
-    print(f"{ctx}: {shown} is in ~/code/{target} ({result['files']} files, {_size(result['bytes'])})")
+    print(f"{ctx}: {shown} is in ~/code/{target} ({result['files']} files, {times.size(result['bytes'], 'GiB')})")
     if packed["skipped_count"]:
         named = ", ".join(s["path"] for s in skipped)
         more = packed["skipped_count"] - len(skipped)

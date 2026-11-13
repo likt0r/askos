@@ -102,8 +102,7 @@ def valid(entries, check, broken, key=patterns.key, twice=lambda e: f"{patterns.
 def write(path, entries, order, legacy=()):
     """The record at path with the entries in order(entries) (readable by the proxy's user),
     then each of the legacy files moved aside (<file>.migrated)."""
-    data = json.dumps({"entries": order(entries)}, indent=2, ensure_ascii=False) + "\n"
-    state_files.write_atomic(path, data.encode(), 0o644)
+    state_files.write_json(path, {"entries": order(entries)}, ensure_ascii=False)
     for old in legacy:
         try:
             os.replace(old, old + ".migrated")

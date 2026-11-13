@@ -6,6 +6,7 @@ is no answer raises Fail (action_failed unless the caller names another code) wi
 and `program=` in its parameters. Programs inside a VM go through the guest agent instead
 (guest.execute).
 """
+import json
 import os
 import subprocess
 
@@ -65,6 +66,17 @@ def quietly(argv, timeout):
                        timeout=timeout)
     except (OSError, subprocess.TimeoutExpired):
         pass
+
+
+def disk_info(path):
+    """What `qemu-img info` says about a disk image, as its JSON object; None when it cannot
+    tell (no such disk, qemu-img missing, failing or not answering within 30 s). -U: also of
+    a disk a running VM holds."""
+    try:
+        info = json.loads(run(["qemu-img", "info", "-U", "--output=json", path], 30).stdout)
+    except (Fail, ValueError):
+        return None
+    return info if isinstance(info, dict) else None
 
 
 def systemctl(*args, timeout=120, ok=(0,), **params):

@@ -50,9 +50,8 @@ import sys
 import threading
 import time
 
-from . import journal, options, paths, registry, settings, vmenv
+from . import guest, journal, options, paths, registry, settings, times, vmenv
 from .errors import Fail, die
-from .guest import TIME
 from .sanitize import clean, field, message_text, redact
 
 NAMESPACE = "agentbox"
@@ -704,10 +703,10 @@ UNITS = {"s": 1, "min": 60, "h": 3600, "d": 86400, "w": 604800}
 CHECKS = {
     "kind": lambda v: all(k in KINDS for k in v.split(",")),
     "vm": registry.NAME.fullmatch,
-    "since": TIME.fullmatch,
-    "until": TIME.fullmatch,
-    "search": lambda v: 0 < len(v) <= 200 and clean(v, False) == v,
-    "lines": lambda v: re.fullmatch(r"\d{1,4}", v) and 1 <= int(v) <= 5000,
+    "since": guest.CHECKS["since"],
+    "until": guest.CHECKS["until"],
+    "search": guest.CHECKS["grep"],              # the same check: one line, at most 200 characters
+    "lines": guest.CHECKS["lines"],
 }
 # Alerts as the proxy logs them, and the token service's lines
 # (github-app/agentbox-gh-tokend)
@@ -726,7 +725,7 @@ REPOSITORY = re.compile(r"[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}")      # what
 
 
 def to_epoch(v, now):
-    """A --since/--until value (guest.TIME) as epoch seconds, Host local time."""
+    """A --since/--until value (times.TIME) as epoch seconds, Host local time."""
     if v == "now":
         return now
     if v in ("today", "yesterday"):
@@ -735,11 +734,8 @@ def to_epoch(v, now):
     m = re.fullmatch(r"-(\d{1,6})(s|min|h|d|w)", v)
     if m:
         return now - int(m.group(1)) * UNITS[m.group(2)]
-    m = re.fullmatch(r"(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2}(?::\d{2})?))?", v)
-    t = m.group(2) or "00:00"
-    fmt = "%Y-%m-%d %H:%M:%S" if t.count(":") == 2 else "%Y-%m-%d %H:%M"
     try:
-        return datetime.datetime.strptime(f"{m.group(1)} {t}", fmt).timestamp()
+        return times.date_time(v).timestamp()
     except ValueError:
         die(f"invalid time: {v}", 2, error="invalid_argument", value=v)
 
@@ -801,12 +797,8 @@ def _text(e, key, limit=MAX_DESCRIPTION):
 
 
 def _base(e):
-    try:
-        usec = int(e["__REALTIME_TIMESTAMP"])
-        when = datetime.datetime.fromtimestamp(usec / 1e6, datetime.timezone.utc)
-    except (KeyError, TypeError, ValueError, OverflowError, OSError):
-        return None
-    return {"time": when.isoformat(timespec="microseconds").replace("+00:00", "Z"), "_usec": usec}
+    when = times.journal_time(e)
+    return {"time": when[1], "_usec": when[0]} if when else None
 
 
 def _recorded(window, kinds, vm, cap):

@@ -100,14 +100,8 @@ def load(name):
 def scan():
     """The usable records ordered by network number, and (name, problem) for
     the others: broken records and VMs sharing a network."""
-    try:
-        files = sorted(os.listdir(paths.REGISTRY))
-    except FileNotFoundError:
-        return [], []
-    except OSError as e:
-        die(f"{paths.REGISTRY}: {e.strerror}", error="action_failed")
     records, problems = [], []
-    for name in (f[:-5] for f in files if f.endswith(".json") and NAME.fullmatch(f[:-5])):
+    for name in (f[:-5] for f in state_files.listdir(paths.REGISTRY) if f.endswith(".json") and NAME.fullmatch(f[:-5])):
         try:
             records.append(load(name))
         except Fail as f:
@@ -145,10 +139,8 @@ def save(rec):
     why = problem(rec, rec.get("name"))
     if why:
         die(f"record for {rec.get('name')} invalid ({why})", error="action_failed")
-    if not os.path.isdir(paths.REGISTRY):
-        os.makedirs(paths.REGISTRY)
-        os.chmod(paths.REGISTRY, 0o755)          # the token service reads it as agentbox-gh
-    state_files.write_atomic(record_file(rec["name"]), (json.dumps(rec, indent=2) + "\n").encode(), 0o644)
+    state_files.directory(paths.REGISTRY, 0o755, only_new=True)     # the token service reads it as agentbox-gh
+    state_files.write_json(record_file(rec["name"]), rec)
 
 
 def check(name):
