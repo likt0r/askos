@@ -23,8 +23,9 @@ into output or into Activity.
 Checking an OpenCode key: its form (sk-..., the same characters; Claude tokens and
 keys refused), then GET /models of OpenCode Go's API with it, which costs nothing:
 a list of models means opencode.ai accepts the key, an authentication or permission
-error that it does not, anything else proves nothing and stores nothing. Whether the
-account has a Go subscription is not checked. The rest is the Claude token's way.
+error that it does not, anything else (no answer among it) proves nothing and stores
+nothing. Whether the account has a Go subscription is not checked. The rest is the
+Claude token's way.
 """
 import json
 import os
@@ -177,6 +178,7 @@ def set_claude_token(args):
             error="anthropic_unavailable", vm=ctx)
     _store(ctx, f, before, token, as_json, "Token")
 
+
 def opencode_answer(key):
     """Body of opencode.ai's answer to GET /models with this key; empty when curl fails."""
     argv = ["curl", "-s", "-m", "20", OPENCODE_MODELS, "-H", "@-"]    # the Authorization header, from stdin
@@ -217,7 +219,7 @@ def set_opencode_key(args):
         die("the key holds unexpected characters or is too long", error="invalid_opencode_key")
     # check with opencode.ai before storing: the old key stays unless the new one works
     answer = opencode_answer(key).replace(b"\0", b"").rstrip(b"\n")
-    verdict = key_verdict(answer) if answer else "refused"
+    verdict = key_verdict(answer)       # no answer proves nothing either
     if verdict != "valid":
         shown = _shown(answer, key)
         if verdict == "refused":

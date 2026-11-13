@@ -513,14 +513,14 @@ class JournalTest(WatchTest):
 
     def test_secrets_never_leave(self):
         self.log("x", "agentbox-activity", AGENTBOX_KIND="credentials", AGENTBOX_ACTION="set-claude-token",
-                 AGENTBOX_DESCRIPTION=f"Token {CLAUDE} und {TOKEN}")
+                 AGENTBOX_DESCRIPTION=f"Token {CLAUDE} und {TOKEN} und sk-Oc12AbCdEf_34-ghiJKLmn")
         self.log(f"[work] refused: '{TOKEN}': invalid-request: {CODE}", "agentbox-gh-work")
         self.log(f"Pairing: {CODE}", "agentbox", namespace=None, _SYSTEMD_UNIT="agentbox-build@base.service")
         self.event("activity")
         self.event("github-token")
         self.event("build-log")
         out = "".join(self.raw)
-        for secret in (CLAUDE, TOKEN, "Zz9_secret-code"):
+        for secret in (CLAUDE, TOKEN, "Zz9_secret-code", "Oc12AbCdEf"):
             self.assertNotIn(secret, out)
         self.assertIn("[hidden]", out)
 
@@ -627,6 +627,20 @@ class LifetimeTest(WatchTest):
 
 
 class DescribeTest(WatchTest):
+    def test_when_the_claude_token_and_the_opencode_key_were_stored(self):
+        """null without one (a placeholder or no file), the file's time with one."""
+        secrets = self.path("etc/agentbox/secrets")
+        os.makedirs(secrets, exist_ok=True)
+        for name, text in (("claude-work", "none\n"), ("opencode-work", "sk-Oc12AbCdEf_34-ghiJKLmn\n")):
+            with open(os.path.join(secrets, name), "w") as f:
+                f.write(text)
+        os.utime(os.path.join(secrets, "opencode-work"), (1760000000, 1760000000))
+        code, out, err = self.run_agentbox("describe", "--json")
+        self.assertEqual(code, 0, err)
+        found = {v["name"]: (v["claude_token_since"], v["opencode_key_since"]) for v in json.loads(out)["vms"]}
+        self.assertEqual(found, {"work": (None, "2025-10-09T08:53:20Z"), "priv": (None, None)})
+        self.assertNotIn("Oc12AbCdEf", out)
+
     def test_one_vm_as_json(self):
         code, out, err = self.run_agentbox("describe", "work", "--json")
         self.assertEqual((code, err), (0, ""))

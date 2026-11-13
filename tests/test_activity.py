@@ -564,7 +564,10 @@ class SecretTest(ActivityTest):
         self.run_agentbox(f"--actor=x {CODE} {TOKEN} ghs_abcdefghijklmnop", "close-web", "work")
         self.assertEqual(self.entries()[-1]["AGENTBOX_ACTOR"],
                          "x orca://pair?[hidden] [hidden] [hidden]")
-        for secret in (b"Ab3_x-9", b"sk-ant", b"ghs_"):
+        # an OpenCode key (or any other sk- API key) too, but not a short word that starts so
+        self.run_agentbox("--actor=x sk-Oc12AbCdEf_34-ghiJKLmn sk-learn", "close-web", "work")
+        self.assertEqual(self.entries()[-1]["AGENTBOX_ACTOR"], "x [hidden] sk-learn")
+        for secret in (b"Ab3_x-9", b"sk-ant", b"ghs_", b"Oc12AbCdEf"):
             self.assertNotIn(secret, self.raw())
 
 

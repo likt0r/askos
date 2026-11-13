@@ -450,13 +450,16 @@ class SetOpencodeKeyTest(CredentialsTest):
                 self.assertEqual(self.read("secrets/opencode-priv"), OC_OLD + "\n")
                 self.assertEqual(self.mode("secrets/opencode-priv"), 0o640)
 
-    def test_no_answer_is_a_rejection(self):
-        for answer, exit_code in (("", 0), ('{"object":"li', 28)):
-            with self.subTest(answer=answer):
+    def test_no_answer_proves_nothing(self):
+        """No connection, a time limit or half an answer say nothing about the key."""
+        self.write("secrets/opencode-priv", OC_OLD + "\n", mode=0o640)
+        for answer, exit_code, shown in (("", 0, "no answer"), ("", 28, "no answer"), ('{"object":"li', 28, "no answer")):
+            with self.subTest(answer=answer, exit=exit_code):
                 self.scenario(answer=answer, exit=exit_code)
                 self.assertEqual(self.set_key("--no-prompt"),
-                                 (1, "", "agentbox: opencode.ai rejects the key: no answer\n"))
-                self.assertEqual(self.read("secrets/opencode-priv"), "none\n")
+                                 (1, "", "agentbox: opencode.ai answered unexpectedly, key not stored "
+                                         f"(try again later): {shown}\n"))
+                self.assertEqual(self.read("secrets/opencode-priv"), OC_OLD + "\n")
 
     def test_answers_that_prove_nothing_store_nothing(self):
         self.write("secrets/opencode-priv", OC_OLD + "\n", mode=0o640)

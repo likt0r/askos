@@ -164,9 +164,11 @@ flowchart LR
   are not kept, so nothing planted there survives a Reset.
 - A VM learns its name, Orca port, Pairing address, Claude token, OpenCode key and VM
   variables from the Host at boot (QEMU fw_cfg); neither the token nor the key touches the
-  Data disk. A login made in the VM with `opencode auth login` writes `auth.json` next to
-  opencode's sessions on the Data disk; `guest-setup` deletes it at every start, so it does
-  not outlive the next one, like a Codex login, which stays on the System disk. The token and the VM
+  Data disk. Logins made in the VM land next to opencode's sessions on the Data disk
+  (`auth.json` from `opencode auth login`, `mcp-auth.json` with MCP servers' OAuth tokens,
+  the login tables of `opencode.db`); `guest-setup` deletes them at every start, keeping the
+  sessions, so none outlives the next one, like a Codex login, which stays on the System
+  disk. A file it cannot remove is reported and does not stop the start. The token and the VM
   variables are files QEMU reads (`root:qemu`, mode 0640, in directories of mode 0750),
   never values in virt-install's `--sysinfo`, which it splits at commas: the VM variables
   are `/var/lib/agentbox/vm-env/<vm>.env`, entry `opt/agentbox/env`, one line

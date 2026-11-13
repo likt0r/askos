@@ -1,0 +1,67 @@
+#!/usr/bin/python3 -I
+"""opencode-forget-logins <opencode data dir>: what opencode keeps of logins made in the VM.
+
+guest-setup runs it as the agent at every start, before orca serve. opencode's data
+directory lies on the Data disk so that its sessions (opencode.db) outlive a Reset;
+the logins in it should not, like any login made in the VM: the OpenCode key comes
+from the Host (OPENCODE_API_KEY). So it removes
+
+- auth.json (`opencode auth login`) and mcp-auth.json (MCP servers' OAuth tokens),
+  also when something made either a directory;
+- the rows of opencode.db's login tables (`opencode console login` and the
+  credentials of integrations), leaving sessions, messages and projects alone.
+
+A table opencode does not have (yet) is skipped. Whatever fails is reported on
+stderr; the exit status is 0 all the same, so a broken file never stops the VM.
+"""
+import os
+import shutil
+import sqlite3
+import sys
+
+FILES = ("auth.json", "mcp-auth.json")
+TABLES = ("account_state", "account", "control_account", "credential")
+
+
+def remove(path):
+    if os.path.isdir(path) and not os.path.islink(path):
+        shutil.rmtree(path)
+    elif os.path.lexists(path):
+        os.remove(path)
+
+
+def forget(folder):
+    problems = []
+    for name in FILES:
+        try:
+            remove(os.path.join(folder, name))
+        except OSError as e:
+            problems.append(f"{name}: {e.strerror}")
+    db = os.path.join(folder, "opencode.db")
+    if os.path.isfile(db):
+        try:
+            con = sqlite3.connect(db, timeout=10)
+            try:
+                have = {n for (n,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+                with con:
+                    for table in TABLES:
+                        if table in have:
+                            con.execute(f'DELETE FROM "{table}"')
+            finally:
+                con.close()
+        except sqlite3.Error as e:
+            problems.append(f"opencode.db: {e}")
+    return problems
+
+
+def main(argv):
+    if len(argv) != 2:
+        print("usage: opencode-forget-logins <opencode data dir>", file=sys.stderr)
+        return 2
+    for p in forget(argv[1]):
+        print(f"opencode-forget-logins: {p}", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
