@@ -654,10 +654,8 @@ JOURNAL = [
     recorded(4 * HOUR, "action", "reset", "Reset: qemu-img create scheitert", vm="priv", outcome="failed"),
     recorded(3 * HOUR, "reset", "reset.automatic", "automatischer Reset (untaetig)", vm="work", actor="timer"),
     journal_entry("sshd", "Accepted publickey for bewr", 2 * HOUR),
-    # the older German keywords are ignored entirely
-    journal_entry("agentbox-proxy-work", "[work] VERDACHT old.example [exfil]", 2 * HOUR - 1),
-    journal_entry("agentbox-gh-priv", "[priv] Token fuer old/repo bis 2026-11-03T12:00:00Z", 2 * HOUR - 2),
-    journal_entry("agentbox-gh-priv", "[priv] abgelehnt: 'old/repo': nein", 2 * HOUR - 3),
+    # what the token service writes in no form of its log lines is no entry
+    journal_entry("agentbox-gh-priv", "Traceback (most recent call last):", 2 * HOUR - 1),
     # a VM deleted since: its Alerts stay part of the timeline
     journal_entry("agentbox-proxy-lab", "[lab] ALERT paste.example [paste]", HOUR),
 ]
