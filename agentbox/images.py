@@ -63,7 +63,7 @@ import subprocess
 import sys
 import time
 
-from . import activity, guest, paths, registry, safeguards, settings, state_files, version, versions
+from . import activity, guest, options, paths, registry, safeguards, settings, state_files, version, versions
 from .errors import Fail, die
 from .sanitize import SECRET, clean, entry
 
@@ -964,37 +964,6 @@ def unit_failed_since(started, target):
 
 # --- commands ------------------------------------------------------------------------------
 
-def _options(args, known):
-    """Positional arguments and options (--name value, --name=value, or a flag); an option
-    known as "many" may come more than once and gives the list of its values."""
-    positional, opts, i = [], {}, 0
-    while i < len(args):
-        a = args[i]
-        i += 1
-        if not a.startswith("--"):
-            positional.append(a)
-            continue
-        name, eq, value = a[2:].partition("=")
-        if name not in known:
-            die("unknown option: " + clean(a, False)[:60], 2, error="invalid_argument", option=clean(a, False)[:60])
-        if not known[name]:
-            if eq:
-                die(f"--{name} takes no value", 2, error="invalid_argument", option=f"--{name}")
-            opts[name] = True
-            continue
-        if not eq:
-            if i >= len(args):
-                die(f"--{name} needs a value", 2, error="invalid_argument", option=f"--{name}")
-            value, i = args[i], i + 1
-        if known[name] == "many":
-            opts.setdefault(name, []).append(value)
-            continue
-        if name in opts:
-            die(f"--{name} given twice", 2, error="invalid_argument", option=f"--{name}")
-        opts[name] = value
-    return positional, opts
-
-
 def _active(name):
     """Whether a unit of a Build runs, or is about to: deactivating counts, a Build that is
     stopping may still hold the run lock and write its Image (describe.ACTIVE leaves it out,
@@ -1071,7 +1040,7 @@ def build_cmd(args):
     """agentbox build <image>|--all [--reset <vm>]... [--json]: start a Build as a systemd
     unit; with --reset an Update: when the Build becomes the current one, these VMs are
     reset onto it."""
-    positional, opts = _options(args, {"all": False, "json": False, "reset": "many"})
+    positional, opts = options.parse(args, {"all": False, "json": False, "reset": options.MANY})
     if bool(positional) == bool(opts.get("all")) or len(positional) > 1:
         die("build <image>|--all [--reset <vm>]... [--json]", error="invalid_argument")
     target = "all" if opts.get("all") else _image_name(positional[0])
@@ -1092,7 +1061,7 @@ def update_now_cmd(args):
     agentbox-build@update: the version check at once, a Build of every Image a new Build would
     update (with the Base image every Image), then, when every Build succeeded, a Reset of these
     VMs onto their Image's current Build (sessions in them end, their Data disks stay)."""
-    positional, opts = _options(args, {"json": False, "reset": "many"})
+    positional, opts = options.parse(args, {"json": False, "reset": options.MANY})
     if positional:
         die("update-now [--reset <vm>]... [--json]", error="invalid_argument")
     picks = _update_vms(None, opts.get("reset", []))
@@ -1290,7 +1259,7 @@ def containerfile_cmd(args):
     Read from the Host only, never fetched; shown as text: at most CONTAINERFILE_MAX bytes,
     without control characters, and anything that looks like a token or key hidden. `url`: the
     file in the repository at the installed Release's tag (None for a checkout's 0.0.0)."""
-    positional, opts = _options(args, {"json": False})
+    positional, opts = options.parse(args, {"json": False})
     if len(positional) != 1:
         die("containerfile <image> [--json]", error="invalid_argument")
     image = _image_name(positional[0])
@@ -1338,13 +1307,9 @@ def _log_entries(info, opts):
 def build_log(args):
     """agentbox build-log <image> [<build>] [--after-cursor C] [--lines N] [--json]: the
     journal of a Build (default: the running one, else the newest)."""
-    positional, opts = _options(args, {"after-cursor": True, "lines": True, "json": False})
+    positional, opts = options.parse(args, {**LOG_CHECKS, "json": False})
     if not 1 <= len(positional) <= 2:
         die("build-log <image> [<build>] [--after-cursor C] [--lines N] [--json]", error="invalid_argument")
-    for k in LOG_CHECKS:
-        if k in opts and not LOG_CHECKS[k](opts[k]):
-            die(f"invalid value for --{k}: " + clean(opts[k], False)[:60], 2, error="invalid_argument",
-                option=f"--{k}")
     image = _image_name(positional[0])
     found = builds().get(image, {})
     if len(positional) == 2:
@@ -1379,7 +1344,7 @@ def build_log(args):
 def set_image(args):
     """agentbox set-image <vm> <image> [--build B] [--json]: the Image of a VM, at its newest
     Build or pinned to one (going back to an earlier Build); applies at the next Reset."""
-    positional, opts = _options(args, {"build": True, "json": False})
+    positional, opts = options.parse(args, {"build": True, "json": False})
     if len(positional) != 2:
         die("set-image <vm> <image> [--build B] [--json]", error="invalid_argument")
     vm = registry.check(positional[0])

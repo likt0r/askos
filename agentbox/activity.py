@@ -52,7 +52,7 @@ import sys
 import threading
 import time
 
-from . import paths, registry, settings, vmenv
+from . import options, paths, registry, settings, vmenv
 from .errors import Fail, die
 from .guest import TIME
 from .sanitize import clean, field, message_text, redact
@@ -773,28 +773,6 @@ def to_epoch(v, now):
         die(f"invalid time: {v}", 2, error="invalid_argument", value=v)
 
 
-def _options(args):
-    opts, as_json, i = {}, False, 0
-    while i < len(args):
-        a = args[i]
-        i += 1
-        if a == "--json":
-            as_json = True
-            continue
-        name, eq, val = a.partition("=")
-        if not name.startswith("--") or name[2:] not in CHECKS:
-            die("unknown option: " + clean(a, False)[:60], 2, error="invalid_argument",
-                option=clean(name, False)[:60])
-        if not eq:
-            if i >= len(args):
-                die(f"{name} needs a value", 2, error="invalid_argument", option=name)
-            val, i = args[i], i + 1
-        if not CHECKS[name[2:]](val):
-            die(f"invalid value for {name}: " + clean(val, False)[:60], 2, error="invalid_argument", option=name)
-        opts[name[2:]] = val
-    return opts, as_json
-
-
 def _journal(window, identifiers, writers, matches=(), grep=None, cap=None, namespace=f"+{NAMESPACE}",
              prefix=None):
     """Entries in the time window, newest first, from the Activity namespace and (by
@@ -1057,7 +1035,8 @@ def timeline(opts, now=None):
 def activity(args):
     """agentbox activity [--kind K[,K]] [--vm VM] [--since T] [--until T] [--search TEXT]
     [--lines N] [--json]: the Activity timeline, newest first."""
-    opts, as_json = _options(args)
+    _, opts = options.parse(args, {**CHECKS, "json": False}, positional=False)
+    as_json = opts.pop("json", False)
     entries, truncated, days = timeline(opts)
     if as_json:
         print(json.dumps({"entries": [{k: v for k, v in e.items() if not k.startswith("_")} for e in entries],

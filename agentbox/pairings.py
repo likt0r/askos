@@ -27,7 +27,7 @@ import os
 import re
 import subprocess
 
-from . import guest, lifecycle, paths
+from . import guest, lifecycle, options, paths
 from .errors import die
 from .registry import check
 from .sanitize import clean
@@ -101,34 +101,9 @@ def devices(ctx):
     return result, observer
 
 
-def _flags(args, known):
-    """Positional arguments, and options as a dict (known: name -> takes a value)."""
-    positional, opts, i = [], {}, 0
-    while i < len(args):
-        a = args[i]
-        i += 1
-        if not a.startswith("--"):
-            positional.append(a)
-            continue
-        name, eq, value = a[2:].partition("=")
-        if name not in known:
-            die("unknown option: " + clean(a, False)[:60], 2, error="invalid_argument", option=clean(a, False)[:60])
-        if not known[name]:
-            if eq:
-                die(f"--{name} takes no value", 2, error="invalid_argument", option=f"--{name}")
-            opts[name] = True
-            continue
-        if not eq:
-            if i >= len(args):
-                die(f"--{name} needs a value", 2, error="invalid_argument", option=f"--{name}")
-            value, i = args[i], i + 1
-        opts[name] = value
-    return positional, opts
-
-
 def pairings(args):
     """agentbox pairings <vm> [--json]"""
-    pos, opts = _flags(args, {"json": False})
+    pos, opts = options.parse(args, {"json": False})
     if len(pos) != 1:
         die("pairings <vm> [--json]", 2, error="invalid_argument")
     ctx = check(pos[0])
@@ -147,7 +122,7 @@ def pairings(args):
 
 def unpair(args):
     """agentbox unpair <vm> <device-id> [--json]: always a refusal, Orca cannot do it."""
-    pos, _ = _flags(args, {"json": False})
+    pos, _ = options.parse(args, {"json": False})
     if len(pos) != 2:
         die("unpair <vm> <device>", 2, error="invalid_argument")
     ctx = check(pos[0])
@@ -166,7 +141,7 @@ def unpair(args):
 
 def revoke_all(args):
     """agentbox revoke-pairings <vm> --confirm <vm> [--json]"""
-    pos, opts = _flags(args, {"confirm": True, "json": False})
+    pos, opts = options.parse(args, {"confirm": True, "json": False})
     if len(pos) != 1:
         die("revoke-pairings <vm> --confirm <vm> [--json]", 2, error="invalid_argument")
     ctx = check(pos[0])

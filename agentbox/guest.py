@@ -15,7 +15,7 @@ import re
 import sys
 import time
 
-from . import paths, state_files, virsh
+from . import options, paths, state_files, virsh
 from .registry import check, dom
 from .errors import Fail, die
 from .sanitize import clean, entry, pairing_codes
@@ -145,25 +145,10 @@ def records(out):
 
 
 def parse(ctx, args):
-    opts, as_json, i = {"boot": "current", "lines": "200"}, False, 0
-    while i < len(args):
-        a = args[i]
-        i += 1
-        if a == "--json":
-            as_json = True
-            continue
-        name, eq, val = a.partition("=")
-        if not name.startswith("--") or name[2:] not in CHECKS:
-            die(f"{ctx}: unknown option: " + clean(a, False)[:60], 2, error="invalid_argument",
-                option=clean(a, False)[:60])
-        if not eq:
-            if i >= len(args):
-                die(f"{ctx}: {name} needs a value", 2, error="invalid_argument", option=name)
-            val, i = args[i], i + 1
-        if not CHECKS[name[2:]](val):
-            die(f"{ctx}: invalid value for {name}: " + clean(val, False)[:60], 2, error="invalid_argument", option=name)
-        opts[name[2:]] = val
-    return opts, as_json
+    """The filters of `agentbox logs` with their defaults, and --json."""
+    _, opts = options.parse(args, {**CHECKS, "json": False}, positional=False, prefix=f"{ctx}: ")
+    as_json = opts.pop("json", False)
+    return {"boot": "current", "lines": "200", **opts}, as_json
 
 
 def logs(args):

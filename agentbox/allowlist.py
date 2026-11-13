@@ -46,7 +46,7 @@ import sys
 import time
 from collections import Counter
 
-from . import activity, paths, patterns, registry, settings, state_files
+from . import activity, options, paths, patterns, registry, settings, state_files
 from .errors import Fail, die
 from .network import CLIENT_REASONS, DOMAIN, done, valid_domain, when
 from .sanitize import clean, field
@@ -83,32 +83,8 @@ def default_duration():
 # --- arguments -----------------------------------------------------------------
 
 def _parse(args, known):
-    """(positional arguments, options): --name value or --name=value for options
-    that take a value (known[name] True), --name for flags."""
-    positional, opts, i = [], {}, 0
-    while i < len(args):
-        a = args[i]
-        i += 1
-        if not a.startswith("--"):
-            positional.append(a)
-            continue
-        name, eq, value = a[2:].partition("=")
-        if name not in known:
-            die("unknown option: " + clean(a, False)[:60], error="invalid_argument",
-                option="--" + clean(name, False)[:60])
-        if not known[name]:
-            if eq:
-                die(f"--{name} takes no value", error="invalid_argument", option=f"--{name}")
-            opts[name] = True
-            continue
-        if not eq:
-            if i >= len(args):
-                die(f"--{name} needs a value", error="invalid_argument", option=f"--{name}")
-            value, i = args[i], i + 1
-        if name in opts:
-            die(f"--{name} given twice", error="invalid_argument", option=f"--{name}")
-        opts[name] = value
-    return positional, opts
+    """(positional arguments, options), for the Allowlist and the lists (exit code 1)."""
+    return options.parse(args, known, exit=1)
 
 
 def scope_arg(s):
