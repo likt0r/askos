@@ -164,8 +164,7 @@ class ParserTest(unittest.TestCase):
     def test_a_fuzzed_hello_is_only_ever_a_name_more_or_refused(self):
         rng = random.Random(20261111)
         hellos = [client_hello("example.org"), client_hello("example.org", tls12=True), client_hello(None)]
-        deadline, runs = time.monotonic() + 2, 0
-        while time.monotonic() < deadline or runs < 500:
+        for run in range(100000):       # about 2 s; the same inputs on every machine
             data = bytearray(rng.choice(hellos))
             for _ in range(rng.randint(1, 4)):
                 what = rng.random()
@@ -183,10 +182,10 @@ class ParserTest(unittest.TestCase):
             try:
                 result = proxy.client_hello(bytes(data))
             except proxy.Refused as e:
-                self.assertIn(e.reason, (proxy.NOT_TLS, "no server name"))
+                self.assertIn(e.reason, (proxy.NOT_TLS, "no server name"), f"run {run}: {bytes(data).hex()}")
             else:
-                self.assertTrue(result is None or isinstance(result, str), result)
-            runs += 1
+                self.assertTrue(result is None or isinstance(result, str),
+                                f"run {run}: {bytes(data).hex()}: {result!r}")
 
 
 class HelloProxyTest(allowlist_tests.ProxyTest):
