@@ -16,7 +16,7 @@ import sys
 import time
 import xml.etree.ElementTree as ET
 
-from . import activity, guest, images, paths, registry, responding, settings, state_files, virsh
+from . import activity, guest, images, paths, programs, registry, responding, settings, state_files, virsh
 from .registry import check, dom
 from .errors import Fail, die
 
@@ -359,14 +359,8 @@ def _reset(ctx, start, say, progress=None):
             die(f"{ctx}: the VM is not off ({st}), the System disk stays unchanged", error="vm_not_off", vm=ctx,
                 state=st)
         progress["disk"] = True
-        try:
-            r = subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", "-F", "qcow2", "-b", base, disk],
-                               stdout=sys.stderr)
-        except OSError:
-            die("qemu-img is missing", 127, error="action_failed")
-    if r.returncode != 0:
-        raise Fail(f"qemu-img create fails (exit {r.returncode})", r.returncode, error="action_failed", raw=True,
-                   vm=ctx)
+        programs.run(["qemu-img", "create", "-q", "-f", "qcow2", "-F", "qcow2", "-b", base, disk], None,
+                     what="qemu-img create", vm=ctx)
     progress["fresh"] = True
     if os.geteuid() == 0:
         try:
@@ -380,8 +374,8 @@ def _reset(ctx, start, say, progress=None):
             say(f"{ctx} started")
         _check_chain(ctx, base)
         if r.returncode != 0:
-            why = " ".join(r.stderr.split())[-300:] or f"exit {r.returncode}"
-            die(f"{ctx}: fresh System disk, but the start fails: {why}", error="reset_start_failed", vm=ctx)
+            die(f"{ctx}: fresh System disk, but the start fails: {programs.summary(r)}", error="reset_start_failed",
+                vm=ctx)
     return base
 
 

@@ -164,7 +164,8 @@ and exits with the same exit code as without `--json`:
 - `error`: the code, set where the failure arises (`agentbox/errors.py`). Codes are
   groups, not one per place: those above, plus `action_failed` for everything else.
 - `message`: English text for people, not translated. For a failure that is another
-  program's own error output (`virsh`, `qemu-img`), that output.
+  program's own error output (`virsh`), that output; for another program that fails, `<program>
+  failed: ` and the end of its error output on one line.
 - `params`: values for programs, such as `vm`, `domain`, `image`, `setting` or `option`;
   never a secret. The backend takes `field` from them (`setting` of `invalid_setting`).
 

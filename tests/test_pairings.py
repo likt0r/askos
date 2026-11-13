@@ -51,6 +51,12 @@ class PairingsTest(ActivityTest):
     def wrapper_calls(self):
         return [c["arg"] for c in self.calls("guest-exec") if c["path"] == DEVICES]
 
+    def test_a_list_that_takes_too_long_names_no_filters(self):
+        self.scenario(responses=[{"stdout": "", "exitcode": 124}])
+        code, _, err = self.run_agentbox("pairings", "work")
+        self.assertEqual(code, 5)
+        self.assertRegex(err, r"^agentbox: work: query in the VM stopped after \d+ s\n$")
+
     def test_lists_devices_with_times_and_marks_the_observer(self):
         self.make_observer()
         self.scenario(responses=[{"stdout": json.dumps(LISTING)}])

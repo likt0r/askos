@@ -69,7 +69,7 @@ class JournalSocketsTest(unittest.TestCase):
     def setUp(self):
         sys.path.insert(0, REPO)
         try:
-            from agentbox import activity, errors, hoststeps, paths
+            from agentbox import activity, errors, hoststeps, paths, programs
         finally:
             sys.path.remove(REPO)
         self.hoststeps, self.errors = hoststeps, errors
@@ -104,7 +104,7 @@ class JournalSocketsTest(unittest.TestCase):
                 self.errors.die(f"the group {name} is missing ({comes_with})", error="action_failed", group=name)
             return self.groups[name], set()
 
-        def systemctl(*args):
+        def systemctl(*args, **limits):
             self.calls.append(list(args))
             if self.restart_fails:
                 self.errors.die("systemctl try-restart fails", error="action_failed", program="systemctl")
@@ -113,7 +113,7 @@ class JournalSocketsTest(unittest.TestCase):
                       mock.patch.object(os, "geteuid", lambda: 0),
                       mock.patch.object(os, "lstat", lstat), mock.patch.object(os, "chown", chown),
                       mock.patch.object(hoststeps, "_group", group),
-                      mock.patch.object(hoststeps, "_systemctl", systemctl)):
+                      mock.patch.object(programs, "systemctl", systemctl)):
             patch.start()
             self.addCleanup(patch.stop)
 

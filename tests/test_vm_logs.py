@@ -186,7 +186,7 @@ class LogsTest(AgentboxTest):
         self.scenario(responses=[{"stdout": "", "exitcode": 124}])
         code, _, err = self.run_agentbox("logs", "priv")
         self.assertEqual(code, 5)
-        self.assertIn("stopped after", err)
+        self.assertEqual(err, "agentbox: priv: query in the VM stopped after 20 s, narrow the filters\n")
 
     def test_journalctl_failing_in_vm(self):
         self.scenario(responses=[{"stdout": "", "exitcode": 1, "stderr": "Failed to open\x1b[2J journal"}])

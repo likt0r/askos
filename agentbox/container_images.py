@@ -22,15 +22,12 @@ that removed nothing or a VM that was skipped. The command records these entries
 dispatcher records nothing for it (activity.own_entry()). One VM failing never stops the
 others, and the command fails only when the VM registry cannot be read.
 """
-import base64
 import json
 import os
 import sys
-import time
 
 from . import activity, generate, guest, paths, registry, state_files, virsh
 from .errors import Fail, die
-from .registry import dom
 from .sanitize import clean
 
 WRAPPER = "/usr/libexec/qemu-ga/fsfreeze-hook.d/agentbox-container-images"
@@ -56,54 +53,24 @@ def _failed(ctx, why):
 
 
 def _run(ctx, days):
-    """Run the wrapper in the VM: its output, once it ended within the limit and well."""
-    r = virsh.run("qemu-agent-command", dom(ctx), json.dumps({"execute": "guest-exec", "arguments": {
-        "path": WRAPPER, "arg": ["prune", str(days)], "capture-output": True}}), "--timeout", "10")
-    if r.returncode != 0:
-        if "No such file or directory" in r.stderr:
-            _missing(ctx)
-        die(f"{ctx}: the guest agent does not answer (" + clean(r.stderr.strip(), False)[:200] + ")", 4,
-            error="guest_agent_unavailable", vm=ctx)
-    try:
-        pid = json.loads(r.stdout)["return"]["pid"]
-    except (ValueError, KeyError, TypeError, RecursionError):
-        pid = None
-    if type(pid) is not int:
-        die(f"{ctx}: unexpected answer from the guest agent", 4, error="guest_agent_unavailable", vm=ctx)
+    """Run the wrapper in the VM: its answer, once it ended within the limit and well."""
     limit = paths.tunable("AGENTBOX_CONTAINER_IMAGE_CLEANUP_SECONDS", LIMIT)
-    deadline, pause = time.monotonic() + limit, 0.2
-    while True:
-        res = guest.agent(ctx, {"execute": "guest-exec-status", "arguments": {"pid": pid}})
-        if isinstance(res, dict) and res.get("exited") is True:
-            break
-        if time.monotonic() > deadline:
-            die(f"{ctx}: the Container image cleanup in the VM takes longer than {limit} s", 5,
-                error="vm_query_timeout", vm=ctx, seconds=limit)
-        time.sleep(pause)
-        pause = min(pause * 2, 2)
-    if res.get("signal") is not None or res.get("exitcode") == 124:
-        die(f"{ctx}: the Container image cleanup in the VM stopped after its time limit", 5,
+    code, out, _, _ = guest.execute(ctx, WRAPPER, ["prune", str(days)], limit, missing=lambda: _missing(ctx),
+                                    answer=MAX_ANSWER)
+    if code == 124:
+        die(f"{ctx}: the Container image cleanup in the VM takes longer than {limit} s", 5,
             error="vm_query_timeout", vm=ctx, seconds=limit)
-    code = res.get("exitcode")
     if code != 0:
         _failed(ctx, f"exit {code}" if type(code) is int else "no exit code")
-    data = res.get("out-data", "")
-    if not isinstance(data, str) or len(data) > MAX_ANSWER * 2 or res.get("out-truncated"):
+    if out is None:
         _failed(ctx, "unexpected answer")
-    try:
-        return base64.b64decode(data, validate=True).decode("utf-8")
-    except (ValueError, TypeError):
-        _failed(ctx, "unexpected answer")
+    return out
 
 
 def _answer(ctx, out):
     """(removed, freed_bytes) from the wrapper's answer, which comes from the VM: untrusted."""
-    try:
-        answer = json.loads(out) if len(out) <= MAX_ANSWER else None
-        numbers = [answer[k] for k in ("removed", "freed_bytes")] if isinstance(answer, dict) else None
-    except (ValueError, KeyError, RecursionError):
-        numbers = None
-    if not numbers or not all(type(n) is int and 0 <= n < MAX_NUMBER for n in numbers):
+    numbers = guest.numbers(out, ("removed", "freed_bytes"), MAX_NUMBER)
+    if not numbers:
         _failed(ctx, "unexpected answer")
     return numbers[0], numbers[1]
 

@@ -42,7 +42,7 @@ import sys
 import tempfile
 from getpass import getpass
 
-from . import firewall, generate, hoststeps, hostsetup, paths, state_files
+from . import firewall, generate, hoststeps, hostsetup, paths, programs, state_files
 from .errors import Fail, die
 
 MIN_PASSWORD = 16
@@ -194,20 +194,6 @@ def _fingerprint():
     except (OSError, subprocess.TimeoutExpired):
         return None
     return r.stdout.strip().partition("=")[2] or None
-
-
-def _run(argv, what):
-    try:
-        return subprocess.run(argv, capture_output=True, text=True, timeout=120)
-    except (OSError, subprocess.TimeoutExpired) as e:
-        return die(f"{what}: {e}", error="action_failed")
-
-
-def _systemctl(*args):
-    r = _run(["systemctl", *args], f"systemctl {' '.join(args)}")
-    if r.returncode != 0:
-        die(f"systemctl {' '.join(args)} fails: " + (r.stderr.strip()[-200:] or f"exit {r.returncode}"),
-            error="action_failed")
 
 
 def firewall_rules(setup):
@@ -368,8 +354,8 @@ def setup(args):
     def control_room():
         if again:
             return hoststeps.enable(WEB_UNIT)
-        _systemctl("enable", WEB_UNIT)
-        _systemctl("restart", WEB_UNIT)
+        programs.systemctl("enable", WEB_UNIT)
+        programs.systemctl("restart", WEB_UNIT)
         return [f"{WEB_UNIT} enabled and restarted"]
 
     steps.run("Certificate and password", certificate_and_password)

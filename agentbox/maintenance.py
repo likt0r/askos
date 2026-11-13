@@ -52,11 +52,10 @@ import datetime
 import json
 import os
 import re
-import subprocess
 import sys
 import time
 
-from . import activity, generate, images, lifecycle, paths, settings, state_files
+from . import activity, generate, images, lifecycle, paths, programs, settings, state_files
 from .errors import Fail, die
 from .sanitize import clean
 
@@ -83,14 +82,7 @@ STEPS = (("feeds", "fetching the Feeds", "Feeds fetched"),
 
 def _start(unit):
     """systemctl start: the unit's run (a oneshot service) to its end."""
-    try:
-        r = subprocess.run(["systemctl", "start", unit], capture_output=True, text=True, errors="replace",
-                           timeout=START_SECONDS)
-    except (OSError, subprocess.TimeoutExpired) as e:
-        die(f"systemctl start {unit}: {type(e).__name__}", error="action_failed", unit=unit)
-    if r.returncode != 0:
-        die(f"systemctl start {unit} failed: " + (clean(r.stderr.strip(), False)[-300:] or f"exit {r.returncode}"),
-            error="action_failed", unit=unit)
+    programs.systemctl("start", unit, timeout=START_SECONDS, unit=unit)
 
 
 def wait_for_builds(say):

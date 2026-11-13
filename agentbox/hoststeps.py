@@ -18,7 +18,7 @@ import subprocess
 import sys
 import tempfile
 
-from . import activity, detection, firewall, generate, lists, paths, state_files
+from . import activity, detection, firewall, generate, lists, paths, programs, state_files
 from .errors import die
 
 # the hand-maintained lists as (record, the text file it is migrated from); the Allowlist the
@@ -61,17 +61,6 @@ SHUTDOWN_TIMEOUT=60
 """
 
 
-def _run(argv):
-    try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=300)
-    except (OSError, subprocess.TimeoutExpired) as e:
-        return die(f"{argv[0]}: {e}", error="action_failed", program=argv[0])
-    if r.returncode != 0:
-        die(f"{' '.join(argv)} fails: " + (r.stderr.strip()[-300:] or f"exit {r.returncode}"), error="action_failed",
-            program=argv[0])
-    return r
-
-
 def _write_if_changed(path, data, mode=0o644):
     """Replace the file when its content or mode differs; True when it did."""
     try:
@@ -90,15 +79,9 @@ def _write_if_changed(path, data, mode=0o644):
 
 def _getent(*args):
     """The entries of `getent <database> [<key>]`, split at ":"; none when the key is not there."""
-    try:
-        r = subprocess.run(["getent", *args], capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.TimeoutExpired) as e:
-        return die(f"getent: {e}", error="action_failed", program="getent")
+    r = programs.run(["getent", *args], 60, ok=(0, 2))
     if r.returncode == 2:
         return []
-    if r.returncode != 0:
-        die(f"getent {' '.join(args)} fails: " + (r.stderr.strip()[-200:] or f"exit {r.returncode}"),
-            error="action_failed", program="getent")
     return [line.split(":") for line in r.stdout.splitlines() if line]
 
 
@@ -177,13 +160,13 @@ def groups(user):
     said = []
     gid, members = _group(LIBVIRT_GROUP, "comes with libvirt")
     if user["gid"] != gid and user["name"] not in members:
-        _run(["usermod", "-aG", LIBVIRT_GROUP, user["name"]])
+        programs.run(["usermod", "-aG", LIBVIRT_GROUP, user["name"]], 300)
         said.append(f"{user['name']} in the group {LIBVIRT_GROUP} (applies from the next sign-in)")
         gid, members = _group(LIBVIRT_GROUP, "comes with libvirt")
     wanted = members | {row[0] for row in _getent("passwd") if len(row) > 3 and row[3] == str(gid)}
     _, journal = _group(activity.JOURNAL_GROUP, "the package creates it")
     if journal != wanted:
-        _run(["gpasswd", "-M", ",".join(sorted(wanted)), activity.JOURNAL_GROUP])
+        programs.run(["gpasswd", "-M", ",".join(sorted(wanted)), activity.JOURNAL_GROUP], 300)
         said.append(f"{activity.JOURNAL_GROUP}: {', '.join(sorted(wanted)) or 'nobody'} (as {LIBVIRT_GROUP})")
     return said
 
@@ -240,7 +223,7 @@ def journal_sockets():
         if changed:
             said.append(f"{path}: {activity.JOURNAL_GROUP}, mode 660")
     if os.path.exists(generate._pending(STREAMS_LOST)):
-        _systemctl("try-restart", PROXIES, JOURNAL_WRITERS)
+        programs.systemctl("try-restart", PROXIES, JOURNAL_WRITERS, timeout=300)
         os.remove(generate._pending(STREAMS_LOST))
         said.append("running proxies and the Control Room restarted to reconnect their log streams")
     return said
@@ -383,25 +366,14 @@ def libvirt_zone():
     return [words.get((verb, kind), f"{verb} {kind} {{}}").format(value) for verb, kind, value in changed]
 
 
-def _systemctl(*args):
-    return _run(["systemctl", *args])
-
-
-def _query(*args):
-    try:
-        return subprocess.run(["systemctl", *args], capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.TimeoutExpired) as e:
-        return die(f"systemctl {' '.join(args)}: {e}", error="action_failed", program="systemctl")
-
-
 def enable(unit, start=True):
     """The unit enabled (at boot) and, with start, running; only what is not so already."""
     said = []
-    if _query("is-enabled", unit).stdout.strip() != "enabled":
-        _systemctl("enable", unit)
+    if programs.systemctl("is-enabled", unit, timeout=60, ok=None).stdout.strip() != "enabled":
+        programs.systemctl("enable", unit, timeout=300)
         said.append(f"{unit} enabled")
-    if start and _query("is-active", unit).returncode != 0:
-        _systemctl("start", unit)
+    if start and programs.systemctl("is-active", unit, timeout=60, ok=None).returncode != 0:
+        programs.systemctl("start", unit, timeout=300)
         said.append(f"{unit} started")
     return said
 
@@ -440,7 +412,7 @@ def proxies_before_lists():
     changes nothing."""
     if not any(os.path.isfile(_conf(legacy)) for _, legacy in LISTS):
         return []
-    _systemctl("try-restart", PROXIES)
+    programs.systemctl("try-restart", PROXIES, timeout=300)
     return ["running proxies restarted before the lists are taken over"]
 
 
@@ -449,7 +421,7 @@ def first_feeds():
     first due; only while none was ever fetched (no status.json)."""
     if os.path.exists(os.path.join(paths.FEEDS, "status.json")):
         return []
-    _systemctl("start", "--no-block", f"{generate.FEEDS}.service")
+    programs.systemctl("start", "--no-block", f"{generate.FEEDS}.service", timeout=300)
     return ["the first Feeds are being fetched (journalctl -t agentbox-feeds)"]
 
 
