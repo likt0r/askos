@@ -79,6 +79,7 @@ class V1Test(unittest.TestCase):
     UI_SOURCE = UI_BUILD        # which one: the placeholder (test_control_room_ui.py: the real one)
     ENV = {}
     WATCH = []                  # lines `agentbox watch` prints at once
+    WATCH_CONF = None           # watch.json (see fake_agentbox.py), there before the server starts its first watch
 
     def setUp(self):
         self.dir = tempfile.mkdtemp()
@@ -93,6 +94,8 @@ class V1Test(unittest.TestCase):
         os.makedirs(os.path.join(self.dir, "bin"))
         if self.WATCH:
             self.watch_lines(*self.WATCH)
+        if self.WATCH_CONF:
+            self.write("watch.json", json.dumps(self.WATCH_CONF))
         self.journald = Journald(os.path.join(self.dir, "journal.socket"))
         self.addCleanup(self.journald.close)
         self.stderr_path = os.path.join(self.dir, "server.err")
@@ -1175,17 +1178,15 @@ class EventsTest(V1Test):
 
 class WatchRestartTest(V1Test):
     WATCH = [("vms", STATE)]
+    # every watch, the first one too, ends by itself with exit 1; nothing kills one
+    WATCH_CONF = {"exit": 1, "stderr": "agentbox: journalctl is missing"}
 
     def test_a_watch_that_ends_is_started_again(self):
-        self.write("watch.json", json.dumps({"exit": 1, "stderr": "agentbox: journalctl is missing"}))
         self.login()
-        # the first watch blocks; ending it (as if it died) brings the next one
         deadline = time.monotonic() + 15
         while self.watch_starts() < 3:
             self.assertLess(time.monotonic(), deadline, self.server_log())
-            # only this server's watch
-            subprocess.run(["pkill", "-P", str(self.server.pid), "-f", "fake_agentbox.py watch"], capture_output=True)
-            time.sleep(0.1)
+            time.sleep(0.05)
         s = self.stream()
         status = json.loads(s.event("watch")["data"])
         self.assertGreaterEqual(status["restarts"], 2)
