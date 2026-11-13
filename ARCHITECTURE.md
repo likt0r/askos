@@ -873,6 +873,15 @@ memory, a login brake after five failures, CSRF protection via a custom header a
 Activity entries with address and device. Pairing codes, tokens
 and passwords never appear in logs.
 
+The backend reads the Host setup (address and port) and the Settings with agentbox's own
+readers and never guesses past a file they refuse. It does not start with one (one line
+`agentbox-web: Host setup <path>: <reason>` or `agentbox-web: Settings <path>: <reason>`), and
+a request that finds the Settings refused while it runs (a sign-in, `GET /session`) is answered
+`503 settings_unreadable`, the reason logged, and then the backend ends. Either way it exits
+with status 78 (`EX_CONFIG`), which `agentbox-web.service` does not restart
+(`RestartPreventExitStatus=78`): the unit stays failed, with the reason in its journal, until
+the file is fixed and the service started again. A missing `settings.json` is the defaults.
+
 Host readings come without privileges, every five seconds, from the kernel and `nvidia-smi`
 (`web/agentbox-readings`): CPU load (`/proc/stat`, `/proc/loadavg`), CPU temperature (hwmon
 `k10temp`, `zenpower` or `coretemp`), memory and swap (`/proc/meminfo`), swap activity (`pswpin` and `pswpout` in
@@ -1031,9 +1040,11 @@ reloaded and its timer restarted (a restarted Feeds timer fetches the lists at o
 other readers take the file at the moment they need it: `create` (defaults for new VMs),
 `open-web` (longest Open web), the Maintenance window (`rebuild_day`; its Reset check
 `reset_age_days`, `auto_update`), `check-versions` (`auto_update`) and the Control Room
-(`session_hours`, read at every sign-in; a missing or unusable value, or a file agentbox
-refuses, means 12 hours; `default_language`, read at every `GET` and `POST /session` and
-passed to the UI, which applies it before a page shows; likewise `browser`), the Builds
+(`session_hours`, read at every sign-in, 12 hours without the file or the key;
+`default_language`, read at every `GET` and `POST /session` and passed to the UI, which
+applies it before a page shows, likewise `browser`; a file agentbox refuses stops the Control
+Room instead of giving it the defaults, which can be wider than what the owner set, see
+Control Room), the Builds
 (`package_min_age_days`, `orca_version`, `builds_kept`) and temporary Allowlist entries
 (`temporary_entry_default`). The Control Room API (`GET`/`PATCH /api/v1/settings`) passes every change to `agentbox set-settings`, accepts
 only the known keys, and so cannot change the password, the home network or the ports, which

@@ -4,13 +4,13 @@ test_control_room.py.
 
 Run from the repo root: python3 -m unittest discover -s tests
 """
+import importlib.machinery
+import importlib.util
 import os
 import re
-import shutil
+import subprocess
 import sys
-import tempfile
 import unittest
-from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_control_room  # noqa: E402
@@ -18,6 +18,14 @@ from test_control_room import ControlRoomTest, failure  # noqa: E402
 
 setUpModule = test_control_room.setUpModule
 tearDownModule = test_control_room.tearDownModule
+
+
+def server_module():
+    loader = importlib.machinery.SourceFileLoader("agentbox_web", test_control_room.SERVER)
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+    loader.exec_module(module)
+    return module
+
 
 SHOWN = {"settings": {"maintenance_time": {"value": "02:00", "default": "02:00", "is_default": True,
                                      "applies_later": None, "allowed": "Uhrzeit HH:MM"}}}
@@ -84,15 +92,6 @@ class SettingsApiTest(ControlRoomTest):
         self.assertEqual(self.calls(), [])
 
 class SessionLengthTest(ControlRoomTest):
-    def setUp(self):
-        # the server reads the Settings as agentbox does, under AGENTBOX_ROOT: never the Host's file
-        root = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, root, True)
-        self.settings = os.path.join(root, "etc", "agentbox", "settings.json")
-        os.makedirs(os.path.dirname(self.settings))
-        with mock.patch.dict(os.environ, AGENTBOX_ROOT=root):
-            super().setUp()
-
     def max_age(self):
         cookie = self.request("POST", "/api/v1/session", {"password": test_control_room.PASSWORD})[2] \
             .getheader("Set-Cookie")
@@ -104,6 +103,8 @@ class SessionLengthTest(ControlRoomTest):
 
     def test_default_without_settings(self):
         self.assertEqual(self.max_age(), 12 * 3600)
+        self.write("{}")
+        self.assertEqual(self.max_age(), 12 * 3600)
 
     def test_session_hours_apply_to_the_next_sign_in(self):
         self.write('{"session_hours": 3}')
@@ -111,14 +112,76 @@ class SessionLengthTest(ControlRoomTest):
         self.write('{"session_hours": 24}')
         self.assertEqual(self.max_age(), 24 * 3600)
 
-    def test_unusable_settings_fall_back_to_the_default(self):
-        # a file agentbox refuses, also for another key, is no file of Settings
-        for text in ("kaputt", "[]", '{"session_hours": 0}', '{"session_hours": "5"}', '{"session_hours": true}',
-                     '{"session_hours": 169}', '{"session_hours": 3, "bogus": 1}',
-                     '{"session_hours": 3, "builds_kept": 0}'):
+
+# files agentbox refuses: not JSON, no object, an invalid value (also of another key), an unknown key
+REFUSED = ("kaputt", "[]", '{"session_hours": 0}', '{"session_hours": "5"}', '{"session_hours": true}',
+           '{"session_hours": 169}', '{"session_hours": 3, "bogus": 1}', '{"session_hours": 3, "builds_kept": 0}',
+           '{"default_language": "fr"}')
+
+
+class RefusedSettingsTest(ControlRoomTest):
+    """A settings.json agentbox refuses stops the backend (#97) instead of giving it the defaults,
+    which can be wider than what the owner set (12-hour sessions instead of 1): it does not
+    start, and a request that finds the file refused while it runs is answered 503
+    settings_unreadable before the backend ends. Either way with exit status 78, which its unit
+    does not restart."""
+
+    def write(self, text):
+        with open(self.settings, "w") as f:
+            f.write(text)
+
+    def ended(self):
+        """The server's exit status once it ended on its own."""
+        try:
+            return self.server.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            self.fail("the server did not end: " + self.server_log())
+
+    def restart(self):
+        """A server started anew, without a settings.json."""
+        self.stop_server()
+        if os.path.exists(self.settings):
+            os.remove(self.settings)
+        self.start_server()
+        self.wait_for_server()
+
+    def test_it_does_not_start_with_one(self):
+        for text in REFUSED:
             with self.subTest(text=text):
+                self.stop_server()
                 self.write(text)
-                self.assertEqual(self.max_age(), 12 * 3600)
+                self.start_server()
+                self.assertEqual(self.ended(), 78)
+                log = self.server_log()
+                # one line with file and reason, as for a broken Host setup
+                self.assertRegex(log, rf"\Aagentbox-web: Settings {re.escape(self.settings)}: [^\n]+\n\Z")
+
+    def test_a_sign_in_that_finds_one_is_answered_503_and_the_backend_ends(self):
+        for text in REFUSED:
+            with self.subTest(text=text):
+                self.restart()
+                self.write(text)
+                status, obj, resp = self.request("POST", "/api/v1/session", {"password": test_control_room.PASSWORD})
+                self.assertEqual((status, obj["error"]["code"]), (503, "settings_unreadable"), obj)
+                self.assertTrue(obj["error"]["detail"].startswith(f"{self.settings}: "), obj)
+                self.assertIsNone(resp.getheader("Set-Cookie"))
+                self.assertEqual(self.ended(), 78)
+                self.assertIn(f"Settings {self.settings}: ", self.server_log())
+                self.assertIn("; the Control Room stops", self.server_log())
+
+    def test_a_page_load_that_finds_one_is_answered_503_and_the_backend_ends(self):
+        self.write('{"session_hours": 1}')
+        self.login()
+        self.write('{"session_hours": 12, "bogus": 1}')
+        self.assertError(self.request("GET", "/api/v1/session"), 503, "settings_unreadable")
+        self.assertEqual(self.ended(), 78)
+
+    def test_the_unit_does_not_restart_it(self):
+        with open(os.path.join(test_control_room.ROOT, "rpm", "units", "agentbox-web.service")) as f:
+            unit = f.read()
+        self.assertIn("\nRestart=on-failure\n", unit)
+        self.assertIn("\nRestartPreventExitStatus=78\n", unit)
+        self.assertEqual(server_module().CONFIG_REFUSED, 78)
 
 
 class DocumentedKeysTest(unittest.TestCase):

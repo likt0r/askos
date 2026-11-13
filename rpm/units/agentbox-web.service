@@ -17,6 +17,9 @@ ProtectKernelTunables=yes
 ProtectControlGroups=yes
 Restart=on-failure
 RestartSec=3
+# 78 (EX_CONFIG): agentbox refuses the Host setup or the Settings; restarting cannot fix that,
+# so the unit stays failed with the reason in the journal until the file is fixed
+RestartPreventExitStatus=78
 
 [Install]
 WantedBy=multi-user.target
