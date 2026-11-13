@@ -148,15 +148,18 @@ class BackendHostSetupTest(unittest.TestCase):
             proc.wait()
         proc.stderr.close()
 
-    def serve(self, setup_for, address):
+    def serve(self, setup_for, address, hold_loopback=False):
         """The backend listening on the port of the record, which the Host setup cannot leave to the
         kernel (port 0 is no valid web_port): it takes a free port, and if another test running at
-        the same time has taken it by the time the backend binds, another one."""
+        the same time has taken it by the time the backend binds, another one. hold_loopback keeps
+        127.0.0.1 on that port bound without listen(), so nothing else can answer there meanwhile."""
         for _ in range(10):
             holder = socket.socket()
+            self.addCleanup(holder.close)
             holder.bind(("127.0.0.1", 0))
             self.port = holder.getsockname()[1]
-            holder.close()
+            if not hold_loopback:
+                holder.close()
             proc = self.start(setup_for(self.port))
             if self.listens(proc, address) is not None:
                 return proc
@@ -194,6 +197,15 @@ class BackendHostSetupTest(unittest.TestCase):
     def test_local_only_listens_on_loopback_on_the_port_of_the_record(self):
         proc = self.serve(lambda port: {"mode": "local", "web_port": port}, "127.0.0.1")
         self.assertTrue(self.listens(proc, "127.0.0.1"))
+
+    def test_it_listens_only_on_the_address_of_the_record(self):
+        # any address in 127.0.0.0/8 is local on Linux; with 127.0.0.1 held on the same port, a
+        # backend binding every address could not start, and 127.0.0.1 must not answer
+        proc = self.serve(lambda port: {"mode": "local", "bind": "127.0.0.5", "web_port": port}, "127.0.0.5",
+                          hold_loopback=True)
+        self.assertTrue(self.listens(proc, "127.0.0.5"))
+        with self.assertRaises(OSError):
+            socket.create_connection(("127.0.0.1", self.port), timeout=1).close()
 
     def address(self, setup):
         """(address, port) the backend takes from this record (its bind_port(), loaded but not
