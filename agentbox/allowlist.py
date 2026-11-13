@@ -177,12 +177,15 @@ def classify(domain):
     """Signals of a destination from agentbox-suspicious as (text, suspicious, why the
     hand-maintained Watchlist cannot be read or None). The classifier prints the Signals
     and exits non-zero on strong suspicion, 3 with the reason on stderr while the
-    Watchlist cannot be read; without a classifier every domain counts as suspicious."""
+    Watchlist cannot be read; without a classifier, or when it does not answer in time,
+    every domain counts as suspicious."""
     try:
         r = subprocess.run([paths.SUSPICIOUS, domain], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                           env=paths.classifier_env())
+                           env=paths.classifier_env(), timeout=paths.CLASSIFIER_SECONDS)
     except OSError:
         return "", True, None
+    except subprocess.TimeoutExpired:
+        return "agentbox-suspicious does not answer", True, None
     unreadable = clean(r.stderr.decode("utf-8", "replace").strip(), False)[-300:] if r.returncode == 3 else None
     return r.stdout.decode("utf-8", "replace").rstrip("\n"), r.returncode != 0, unreadable
 

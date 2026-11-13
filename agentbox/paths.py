@@ -87,6 +87,10 @@ def tunable(name, default):
         return default
 
 
+# how long agentbox waits for agentbox-suspicious to classify a domain
+CLASSIFIER_SECONDS = tunable("AGENTBOX_CLASSIFIER_SECONDS", 30)
+
+
 def test_address(name):
     """host:port from the environment, only in tests (see tunable), else None."""
     if not ROOT:
