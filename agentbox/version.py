@@ -64,4 +64,9 @@ def version(args):
         print(f"agentbox {release()}")
 
 
-COMMANDS = {"version": version}
+from .commands import declare
+
+DECLARATIONS = {
+    "version": declare(version, "agentbox version [--json]", options={"json": False}, needs_root=False,
+                        read_only=True, order=1),
+}

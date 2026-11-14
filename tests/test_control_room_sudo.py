@@ -1,5 +1,5 @@
 """What the Control Room may run through sudo (#50). Its sudoers rule lets agentbox-web run
-agentbox only with one of the Control Room's commands (cli.CONTROL_ROOM_COMMANDS) as the first
+agentbox only with one of the declared Control Room commands as the first
 argument, and agentbox itself, called through sudo by agentbox-web, runs only these commands and
 never --force, before anything runs.
 
@@ -145,17 +145,17 @@ class BackendTest(unittest.TestCase):
         argument, as the sudoers rule wants it."""
         commands = backend_commands()
         self.assertGreater(len(commands), 50)
-        self.assertEqual(sorted(set(commands) - cli.CONTROL_ROOM_COMMANDS), [], "run by the backend, not in the set")
-        self.assertEqual(sorted(cli.CONTROL_ROOM_COMMANDS - set(commands)), [], "in the set, not run by the backend")
+        self.assertEqual(sorted(set(commands) - cli.control_room_commands()), [], "run by the backend, not declared")
+        self.assertEqual(sorted(cli.control_room_commands() - set(commands)), [], "declared, not run by the backend")
         # the event helper, and the loop of POST /vms/<vm>/start etc.
         self.assertIn("watch", commands)
         self.assertIn("restart", commands)
 
     def test_the_set_names_commands_of_the_cli(self):
-        self.assertLessEqual(cli.CONTROL_ROOM_COMMANDS, set(cli.COMMANDS))
+        self.assertLessEqual(cli.control_room_commands(), set(cli.DECLARATIONS))
         # what only the owner at the Host runs
         for command in ("setup", "import", "regenerate", "migrate-lists", "unset-env", "build-run"):
-            self.assertNotIn(command, cli.CONTROL_ROOM_COMMANDS)
+            self.assertNotIn(command, cli.control_room_commands())
 
     def test_the_backend_never_passes_force(self):
         with open(SERVER, encoding="utf-8") as f:
@@ -169,10 +169,19 @@ class SudoersTest(unittest.TestCase):
         listed, _ = sudoers_rule()
         self.assertEqual(listed, sorted(listed), "sorted, so that a change shows as one word")
         self.assertEqual(len(listed), len(set(listed)))
-        self.assertEqual(set(listed), cli.CONTROL_ROOM_COMMANDS)
+        self.assertEqual(set(listed), cli.control_room_commands())
+
+    def test_every_declared_option_is_documented_in_the_command_usage(self):
+        for name, declaration in cli.DECLARATIONS.items():
+            with self.subTest(command=name):
+                self.assertTrue(declaration.usage, "missing usage")
+                self.assertIn(name, cli.USAGE)
+                for option in declaration.options:
+                    self.assertIn(f"--{option}", declaration.usage, f"--{option} is not documented")
+                    self.assertIn(f"--{option}", cli.USAGE, f"--{option} is missing from CLI usage")
 
     def test_it_takes_what_the_backend_passes(self):
-        for command in sorted(cli.CONTROL_ROOM_COMMANDS):
+        for command in sorted(cli.control_room_commands()):
             with self.subTest(command=command):
                 self.assertTrue(sudo_allows(command))
                 self.assertTrue(sudo_allows(command, f"--actor={FIREFOX}", "work", "--note=a, b: c = d # e\nf",
@@ -208,7 +217,7 @@ class CallerTest(ActivityTest):
         return said
 
     def test_commands_outside_the_control_rooms_set_are_refused(self):
-        for command in sorted(set(cli.COMMANDS) - cli.CONTROL_ROOM_COMMANDS):
+        for command in sorted(set(cli.DECLARATIONS) - cli.control_room_commands()):
             with self.subTest(command=command):
                 said = self.refused(command)
                 self.assertEqual(said["params"], {"command": command})

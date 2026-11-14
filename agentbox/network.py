@@ -170,4 +170,20 @@ def close_web(args):
     done("--json" in args[1:], f"{ctx}: Open web closed", vm=ctx)
 
 
-COMMANDS = {"blocked": blocked, "alerts": alerts, "open-web": open_web, "close-web": close_web}
+from .commands import declare
+
+DECLARATIONS = {
+    "blocked": declare(blocked, "agentbox blocked <vm> [--json]", options={"json": False},
+                       read_only=True, control_room=True, order=0),
+    "alerts": declare(alerts, "agentbox alerts <vm> [--json]", options={"json": False},
+                      read_only=True, control_room=True, order=0),
+    "open-web": declare(open_web, "agentbox open-web <vm> <minutes> [--json]", options={"json": False},
+                        control_room=True, kind="allowlist",
+                        describe=lambda a: activity._said(
+                            f"Open web for {a.positional[1] if len(a.positional) > 1 else ''} minutes",
+                            minutes=(a.positional[1] if len(a.positional) > 1 and
+                                     re.fullmatch(r"[0-9]{1,6}", a.positional[1]) else None)), order=36),
+    "close-web": declare(close_web, "agentbox close-web <vm> [--json]", options={"json": False},
+                         control_room=True, kind="allowlist",
+                         describe=lambda a: activity._said("Close Open web"), order=37),
+}

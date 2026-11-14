@@ -199,7 +199,7 @@ def parse(ctx, args):
 def logs(args):
     """agentbox logs <vm> [filters] [--json]"""
     ctx = check(args[0] if args else "")
-    opts, as_json = parse(ctx, args[1:])
+    opts, as_json = parse(ctx, args)
     argv = ["--output=json", "--all"]
     if opts["boot"] == "current":
         argv.append("--boot=0")
@@ -280,5 +280,15 @@ def pair(args):
         print(code)
 
 
-COMMANDS = {"logs": logs, "pair": pair}
-NO_ROOT = {"logs", "pair", "version"}    # need libvirt access, or nothing of the Host at all
+from . import activity
+from .commands import declare
+
+DECLARATIONS = {
+    "logs": declare(logs, "agentbox logs <vm> [--unit U] [--priority P] [--since T] [--until T] [--boot current|all] [--grep TEXT] [--lines N] [--after-cursor C] [--json]",
+                    options={**CHECKS, "json": False}, needs_root=False, read_only=True, control_room=True,
+                    order=24, prefix=lambda raw: f"{raw[0]}: " if raw else "", positional=False,
+                    option_offset=1),
+    "pair": declare(pair, "agentbox pair <vm> [--json]", options={"json": False}, needs_root=False,
+                    control_room=True, kind="pairing",
+                    describe=lambda a: activity._said("Show the Pairing code"), order=16),
+}

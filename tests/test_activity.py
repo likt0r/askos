@@ -300,12 +300,13 @@ class RecordTest(ActivityTest):
         # in this process: neither comes from a command on purpose (focus off names no VM, so
         # nothing on the Host is looked at)
         sys.path.insert(0, REPO)
-        from agentbox import activity
+        from agentbox import activity, cli, options
         sent = []
         with mock.patch.object(activity, "_send", sent.append), mock.patch.object(activity, "_actor", "timer"):
             for exc in (KeyboardInterrupt, KeyError):
                 with self.subTest(exc=exc), self.assertRaises(exc):
-                    with activity.command("focus", ["off"]):
+                    parsed = options.Parsed(["off"], ["off"], {})
+                    with activity.command("focus", ["off"], cli.DECLARATIONS["focus"], lambda: parsed):
                         raise exc("x")
         fields = [dict(line.split("=", 1) for line in data.decode().splitlines()) for data in sent]
         self.assertEqual([(f["AGENTBOX_ERROR"], f["AGENTBOX_DESCRIPTION"], f["AGENTBOX_PARAM_OFF"],
@@ -1142,8 +1143,9 @@ class ControlRoomWordsTest(unittest.TestCase):
         """The commands DESCRIBE words, the sign-ins, Alerts, and the action of every
         activity.record() call in agentbox/."""
         sys.path.insert(0, REPO)
-        from agentbox import activity, maintenance
-        actions = set(activity.DESCRIBE) | activity.SIGN_INS | {"alert"} | {a for a, _ in activity.GITHUB.values()}
+        from agentbox import activity, cli, maintenance
+        actions = {name for name, declaration in cli.DECLARATIONS.items() if declaration.describe}
+        actions |= activity.SIGN_INS | {"alert"} | {a for a, _ in activity.GITHUB.values()}
         folder = os.path.join(REPO, "agentbox")
         for name in sorted(os.listdir(folder)):
             if not name.endswith(".py"):

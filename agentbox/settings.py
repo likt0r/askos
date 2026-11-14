@@ -19,13 +19,13 @@ import json
 import os
 import re
 
-from . import paths, state_files
+from . import durations, paths, state_files
 from .errors import Fail, die
 from .sanitize import clean
 
 SETTINGS = os.path.join(paths.CONF, "settings.json")
 DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
-ENTRY_DURATIONS = ("15min", "1h", "8h", "7d")       # as allow --for takes them
+ENTRY_DURATIONS = tuple(durations.DURATIONS)       # the Control Room's matching API choices
 LANGUAGES = ("en", "de")
 BROWSER = "browser"            # default_language: each browser's own language (en or de, else en)
 TIME = re.compile(r"([01][0-9]|2[0-3]):[0-5][0-9]")
@@ -120,7 +120,7 @@ SPEC = {
     "default_container_image_cleanup": Setting(True, _bool(), NEW_VMS),
     "default_container_image_cleanup_days": Setting(7, _int(1, 365), NEW_VMS),
     "open_web_max_minutes": Setting(240, _int(1, 1440)),
-    "temporary_entry_default": Setting("1h", _choice(*ENTRY_DURATIONS), "for new Temporary allowlist entries"),
+    "temporary_entry_default": Setting("1h", _choice(*durations.DURATIONS), "for new Temporary allowlist entries"),
     "young_domain_days": Setting(14, _young_days(), "at the next fetch of the Feeds"),
     "feed_interval_hours": Setting(12, _int(1, 168)),
     "package_min_age_days": Setting(2, _int(1, 30), BUILD),
@@ -304,4 +304,16 @@ def _set(args):
         print(line)
 
 
-COMMANDS = {"settings": _show, "set-settings": _set}
+from .commands import declare
+
+
+def _describe_settings(args):
+    keys = [key for key in dict.fromkeys(value.partition("=")[0] for value in args.positional) if key in SPEC]
+    return "Change Settings" + (": " + ", ".join(keys) if keys else ""), {"settings": keys}
+
+DECLARATIONS = {
+    "settings": declare(_show, "agentbox settings [--json]", options={"json": False}, read_only=True,
+                         control_room=True, order=155),
+    "set-settings": declare(_set, "agentbox set-settings KEY=VALUE... [--json]", options={"json": False},
+                            control_room=True, kind="settings", describe=_describe_settings, order=156),
+}

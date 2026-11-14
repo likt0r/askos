@@ -1,18 +1,16 @@
-"""Command dispatch. Each module contributes COMMANDS (name -> handler(args)).
+"""Command dispatch. Each handler module contributes declarations (name -> command facts).
 
 The dispatcher takes the global option --actor before or right after the command
-and records every command in Activity (activity.py), except the read-only ones
-listed in activity.READ_ONLY: a new command is recorded without doing anything,
-and a new read-only command belongs in that list. Called through sudo by the
-Control Room (agentbox-web), it runs only CONTROL_ROOM_COMMANDS and never --force.
+and records every command in Activity (activity.py), except commands declared
+read-only or as recording their own entries. Called through sudo by the Control
+Room (agentbox-web), it runs only declared Control Room commands and never --force.
 """
 import json
 import os
-import re
 import sys
 
 from . import activity, allowlist, container_images, credentials, describe, detection, generate, github, guest
-from . import images, lifecycle, lists, maintenance, network, pairings, paths, settings, setup, transfer
+from . import images, lifecycle, lists, maintenance, network, options, pairings, paths, settings, setup, transfer
 from . import version, versions, vms, watch
 from .errors import Fail
 
@@ -162,41 +160,23 @@ Controls the agent VMs on this Host.
 With --json, a failure also goes to stderr as one JSON object:
   {"error": "<code>", "message": "<text>", "params": {...}}"""
 
-COMMANDS = {**guest.COMMANDS, **lifecycle.COMMANDS, **network.COMMANDS, **credentials.COMMANDS,
-            **generate.COMMANDS, **vms.COMMANDS, **activity.COMMANDS, **detection.COMMANDS,
-            **pairings.COMMANDS, **settings.COMMANDS, **github.COMMANDS, **allowlist.COMMANDS,
-            **images.COMMANDS, **describe.COMMANDS, **watch.COMMANDS, **lists.COMMANDS,
-            **setup.COMMANDS, **version.COMMANDS, **versions.COMMANDS, **transfer.COMMANDS,
-            **maintenance.COMMANDS, **container_images.COMMANDS}
-
-# The options that take a value, as USAGE shows them ("--note TEXT", "--for 15min|1h|...").
-# Given as --note VALUE, the value is the next argument, whatever it looks like.
-VALUED = frozenset(re.findall(r"(--[a-z][a-z-]*) (?:[A-Z<]|[a-z0-9]+\|)", USAGE))
+MODULES = (lifecycle, version, describe, setup, watch, vms, pairings, transfer, guest, credentials, network,
+           allowlist, detection, lists, generate, settings, github, images, versions, activity, maintenance,
+           container_images)
+DECLARATIONS = {name: declaration for module in MODULES for name, declaration in module.DECLARATIONS.items()}
 
 
 # The Control Room's backend (web/agentbox-web) runs agentbox through sudo as this user. Its
 # sudoers rule (rpm/agentbox-web.sudoers) lets the first argument be only one of these commands;
 # agentbox itself limits what it runs, which holds also should sudo's matching be got around.
 CONTROL_ROOM_USER = "agentbox-web"
+GLOBAL_OPTIONS = {"actor": True}
 # The commands the backend runs, and no others (tests/test_control_room_sudo.py checks that it
 # calls exactly these). Never --force: what lifts strong Signals, allows a destination while the
 # Watchlist cannot be read or replaces a Host setup is the CLI's at the Host (ADR 0009).
-CONTROL_ROOM_COMMANDS = frozenset({
-    # VMs
-    "describe", "create", "delete", "start", "pause", "restart", "reset", "focus", "set-memory",
-    "set-env", "set-image", "set-owners", "set-container-image-cleanup", "logs", "blocked", "alerts", "mark-seen",
-    "open-web", "close-web", "pair", "pairings", "unpair", "revoke-pairings", "set-claude-token",
-    "github-tokens",
-    # Allowlist, Watchlist, Legitimate domains, Harmless marks
-    "allowlist", "allow", "disallow", "extend", "make-permanent", "set-note", "check-regex",
-    "check-domain", "watchlist", "watch-add", "watch-remove", "watch-set-note", "legitimate",
-    "legitimate-add", "legitimate-remove", "legitimate-set-note", "harmless", "mark-harmless",
-    "unmark-harmless",
-    # Images and Builds
-    "images", "containerfile", "build", "build-log", "update-now",
-    # GitHub App, Settings, Activity, the event helper
-    "github-app", "set-github-app", "remove-github-app", "settings", "set-settings", "activity", "watch",
-})
+def control_room_commands():
+    """The commands declared for the Control Room."""
+    return frozenset(name for name, declaration in DECLARATIONS.items() if declaration.control_room)
 
 
 def check_control_room(cmd, args):
@@ -204,7 +184,7 @@ def check_control_room(cmd, args):
     caller): only its commands, never --force. Before anything runs, nothing recorded."""
     if os.environ.get("SUDO_USER") != CONTROL_ROOM_USER:
         return
-    if cmd not in CONTROL_ROOM_COMMANDS:
+    if cmd not in control_room_commands():
         raise Fail(f"{cmd} is not for the Control Room: only the CLI at the Host runs it",
                    error="control_room_refused", command=cmd)
     if any(a == "--force" or a.startswith("--force=") for a in args):
@@ -212,54 +192,67 @@ def check_control_room(cmd, args):
                    error="control_room_refused", command=cmd, option="--force")
 
 
-def wants_json(args):
-    """--json is among the arguments, and not as the value of an option (`--note --json`)."""
+def wants_json(args, known=None):
+    """--json is among the arguments, and not as the value of a declared valued option."""
+    known = known or {}
     value = False
     for a in args:
         if value:
             value = False
         elif a == "--json":
             return True
-        elif a in VALUED:
+        elif a.startswith("--") and a[2:].partition("=")[0] in known \
+                and known[a[2:].partition("=")[0]] is not False and "=" not in a:
             value = True
     return False
 
 
 def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
-    as_json = wants_json(args)
+    as_json = wants_json(args, GLOBAL_OPTIONS)
     try:
         actor, args = activity.take_actor(args)
-        as_json = wants_json(args)
+        as_json = wants_json(args, GLOBAL_OPTIONS)
         cmd = args.pop(0) if args else "status"
         if cmd == "--version":
             cmd = "version"
-        if cmd not in COMMANDS:
+        if cmd not in DECLARATIONS:
             print(USAGE, file=sys.stderr)
             return 1
+        declaration = DECLARATIONS[cmd]
+        as_json = wants_json(args, {**declaration.options, **GLOBAL_OPTIONS})
         # --actor also right after the command: the Control Room passes the command first,
         # which its sudoers rule pins
         after, args = activity.take_actor(args)
         if after is not None:
             if actor is not None:
                 raise Fail("--actor given twice", 2, error="invalid_argument", option="--actor")
-            actor, as_json = after, wants_json(args)
+            actor, as_json = after, wants_json(args, {**declaration.options, **GLOBAL_OPTIONS})
         check_control_room(cmd, args)
         # Everything except logs and pair needs the files under /etc/agentbox and
         # /var/lib/agentbox, which belong to root. AGENTBOX_ROOT (tests) redirects them.
-        if os.geteuid() != 0 and cmd not in guest.NO_ROOT | versions.NO_ROOT and not paths.ROOT:
+        if os.geteuid() != 0 and declaration.needs_root and not paths.ROOT:
             raise Fail(f"{cmd} needs root: sudo agentbox {' '.join([cmd, *args])}", error="sudo_failed",
                        command=cmd)
         # the actor (--actor, else the user) of every Activity entry of this call
         activity.set_actor(actor)
         # A checkout's CLI would write units and the like naming the files under /usr,
         # which need not be there or be its own (paths.py)
-        if not paths.INSTALLED and not paths.ROOT and cmd not in activity.READ_ONLY:
+        if not paths.INSTALLED and not paths.ROOT and not declaration.read_only:
             raise Fail(f"{cmd}: this agentbox is not installed ({paths.CODE}) and does not change the Host, "
                        "its units would name files that need not exist here; use the installed one: "
                        f"sudo agentbox {' '.join([cmd, *args])}", error="action_failed", command=cmd)
-        with activity.command(cmd, args):
-            COMMANDS[cmd](args)
+        def parse_command():
+            prefix = declaration.prefix(args) if callable(declaration.prefix) else declaration.prefix
+            positional, values = options.parse(args[declaration.option_offset:],
+                                               {**declaration.options, "json": False},
+                                               exit=declaration.option_exit, prefix=prefix,
+                                               positional=declaration.positional,
+                                               allow_unknown=declaration.allow_unknown)
+            return options.Parsed(args, positional, values)
+
+        with activity.command(cmd, args, declaration, parse_command) as parsed:
+            declaration.handler(parsed)
         return 0
     except Fail as f:
         sys.stdout.flush()

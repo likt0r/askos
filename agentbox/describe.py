@@ -300,4 +300,9 @@ def describe(args):
         print(f"agentbox: {p['problem']}", file=sys.stderr)
 
 
-COMMANDS = {"describe": describe}
+from .commands import declare
+
+DECLARATIONS = {
+    "describe": declare(describe, "agentbox describe [<vm>] [--json]", options={"json": False},
+                        read_only=True, control_room=True, order=2),
+}
