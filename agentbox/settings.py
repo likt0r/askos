@@ -29,7 +29,7 @@ ENTRY_DURATIONS = ("15min", "1h", "8h", "7d")       # as allow --for takes them
 LANGUAGES = ("en", "de")
 BROWSER = "browser"            # default_language: each browser's own language (en or de, else en)
 TIME = re.compile(r"([01][0-9]|2[0-3]):[0-5][0-9]")
-# an Image name, shared by images.py, the VM registry and the Control Room
+# an Image name, shared by images.py, the VM registry, activity.py and the Control Room backend
 IMAGE = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
 # a Build of an Image (images.py; activity.py and the Control Room, which do not import images):
 # YYYYMMDD-HHMMSS, before that YYYYMMDD-HHMM or YYYYMMDD
