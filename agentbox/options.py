@@ -9,7 +9,7 @@ exit code the command chose.
 
 The global options (`--actor`, and `--json` for the failure's form) are taken by cli.py.
 """
-from .errors import die
+from .errors import Fail
 from .sanitize import clean
 
 MANY = "many"
@@ -33,7 +33,7 @@ class Parsed:
         return self.raw[index]
 
 
-def parse(args, known, *, exit=2, positional=True, prefix="", allow_unknown=False):
+def parse(args, known=None, *, exit=2, positional=True, prefix="", allow_unknown=False):
     """(positional arguments, options). known: option name (without --) -> False for a flag
     (True when given), True for one value, MANY for a value that may repeat (a list of them),
     or a function that checks the one value (true when it is valid). positional=False: a
@@ -41,14 +41,20 @@ def parse(args, known, *, exit=2, positional=True, prefix="", allow_unknown=Fals
     if isinstance(args, Parsed):
         return list(args.positional), dict(args.values)
 
+    known = known or {}
     found, opts, i = [], {}, 0
 
     def fail(message, name):
-        die(prefix + message, exit, error="invalid_argument", option="--" + clean(name, False)[:60])
+        error = "--" + clean(name, False)[:60]
+        failure = Fail(prefix + message, exit, error="invalid_argument", option=error)
+        failure.parsed = Parsed(args, found, opts)
+        raise failure
 
     def stray(a):
-        die(prefix + "unknown option: " + clean(a, False)[:60], exit, error="invalid_argument",
-            option=clean(a, False)[:60])
+        error = clean(a, False)[:60]
+        failure = Fail(prefix + "unknown option: " + error, exit, error="invalid_argument", option=error)
+        failure.parsed = Parsed(args, found, opts)
+        raise failure
 
     while i < len(args):
         a = args[i]

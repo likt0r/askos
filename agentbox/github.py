@@ -35,6 +35,7 @@ import sys
 import time
 
 from . import activity, ids, options, paths, registry, state_files
+from .commands import declare
 from .errors import Fail, die
 from .sanitize import clean, redact
 
@@ -418,8 +419,7 @@ def _local(iso):
 def github_tokens(args):
     """agentbox github-tokens <vm> [--since T] [--until T] [--lines N] [--json]"""
     vm = registry.check(args[0] if args else "")
-    _, opts = options.parse(args, {**{k: activity.CHECKS[k] for k in ("since", "until", "lines")},
-                                       "json": False}, positional=False)
+    _, opts = options.parse(args)
     as_json = opts.pop("json", False)
     result = tokens(vm, opts)
     if as_json:
@@ -438,8 +438,6 @@ def github_tokens(args):
     if result["truncated"]:
         print("agentbox: there are more entries (raise --lines or narrow --since)", file=sys.stderr)
 
-
-from .commands import declare
 
 DECLARATIONS = {
     "set-github-app": declare(set_github_app, "agentbox set-github-app <app-id> [--no-prompt] [--json]",

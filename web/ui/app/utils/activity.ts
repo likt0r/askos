@@ -154,7 +154,7 @@ const step = (key: string): Sentence => (_p, tr, e) => say(tr, e.outcome === 'fa
 const NOT_RESPONDING: Record<string, string> = { 'system-not-booted': 'notRespondingSystem', 'orca-not-answering': 'notRespondingOrca' }
 
 export const SENTENCES: Record<string, Sentence> = {
-  // commands (agentbox/activity.py DESCRIBE)
+  // commands (agentbox command declarations)
   'start': plain('start'),
   'wake': plain('wake'),
   'pause': plain('pause'),

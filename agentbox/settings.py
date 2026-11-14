@@ -20,6 +20,7 @@ import os
 import re
 
 from . import durations, paths, state_files
+from .commands import declare
 from .errors import Fail, die
 from .sanitize import clean
 
@@ -305,16 +306,15 @@ def _set(args):
         print(line)
 
 
-from .commands import declare
-
-
 def _describe_settings(args):
     keys = [key for key in dict.fromkeys(value.partition("=")[0] for value in args.positional) if key in SPEC]
     return "Change Settings" + (": " + ", ".join(keys) if keys else ""), {"settings": keys}
+
 
 DECLARATIONS = {
     "settings": declare(_show, "agentbox settings [--json]", options={"json": False}, read_only=True,
                          control_room=True, order=155),
     "set-settings": declare(_set, "agentbox set-settings KEY=VALUE... [--json]", options={"json": False},
-                            control_room=True, kind="settings", describe=_describe_settings, order=156),
+                             control_room=True, kind="settings", describe=_describe_settings,
+                             allow_unknown=True, order=156),
 }

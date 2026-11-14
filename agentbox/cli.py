@@ -22,17 +22,15 @@ Controls the agent VMs on this Host.
   agentbox version [--json]                          the version of this Release (also: agentbox --version)
   agentbox describe [<vm>] [--json]                  VMs for the Control Room: state, agents, System disk,
                                                      Image and Build, connected devices
-  agentbox setup [--mode local|network] [--bind A --home-network N] [--web-port P]
-                [--cert-name N] [--owner-user U] [--password-file F | --password-stdin] [--force] [--json]
+  agentbox setup [--mode local|network] [--bind A --home-network N] [--web-port P] [--cert-name N] [--owner-user U] [--password-file F|--password-stdin] [--force] [--json]
                                                      set up the Host: Host setup, Control Room password,
                                                      certificate, Host steps (groups, lists, firewall, units,
                                                      migrations), service; local: this machine only,
                                                      network: also home network N; without options on a
                                                      Host that is set up, only the Host steps
   agentbox watch                                     (Control Room) events as JSON lines until stdin ends
-  agentbox create <vm> [--image I] [--memory-mib N] [--data-disk-gib N] [--owner O]...
-                [--container-image-cleanup on|off] [--container-image-cleanup-days N]
-                [--copy-allowlist-from VM] [--json]    new VM; network and Orca port are picked automatically
+  agentbox create <vm> [--image I] [--memory-mib N] [--data-disk-gib N] [--owner O]... [--container-image-cleanup on|off] [--container-image-cleanup-days N] [--copy-allowlist-from VM] [--json]
+                new VM; network and Orca port are picked automatically
   agentbox delete <vm> --confirm <vm> [--delete-data-disk] [--json]
                 delete a VM; its Data disk is archived, or deleted with --delete-data-disk
   agentbox set-memory <vm> <mib> [--json]            memory limit (1024 MiB up to the Host's memory); applies
@@ -47,7 +45,10 @@ Controls the agent VMs on this Host.
                 add or change VM variables (--replace: these are all of them); names a Safeguard or
                 Agent Box reads are refused; applies from the next start, for a running VM after a Restart
   agentbox unset-env <vm> NAME [NAME ...] [--json]   remove VM variables; applies like set-env
-  agentbox start|wake|pause|restart <vm> [--json]
+  agentbox start <vm> [--json]
+  agentbox wake <vm> [--json]
+  agentbox pause <vm> [--json]
+  agentbox restart <vm> [--json]
   agentbox reset <vm> [--no-start] [--json]          fresh System disk from the VM's Image
   agentbox focus <vm|off> [--json]                   pause every other VM
   agentbox pair <vm> [--json]                        show the current Orca Pairing code (starts the VM if needed)
@@ -58,27 +59,29 @@ Controls the agent VMs on this Host.
   agentbox import <vm> <folder> [<target>] [--json]
                 copy a folder of the Host into the VM, unpacked, to ~/code/<target> (default: the folder's
                 name); of a Git repository .git and the files Git does not ignore; starts the VM if needed
-  agentbox logs <vm> [--unit U] [--priority P] [--since T] [--until T] [--boot current|all]
-                [--grep TEXT] [--lines N] [--after-cursor C] [--json]   the VM's journal
+  agentbox logs <vm> [--unit U] [--priority P] [--since T] [--until T] [--boot current|all] [--grep TEXT] [--lines N] [--after-cursor C] [--json]
+                the VM's journal
   agentbox set-claude-token <vm> [--no-prompt] [--json]   token from `claude setup-token` (stdin)
-  agentbox blocked|alerts <vm> [--json]
+  agentbox blocked <vm> [--json]
+  agentbox alerts <vm> [--json]
   agentbox allowlist [<vm>|all] [--json]             Allowlist entries (all, a VM's, those for all VMs)
                                                      with time left and use in the last 24 hours
-  agentbox allow <vm|all> <domain> [--for 15min|1h|8h|7d | --temporary] [--note TEXT] [--force] [--json]
+  agentbox allow <vm|all> <domain>|--regex PATTERN [--confirm-pattern] [--for D|--temporary] [--note TEXT] [--force] [--json]
                 Allowlist entry for one VM or all, permanent or temporary (suspicious ones only
                 with --force)
-  agentbox allow <vm|all> --regex PATTERN [--confirm-pattern] [--for ...|--temporary] [--note TEXT] [--json]
                 Regex entry: never allows strong Signals; without --confirm-pattern it only shows
                 which hosts of the proxy log of the last 7 days it would allow
-  agentbox check-regex <allowlist|watchlist|legitimate|harmless> --regex PATTERN [<host>...]
-                [--scope vm|all] [--json]            whether the pattern can be an entry of that list,
+  agentbox check-regex <list> --regex PATTERN [<host>...] [--scope vm|all] [--json]
+                whether the pattern can be an entry of that list,
                                                      which hosts it matches, for the Allowlist the preview
                 Every command of the four lists takes --regex PATTERN in place of <domain>: a Regex
                 entry, matched with re.fullmatch against the whole host name (ADR 0013)
-  agentbox disallow <vm|all> <domain> [--json]       remove an Allowlist entry, close open tunnels to it
-  agentbox extend <vm|all> <domain> --for 15min|1h|8h|7d [--force] [--json]   extend a temporary one
-  agentbox make-permanent <vm|all> <domain> [--force] [--json]
-  agentbox set-note <vm|all> <domain> --note TEXT [--json]
+  agentbox disallow <vm|all> <domain> [--regex PATTERN] [--json]
+                remove an Allowlist entry, close open tunnels to it
+  agentbox extend <vm|all> <domain> --for D [--regex PATTERN] [--force] [--json]
+                extend a temporary one
+  agentbox make-permanent <vm|all> <domain> [--regex PATTERN] [--force] [--json]
+  agentbox set-note <vm|all> <domain> --note TEXT [--regex PATTERN] [--json]
   agentbox expire-allowlist [--json]                 (timer, every minute) remove expired Allowlist entries
   agentbox migrate-allowlist [--json]                take over the old Allowlist files once
   agentbox open-web <vm> <minutes> [--json]          allow every public domain for a while (Open web)
@@ -86,23 +89,26 @@ Controls the agent VMs on this Host.
   agentbox mark-seen <vm> [<domain>] [--json]        mark Alerts (all, or one domain's) as seen
   agentbox check-domain <domain> [--json]            a domain's Signals with their reasons
   agentbox watchlist [--json]                        the Watchlist kept by hand, state of the HaGeZi lists
-  agentbox watch-add <domain> --category C [--source S] [--note TEXT] [--force] [--json]
+  agentbox watch-add <domain>|--regex PATTERN --category C [--source S] [--note TEXT] [--force] [--json]
                 Watchlist entry (with subdomains), category exfil, c2, tunnel, paste, phishing,
                 blockchain or payload; downgrading a strong one only with --force
-  agentbox watch-remove <domain> [--force] [--json]  remove an entry (strong ones only with --force)
-  agentbox watch-set-note <domain> --note TEXT [--json]
+  agentbox watch-remove <domain>|--regex PATTERN [--force] [--json]
+                remove an entry (strong ones only with --force)
+  agentbox watch-set-note <domain>|--regex PATTERN --note TEXT [--json]
   agentbox legitimate [--json]                       Legitimate domains (added and built-in)
-  agentbox legitimate-add <domain> [--note TEXT] [--force] [--json]
+  agentbox legitimate-add <domain>|--regex PATTERN [--note TEXT] [--force] [--json]
                 no more pattern Signals (except blockchain) and HaGeZi hits for it and its
                 subdomains (HaGeZi hits below github.io, githubusercontent.com and
                 claudeusercontent.com still count); lifting strong Signals only with --force
-  agentbox legitimate-remove <domain> [--json]       remove an added one (built-in ones stay)
-  agentbox legitimate-set-note <domain> --note TEXT [--json]
+  agentbox legitimate-remove <domain>|--regex PATTERN [--json]
+                remove an added one (built-in ones stay)
+  agentbox legitimate-set-note <domain>|--regex PATTERN --note TEXT [--json]
   agentbox migrate-lists [--json]                    take over the Watchlist and Legitimate domains from
                                                      the old text files once
   agentbox harmless [--json]                         domains with a Harmless mark (no Alerts)
-  agentbox mark-harmless <domain> [--json]           no more Alerts (blocks stay)
-  agentbox unmark-harmless <domain> [--json]
+  agentbox mark-harmless <domain> [--regex PATTERN] [--json]
+                no more Alerts (blocks stay)
+  agentbox unmark-harmless <domain> [--regex PATTERN] [--json]
   agentbox owners <vm> [--json]                      GitHub owners for App tokens
   agentbox set-owners <vm> <owner>... [--json]
   agentbox set-github-app <app-id> [--no-prompt] [--json]   add a GitHub App or replace its private key
@@ -133,8 +139,8 @@ Controls the agent VMs on this Host.
                                                      and what a new Build would bring
   agentbox containerfile <image> [--json]            the Image's Containerfile in the installed Release (what
                                                      its next Build takes), as text
-  agentbox build <image>|--all [--json]              Build from the installed Release (unit agentbox-build@<image>)
-  agentbox build <image> --reset <vm> [--reset <vm>]... [--json]
+  agentbox build <image>|--all [--reset <vm>]... [--json]
+                Build from the installed Release (unit agentbox-build@<image>)
                 Update: a Build and, if it succeeds, a Reset of these VMs onto it (sessions in them
                 end, the Data disk stays; a failed Build resets nothing)
   agentbox update-now [--reset <vm>]... [--json]    Update now (unit agentbox-build@update): check versions,
@@ -153,8 +159,8 @@ Controls the agent VMs on this Host.
   agentbox settings [--json]                         Settings (defaults, what applies only later)
   agentbox set-settings KEY=VALUE... [--json]        change Settings (VALUE default: the default); all or
                                                      nothing, dependent timers and units are generated
-  agentbox activity [--kind K[,K]] [--vm VM] [--since T] [--until T] [--search TEXT]
-                [--lines N] [--json]                 Activity: sign-ins, actions, Allowlist changes, Alerts,
+  agentbox activity [--kind K[,K]] [--vm VM] [--since T] [--until T] [--search TEXT] [--lines N] [--json]
+                Activity: sign-ins, actions, Allowlist changes, Alerts,
                                                      GitHub tokens, pairing, Builds, automatic Resets, Settings
 
 With --json, a failure also goes to stderr as one JSON object:
@@ -229,8 +235,8 @@ def main(argv=None):
                 raise Fail("--actor given twice", 2, error="invalid_argument", option="--actor")
             actor, as_json = after, wants_json(args, {**declaration.options, **GLOBAL_OPTIONS})
         check_control_room(cmd, args)
-        # Everything except logs and pair needs the files under /etc/agentbox and
-        # /var/lib/agentbox, which belong to root. AGENTBOX_ROOT (tests) redirects them.
+        # Commands declared with needs_root require root; AGENTBOX_ROOT (tests) redirects
+        # their paths under /etc/agentbox and /var/lib/agentbox.
         if os.geteuid() != 0 and declaration.needs_root and not paths.ROOT:
             raise Fail(f"{cmd} needs root: sudo agentbox {' '.join([cmd, *args])}", error="sudo_failed",
                        command=cmd)

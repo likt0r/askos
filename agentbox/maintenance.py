@@ -56,6 +56,7 @@ import sys
 import time
 
 from . import activity, generate, images, lifecycle, paths, programs, settings, state_files
+from .commands import declare
 from .errors import Fail, die
 from .sanitize import clean
 
@@ -375,11 +376,9 @@ def weekly_check(args):
     lifecycle.weekly_check(args)
 
 
-from .commands import declare
-
 DECLARATIONS = {
     "maintenance": declare(maintenance, "agentbox maintenance [--json]", options={"json": False},
-                            own_entries=True, order=121),
+                            own_entries=True, allow_unknown=True, order=121),
     "weekly-check": declare(weekly_check, "agentbox weekly-check [--json]", options={"json": False},
                              own_entries=True, order=126),
 }

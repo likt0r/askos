@@ -64,6 +64,7 @@ import time
 
 from . import activity, guest, options, paths, programs, registry, safeguards, settings, state_files, times, version
 from . import versions
+from .commands import declare
 from .errors import Fail, die
 from .sanitize import SECRET, clean, entry
 
@@ -995,7 +996,7 @@ def build_cmd(args):
     """agentbox build <image>|--all [--reset <vm>]... [--json]: start a Build as a systemd
     unit; with --reset an Update: when the Build becomes the current one, these VMs are
     reset onto it."""
-    positional, opts = options.parse(args, {"all": False, "json": False, "reset": options.MANY})
+    positional, opts = options.parse(args)
     if bool(positional) == bool(opts.get("all")) or len(positional) > 1:
         die("build <image>|--all [--reset <vm>]... [--json]", error="invalid_argument")
     target = "all" if opts.get("all") else _image_name(positional[0])
@@ -1016,7 +1017,7 @@ def update_now_cmd(args):
     agentbox-build@update: the version check at once, a Build of every Image a new Build would
     update (with the Base image every Image), then, when every Build succeeded, a Reset of these
     VMs onto their Image's current Build (sessions in them end, their Data disks stay)."""
-    positional, opts = options.parse(args, {"json": False, "reset": options.MANY})
+    positional, opts = options.parse(args)
     if positional:
         die("update-now [--reset <vm>]... [--json]", error="invalid_argument")
     picks = _update_vms(None, opts.get("reset", []))
@@ -1214,7 +1215,7 @@ def containerfile_cmd(args):
     Read from the Host only, never fetched; shown as text: at most CONTAINERFILE_MAX bytes,
     without control characters, and anything that looks like a token or key hidden. `url`: the
     file in the repository at the installed Release's tag (None for a checkout's 0.0.0)."""
-    positional, opts = options.parse(args, {"json": False})
+    positional, opts = options.parse(args)
     if len(positional) != 1:
         die("containerfile <image> [--json]", error="invalid_argument")
     image = _image_name(positional[0])
@@ -1262,7 +1263,7 @@ def _log_entries(info, opts):
 def build_log(args):
     """agentbox build-log <image> [<build>] [--after-cursor C] [--lines N] [--json]: the
     journal of a Build (default: the running one, else the newest)."""
-    positional, opts = options.parse(args, {**LOG_CHECKS, "json": False})
+    positional, opts = options.parse(args)
     if not 1 <= len(positional) <= 2:
         die("build-log <image> [<build>] [--after-cursor C] [--lines N] [--json]", error="invalid_argument")
     image = _image_name(positional[0])
@@ -1297,7 +1298,7 @@ def build_log(args):
 def set_image(args):
     """agentbox set-image <vm> <image> [--build B] [--json]: the Image of a VM, at its newest
     Build or pinned to one (going back to an earlier Build); applies at the next Reset."""
-    positional, opts = options.parse(args, {"build": True, "json": False})
+    positional, opts = options.parse(args)
     if len(positional) != 2:
         die("set-image <vm> <image> [--build B] [--json]", error="invalid_argument")
     vm = registry.check(positional[0])
@@ -1326,18 +1327,16 @@ def set_image(args):
         print(message)
 
 
-from .commands import declare
-
 DECLARATIONS = {
     "images": declare(images_cmd, "agentbox images [--json]", options={"json": False}, read_only=True,
-                       control_room=True, order=133),
+                       control_room=True, allow_unknown=True, order=133),
     "build": declare(build_cmd, "agentbox build <image>|--all [--reset <vm>]... [--json]",
                       options={"all": False, "reset": options.MANY, "json": False}, control_room=True,
                       kind="build",
                       describe=lambda a: activity._then_reset(
                           a, "Start a Build of all Images", all=True) if "all" in a.values else
                           activity._then_reset(a, f"Start a Build of {a.positional[0] if a.positional else ''}",
-                                               image=activity._name(a.positional[0] if a.positional else "",
+                                                image=activity.name(a.positional[0] if a.positional else "",
                                                                     settings.IMAGE)), order=138),
     "build-run": declare(build_run, "agentbox build-run <image>|all", options={}, own_entries=True, order=148),
     "build-log": declare(build_log, "agentbox build-log <image> [<build>] [--after-cursor C] [--lines N] [--json]",

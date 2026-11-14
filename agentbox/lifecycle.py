@@ -17,6 +17,7 @@ import time
 import xml.etree.ElementTree as ET
 
 from . import activity, guest, images, paths, programs, registry, responding, settings, state_files, virsh
+from .commands import declare
 from .registry import check, dom
 from .errors import Fail, die
 
@@ -642,27 +643,27 @@ def observe(args):
         print(line)
 
 
-from .commands import declare
-
 DECLARATIONS = {
-    "status": declare(status, "agentbox status [--json]", options={"json": False}, read_only=True, order=0),
+    "status": declare(status, "agentbox status [--json]", options={"json": False}, read_only=True,
+                       allow_unknown=True, order=0),
     "start": declare(start_cmd, "agentbox start <vm> [--json]", options={"json": False},
-                      control_room=True, describe=lambda a: activity._said("Start"), order=12),
+                      control_room=True, allow_unknown=True,
+                      describe=lambda a: activity.said("Start"), order=12),
     "wake": declare(wake_cmd, "agentbox wake <vm> [--json]", options={"json": False},
-                    describe=lambda a: activity._said("Wake"), order=0),
+                    describe=lambda a: activity.said("Wake"), order=0),
     "pause": declare(pause_cmd, "agentbox pause <vm> [--json]", options={"json": False},
-                     control_room=True, describe=lambda a: activity._said("Pause"), order=12),
+                      control_room=True, describe=lambda a: activity.said("Pause"), order=12),
     "reset": declare(reset_cmd, "agentbox reset <vm> [--no-start] [--json]",
                      options={"no-start": False, "json": False}, control_room=True,
-                     describe=lambda a: activity._said("Reset without start", no_start=True)
-                     if "no-start" in a.values else activity._said("Reset"), order=13),
+                      describe=lambda a: activity.said("Reset without start", no_start=True)
+                      if "no-start" in a.values else activity.said("Reset"), order=13),
     "restart": declare(restart_cmd, "agentbox restart <vm> [--json]", options={"json": False},
-                       control_room=True, describe=lambda a: activity._said("Restart"), order=12),
+                        control_room=True, describe=lambda a: activity.said("Restart"), order=12),
     "focus": declare(focus_cmd, "agentbox focus <vm|off> [--json]", options={"json": False},
-                     control_room=True,
-                     describe=lambda a: activity._said("Focus off", off=True) if a.positional and a.positional[0] == "off"
-                     else activity._said(f"Focus on {a.positional[0] if a.positional else ''}",
-                                         target=activity._name(a.positional[0] if a.positional else "")), order=14),
+                      control_room=True, allow_unknown=True,
+                      describe=lambda a: activity.said("Focus off", off=True) if a.positional and a.positional[0] == "off"
+                      else activity.said(f"Focus on {a.positional[0] if a.positional else ''}",
+                                         target=activity.name(a.positional[0] if a.positional else "")), order=14),
     "observe": declare(observe, "agentbox observe <vm> [--json]", options={"json": False},
-                       kind="pairing", describe=lambda a: activity._said("Pair the Host as Observer"), order=0),
+                        kind="pairing", describe=lambda a: activity.said("Pair the Host as Observer"), order=0),
 }

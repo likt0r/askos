@@ -18,8 +18,8 @@ import os
 import re
 import time
 
-from . import list_records, patterns, paths, programs, scripts, state_files, times
-from .allowlist import _parse
+from . import list_records, options, patterns, paths, programs, scripts, state_files, times
+from .commands import declare
 from .entry_store import given, label
 from .errors import die
 from .network import DOMAIN, done, valid_domain
@@ -72,7 +72,7 @@ def _mark_line(ref):
 def _mark_target(args):
     """The mark asked for, ("domain", domain) or ("regex", pattern) from --regex, and whether
     --json was given. A pattern is taken as given; mark-harmless checks a new one."""
-    positional, opts = _parse(args, {"regex": True, "json": False})
+    positional, opts = options.parse(args)
     if "regex" in opts:
         if positional:
             die("--regex takes the place of the domain; too many arguments: " + clean(positional[0], False)[:60],
@@ -82,14 +82,6 @@ def _mark_target(args):
     if len(positional) > 1:
         die("too many arguments: " + clean(positional[1], False)[:60], error="invalid_argument")
     return ("domain", domain), "json" in opts
-
-
-def flags(args, allowed):
-    for a in args:
-        if a not in allowed:
-            die(f"unknown option: {a}" if a.startswith("-") else f"too many arguments: {a}",
-                error="invalid_argument")
-    return set(args)
 
 
 def domain_arg(d):
@@ -169,9 +161,10 @@ def feed_line(feeds):
 def check_domain(args):
     """agentbox check-domain <domain> [--json]: which Signals a domain has, and why"""
     domain = domain_arg(args[0] if args else "")
-    opts = flags(args[1:], {"--json"})
+    if len(args.positional) > 1:
+        die(f"too many arguments: {clean(args.positional[1], False)[:60]}", error="invalid_argument")
     rep = report(domain)
-    if "--json" in opts:
+    if args.values.get("json"):
         print(json.dumps(rep))
         return
     print(f"{domain}: {verdict(rep)}")
@@ -186,9 +179,11 @@ def harmless(args):
     """agentbox harmless [--json]: the Harmless marks, domains and (with --json as
     {"domain": null, "regex": p}) Regex entries; refused: why the rules refuse a stored pattern
     (it silences nothing until removed), else null"""
-    opts = flags(args, {"--json"})
+    if args.positional:
+        die(f"too many arguments: {clean(args.positional[0], False)[:60]}", error="invalid_argument")
+    opts = args.values
     marks = harmless_marks()
-    if "--json" in opts:
+    if opts.get("json"):
         print(json.dumps([{**patterns.both(m), "refused": patterns.refused(m)} for m in marks]))
     else:
         for m in marks:
@@ -254,8 +249,8 @@ def mark_seen(args):
     """agentbox mark-seen <vm> [<domain>] [--json]: the VM's Alerts until now
     (all, or those of one destination) count as seen"""
     ctx = check(args[0] if args else "")
-    names = [a for a in args[1:] if not a.startswith("-")]
-    opts = flags([a for a in args[1:] if a.startswith("-")], {"--json"})
+    positional, opts = options.parse(args)
+    names = positional[1:]
     if len(names) > 1:
         die(f"too many arguments: {names[1]}", error="invalid_argument")
     domain = alert_host(names[0]) if names else None
@@ -265,7 +260,7 @@ def mark_seen(args):
         marks = {k: v for k, v in seen_marks(ctx).items() if k == "*" or v > now - SEEN_KEEP}
         marks[domain or "*"] = now
         state_files.write_json(f, marks, indent=None, sort_keys=True)
-    done("--json" in opts, f"{ctx}: Alerts {'for ' + domain + ' ' if domain else ''}marked as seen",
+    done(opts.get("json", False), f"{ctx}: Alerts {'for ' + domain + ' ' if domain else ''}marked as seen",
          vm=ctx, domain=domain, seen=now)
 
 
@@ -288,8 +283,6 @@ def alert_view(ctx, rows):
 
 
 from . import activity
-from .commands import declare
-
 DECLARATIONS = {
     "check-domain": declare(check_domain, "agentbox check-domain <domain> [--json]", options={"json": False},
                              read_only=True, control_room=True, option_exit=1, order=29),

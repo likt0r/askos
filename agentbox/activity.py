@@ -51,6 +51,7 @@ import threading
 import time
 
 from . import durations, guest, ids, journal, options, paths, registry, settings, times, vmenv
+from .commands import declare
 from .errors import Fail, die
 from .sanitize import clean, field, message_text, redact
 
@@ -234,13 +235,13 @@ def _arg(args, i):
 WATCH_CATEGORIES = ("exfil", "c2", "tunnel", "paste", "phishing", "blockchain", "payload")
 
 
-def _name(v, pattern=registry.NAME):
+def name(v, pattern=registry.NAME):
     """v if it is a name of that form (a VM by default, an Image, a Build), else None: a
     parameter carries a name only when it is one."""
     return v if isinstance(v, str) and pattern.fullmatch(v) else None
 
 
-def _said(text, **params):
+def said(text, **params):
     """A command's description and its parameters, as record() takes them."""
     return text, params
 
@@ -254,7 +255,7 @@ def _entry(a, p, i):
     return _arg(p, i), {"domain": _arg(p, i)}
 
 
-def _listed(what, duration=None, temporary=False, force=False):
+def listed(what, duration=None, temporary=False, force=False):
     """Description of an Allowlist command `<vm|all> <domain>`: `what` with the domain (and
     "for all VMs"), then the duration of --for after `duration` ("for", "by") or "temporarily"
     (--temporary), and --force where the command takes it. Parameters: domain, or regex for a
@@ -264,7 +265,7 @@ def _listed(what, duration=None, temporary=False, force=False):
         p = a.positional
         scope, (shown, given) = _arg(p, 0), _entry(a, p, 1)
         text = what.format(shown + (" for all VMs" if scope == "all" else ""))
-        params = {**given, "scope": "all" if scope == "all" else _name(scope)}
+        params = {**given, "scope": "all" if scope == "all" else name(scope)}
         d = a.values.get("for")
         if duration and d in durations.DURATIONS:
             text, params["duration"] = f"{text} {duration} {durations.DURATIONS[d][1]}", d
@@ -293,7 +294,7 @@ def _watch_add(a):
 
 def _mark_seen(a):
     domain = _arg(a.positional, 1)
-    return _said(f"Mark the Alerts for {domain} as seen", domain=domain) if domain else _said("Mark Alerts as seen")
+    return said(f"Mark the Alerts for {domain} as seen", domain=domain) if domain else said("Mark Alerts as seen")
 
 
 # Room for the list of VM variables in a description, so a failure's message fits behind it
@@ -337,25 +338,25 @@ def _set_env(a):
     if len(listed) > ENV_LISTED:
         listed = _env_listed([p.partition("=")[0] for p in pairs]) + " (values left out, too long)"
     if "replace" in a.values:
-        return _said("Replace the VM variables" + (": " + listed if pairs else " with none"),
+        return said("Replace the VM variables" + (": " + listed if pairs else " with none"),
                      env=_env_param(pairs), replace=True)
-    return _said("Set VM variables" + (": " + listed if pairs else ""), env=_env_param(pairs))
+    return said("Set VM variables" + (": " + listed if pairs else ""), env=_env_param(pairs))
 
 
 def _unset_env(a):
     names = [n for n in a.positional[1:] if vmenv.NAME.fullmatch(n)]
-    return _said("Remove VM variables" + (": " + _env_listed(names) if names else ""), names=_env_param(names))
+    return said("Remove VM variables" + (": " + _env_listed(names) if names else ""), names=_env_param(names))
 
 
 def _owners(a):
     owners = list(a.positional[1:])
-    return _said("Set GitHub owners: " + ", ".join(owners), owners=owners)
+    return said("Set GitHub owners: " + ", ".join(owners), owners=owners)
 
 
 def _then_reset(a, text, **params):
     """build and update-now: with the VMs an Update resets (--reset) after its Builds."""
     resets = [v for v in dict.fromkeys(a.values.get("reset", [])) if registry.NAME.fullmatch(v)]
-    return _said(text + (", then a Reset of " + ", ".join(resets) if resets else ""), **params, reset=resets)
+    return said(text + (", then a Reset of " + ", ".join(resets) if resets else ""), **params, reset=resets)
 
 
 def _import(a):
@@ -366,14 +367,14 @@ def _import(a):
     target = transfer.target_for(_arg(p, 1), _arg(p, 2)) if folder else None
     target = target if target and transfer.target_problem(target) is None else None
     if folder and target:
-        return _said(f"Import {folder} into ~/code/{target}", folder=folder, target=target)
-    return _said("Import a folder", folder=folder)
+        return said(f"Import {folder} into ~/code/{target}", folder=folder, target=target)
+    return said("Import a folder", folder=folder)
 
 
 def _set_image(a):
     image, build = _arg(a.positional, 1), a.values.get("build")
-    return _said(f"Image {image}, " + (f"pinned to Build {build}" if build else "always its current Build")
-                 + ", from the next Reset", image=_name(image, settings.IMAGE), build=_name(build, settings.BUILD_ID))
+    return said(f"Image {image}, " + (f"pinned to Build {build}" if build else "always its current Build")
+                 + ", from the next Reset", image=name(image, settings.IMAGE), build=name(build, settings.BUILD_ID))
 
 
 def _failure_params(params):
@@ -423,6 +424,8 @@ def command(cmd, raw, declaration, parse_args):
         what, params = declaration.describe(args) if declaration.describe else (None, {})
         yield args
     except Fail as f:
+        if declaration.describe and what is None and hasattr(f, "parsed"):
+            what, params = declaration.describe(f.parsed)
         if not _own_entry:
             entry("failed", f.message.strip(), f.error, _failure_params(f.params), exit=f.exit)
         raise
@@ -864,7 +867,7 @@ def timeline(opts, now=None):
 def activity(args):
     """agentbox activity [--kind K[,K]] [--vm VM] [--since T] [--until T] [--search TEXT]
     [--lines N] [--json]: the Activity timeline, newest first."""
-    _, opts = options.parse(args, {**CHECKS, "json": False}, positional=False)
+    _, opts = options.parse(args)
     as_json = opts.pop("json", False)
     entries, truncated, days = timeline(opts)
     if as_json:
@@ -878,8 +881,6 @@ def activity(args):
     if truncated:
         print("agentbox: there are more entries (raise --lines or narrow the filters)", file=sys.stderr)
 
-
-from .commands import declare
 
 DECLARATIONS = {
     "activity": declare(activity, "agentbox activity [--kind K[,K]] [--vm VM] [--since T] [--until T] [--search TEXT] [--lines N] [--json]",

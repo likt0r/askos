@@ -16,6 +16,7 @@ import sys
 import time
 
 from . import options, paths, state_files, times, virsh
+from .commands import declare
 from .registry import check, dom
 from .errors import Fail, die
 from .sanitize import clean, entry, pairing_codes
@@ -191,9 +192,14 @@ def records(out):
 
 def parse(ctx, args):
     """The filters of `agentbox logs` with their defaults, and --json."""
-    _, opts = options.parse(args, {**CHECKS, "json": False}, positional=False, prefix=f"{ctx}: ")
+    _, opts = options.parse(args)
     as_json = opts.pop("json", False)
     return {"boot": "current", "lines": "200", **opts}, as_json
+
+
+def _logs_prefix(raw):
+    """Check and clean the VM name before an option error can use it as a prefix."""
+    return f"{check(raw[0])}: " if raw else ""
 
 
 def logs(args):
@@ -281,14 +287,12 @@ def pair(args):
 
 
 from . import activity
-from .commands import declare
-
 DECLARATIONS = {
     "logs": declare(logs, "agentbox logs <vm> [--unit U] [--priority P] [--since T] [--until T] [--boot current|all] [--grep TEXT] [--lines N] [--after-cursor C] [--json]",
                     options={**CHECKS, "json": False}, needs_root=False, read_only=True, control_room=True,
-                    order=24, prefix=lambda raw: f"{raw[0]}: " if raw else "", positional=False,
+                    order=24, prefix=_logs_prefix, positional=False,
                     option_offset=1),
     "pair": declare(pair, "agentbox pair <vm> [--json]", options={"json": False}, needs_root=False,
                     control_room=True, kind="pairing",
-                    describe=lambda a: activity._said("Show the Pairing code"), order=16),
+                    describe=lambda a: activity.said("Show the Pairing code"), order=16),
 }

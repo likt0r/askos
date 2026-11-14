@@ -61,6 +61,7 @@ import sys
 import time
 
 from . import paths, programs, safeguards, scripts, settings, state_files, times
+from .commands import declare
 from .errors import Fail, die
 from .sanitize import clean
 
@@ -596,8 +597,6 @@ def check_versions(args):
         from . import images        # images records the versions of a Build with this module
         images.start_automatic(say)
 
-
-from .commands import declare
 
 DECLARATIONS = {
     "check-versions": declare(check_versions, "agentbox check-versions [--json]", options={"json": False},

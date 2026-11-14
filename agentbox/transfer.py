@@ -39,6 +39,7 @@ import tarfile
 import time
 
 from . import activity, guest, lifecycle, paths, programs, responding, state_files, times, virsh
+from .commands import declare
 from .errors import Fail, die
 from .registry import check, dom
 from .sanitize import clean
@@ -89,14 +90,8 @@ def target_for(folder, given):
 
 
 def parse(args):
-    positional, as_json = [], False
-    for a in args:
-        if a == "--json":
-            as_json = True
-        elif a.startswith("--"):
-            die("unknown option: " + clean(a, False)[:60], 2, error="invalid_argument", option=clean(a, False)[:60])
-        else:
-            positional.append(a)
+    positional = args.positional
+    as_json = args.values.get("json", False)
     if not positional:
         check("")
     if not 2 <= len(positional) <= 3:
@@ -535,8 +530,6 @@ def import_cmd(args):
         print(f"skipped {packed['skipped_count']} (links leading out of the folder, special files): {named}"
               + (f" and {more} more" if more else ""))
 
-
-from .commands import declare
 
 DECLARATIONS = {
     "import": declare(import_cmd, "agentbox import <vm> <folder> [<target>] [--json]",

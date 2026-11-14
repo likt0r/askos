@@ -11,6 +11,7 @@ import re
 import time
 
 from . import activity, list_records, settings, state_files, times
+from .commands import declare
 from .registry import check
 from .errors import die
 from .sanitize import field
@@ -170,8 +171,6 @@ def close_web(args):
     done("--json" in args[1:], f"{ctx}: Open web closed", vm=ctx)
 
 
-from .commands import declare
-
 DECLARATIONS = {
     "blocked": declare(blocked, "agentbox blocked <vm> [--json]", options={"json": False},
                        read_only=True, control_room=True, order=0),
@@ -179,11 +178,11 @@ DECLARATIONS = {
                       read_only=True, control_room=True, order=0),
     "open-web": declare(open_web, "agentbox open-web <vm> <minutes> [--json]", options={"json": False},
                         control_room=True, kind="allowlist",
-                        describe=lambda a: activity._said(
+                         describe=lambda a: activity.said(
                             f"Open web for {a.positional[1] if len(a.positional) > 1 else ''} minutes",
                             minutes=(a.positional[1] if len(a.positional) > 1 and
                                      re.fullmatch(r"[0-9]{1,6}", a.positional[1]) else None)), order=36),
     "close-web": declare(close_web, "agentbox close-web <vm> [--json]", options={"json": False},
                          control_room=True, kind="allowlist",
-                         describe=lambda a: activity._said("Close Open web"), order=37),
+                          describe=lambda a: activity.said("Close Open web"), order=37),
 }

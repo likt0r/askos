@@ -13,7 +13,6 @@ class Declaration:
     own_entries: bool = False
     kind: str = "action"
     describe: object = None
-    order: int = 0
     option_exit: int = 2
     prefix: object = ""
     positional: bool = True
@@ -26,4 +25,4 @@ def declare(handler, usage, *, options=None, needs_root=True, control_room=False
             allow_unknown=False, option_offset=0):
     """Keep all command facts beside its handler; usage is also the operator reference."""
     return Declaration(handler, usage, options or {}, needs_root, control_room, read_only, own_entries,
-                       kind, describe, order, option_exit, prefix, positional, allow_unknown, option_offset)
+                       kind, describe, option_exit, prefix, positional, allow_unknown, option_offset)

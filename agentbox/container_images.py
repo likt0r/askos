@@ -27,6 +27,7 @@ import os
 import sys
 
 from . import activity, generate, guest, paths, registry, state_files, times, virsh
+from .commands import declare
 from .errors import Fail, die
 from .sanitize import clean
 
@@ -138,8 +139,6 @@ def cleanup(args):
     if as_json:
         print(json.dumps({"vms": results}))
 
-
-from .commands import declare
 
 DECLARATIONS = {
     "cleanup-container-images": declare(cleanup, "agentbox cleanup-container-images [--json]",
