@@ -968,4 +968,12 @@ def regenerate(args):
     print("\n".join(lines) or "everything up to date")
 
 
-COMMANDS = {"migrate": migrate, "regenerate": regenerate}
+from .commands import declare
+
+DECLARATIONS = {
+    "migrate": declare(migrate, "agentbox migrate [--json]", options={"json": False},
+                       describe=lambda a: activity._said("Take over work and priv into the VM registry"), order=117),
+    "regenerate": declare(regenerate, "agentbox regenerate [--json]", options={"json": False},
+                           describe=lambda a: activity._said("Generate the configuration from the VM registry"),
+                           order=118),
+}

@@ -15,11 +15,32 @@ from .sanitize import clean
 MANY = "many"
 
 
-def parse(args, known, *, exit=2, positional=True, prefix=""):
+class Parsed:
+    """The raw arguments and the one result of parsing them for a command."""
+
+    def __init__(self, raw, positional, values):
+        self.raw = tuple(raw)
+        self.positional = tuple(positional)
+        self.values = dict(values)
+
+    def __iter__(self):
+        return iter(self.raw)
+
+    def __len__(self):
+        return len(self.raw)
+
+    def __getitem__(self, index):
+        return self.raw[index]
+
+
+def parse(args, known, *, exit=2, positional=True, prefix="", allow_unknown=False):
     """(positional arguments, options). known: option name (without --) -> False for a flag
     (True when given), True for one value, MANY for a value that may repeat (a list of them),
     or a function that checks the one value (true when it is valid). positional=False: a
     positional argument is an unknown option. prefix: put before every message."""
+    if isinstance(args, Parsed):
+        return list(args.positional), dict(args.values)
+
     found, opts, i = [], {}, 0
 
     def fail(message, name):
@@ -39,6 +60,9 @@ def parse(args, known, *, exit=2, positional=True, prefix=""):
             continue
         name, eq, value = a[2:].partition("=")
         if name not in known:
+            if allow_unknown and positional:
+                found.append(a)
+                continue
             fail("unknown option: " + clean(a, False)[:60], name)
         kind = known[name]
         if kind is False:

@@ -7,7 +7,7 @@ journal entry under the identifier agentbox-activity. The action is the entry's
 stable code (ADR 0012): the Control Room words the entry from it and the parameters
 in the user's language, and shows the description only for an action it does not
 know. A new command is recorded without doing anything; only
-commands in READ_ONLY are not. Other code records events of its own with
+commands declared read-only are not. Other code records events of its own with
 record() (automatic Resets here, Allowlist expiries in allowlist.py, the outcome of
 every Build in images.py, a VM that does not respond in responding.py, once per
 incident by a wake or by `watch`); a command that recorded what is due itself says so
@@ -50,7 +50,7 @@ import sys
 import threading
 import time
 
-from . import guest, journal, options, paths, registry, settings, times, vmenv
+from . import durations, guest, ids, journal, options, paths, registry, settings, times, vmenv
 from .errors import Fail, die
 from .sanitize import clean, field, message_text, redact
 
@@ -62,26 +62,6 @@ KINDS = ("signin", "action", "allowlist", "alert", "github", "pairing", "build",
 # the running sockets of the namespace (stdout, socket, dev-log)
 JOURNAL_RUN = paths.host(f"/run/systemd/journal.{NAMESPACE}")
 SOCKETS = (f"{JOURNAL_RUN}/socket", paths.host("/run/systemd/journal/socket"))
-
-# Commands that change nothing are not recorded; every other command is, so a
-# new command is recorded unless it is listed here. (watch writes only bookkeeping,
-# the wakes files, and records its own entries, responding.py.)
-READ_ONLY = {"status", "logs", "blocked", "alerts", "allowlist", "owners", "activity", "check-domain", "check-regex",
-             "watchlist", "legitimate", "harmless", "pairings", "settings", "github-app", "github-tokens", "images", "build-log",
-             "containerfile", "describe", "watch", "version", "env"}
-# Commands that record their own entries (one per VM, entry or step) instead of one for the
-# call; fetch-versions records none, and check-versions only the start of an automatic update
-# (build.automatic); otherwise they change only their records of what is available
-# (versions.py). maintenance records each step of the Maintenance window (maintenance.<step>).
-OWN_ENTRIES = {"weekly-check", "expire-allowlist", "build-run", "check-versions", "fetch-versions", "maintenance"}
-# Kind of a command's entry; every other command is an "action".
-COMMAND_KINDS = {"allow": "allowlist", "disallow": "allowlist", "open-web": "allowlist", "close-web": "allowlist",
-                 "extend": "allowlist", "make-permanent": "allowlist", "set-note": "allowlist",
-                 "migrate-allowlist": "allowlist", "pair": "pairing", "observe": "pairing", "unpair": "pairing",
-                 "revoke-pairings": "pairing", "set-settings": "settings",
-                 "set-claude-token": "credentials", "set-owners": "credentials", "set-github-app": "credentials",
-                 "remove-github-app": "credentials",
-                 "build": "build", "set-image": "build", "update-now": "build"}
 
 MAX_ACTOR = 100
 MAX_DESCRIPTION = 500                # also each parameter
@@ -233,7 +213,7 @@ def unchanged():
 
 def result(**params):
     """Parameters of the command's entry that are known only once it ran (an import's files
-    and bytes); the dispatcher adds them to those DESCRIBE gives."""
+    and bytes); the dispatcher adds them to those the declaration gives."""
     _result.update(params)
 
 
@@ -249,42 +229,9 @@ def _arg(args, i):
     return args[i] if len(args) > i else ""
 
 
-# Allowlist and list commands: options that take a value, and the durations of --for
-_VALUED = ("--for", "--note", "--category", "--source", "--regex")
-_DURATIONS = {"15min": "15 minutes", "1h": "1 hour", "8h": "8 hours", "7d": "7 days"}
 # The Watchlist's categories, as the classifier's CATEGORIES (tests/test_lists.py checks
 # that): a description names only one of these, never what a request passed as --category.
 WATCH_CATEGORIES = ("exfil", "c2", "tunnel", "paste", "phishing", "blockchain", "payload")
-
-
-def _positional(args):
-    """The arguments that are neither an option nor an option's value."""
-    out, skip = [], False
-    for a in args:
-        if skip:
-            skip = False
-        elif a in _VALUED:
-            skip = True
-        elif not a.startswith("--"):
-            out.append(a)
-    return out
-
-
-def _opt(args, name):
-    """The value of --name V or --name=V, else None."""
-    for i, a in enumerate(args):
-        if a == name and i + 1 < len(args):
-            return args[i + 1]
-        if a.startswith(name + "="):
-            return a[len(name) + 1:]
-    return None
-
-
-def _resets(args):
-    """The VMs of `build --reset <vm>...` (an Update) that are VM names."""
-    found = [args[i + 1] for i, a in enumerate(args[:-1]) if a == "--reset"]
-    found += [a[len("--reset="):] for a in args if a.startswith("--reset=")]
-    return [v for v in dict.fromkeys(found) if registry.NAME.fullmatch(v)]
 
 
 def _name(v, pattern=registry.NAME):
@@ -298,15 +245,10 @@ def _said(text, **params):
     return text, params
 
 
-def _forced(a, text, params):
-    """With --force: said, and the flag force."""
-    return (f"{text} with --force", {**params, "force": True}) if "--force" in a else (text, params)
-
-
 def _entry(a, p, i):
     """The entry a list command names: (its text, its parameter), the domain at position i, or
     the pattern of --regex (a Regex entry, ADR 0013)."""
-    pattern = _opt(a, "--regex")
+    pattern = a.values.get("regex")
     if pattern is not None:
         return f"pattern {pattern}", {"regex": pattern}
     return _arg(p, i), {"domain": _arg(p, i)}
@@ -319,16 +261,16 @@ def _listed(what, duration=None, temporary=False, force=False):
     Regex entry (--regex), scope (a VM or all), duration (15min, 1h, 8h, 7d), the flags
     temporary and force."""
     def describe(a):
-        p = _positional(a)
+        p = a.positional
         scope, (shown, given) = _arg(p, 0), _entry(a, p, 1)
         text = what.format(shown + (" for all VMs" if scope == "all" else ""))
         params = {**given, "scope": "all" if scope == "all" else _name(scope)}
-        d = _opt(a, "--for")
-        if duration and d in _DURATIONS:
-            text, params["duration"] = f"{text} {duration} {_DURATIONS[d]}", d
-        elif temporary and "--temporary" in a:
+        d = a.values.get("for")
+        if duration and d in durations.DURATIONS:
+            text, params["duration"] = f"{text} {duration} {durations.DURATIONS[d][1]}", d
+        elif temporary and "temporary" in a.values:
             text, params["temporary"] = f"{text} temporarily", True
-        return _forced(a, text, params) if force else (text, params)
+        return (f"{text} with --force", {**params, "force": True}) if force and "force" in a.values else (text, params)
     return describe
 
 
@@ -336,21 +278,21 @@ def _domain(what, force=False):
     """Description of a command `<domain>` (Watchlist, Legitimate domains, Harmless marks):
     `what` with the domain (or the pattern of --regex), and --force where the command takes it."""
     def describe(a):
-        shown, params = _entry(a, _positional(a), 0)
+        shown, params = _entry(a, a.positional, 0)
         text = what.format(shown)
-        return _forced(a, text, params) if force else (text, params)
+        return (f"{text} with --force", {**params, "force": True}) if force and "force" in a.values else (text, params)
     return describe
 
 
 def _watch_add(a):
-    (shown, given), category = _entry(a, _positional(a), 0), _opt(a, "--category")
+    (shown, given), category = _entry(a, a.positional, 0), a.values.get("category")
     category = category if category in WATCH_CATEGORIES else None
-    return _forced(a, f"Watchlist: add {shown}" + (f" ({category})" if category else ""),
-                   {**given, "category": category})
+    text, params = f"Watchlist: add {shown}" + (f" ({category})" if category else ""), {**given, "category": category}
+    return (f"{text} with --force", {**params, "force": True}) if "force" in a.values else (text, params)
 
 
 def _mark_seen(a):
-    domain = _arg(_positional(a), 1)
+    domain = _arg(a.positional, 1)
     return _said(f"Mark the Alerts for {domain} as seen", domain=domain) if domain else _said("Mark Alerts as seen")
 
 
@@ -390,53 +332,36 @@ def _set_env(a):
     """The variables as NAME=value (their values are not secret, vmenv.py), only those whose
     name has the form of one, and the flag replace. The description lists the names before
     the values: the values only when all fit."""
-    pairs = [p for p in _positional(a)[1:] if vmenv.NAME.fullmatch(p.partition("=")[0]) and "=" in p]
+    pairs = [p for p in a.positional[1:] if vmenv.NAME.fullmatch(p.partition("=")[0]) and "=" in p]
     listed = ", ".join(pairs)
     if len(listed) > ENV_LISTED:
         listed = _env_listed([p.partition("=")[0] for p in pairs]) + " (values left out, too long)"
-    if "--replace" in a:
+    if "replace" in a.values:
         return _said("Replace the VM variables" + (": " + listed if pairs else " with none"),
                      env=_env_param(pairs), replace=True)
     return _said("Set VM variables" + (": " + listed if pairs else ""), env=_env_param(pairs))
 
 
 def _unset_env(a):
-    names = [n for n in _positional(a)[1:] if vmenv.NAME.fullmatch(n)]
+    names = [n for n in a.positional[1:] if vmenv.NAME.fullmatch(n)]
     return _said("Remove VM variables" + (": " + _env_listed(names) if names else ""), names=_env_param(names))
 
 
-def _create(a):
-    image = _name(_opt(a, "--image"), settings.IMAGE)
-    return _said("Create the VM" + (f" with Image {image}" if image else ""), image=image)
-
-
 def _owners(a):
-    owners = [o for o in a[1:] if o != "--json"]
+    owners = list(a.positional[1:])
     return _said("Set GitHub owners: " + ", ".join(owners), owners=owners)
-
-
-def _settings(a):
-    """The Settings' keys only, never what was passed instead of one."""
-    keys = [k for k in dict.fromkeys(x.partition("=")[0] for x in a if x != "--json") if k in settings.SPEC]
-    return _said("Change Settings" + (": " + ", ".join(keys) if keys else ""), settings=keys)
 
 
 def _then_reset(a, text, **params):
     """build and update-now: with the VMs an Update resets (--reset) after its Builds."""
-    resets = _resets(a)
+    resets = [v for v in dict.fromkeys(a.values.get("reset", [])) if registry.NAME.fullmatch(v)]
     return _said(text + (", then a Reset of " + ", ".join(resets) if resets else ""), **params, reset=resets)
-
-
-def _build(a):
-    if "--all" in a:
-        return _then_reset(a, "Start a Build of all Images", all=True)
-    return _then_reset(a, f"Start a Build of {_arg(a, 0)}", image=_name(_arg(a, 0), settings.IMAGE))
 
 
 def _import(a):
     """The folder as an absolute path; the target only when it is one."""
     from . import transfer               # transfer imports this module
-    p = _positional(a)
+    p = a.positional
     folder = transfer.folder_path(_arg(p, 1)) if _arg(p, 1) else None
     target = transfer.target_for(_arg(p, 1), _arg(p, 2)) if folder else None
     target = target if target and transfer.target_problem(target) is None else None
@@ -446,71 +371,9 @@ def _import(a):
 
 
 def _set_image(a):
-    image, build = _arg(a, 1), _opt(a, "--build")
+    image, build = _arg(a.positional, 1), a.values.get("build")
     return _said(f"Image {image}, " + (f"pinned to Build {build}" if build else "always its current Build")
                  + ", from the next Reset", image=_name(image, settings.IMAGE), build=_name(build, settings.BUILD_ID))
-
-
-# What a command was asked to do, for its entry (works for either outcome): the English
-# description and the parameters the Control Room words it from (docs/control-room-api.md).
-# Commands not listed are described by their command line, without parameters.
-DESCRIBE = {
-    "start": lambda a: _said("Start"),
-    "wake": lambda a: _said("Wake"),
-    "pause": lambda a: _said("Pause"),
-    "restart": lambda a: _said("Restart"),
-    "reset": lambda a: _said("Reset without start", no_start=True) if "--no-start" in a[1:] else _said("Reset"),
-    "focus": lambda a: _said("Focus off", off=True) if _arg(a, 0) == "off"
-                       else _said(f"Focus on {_arg(a, 0)}", target=_name(_arg(a, 0))),
-    "create": _create,
-    "delete": lambda a: _said("Delete the VM and its Data disk", delete_data_disk=True)
-                        if "--delete-data-disk" in a else _said("Delete the VM"),
-    "set-memory": lambda a: _said(f"Memory limit {_arg(a, 1)} MiB", mib=_arg(a, 1))
-                            if re.fullmatch(r"[0-9]{1,9}", _arg(a, 1)) else _said("Change the memory limit"),
-    "set-env": _set_env,
-    "unset-env": _unset_env,
-    "allow": _listed("Allow {}", "for", temporary=True, force=True),
-    "disallow": _listed("Remove the Allowlist entry {}"),
-    "extend": _listed("Extend the Allowlist entry {}", "by", force=True),
-    "make-permanent": _listed("Make the Allowlist entry {} permanent", force=True),
-    "set-note": _listed("Note on the Allowlist entry {}"),
-    "migrate-allowlist": lambda a: _said("Take over the old Allowlist files"),
-    "open-web": lambda a: _said(f"Open web for {_arg(a, 1)} minutes",
-                                minutes=_arg(a, 1) if re.fullmatch(r"[0-9]{1,6}", _arg(a, 1)) else None),
-    "close-web": lambda a: _said("Close Open web"),
-    "mark-seen": _mark_seen,
-    "mark-harmless": _domain("Harmless mark for {}"),
-    "unmark-harmless": _domain("Remove the Harmless mark for {}"),
-    "watch-add": _watch_add,
-    "watch-remove": _domain("Watchlist: remove {}", force=True),
-    "watch-set-note": _domain("Watchlist: note on {}"),
-    "legitimate-add": _domain("Add the Legitimate domain {}", force=True),
-    "legitimate-remove": _domain("Remove the Legitimate domain {}"),
-    "legitimate-set-note": _domain("Note on the Legitimate domain {}"),
-    "migrate-lists": lambda a: _said("Take over the Watchlist and the Legitimate domains from the text files"),
-    "set-owners": _owners,
-    "set-claude-token": lambda a: _said("Set the Claude token"),
-    # the App ID only when it is one: never echo what might be a pasted key
-    "set-github-app": lambda a: _said(f"Add or replace the GitHub App (App ID {_arg(a, 0)})", app_id=_arg(a, 0))
-                                if re.fullmatch(r"[1-9][0-9]{0,11}", _arg(a, 0))
-                                else _said("Add or replace the GitHub App"),
-    "remove-github-app": lambda a: _said(f"Remove the GitHub App (App ID {_arg(a, 0)})", app_id=_arg(a, 0))
-                                   if re.fullmatch(r"[1-9][0-9]{0,11}", _arg(a, 0))
-                                   else _said("Remove a GitHub App"),
-    "pair": lambda a: _said("Show the Pairing code"),
-    "observe": lambda a: _said("Pair the Host as Observer"),
-    "unpair": lambda a: _said("Remove a single device"),
-    "revoke-pairings": lambda a: _said("Revoke all pairings"),
-    "migrate": lambda a: _said("Take over work and priv into the VM registry"),
-    "regenerate": lambda a: _said("Generate the configuration from the VM registry"),
-    "setup": lambda a: _said("Set up the Host"),
-    "set-settings": _settings,
-    "build": _build,
-    "update-now": lambda a: _then_reset(a, "Update now: check the versions, build every Image with an update"),
-    "set-image": _set_image,
-    "import": _import,
-    "set-container-image-cleanup": lambda a: _said("Set the Container image cleanup"),
-}
 
 
 def _failure_params(params):
@@ -530,21 +393,22 @@ def _known_vm(args):
 
 
 @contextlib.contextmanager
-def command(cmd, args):
+def command(cmd, raw, declaration, parse_args):
     """Record the command that runs inside this block, with its outcome. The VM
     is the first argument if such a VM exists before or after the command (so
     creating and deleting one name it). A failure adds its message to the
     description and records its error code and parameters (Fail); an interrupt
     is `interrupted`, any other exception `unexpected_error`."""
     global _unchanged, _own_entry
-    if cmd in READ_ONLY or cmd in OWN_ENTRIES:
-        yield
+    if declaration.read_only or declaration.own_entries:
+        yield parse_args()
         return
     _unchanged = _own_entry = False
     _result.clear()
-    vm_before = _known_vm(args)
-    what, params = DESCRIBE[cmd](args) if cmd in DESCRIBE else (None, {})
-    kind = COMMAND_KINDS.get(cmd, "action")
+    vm_before = _known_vm(raw)
+    args = raw
+    what, params = None, {}
+    kind = declaration.kind
 
     def entry(outcome, message=None, error=None, error_params=None, **fields):
         vm = vm_before or _known_vm(args)
@@ -555,7 +419,9 @@ def command(cmd, args):
                error=error, error_params=error_params, **fields)
 
     try:
-        yield
+        args = parse_args()
+        what, params = declaration.describe(args) if declaration.describe else (None, {})
+        yield args
     except Fail as f:
         if not _own_entry:
             entry("failed", f.message.strip(), f.error, _failure_params(f.params), exit=f.exit)
@@ -717,7 +583,7 @@ GITHUB = {"token for": ("github.token", "ok"), "refused:": ("github.refused", "f
 # the parts of a token service line: "<owner>/<repo> until <expiry>[ by App <app-id>]" (without the
 # App before there were several), or "<request as repr()>: <rest>",
 # the rest of a refusal "<reason>[ <name>=<value>...]: <text>"
-ISSUED = re.compile(r"(\S+) until (\S+?)(?: by App ([1-9][0-9]{0,11}))?")
+ISSUED = re.compile(rf"(\S+) until (\S+?)(?: by App ({ids.APP_ID.pattern}))?")
 REFUSAL = re.compile(r"([a-z][a-z-]{0,31})((?: [a-z][a-z0-9_]{0,27}=[A-Za-z0-9._/-]{1,64}){0,8}): (.*)")
 TOKEN_PARAMS = {"request", "repository", "reason", "expires", "message"}        # the entry's own
 REQUEST = re.compile(r"""('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"): (.*)""")
@@ -1013,4 +879,10 @@ def activity(args):
         print("agentbox: there are more entries (raise --lines or narrow the filters)", file=sys.stderr)
 
 
-COMMANDS = {"activity": activity}
+from .commands import declare
+
+DECLARATIONS = {
+    "activity": declare(activity, "agentbox activity [--kind K[,K]] [--vm VM] [--since T] [--until T] [--search TEXT] [--lines N] [--json]",
+                         options={**CHECKS, "json": False}, read_only=True, control_room=True,
+                         positional=False, order=158),
+}

@@ -536,4 +536,9 @@ def import_cmd(args):
               + (f" and {more} more" if more else ""))
 
 
-COMMANDS = {"import": import_cmd}
+from .commands import declare
+
+DECLARATIONS = {
+    "import": declare(import_cmd, "agentbox import <vm> <folder> [<target>] [--json]",
+                       options={"json": False}, describe=activity._import, order=60),
+}

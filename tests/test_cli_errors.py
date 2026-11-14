@@ -10,6 +10,8 @@ import json
 import os
 import sys
 import unittest
+from dataclasses import replace
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_lifecycle import REPO, START_ERROR, LifecycleTest  # noqa: E402
@@ -58,8 +60,11 @@ class JsonFailureTest(LifecycleTest):
         said = self.failure("set-note", "nope", "x.org", "--note", "--json")
         self.assertEqual((said["error"], said["params"]), ("vm_not_found", {"vm": "nope"}))
         # every option USAGE shows with a value, none of the flags
-        self.assertLessEqual({"--actor", "--note", "--for", "--confirm", "--since", "--reset", "--mode"}, cli.VALUED)
-        self.assertEqual(cli.VALUED & {"--json", "--force", "--temporary", "--all", "--no-start", "--no-prompt"},
+        valued = {"--" + option for declaration in cli.DECLARATIONS.values()
+                  for option, kind in declaration.options.items() if kind is not False}
+        valued |= {"--" + name for name, kind in cli.GLOBAL_OPTIONS.items() if kind is not False}
+        self.assertLessEqual({"--actor", "--note", "--for", "--confirm", "--since", "--reset", "--mode"}, valued)
+        self.assertEqual(valued & {"--json", "--force", "--temporary", "--all", "--no-start", "--no-prompt"},
                          set())
 
     def test_another_program_s_own_error_output(self):
@@ -69,6 +74,25 @@ class JsonFailureTest(LifecycleTest):
         code, out, err = self.run_agentbox("start", "work", "--json")
         self.assertEqual((code, out), (1, ""))
         self.assertEqual(json.loads(err), {"error": "action_failed", "message": START_ERROR.strip(), "params": {}})
+
+    def test_dispatch_parses_once_for_the_handler_and_activity_description(self):
+        original = cli.DECLARATIONS["focus"]
+        received = []
+
+        def describe(parsed):
+            received.append(parsed)
+            return "Focus off", {"off": True}
+
+        replacement = replace(original, handler=received.append, describe=describe)
+        with mock.patch.object(cli, "DECLARATIONS", {**cli.DECLARATIONS, "focus": replacement}), \
+                mock.patch.object(cli.os, "geteuid", return_value=0), \
+                mock.patch.object(cli.paths, "ROOT", True), \
+                mock.patch.object(cli.activity, "record"), \
+                mock.patch.object(cli.options, "parse", wraps=cli.options.parse) as parse:
+            self.assertEqual(cli.main(["focus", "off"]), 0)
+        self.assertEqual(parse.call_count, 1)
+        self.assertIs(received[0], received[1])
+        self.assertEqual(received[0].positional, ("off",))
 
 
 if __name__ == "__main__":

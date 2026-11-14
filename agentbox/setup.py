@@ -382,4 +382,13 @@ def setup(args):
         print(f"Certificate fingerprint (compare it in the browser on the first visit): {fingerprint}")
 
 
-COMMANDS = {"setup": setup}
+from .commands import declare
+
+DECLARATIONS = {
+    "setup": declare(setup, "agentbox setup [--mode local|network] [--bind A --home-network N] [--web-port P] [--cert-name N] [--owner-user U] [--password-file F|--password-stdin] [--force] [--json]",
+                     options={"mode": True, "bind": True, "home-network": True, "web-port": True,
+                              "cert-name": True, "owner-user": True, "password-file": True,
+                              "password-stdin": False, "force": False, "json": False},
+                     describe=lambda a: ("Set up the Host", {}),
+                     order=3),
+}

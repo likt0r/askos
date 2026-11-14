@@ -375,4 +375,11 @@ def weekly_check(args):
     lifecycle.weekly_check(args)
 
 
-COMMANDS = {"maintenance": maintenance, "weekly-check": weekly_check}
+from .commands import declare
+
+DECLARATIONS = {
+    "maintenance": declare(maintenance, "agentbox maintenance [--json]", options={"json": False},
+                            own_entries=True, order=121),
+    "weekly-check": declare(weekly_check, "agentbox weekly-check [--json]", options={"json": False},
+                             own_entries=True, order=126),
+}
