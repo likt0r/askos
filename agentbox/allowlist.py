@@ -171,22 +171,6 @@ def _clipped(text, limit):
     return clean(text, False)[:limit]
 
 
-def _problem(e):
-    return list_records.allowlist_problem(e)
-
-
-def _valid(data, path):
-    """The entries; ends the command at a broken one, or a second one of a domain or pattern
-    and scope."""
-    if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
-        die(f"{path}: broken (no list entries)", error="action_failed")
-
-    def broken(why):
-        die(f"{path}: {why}", error="action_failed")
-    return entry_store.valid(data["entries"], _problem, broken, list_records.printable,
-                             key=list_records.allowlist_key, twice=list_records.allowlist_twice)
-
-
 def legacy_files():
     """The Allowlist files from before allowlist.json, as (path, scope)."""
     out = []
@@ -232,15 +216,14 @@ def read():
     path = store_file()
     try:
         with open(path, encoding="utf-8") as f:
-            data = json.load(f)
+            return list_records.allowlist_entries(f.read()), []
     except FileNotFoundError:
         files = legacy_files()
         return _from_legacy(files, int(time.time()))[0], files
     except OSError as e:
         die(f"{path}: {e.strerror}", error="action_failed")
-    except ValueError:
-        die(f"{path}: not valid JSON", error="action_failed")
-    return _valid(data, path), []
+    except ValueError as e:        # the record's checks and texts, as the proxy has them
+        die(f"{path}: {'not valid JSON' if isinstance(e, UnicodeDecodeError) else e}", error="action_failed")
 
 
 def _order(entries):
