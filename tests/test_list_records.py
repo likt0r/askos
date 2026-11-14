@@ -48,10 +48,22 @@ class SeamTest(unittest.TestCase):
 
     def test_the_rpm_restarts_the_proxies_when_a_module_they_import_changes(self):
         with open(os.path.join(REPO, "rpm", "agentbox.spec")) as f:
-            code = re.search(r"^%global proxy_code (.*)$", f.read(), re.M).group(1).split()
+            spec = f.read()
+        code = re.search(r"^%global proxy_code (.*)$", spec, re.M).group(1).split()
         imported = set().union(*(self.imports(p) for p in ("agentbox-proxy", "agentbox-suspicious")))
-        modules = {f"%{{_prefix}}/lib/agentbox/agentbox/{m.split('.', 1)[1]}.py" for m in imported if "." in m}
+        modules = {"%{_prefix}/lib/agentbox/agentbox/" + (m.split(".", 1)[1] if "." in m else "__init__") + ".py"
+                   for m in imported}
         self.assertEqual(set(code), {"%{_libexecdir}/agentbox-proxy", "%{_libexecdir}/agentbox-suspicious"} | modules)
+        # %pre takes the old code's hash, %posttrans the new one's, both of the same list
+        for scriptlet in ("%pre", "%posttrans"):
+            body = re.search(r"^%s\n(.*?)(?=^%%[a-z]+\b)" % scriptlet, spec, re.M | re.S).group(1)
+            self.assertIn("cat %{proxy_code}", body, scriptlet)
+
+    def test_no_proxy_program_imports_more_of_the_package_inside_a_function(self):
+        for program in PROGRAMS:
+            with open(os.path.join(REPO, "proxy", program)) as f:
+                imports = re.findall(r"^\s*(?:from|import)\s+(agentbox\S*)", f.read(), re.M)
+            self.assertLessEqual(set(imports), {"agentbox", "agentbox.list_records"}, program)
 
     def test_patterns_py_no_longer_loads_the_classifier(self):
         with open(os.path.join(REPO, "agentbox", "patterns.py")) as f:

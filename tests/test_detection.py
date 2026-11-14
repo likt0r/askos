@@ -602,6 +602,14 @@ class HarmlessCliTest(CliTest):
                          (0, '{"domain": "other.example", "regex": null, '
                              '"message": "other.example no longer marked harmless"}\n', ""))
 
+    def test_unmark_removes_every_line_that_reads_as_the_mark(self):
+        # hand edits the classifier reads as githbu.com: a second word, a comment, case, a dot
+        write(os.path.join(self.conf, "harmless"),
+              HEADER + b"githbu.com extra\nGithbu.COM. # note\nfresh.example\n")
+        self.assertEqual(self.run_agentbox("harmless"), (0, "githbu.com\ngithbu.com\nfresh.example\n", ""))
+        self.assertEqual(self.run_agentbox("unmark-harmless", "githbu.com")[0], 0)
+        self.assertEqual(self.read_conf("harmless"), HEADER + b"fresh.example\n")
+
     def test_without_list(self):
         self.assertEqual(self.run_agentbox("harmless", "--json"), (0, "[]\n", ""))
         self.assertEqual(self.run_agentbox("unmark-harmless", "githbu.com")[0], 0)

@@ -172,7 +172,7 @@ def _clipped(text, limit):
 
 
 def _problem(e):
-    return list_records.allowlist_problem(e, _clipped)
+    return list_records.allowlist_problem(e)
 
 
 def _valid(data, path):
@@ -183,8 +183,8 @@ def _valid(data, path):
 
     def broken(why):
         die(f"{path}: {why}", error="action_failed")
-    return entry_store.valid(data["entries"], _problem, broken, _clipped, key=list_records.allowlist_key,
-                             twice=lambda e: list_records.allowlist_twice(e, _clipped))
+    return entry_store.valid(data["entries"], _problem, broken, list_records.printable,
+                             key=list_records.allowlist_key, twice=list_records.allowlist_twice)
 
 
 def legacy_files():

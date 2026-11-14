@@ -53,10 +53,7 @@ def label(ref):
     return f"pattern {ref[1]}" if ref[0] == "regex" else ref[1]
 
 
-def param(ref):
-    """The entry asked for as an entry's field or a failure's parameter: {"domain": d} or
-    {"regex": p}."""
-    return {ref[0]: ref[1]}
+param = list_records.param
 
 
 def given(ref):

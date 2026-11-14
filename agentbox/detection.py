@@ -220,10 +220,11 @@ def unmark_harmless(args):
     f = harmless_file()
     if os.path.isfile(f):
         with state_files.locked(f):
-            data = state_files.read(f)
-            entry = _mark_line(ref)
-            if entry in state_files.lines(data):
-                state_files.write_atomic(f, b"".join(l + b"\n" for l in state_files.lines(data) if l != entry), 0o644)
+            data = state_files.lines(state_files.read(f))
+            mark = list_records.param(ref)
+            kept = [l for l in data if list_records.harmless_marks(l.decode("utf-8", "replace")) != [mark]]
+            if kept != data:            # every line that reads as the mark, as the classifier reads it
+                state_files.write_atomic(f, b"".join(l + b"\n" for l in kept), 0o644)
     done(as_json, f"{label(ref)} no longer marked harmless", **given(ref))
 
 
