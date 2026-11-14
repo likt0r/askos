@@ -255,10 +255,9 @@ class AllowlistProxyTest(allowlist_tests.ProxyTest):
 
     def test_a_pattern_the_rules_refuse_is_left_out(self):
         # only a hand edit can put one there: agentbox refuses it
-        self.store(rx(r"(a+)+\.example"), rx(".*"), rx(MIRRORS), {"domain": "x.example", "regex": MIRRORS,
-                                                                  "scope": "all", "expires": None})
+        self.store(rx(r"(a+)+\.example"), rx(".*"), rx(MIRRORS))
         self.start()
-        for host in ("aaa.example", "anything.example", "x.example"):
+        for host in ("aaa.example", "anything.example"):
             with self.subTest(host=host):
                 self.assertTrue(self.refused(host))
         self.tunnel("mirror1.vendor.example")

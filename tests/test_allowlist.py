@@ -215,13 +215,35 @@ class ScopeTest(ProxyTest):
         self.store(entry("later.example", "work"))
         self.tunnel("later.example")
 
-    def test_entries_with_wrong_types_allow_nothing(self):
-        self.store({"domain": "a.example", "scope": "work", "expires": "never"},
-                   {"domain": "b.example", "scope": ["work"], "expires": None}, entry("c.example", "work"))
+    def test_a_broken_entry_breaks_the_record_and_a_starting_proxy_allows_nothing(self):
+        # checked as the CLI checks them: a wrong type, a missing field, a domain that is none
+        # (com would cover every .com host), a second entry
+        partial = {k: v for k, v in entry("a.example", "work").items() if k != "note"}
+        for broken, why in (({"domain": "a.example", "scope": "work", "expires": "never"},
+                             "field expires missing or of the wrong type"),
+                            (partial, "field note missing or of the wrong type"),
+                            (entry("com", "all"), "invalid domain com"),
+                            (entry("A.example.", "all"), "invalid domain A.example."),
+                            (entry("c.example", "work"), "c.example (work) twice")):
+            with self.subTest(why=why):
+                self.store(broken, entry("c.example", "work"))
+                self.start()
+                for host in ("a.example", "c.example", "x.com"):
+                    self.assertTrue(self.refused(host))
+                self.assertIn(f"unreadable (broken entry ({why})), nothing is allowed until it is fixed"
+                              if "twice" not in why else f"unreadable ({why}), nothing is allowed", self.log())
+                self.stop()
+                os.remove(self.sock)        # the next proxy binds it again
+
+    def test_a_running_proxy_keeps_its_entries_when_an_entry_breaks(self):
+        self.store(entry("c.example", "work"))
         self.start()
-        self.assertTrue(self.refused("a.example"))
-        self.assertTrue(self.refused("b.example"))
         self.tunnel("c.example")
+        self.store(entry("com", "all"), entry("c.example", "work"))
+        time.sleep(SETTLE)
+        self.tunnel("c.example")
+        self.assertTrue(self.refused("x.com"))
+        self.assertIn("unreadable (broken entry (invalid domain com)), the previous entries stay", self.log())
 
     def test_a_broken_file_keeps_the_entries_before_it(self):
         self.store(entry("a.example", "work"))

@@ -368,7 +368,9 @@ flowchart LR
   expiry (15 minutes, 1 hour, 8 hours or 7 days; a **Temporary allowlist entry**), a note, and
   who added it when. Only the
   `agentbox` CLI writes it (`allow`, `disallow`, `extend`, `make-permanent`, `set-note`);
-  a broken file leaves the proxy with the entries it read before. `agentbox
+  a broken file, also one with a single broken or second entry (the proxy checks the
+  entries as the CLI does, `agentbox/list_records.py`), leaves the proxy with the entries it
+  read before, and a proxy that starts with one allows nothing until it is fixed. `agentbox
   migrate-allowlist` (run by `agentbox setup`) took over the earlier files
   `/etc/agentbox/allowlist` and `allowlist-<vm>`, every entry of them, and moved them aside
   as `*.migrated`; until then the proxy reads those.
