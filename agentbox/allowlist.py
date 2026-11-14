@@ -45,7 +45,7 @@ import sys
 import time
 from collections import Counter
 
-from . import activity, entry_store, options, paths, patterns, registry, settings, state_files, times
+from . import activity, entry_store, list_records, options, paths, patterns, registry, settings, state_files, times
 from .errors import Fail, die
 from .network import CLIENT_REASONS, DOMAIN, done, valid_domain
 from .sanitize import clean, field
@@ -71,7 +71,7 @@ LOGGED = re.compile(r"\[[a-z0-9-]+\] (ALLOWED|BLOCKED) ([a-z0-9.-]+) \((.*)\)")
 
 
 def store_file():
-    return os.path.join(paths.CONF, "allowlist.json")
+    return os.path.join(paths.CONF, list_records.ALLOWLIST)
 
 
 def default_duration():
@@ -172,7 +172,7 @@ def _clipped(text, limit):
 
 
 def _scope_or_note(e):
-    """The Allowlist's own checks of a stored entry (entry_store.problem)."""
+    """The Allowlist's own checks of a stored entry (list_records.problem)."""
     if e["scope"] != ALL and (not registry.NAME.fullmatch(e["scope"]) or registry.reserved(e["scope"])):
         return f"invalid scope {_clipped(e['scope'], 20)}"
     if len(e["note"]) > MAX_NOTE:
@@ -181,7 +181,7 @@ def _scope_or_note(e):
 
 
 def _problem(e):
-    return entry_store.problem(e, FIELDS, _clipped, _scope_or_note)
+    return list_records.problem(e, FIELDS, _clipped, _scope_or_note)
 
 
 def _valid(data, path):
@@ -193,15 +193,17 @@ def _valid(data, path):
     def broken(why):
         die(f"{path}: {why}", error="action_failed")
     return entry_store.valid(data["entries"], _problem, broken, _clipped, key=lambda e: (patterns.key(e), e["scope"]),
-                             twice=lambda e: f"{_clipped(patterns.value(e), entry_store.SHOWN)} ({e['scope']}) twice")
+                             twice=lambda e: f"{_clipped(patterns.value(e), list_records.MAX_HOST)} ({e['scope']}) twice")
 
 
 def legacy_files():
     """The Allowlist files from before allowlist.json, as (path, scope)."""
     out = []
+    every, one = list_records.LEGACY_ALLOWLIST
+    prefix = one.format("")
     for n in state_files.listdir(paths.CONF):
-        vm = n[len("allowlist-"):] if n.startswith("allowlist-") else None
-        if n == "allowlist":
+        vm = n[len(prefix):] if n.startswith(prefix) else None
+        if n == every:
             out.append((os.path.join(paths.CONF, n), ALL))
         elif vm and registry.NAME.fullmatch(vm) and not registry.reserved(vm):
             out.append((os.path.join(paths.CONF, n), vm))
@@ -212,9 +214,8 @@ def _from_legacy(files, now):
     """(entries, lines that are no domain) of the legacy files, read as the proxy read them."""
     entries, skipped, seen = [], [], set()
     for path, scope in files:
-        for body, _ in entry_store.legacy_lines(path) or ():
-            domain = entry_store.legacy_domain(body.strip())
-            if not domain or (domain, scope) in seen:
+        for domain in list_records.legacy_allowlist(state_files.read(path, b"").decode("utf-8", "replace")):
+            if (domain, scope) in seen:
                 continue
             if not DOMAIN.fullmatch(domain):
                 skipped.append(clean(domain, False)[:60])
@@ -283,7 +284,7 @@ def _existing(entries, ref, scope):
 
 def _remove_legacy(name):
     """A legacy file of the VM, and its migrated copy, go as well."""
-    path = os.path.join(paths.CONF, f"allowlist-{name}")
+    path = os.path.join(paths.CONF, list_records.LEGACY_ALLOWLIST[1].format(name))
     for p in (path, path + ".migrated"):
         state_files.remove(p)
 
@@ -308,7 +309,7 @@ def drop_vm(name):
         before = len(entries)
         entries[:] = [e for e in entries if e["scope"] != name]
         gone = len(entries) != before
-    legacy = os.path.join(paths.CONF, f"allowlist-{name}")
+    legacy = os.path.join(paths.CONF, list_records.LEGACY_ALLOWLIST[1].format(name))
     gone = gone or os.path.exists(legacy)
     _remove_legacy(name)
     return gone
@@ -352,13 +353,13 @@ def preview(scope, pattern):
                                             cap=PREVIEW_LINES), None
     except Fail as f:
         log, unreadable = [], f.message
-    compiled = patterns.compiled(pattern)
+    compiled = list_records.compile_pattern(pattern)
     counts = {}
     for e in log:
         m = LOGGED.fullmatch(field(e, "MESSAGE", limit=1024) or "")
         if m and m.group(3) in CLIENT_REASONS:
             continue
-        if m and compiled is not None and patterns.matches(compiled, m.group(2)):
+        if m and compiled is not None and list_records.pattern_matches(compiled, m.group(2)):
             c = counts.setdefault(m.group(2), {"allowed": 0, "blocked": 0})
             c["allowed" if m.group(1) == "ALLOWED" else "blocked"] += 1
     hosts = sorted(counts)
@@ -601,7 +602,7 @@ def check_regex(args):
             die(f"invalid domain: {clean(h, False)[:60]}", error="invalid_domain", domain=clean(h, False)[:60])
     compiled = re.compile(pattern)
     result = {"list": which, "regex": pattern, "scope": scope if which == "allowlist" else None,
-              "matches": {h: patterns.matches(compiled, h) for h in hosts},
+              "matches": {h: list_records.pattern_matches(compiled, h) for h in hosts},
               "preview": preview(scope, pattern) if which == "allowlist" else None}
     if "json" in opts:
         print(json.dumps(result, ensure_ascii=False))

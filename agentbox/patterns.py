@@ -5,10 +5,9 @@ Matching. re.fullmatch on the lowercased host name without its trailing dot; hos
 than a host name or with other characters than printable ASCII never match. A domain entry
 keeps covering its subdomains; a pattern matches exactly what it matches.
 
-Rules. Whether a pattern may be an entry is decided by the classifier
-(proxy/agentbox-suspicious, pattern_problem), which the proxy loads as well: agentbox
-loads the same file (paths.SUSPICIOUS) so that both judge a pattern alike, and a pattern
-agentbox accepts is never one the proxy leaves out. At most 200 printable ASCII characters
+Rules. Whether a pattern may be an entry is decided in the list records
+(list_records.py, pattern_problem), which the proxy and the classifier import as well: all
+judge a pattern alike, and a pattern agentbox accepts is never one the proxy leaves out. At most 200 printable ASCII characters
 without spaces; it compiles; no uppercase letters, backreferences or lookarounds; no
 quantifier or alternative inside a repeated group; at most two quantifiers in a row that
 can take the same characters. The breadth check: it matches none of a fixed sample of
@@ -23,26 +22,9 @@ closed until it is removed. It is listed with the reason (refused) and removed b
 the other entries keep working. Commands take the pattern with --regex PATTERN where they take a domain,
 and remove or change an entry by the same value.
 """
-from . import paths, scripts
+from . import list_records
 from .errors import die
 from .sanitize import clean
-
-_rules = None
-
-
-def rules():
-    """The classifier as a module, for its pattern rules (loaded once, like the proxy loads
-    it; no bytecode is written next to it)."""
-    global _rules
-    if _rules is None:
-        _rules = scripts.load(paths.SUSPICIOUS, "agentbox_suspicious")
-    return _rules
-
-
-def problem(pattern, broad=True):
-    """Why pattern cannot be an entry, as (reason, English text, sample host or None), else
-    None (the classifier's pattern_problem)."""
-    return rules().pattern_problem(pattern, broad)
 
 
 def checked(pattern, broad=True):
@@ -50,7 +32,7 @@ def checked(pattern, broad=True):
     (too-long, characters, syntax, uppercase, backreference, lookaround, nested-quantifier,
     too-complex), or pattern_too_broad with the host of the sample it matches. broad: with
     the breadth check (every list but the Watchlist)."""
-    why = problem(pattern, broad)
+    why = list_records.pattern_problem(pattern, broad)
     shown = clean(str(pattern), False)[:60]
     if why and why[0] == "too-broad":
         die(f"--regex {shown}: {why[1]}", error="pattern_too_broad", host=why[2])
@@ -61,24 +43,13 @@ def checked(pattern, broad=True):
 
 def refused(e, broad=True):
     """Why the rules refuse a stored Regex entry (a hand edit, or a later Release with stricter
-    rules or a larger breadth sample), else None (the classifier's refused_entry, the same text
-    the proxy goes by). Such an entry counts as nothing, but stays listed with this reason and
+    rules or a larger breadth sample), else None (list_records.refused_entry, the same text the proxy
+    goes by). Such an entry counts as nothing, but stays listed with this reason and
     can be removed by its pattern; the other entries keep working."""
-    return rules().refused_entry(e, broad) if "regex" in e else None
+    return list_records.refused_entry(e, broad) if "regex" in e else None
 
 
-def compiled(pattern):
-    return rules().compile_pattern(pattern)
-
-
-def matches(compiled_pattern, host):
-    """Whether a compiled pattern matches host (lowercased, without its trailing dot)."""
-    return rules().pattern_matches(compiled_pattern, host)
-
-
-def key(e):
-    """What tells an entry apart within its scope: ("regex", pattern) or ("domain", domain)."""
-    return ("regex", e["regex"]) if "regex" in e else ("domain", e["domain"])
+key = list_records.key
 
 
 def value(e):

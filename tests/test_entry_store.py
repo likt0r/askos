@@ -12,7 +12,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from agentbox import entry_store, paths, patterns  # noqa: E402
+from agentbox import entry_store, list_records, paths, patterns  # noqa: E402
 from agentbox.errors import Fail  # noqa: E402
 from agentbox.network import valid_domain  # noqa: E402
 
@@ -75,7 +75,7 @@ class ArgumentsTest(unittest.TestCase):
 
 class ProblemTest(unittest.TestCase):
     def problem(self, e, extra=None):
-        return entry_store.problem(e, FIELDS, shown, extra)
+        return list_records.problem(e, FIELDS, shown, extra)
 
     def test_the_common_checks(self):
         self.assertIsNone(self.problem({"domain": "a.org", "note": "", "added": 1}))
@@ -89,7 +89,7 @@ class ProblemTest(unittest.TestCase):
                          "both domain and regex")
 
     def test_an_invalid_domain_is_shown_by_the_list_s_function(self):
-        self.assertEqual(entry_store.problem({"domain": "A" * 70, "note": "", "added": 1}, FIELDS,
+        self.assertEqual(list_records.problem({"domain": "A" * 70, "note": "", "added": 1}, FIELDS,
                                              lambda t, n: f"<{t[:n]}>"), f"invalid domain <{'A' * 60}>")
 
     def test_the_list_s_own_checks_come_last(self):
@@ -104,7 +104,7 @@ class ValidTest(unittest.TestCase):
     def valid(self, entries, **kw):
         def broken(why):
             raise ValueError(why)
-        return entry_store.valid(entries, lambda e: entry_store.problem(e, FIELDS, shown), broken, printable, **kw)
+        return entry_store.valid(entries, lambda e: list_records.problem(e, FIELDS, shown), broken, printable, **kw)
 
     def test_a_broken_or_second_entry_ends_it(self):
         good = [{"domain": "a.org", "note": "", "added": 1}, {"regex": "a.org", "note": "", "added": 1}]
@@ -213,7 +213,7 @@ class StorageTest(unittest.TestCase):
         self.assertEqual(entry_store.legacy_lines(path),
                          [("A.Org. ", " docs"), ("", ""), ("", " only a comment"), ("b.org exfil ", " src")])
         self.assertIsNone(entry_store.legacy_lines(os.path.join(self.dir, "missing")))
-        self.assertEqual(entry_store.legacy_domain("A.Org."), "a.org")
+        self.assertEqual(list_records.legacy_domain("A.Org."), "a.org")
         with self.assertRaises(Fail) as caught:
             entry_store.legacy_lines(self.dir)
         self.assertEqual(caught.exception.error, "action_failed")
