@@ -1252,8 +1252,9 @@ Files `agentbox` opens or runs itself are moved under `AGENTBOX_ROOT` in tests; 
 names for others (in units, for `sudo`) are the Host's even there. The programs in
 `libexec` that load one another (the proxy and the
 Feeds the classifier, its self-test the proxy, the backend its readings) look next to
-themselves, so they work the same in a checkout. Only the two starters find the package
-on their own: `bin/agentbox` and `agentbox-web` look next to themselves in a checkout and
+themselves, so they work the same in a checkout. The programs that import the package find
+it on their own: `bin/agentbox` and `agentbox-web`, and the proxy and the classifier, which
+import only its leaf module `list_records`, look next to themselves in a checkout and
 otherwise in `lib/agentbox` under their own prefix.
 
 ## What it does not protect against

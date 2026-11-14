@@ -31,7 +31,7 @@ Datei nicht gibt (vor agentbox migrate-allowlist), gelten die alten Listen
 /etc/agentbox/allowlist und allowlist-<vm>, eine gueltige Domain pro Zeile.
 
 A Regex entry (ADR 0013) has a pattern (regex) instead of the domain, compiled once
-whenever the file is read again; one that breaks the rules of agentbox-suspicious is
+whenever the file is read again; one that breaks the pattern rules (list_records) is
 left out. It never allows a destination with strong Signals, checked on every connection
 as in Open web ("suspicious: <signals>"), and nothing while the Watchlist cannot be read:
   [<vm>] BLOCKED <host> (Watchlist unreadable, regex entries closed)
@@ -341,7 +341,8 @@ class Allowlist:
                     self.entries, self.compiled, refused = _entries(f.read(), self.ctx)
             except (OSError, ValueError) as e:
                 why = records.printable(str(e), 200) if isinstance(e, ValueError) and str(e) else type(e).__name__
-                kept = "the previous entries stay" if self.good else "nothing is allowed until it is fixed"
+                kept = ("the previous entries stay" if self.good or self.entries
+                        else "nothing is allowed until it is fixed")
                 log(self.ctx, f"ERROR {path} unreadable ({why}), {kept}")
             else:
                 self.good = True

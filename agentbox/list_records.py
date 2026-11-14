@@ -461,6 +461,11 @@ def legacy_allowlist(text):
     return [d for d in (legacy_domain(body.strip()) for body, _ in legacy_lines(text)) if d]
 
 
+def param(ref):
+    """An entry asked for, ("domain", d) or ("regex", p), as {"domain": d} or {"regex": p}."""
+    return {ref[0]: ref[1]}
+
+
 def harmless_marks(text):
     """The Harmless marks as {"domain": d} or {"regex": p}: a domain per line (the first word,
     comments after #), or "regex <pattern>" for a Regex entry."""

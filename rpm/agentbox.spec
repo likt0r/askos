@@ -61,9 +61,9 @@ Requires:       e2fsprogs
 # The Containerfile and guest files are the Base image's build context: they belong to the
 # VMs, not to the Host. Keep them byte for byte (no shebang rewriting) and take no
 # dependencies from them.
-# the proxy code: the proxy, the classifier it loads and the one module of the package both
-# import (list_records; tests/test_list_records.py checks this list against their imports)
-%global proxy_code %{_libexecdir}/agentbox-proxy %{_libexecdir}/agentbox-suspicious %{_prefix}/lib/agentbox/agentbox/list_records.py
+# the proxy code: the proxy, the classifier it loads and what of the package both import
+# (the package itself and list_records; tests/test_list_records.py checks this list against their imports)
+%global proxy_code %{_libexecdir}/agentbox-proxy %{_libexecdir}/agentbox-suspicious %{_prefix}/lib/agentbox/agentbox/__init__.py %{_prefix}/lib/agentbox/agentbox/list_records.py
 %global __brp_mangle_shebangs_exclude_from ^%{_datadir}/agentbox/vm/
 %global __requires_exclude_from ^%{_datadir}/agentbox/vm/
 
