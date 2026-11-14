@@ -857,9 +857,9 @@ Host after every Build
 ### Control Room
 A small Python standard-library service running as an unprivileged user; every action is one
 call of `sudo agentbox <command> …` with fixed arguments, the command first, naming the
-browser's device (from its User-Agent) and address as the actor right after it. The Control
-Room's commands are `CONTROL_ROOM_COMMANDS` in `agentbox/cli.py`; tests hold it equal to the
-commands the backend runs and to the list in its sudoers rule. That rule lets `agentbox-web`
+browser's device (from its User-Agent) and address as the actor right after it. The commands
+the Control Room may run are declared beside their handlers in `agentbox/`; tests hold that set
+equal to the commands the backend runs and to the list in its sudoers rule. That rule lets `agentbox-web`
 run `agentbox` only with one of these commands as the first argument (a sudoers regular
 expression, sudo 1.9.10 or later). Since sudo matches the arguments joined with spaces, a first
 argument such as `start setup` still passes it; agentbox knows no such command. Called through

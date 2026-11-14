@@ -940,6 +940,7 @@ class PackageTest(unittest.TestCase):
     modules only: never one that pulls in the CLI's commands (activity, images, github)."""
 
     LEAVES = {"agentbox", "agentbox.errors", "agentbox.paths", "agentbox.state_files", "agentbox.sanitize",
+              "agentbox.commands", "agentbox.durations",
               "agentbox.hostsetup", "agentbox.settings", "agentbox.version", "agentbox.registry",
               "agentbox.vmenv", "agentbox.safeguards", "agentbox.journal", "agentbox.times"}
 

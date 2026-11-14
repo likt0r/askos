@@ -149,7 +149,7 @@ else `500 action_failed`, with the message in `detail`:
 | 502 | `container_image_cleanup_failed` | the Container image cleanup in the VM failed or answered something other than its two numbers (in Activity only) |
 | 400 | `invalid_argument` | any other value or option agentbox refused |
 | 500 | `sudo_failed` | sudo refused to run agentbox for the backend (its sudo rule is missing or does not allow the call), or agentbox did not run as root |
-| 500 | `control_room_refused` | agentbox refused a command or `--force` that only the CLI on the Host may run, not the Control Room (`agentbox/cli.py` `CONTROL_ROOM_COMMANDS`) |
+| 500 | `control_room_refused` | agentbox refused a command or `--force` that only the CLI on the Host may run, not the Control Room (the command declarations in `agentbox/`) |
 | 500 | `action_failed` | anything else agentbox reported (e.g. libvirt failing, a broken file on the Host); also the code of every failure only the Host can cause (setup, regenerate, timers) |
 
 ### agentbox's failures

@@ -45,14 +45,12 @@ import sys
 import time
 from collections import Counter
 
-from . import activity, entry_store, options, paths, patterns, registry, settings, state_files, times
+from . import activity, durations, entry_store, options, paths, patterns, registry, settings, state_files, times
 from .errors import Fail, die
 from .network import CLIENT_REASONS, DOMAIN, done, valid_domain
 from .sanitize import clean, field
 
 ALL = "all"
-# Durations of a Temporary allowlist entry (--for), in seconds
-DURATIONS = {"15min": 15 * 60, "1h": 3600, "8h": 8 * 3600, "7d": 7 * 86400}
 # --temporary without --for; Settings (#22) will make this configurable
 MAX_NOTE = 200
 USES_WINDOW = 86400                  # uses are counted over the last 24 hours
@@ -109,12 +107,12 @@ def _seconds(opts):
     if "for" in opts and "temporary" in opts:
         die("--for and --temporary not together", error="invalid_duration")
     if "temporary" in opts:
-        return DURATIONS[default_duration()]
+        return durations.DURATIONS[default_duration()][0]
     if "for" in opts:
-        if opts["for"] not in DURATIONS:
+        if opts["for"] not in durations.DURATIONS:
             die("--for must be 15min, 1h, 8h or 7d", error="invalid_duration",
                 value=clean(str(opts["for"]), False)[:20])
-        return DURATIONS[opts["for"]]
+        return durations.DURATIONS[opts["for"]][0]
     return None
 
 
@@ -643,6 +641,36 @@ def migrate(args):
          skipped=skipped)
 
 
-COMMANDS = {"allowlist": show, "allow": allow, "disallow": disallow, "extend": extend,
-            "make-permanent": make_permanent, "set-note": set_note, "expire-allowlist": expire,
-            "migrate-allowlist": migrate, "check-regex": check_regex}
+from .commands import declare
+
+DECLARATIONS = {
+    "allowlist": declare(show, "agentbox allowlist [<vm>|all] [--json]", options={"json": False},
+                         read_only=True, control_room=True, option_exit=1, order=31),
+    "allow": declare(allow, "agentbox allow <vm|all> <domain>|--regex PATTERN [--confirm-pattern] [--for D|--temporary] [--note TEXT] [--force] [--json]",
+                     options={"regex": True, "confirm-pattern": False, "for": True, "temporary": False,
+                              "note": True, "force": False, "json": False}, option_exit=1,
+                     control_room=True, kind="allowlist",
+                     describe=activity._listed("Allow {}", "for", temporary=True, force=True), order=31),
+    "disallow": declare(disallow, "agentbox disallow <vm|all> <domain> [--regex PATTERN] [--json]",
+                        options={"regex": True, "json": False}, option_exit=1, control_room=True,
+                        kind="allowlist", describe=activity._listed("Remove the Allowlist entry {}"), order=32),
+    "extend": declare(extend, "agentbox extend <vm|all> <domain> --for D [--regex PATTERN] [--force] [--json]",
+                      options={"for": True, "regex": True, "force": False, "json": False}, option_exit=1,
+                      control_room=True, kind="allowlist",
+                      describe=activity._listed("Extend the Allowlist entry {}", "by", force=True), order=33),
+    "make-permanent": declare(make_permanent, "agentbox make-permanent <vm|all> <domain> [--regex PATTERN] [--force] [--json]",
+                              options={"regex": True, "force": False, "json": False}, option_exit=1,
+                              control_room=True, kind="allowlist",
+                              describe=activity._listed("Make the Allowlist entry {} permanent", force=True), order=34),
+    "set-note": declare(set_note, "agentbox set-note <vm|all> <domain> --note TEXT [--regex PATTERN] [--json]",
+                        options={"note": True, "regex": True, "json": False}, option_exit=1, control_room=True,
+                        kind="allowlist", describe=activity._listed("Note on the Allowlist entry {}"), order=35),
+    "expire-allowlist": declare(expire, "agentbox expire-allowlist [--json]", options={"json": False},
+                                 own_entries=True, kind="allowlist", option_exit=1, order=0),
+    "migrate-allowlist": declare(migrate, "agentbox migrate-allowlist [--json]", options={"json": False},
+                                  kind="allowlist", describe=lambda a: activity._said("Take over the old Allowlist files"),
+                                  option_exit=1, order=30),
+    "check-regex": declare(check_regex, "agentbox check-regex <list> --regex PATTERN [<host>...] [--scope vm|all] [--json]",
+                           options={"regex": True, "scope": True, "json": False}, read_only=True,
+                           control_room=True, option_exit=1, order=28),
+}

@@ -635,7 +635,36 @@ def migrate(args):
     done("json" in opts, "; ".join(said + notes) or NOTHING_TO_MIGRATE, **result)
 
 
-COMMANDS = {"watchlist": watchlist, "watch-add": watch_add, "watch-remove": watch_remove,
-            "watch-set-note": watch_set_note, "legitimate": legitimate, "legitimate-add": legitimate_add,
-            "legitimate-remove": legitimate_remove, "legitimate-set-note": legitimate_set_note,
-            "migrate-lists": migrate}
+from .commands import declare
+
+DECLARATIONS = {
+    "watchlist": declare(watchlist, "agentbox watchlist [--json]", options={"json": False}, read_only=True,
+                          control_room=True, option_exit=1, order=0),
+    "watch-add": declare(watch_add, "agentbox watch-add <domain>|--regex PATTERN --category C [--source S] [--note TEXT] [--force] [--json]",
+                         options={"regex": True, "category": True, "source": True, "note": True,
+                                  "force": False, "json": False}, option_exit=1, control_room=True,
+                         describe=activity._watch_add, order=91),
+    "watch-remove": declare(watch_remove, "agentbox watch-remove <domain>|--regex PATTERN [--force] [--json]",
+                            options={"regex": True, "force": False, "json": False}, option_exit=1,
+                            control_room=True, describe=activity._domain("Watchlist: remove {}", force=True),
+                            order=93),
+    "watch-set-note": declare(watch_set_note, "agentbox watch-set-note <domain>|--regex PATTERN --note TEXT [--json]",
+                              options={"regex": True, "note": True, "json": False}, option_exit=1,
+                              control_room=True, describe=activity._domain("Watchlist: note on {}"), order=95),
+    "legitimate": declare(legitimate, "agentbox legitimate [--json]", options={"json": False}, read_only=True,
+                          control_room=True, option_exit=1, order=0),
+    "legitimate-add": declare(legitimate_add, "agentbox legitimate-add <domain>|--regex PATTERN [--note TEXT] [--force] [--json]",
+                              options={"regex": True, "note": True, "force": False, "json": False},
+                              option_exit=1, control_room=True,
+                              describe=activity._domain("Add the Legitimate domain {}", force=True), order=97),
+    "legitimate-remove": declare(legitimate_remove, "agentbox legitimate-remove <domain>|--regex PATTERN [--json]",
+                                 options={"regex": True, "json": False}, option_exit=1, control_room=True,
+                                 describe=activity._domain("Remove the Legitimate domain {}"), order=101),
+    "legitimate-set-note": declare(legitimate_set_note, "agentbox legitimate-set-note <domain>|--regex PATTERN --note TEXT [--json]",
+                                   options={"regex": True, "note": True, "json": False}, option_exit=1,
+                                   control_room=True, describe=activity._domain("Note on the Legitimate domain {}"),
+                                   order=102),
+    "migrate-lists": declare(migrate, "agentbox migrate-lists [--json]", options={"json": False},
+                             describe=lambda a: activity._said("Take over the Watchlist and the Legitimate domains from the text files"),
+                              option_exit=1, order=103),
+}

@@ -26,7 +26,7 @@ import os
 import re
 import subprocess
 
-from . import guest, lifecycle, options, paths, state_files, times
+from . import activity, guest, lifecycle, options, paths, state_files, times
 from .errors import die
 from .registry import check
 from .sanitize import clean
@@ -169,5 +169,15 @@ def revoke_all(args):
         die("Observer not paired again", 8, error="action_failed", vm=ctx)
 
 
-COMMANDS = {"pairings": pairings, "unpair": unpair, "revoke-pairings": revoke_all}
-NO_ROOT = set()
+from .commands import declare
+
+DECLARATIONS = {
+    "pairings": declare(pairings, "agentbox pairings <vm> [--json]", options={"json": False},
+                         read_only=True, control_room=True, order=17),
+    "unpair": declare(unpair, "agentbox unpair <vm> <device> [--json]", options={"json": False},
+                       control_room=True, kind="pairing",
+                       describe=lambda a: activity._said("Remove a single device"), order=18),
+    "revoke-pairings": declare(revoke_all, "agentbox revoke-pairings <vm> --confirm <vm> [--json]",
+                                options={"confirm": True, "json": False}, control_room=True, kind="pairing",
+                                describe=lambda a: activity._said("Revoke all pairings"), order=19),
+}

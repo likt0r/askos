@@ -469,4 +469,8 @@ def watch(args):
         poller.wake.clear()
 
 
-COMMANDS = {"watch": watch}
+from .commands import declare
+
+DECLARATIONS = {
+    "watch": declare(watch, "agentbox watch", options={}, read_only=True, control_room=True, order=4),
+}

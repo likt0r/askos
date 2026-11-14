@@ -139,4 +139,9 @@ def cleanup(args):
         print(json.dumps({"vms": results}))
 
 
-COMMANDS = {"cleanup-container-images": cleanup}
+from .commands import declare
+
+DECLARATIONS = {
+    "cleanup-container-images": declare(cleanup, "agentbox cleanup-container-images [--json]",
+                                        options={"json": False}, own_entries=True, order=130),
+}

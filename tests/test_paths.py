@@ -122,18 +122,19 @@ class CheckoutTest(unittest.TestCase):
         self.cli, self.ran, self.recorded = cli, [], []
 
         @contextlib.contextmanager
-        def command(cmd, args):
+        def command(cmd, args, declaration, parse_args):
             self.recorded.append(cmd)
-            yield
+            yield parse_args()
 
         def journal(*args, **kw):
             raise AssertionError(f"the Activity journal was reached: {args}")
 
-        def dispatched(name):
-            return lambda args: self.ran.append(name)
+        from dataclasses import replace
+        declarations = {n: replace(d, handler=lambda args, name=n: self.ran.append(name))
+                        for n, d in cli.DECLARATIONS.items()}
 
         for target, name, value in ((paths, "ROOT", ""), (paths, "INSTALLED", False),
-                                    (cli, "COMMANDS", {n: dispatched(n) for n in cli.COMMANDS}),
+                                    (cli, "DECLARATIONS", declarations),
                                     (activity, "command", command), (activity, "record", journal),
                                     (cli.os, "geteuid", lambda: 0)):
             patcher = mock.patch.object(target, name, value)

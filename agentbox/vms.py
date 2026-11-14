@@ -601,6 +601,34 @@ def env(args):
                   f"(agentbox unset-env {name} {n} removes it)")
 
 
-COMMANDS = {"create": create, "delete": delete, "set-memory": set_memory,
-            "set-container-image-cleanup": set_container_cleanup, "set-env": set_env,
-            "unset-env": unset_env, "env": env}
+from .commands import declare
+
+DECLARATIONS = {
+    "create": declare(create, "agentbox create <vm> [--image I] [--memory-mib N] [--data-disk-gib N] [--owner O]... [--container-image-cleanup on|off] [--container-image-cleanup-days N] [--copy-allowlist-from VM] [--json]",
+                      options={**CREATE_OPTIONS}, control_room=True, option_exit=1,
+                      describe=lambda a: activity._said(
+                          "Create the VM" + (f" with Image {activity._name(a.values.get('image'), settings.IMAGE)}"
+                                             if activity._name(a.values.get("image"), settings.IMAGE) else ""),
+                          image=activity._name(a.values.get("image"), settings.IMAGE)), order=5),
+    "delete": declare(delete, "agentbox delete <vm> --confirm <vm> [--delete-data-disk] [--json]",
+                      options={"confirm": True, "delete-data-disk": False, "json": False}, control_room=True,
+                      option_exit=1,
+                      describe=lambda a: activity._said("Delete the VM and its Data disk", delete_data_disk=True)
+                      if "delete-data-disk" in a.values else activity._said("Delete the VM"), order=6),
+    "set-memory": declare(set_memory, "agentbox set-memory <vm> <mib> [--json]", options={"json": False},
+                           control_room=True, option_exit=1,
+                           describe=lambda a: activity._said(f"Memory limit {a.positional[1]} MiB", mib=a.positional[1])
+                           if len(a.positional) > 1 and re.fullmatch(r"[0-9]{1,9}", a.positional[1])
+                           else activity._said("Change the memory limit"), order=7),
+    "set-container-image-cleanup": declare(
+        set_container_cleanup, "agentbox set-container-image-cleanup <vm> [on|off] [--days N] [--json]",
+        options={"days": True, "json": False}, control_room=True, option_exit=1,
+        describe=lambda a: activity._said("Set the Container image cleanup"), order=8),
+    "set-env": declare(set_env, "agentbox set-env <vm> NAME=VALUE [NAME=VALUE ...] [--replace] [--json]",
+                       options={"replace": False, "json": False}, control_room=True, option_exit=1,
+                       describe=activity._set_env, order=9),
+    "unset-env": declare(unset_env, "agentbox unset-env <vm> NAME [NAME ...] [--json]", options={"json": False},
+                         describe=activity._unset_env, option_exit=1, order=10),
+    "env": declare(env, "agentbox env <vm> [--json]", options={"json": False}, read_only=True,
+                   option_exit=1, order=0),
+}

@@ -285,5 +285,20 @@ def alert_view(ctx, rows):
     return out
 
 
-COMMANDS = {"check-domain": check_domain, "harmless": harmless,
-            "mark-harmless": mark_harmless, "unmark-harmless": unmark_harmless, "mark-seen": mark_seen}
+from . import activity
+from .commands import declare
+
+DECLARATIONS = {
+    "check-domain": declare(check_domain, "agentbox check-domain <domain> [--json]", options={"json": False},
+                             read_only=True, control_room=True, option_exit=1, order=29),
+    "harmless": declare(harmless, "agentbox harmless [--json]", options={"json": False}, read_only=True,
+                        control_room=True, option_exit=1, order=0),
+    "mark-harmless": declare(mark_harmless, "agentbox mark-harmless <domain> [--regex PATTERN] [--json]",
+                             options={"regex": True, "json": False}, control_room=True, option_exit=1,
+                             describe=activity._domain("Harmless mark for {}"), order=106),
+    "unmark-harmless": declare(unmark_harmless, "agentbox unmark-harmless <domain> [--regex PATTERN] [--json]",
+                               options={"regex": True, "json": False}, control_room=True, option_exit=1,
+                               describe=activity._domain("Remove the Harmless mark for {}"), order=107),
+    "mark-seen": declare(mark_seen, "agentbox mark-seen <vm> [<domain>] [--json]", options={"json": False},
+                          control_room=True, option_exit=1, describe=activity._mark_seen, order=27),
+}
