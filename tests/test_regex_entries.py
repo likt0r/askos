@@ -1,9 +1,9 @@
 """Regex entries in the Allowlist, the Watchlist, the Legitimate domains and the Harmless
 marks (#2, ADR 0013).
 
-The rules a pattern has to follow and the breadth check are the classifier's
-(proxy/agentbox-suspicious, pattern_problem), which the proxy loads and agentbox loads the
-same way (agentbox/patterns.py).
+The rules a pattern has to follow and the breadth check are in the list records
+(agentbox/list_records.py, pattern_problem), which the proxy, the classifier and agentbox
+import alike.
 
 Seam C: the real proxy (`proxy/agentbox-proxy`) with the real classifier next to it, on a
 Unix socket with a temporary configuration, as in test_allowlist.py, test_lists.py and
@@ -34,6 +34,7 @@ import test_lists as lists_tests  # noqa: E402
 import test_vms as vms_tests  # noqa: E402
 from client_hello import ACCESS_DENIED  # noqa: E402
 from journal_writers import proxy  # noqa: E402
+import proxy_layout  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SUSPICIOUS = os.path.join(REPO, "proxy", "agentbox-suspicious")
@@ -55,7 +56,8 @@ def load(path, name):
     return module
 
 
-RULES = load(SUSPICIOUS, "agentbox_suspicious_rules")
+sys.path.insert(0, REPO)
+from agentbox import list_records as RULES  # noqa: E402  the pattern rules
 
 
 def rx(pattern, scope="all", expires=None, note=""):
@@ -276,8 +278,8 @@ class CompiledOnceTest(unittest.TestCase):
                 proxy = load(PROXY, "agentbox_proxy_compiled_once")
             lists = proxy.Allowlist("work")
             compiled = []
-            real = proxy.suspicious.compile_pattern
-            with mock.patch.object(proxy.suspicious, "compile_pattern",
+            real = proxy.records.compile_pattern
+            with mock.patch.object(proxy.records, "compile_pattern",
                                    side_effect=lambda p, *a: compiled.append(p) or real(p, *a)):
                 for _ in range(20):
                     keys, refused = proxy.granting("mirror1.vendor.example", [], lists, time.time())
@@ -295,7 +297,8 @@ class AllowlistCliTest(allowlist_tests.CliTest):
 
     def setUp(self):
         super().setUp()
-        shutil.copy2(SUSPICIOUS, os.path.join(self.root, "usr", "libexec", "agentbox-suspicious"))
+        os.remove(os.path.join(self.root, "usr", "libexec", "agentbox-suspicious"))     # the fake one
+        os.symlink(SUSPICIOUS, os.path.join(self.root, "usr", "libexec", "agentbox-suspicious"))
         write(os.path.join(self.conf, "watchlist.json"), lists_tests.record(lists_tests.watch("exfil.example")))
         self.now = int(time.time())
         self.journal([
@@ -506,7 +509,7 @@ class CopyTest(vms_tests.VmsTest):
     def test_a_new_vm_copies_the_patterns_of_its_source(self):
         libexec = self.path("usr/libexec")
         os.makedirs(libexec, exist_ok=True)
-        shutil.copy2(SUSPICIOUS, libexec)
+        os.symlink(SUSPICIOUS, os.path.join(libexec, "agentbox-suspicious"))
         self.write("etc/agentbox/allowlist.json", json.dumps({"entries": [
             rx(MIRRORS, "priv", note="Spiegel"), allowlist_tests.entry("docs.rs", "priv")]}))
         self.assertIn("lab: 2 Allowlist entries copied from priv",
@@ -806,7 +809,8 @@ class SelfTestTest(unittest.TestCase):
             self.assertIn(line, out)
 
     def test_it_fails_when_a_pattern_lets_strong_signals_through(self):
-        with tempfile.TemporaryDirectory() as d:
+        with tempfile.TemporaryDirectory() as prefix:
+            d = proxy_layout.libexec(prefix)
             with open(PROXY) as f:
                 source = f.read()
             old = "    if strong(tags):\n        return f\"suspicious: {','.join(tags)}\""

@@ -12,12 +12,10 @@ import grp
 import json
 import os
 import pwd
-import re
 import stat
 import tempfile
-import time
 
-from . import paths
+from . import list_records, paths
 from .errors import die
 
 
@@ -244,17 +242,13 @@ def write_atomic(path, data, mode=0o644, gid=-1, uid=-1):
 
 
 def open_web_file(ctx):
-    return os.path.join(paths.CONF, f"open-{ctx}")
+    return os.path.join(paths.CONF, list_records.OPEN_WEB.format(ctx))
 
 
 def open_until(ctx):
-    """End of the VM's Open web (epoch seconds), or 0 when the web is not open."""
-    try:
-        with open(open_web_file(ctx)) as f:
-            u = f.read().strip().split(".")[0]
-    except OSError:
-        return 0
-    return int(u) if re.fullmatch(r"\d+", u) and int(u) > time.time() else 0
+    """End of the VM's Open web (epoch seconds), or 0 when the web is not open
+    (list_records.open_until, as the proxy reads it)."""
+    return list_records.open_until(open_web_file(ctx))
 
 
 def claude_token_file(ctx):

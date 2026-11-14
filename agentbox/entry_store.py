@@ -3,8 +3,9 @@
 patterns.py), a pattern, with fields of their own besides.
 
 An entry asked for is a ref, ("domain", domain) or ("regex", pattern). A record is the file
-{"entries": [...]}, written sorted and readable by the proxy's user; the text lists from
-before the records are read line by line, a domain per line and a comment after #. Each
+{"entries": [...]}, written sorted and readable by the proxy's user; its format, the entry
+checks and their texts, and the text lists from before the records are list_records.py's,
+which the proxy and the classifier import as well. Each
 list keeps its own commands, files and rules: what tells its entries apart, its own
 checks, how a broken record is reported, its order.
 """
@@ -12,9 +13,8 @@ import contextlib
 import json
 import os
 
-from . import patterns, state_files
+from . import list_records, patterns, state_files
 from .errors import die
-from .network import DOMAIN
 from .sanitize import clean
 
 
@@ -66,44 +66,17 @@ def given(ref):
 
 # --- records -------------------------------------------------------------------------
 
-def problem(e, fields, shown, extra=None):
-    """What is wrong with a stored entry, else None: no JSON object, a field missing or of the
-    wrong type (domain or regex, then fields: {name: type}), both domain and regex, an
-    invalid domain (shown(text, limit) shows it), then extra(e), the list's own checks. A
-    pattern the rules refuse is no broken entry: it counts as nothing (patterns.refused)."""
-    if not isinstance(e, dict):
-        return "not a JSON object"
-    name = "regex" if "regex" in e else "domain"
-    for key, kind in ((name, str), *fields.items()):
-        if key not in e or isinstance(e[key], bool) or not isinstance(e[key], kind):
-            return f"field {key} missing or of the wrong type"
-    if name == "regex":
-        if "domain" in e:
-            return "both domain and regex"
-    elif not DOMAIN.fullmatch(e["domain"]):
-        return f"invalid domain {shown(e['domain'], 60)}"
-    return extra(e) if extra else None
-
-
-# a domain or pattern in a message: at most as long as a host name (the classifier's MAX_HOST)
-SHOWN = 253
-
-
 def valid(entries, check, broken, shown, key=patterns.key, twice=None):
-    """The entries; at the first broken one (check(e) says why, see problem) or one whose key(e) came
+    """The entries; at the first broken one (check(e) says why) or one whose key(e) came
     before (twice(e) says so) broken(why) ends the command, why "broken entry (...)" or the
-    text of twice. Without twice that is "<domain or pattern> listed twice", the value shown
-    by shown(text, limit), as problem shows a domain: a hand-edited pattern may hold control
-    characters."""
-    twice = twice or (lambda e: f"{shown(patterns.value(e), SHOWN)} listed twice")
-    seen = set()
-    for e in entries:
-        why = check(e)
-        why = f"broken entry ({why})" if why else twice(e) if key(e) in seen else None
-        if why:
-            broken(why)
-        seen.add(key(e))
-    return entries
+    text of twice (list_records.checked). Without twice that is "<domain or pattern> listed
+    twice", the value shown by shown(text, limit) at most as long as a host name: a
+    hand-edited pattern may hold control characters."""
+    twice = twice or (lambda e: f"{shown(patterns.value(e), list_records.MAX_HOST)} listed twice")
+    try:
+        return list_records.checked(entries, check, key, twice)
+    except ValueError as e:
+        broken(str(e))
 
 
 def write(path, entries, order, legacy=()):
@@ -146,12 +119,5 @@ def legacy_lines(path):
     """The lines of a text list as (what comes before #, the comment), None when the file is
     missing."""
     data = state_files.read(path, None)
-    if data is None:
-        return None
-    lines = data.decode("utf-8", "replace").splitlines()
-    return [(body, comment) for body, _, comment in (line.partition("#") for line in lines)]
+    return None if data is None else list_records.legacy_lines(data.decode("utf-8", "replace"))
 
-
-def legacy_domain(word):
-    """A domain as a text list has it: lowercased, without its trailing dot."""
-    return word.lower().rstrip(".")

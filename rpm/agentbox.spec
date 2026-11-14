@@ -61,6 +61,9 @@ Requires:       e2fsprogs
 # The Containerfile and guest files are the Base image's build context: they belong to the
 # VMs, not to the Host. Keep them byte for byte (no shebang rewriting) and take no
 # dependencies from them.
+# the proxy code: the proxy, the classifier it loads and the one module of the package both
+# import (list_records; tests/test_list_records.py checks this list against their imports)
+%global proxy_code %{_libexecdir}/agentbox-proxy %{_libexecdir}/agentbox-suspicious %{_prefix}/lib/agentbox/agentbox/list_records.py
 %global __brp_mangle_shebangs_exclude_from ^%{_datadir}/agentbox/vm/
 %global __requires_exclude_from ^%{_datadir}/agentbox/vm/
 
@@ -149,14 +152,13 @@ AGENTBOX_CONF_DIR="$lists" %{python3} -I -B proxy/agentbox-suspicious --self-tes
 rm -rf "$lists"
 
 %pre
-# update only: the proxy code of the Release this one replaces (agentbox-proxy and the
-# classifier agentbox-suspicious it loads), taken before its files are replaced, for
+# update only: the proxy code of the Release this one replaces (agentbox-proxy, the
+# classifier agentbox-suspicious it loads and the package module both import), taken before its files are replaced, for
 # %%posttrans. An update that stopped after replacing them left the code the proxies run
 # here already, so that one is kept. Under /run, like the restart %%posttrans may leave
 # pending: the Host restarting starts the proxies with the installed code anyway.
 if [ $1 -gt 1 ] && [ ! -e /run/agentbox-proxy-code ]; then
-    cat %{_libexecdir}/agentbox-proxy %{_libexecdir}/agentbox-suspicious 2>/dev/null \
-        | sha256sum > /run/agentbox-proxy-code || :
+    cat %{proxy_code} 2>/dev/null | sha256sum > /run/agentbox-proxy-code || :
 fi
 
 %post
@@ -258,7 +260,7 @@ fi
 # and the Orca ports (a process per connection) and the timers' services take the new code
 # with their next start; no VM is touched.
 if [ -f /run/agentbox-proxy-code ]; then
-    code=$(cat %{_libexecdir}/agentbox-proxy %{_libexecdir}/agentbox-suspicious | sha256sum)
+    code=$(cat %{proxy_code} | sha256sum)
     if [ "$code" != "$(cat /run/agentbox-proxy-code)" ]; then
         touch /run/agentbox-proxy-restart
     fi

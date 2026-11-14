@@ -79,7 +79,7 @@ class CliTest(unittest.TestCase):
         vm_records.write(self.root)
         libexec = os.path.join(self.root, "usr", "libexec")
         os.makedirs(libexec)
-        shutil.copy2(SUSPICIOUS, libexec)
+        os.symlink(SUSPICIOUS, os.path.join(libexec, "agentbox-suspicious"))
         write(os.path.join(self.feeds, "threat-intelligence"),
               b"".join(d.encode() + b"\n" for d in sorted(["bad.example", "a.pages.example", "b.pages.example"])))
         self.journald = Journald(os.path.join(self.root, "run", "systemd", "journal.agentbox", "socket"))
@@ -252,7 +252,7 @@ class WatchlistTest(CliTest):
         # a typo in the category of a strong entry would make it weak for the proxy otherwise
         path = os.path.join(self.conf, "watchlist.json")
         partial = {k: v for k, v in watch("a.example").items() if k != "note"}
-        # the CLI and the classifier say the same, byte for byte
+        # the CLI and the classifier say the same (list_records)
         cases = [
             (record(watch("a.example", "exfill")), "broken entry (unknown category exfill)"),
             (record(watch("a.example"), watch("a.example", "c2")), "a.example listed twice"),
@@ -769,7 +769,7 @@ class ProxyTest(unittest.TestCase):
         self.feeds = os.path.join(self.root, "var", "lib", "agentbox", "feeds")
         libexec = os.path.join(self.root, "usr", "libexec")
         os.makedirs(libexec)
-        shutil.copy2(SUSPICIOUS, libexec)
+        os.symlink(SUSPICIOUS, os.path.join(libexec, "agentbox-suspicious"))
         write(os.path.join(self.conf, "watchlist.json"), record(watch("exfil.example", source="Test")))
         write(os.path.join(self.conf, "legitimate.json"), record(legit("registry.example")))
         # the text files from before are ignored once the records exist

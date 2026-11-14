@@ -382,8 +382,8 @@ flowchart LR
   `regex <pattern>` among the Harmless marks, `--regex PATTERN` on the CLI). It matches with
   `re.fullmatch` against the lowercased host name without its trailing dot, only hosts of at
   most 253 printable ASCII characters, and covers no subdomains of its own accord. The rules
-  live in the classifier (`pattern_problem`), which the proxy loads and agentbox loads the
-  same way, so both judge a pattern alike when it is added and whenever a list is read: at
+  live in the list records (`agentbox/list_records.py`, `pattern_problem`), which the proxy,
+  the classifier and agentbox import alike, so all judge a pattern alike when it is added and whenever a list is read: at
   most 200 printable ASCII characters without spaces, it compiles, no uppercase letters,
   backreferences or lookarounds, no quantifier or alternative inside a repeated group, at
   most two quantifiers in a row that can take the same characters (the host comes from the
