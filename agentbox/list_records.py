@@ -25,6 +25,14 @@ LEGACY_LEGITIMATE = "legitimate-domains"
 HARMLESS = "harmless"
 OPEN_WEB = "open-{}"
 
+# a VM's name, and the words that stand, or may come to stand, where one may stand (the scope
+# "all" of Allowlist entries, `agentbox focus off`, the Control Room's areas and paths, its API
+# versions v1, v2, ...), so no VM can have them (registry.py)
+VM_NAME = re.compile(r"[a-z][a-z0-9-]{1,15}")
+RESERVED_NAMES = frozenset({"off", "all", "new", "status", "login", "logout", "activity", "allowlist", "watchlist",
+                            "images", "settings", "system", "host", "events", "version", "vms", "github-app"})
+API_VERSION = re.compile(r"v[0-9]+")
+ALL = "all"             # the scope of an Allowlist entry for every VM
 # lowercase labels of letters, digits and inner hyphens, at least two of them
 DOMAIN = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+")
 # the Watchlist's categories, each also the Signal of a hit; payload is a weak one
@@ -32,6 +40,7 @@ CATEGORIES = ("exfil", "c2", "tunnel", "paste", "phishing", "blockchain", "paylo
 # the fields of an entry besides domain or regex; an entry that differs breaks its record
 WATCH_FIELDS = {"category": str, "source": str, "note": str, "added": int, "added_by": str}
 LEGITIMATE_FIELDS = {"note": str, "added": int, "added_by": str}
+ALLOWLIST_FIELDS = {"scope": str, "expires": (int, type(None)), "note": str, "added": int, "added_by": str}
 MAX_TEXT = 200          # note and source
 
 
@@ -382,6 +391,38 @@ def legitimate_problem(e):
     return problem(e, LEGITIMATE_FIELDS, extra=_watch_or_legitimate)
 
 
+def reserved_name(name):
+    """Whether name is a word no VM can have (RESERVED_NAMES, an API version)."""
+    return name in RESERVED_NAMES or bool(API_VERSION.fullmatch(name))
+
+
+def allowlist_problem(e, shown=printable):
+    """What is wrong with an entry of the Allowlist, else None: the common checks, a scope that
+    is neither all nor a VM's name, a note too long."""
+    def scope_or_note(e):
+        if e["scope"] != ALL and (not VM_NAME.fullmatch(e["scope"]) or reserved_name(e["scope"])):
+            return f"invalid scope {shown(e['scope'], 20)}"
+        if len(e["note"]) > MAX_TEXT:
+            return "note too long"
+        return None
+    return problem(e, ALLOWLIST_FIELDS, shown, scope_or_note)
+
+
+def allowlist_key(e):
+    """What tells an Allowlist entry apart: its domain or pattern, and its scope."""
+    return key(e), e["scope"]
+
+
+def allowlist_twice(e, shown=printable):
+    return f"{shown(key(e)[1], MAX_HOST)} ({e['scope']}) twice"
+
+
+def allowlist_entries(text):
+    """The entries of allowlist.json's text; a broken or second entry makes the whole record
+    broken (ValueError), for the proxy as for agentbox."""
+    return checked(entries(text), allowlist_problem, allowlist_key, allowlist_twice)
+
+
 def checked(items, check, key=key, twice=lambda e: f"{printable(key(e)[1], MAX_HOST)} listed twice"):
     """The entries; at the first broken one (check(e) says why) or one whose key(e) came before
     (twice(e) says so) the record is broken: ValueError "broken entry (...)" or the text of
@@ -415,7 +456,8 @@ def legacy_domains(text):
 
 
 def legacy_allowlist(text):
-    """The domains of an Allowlist text list: each line before #, stripped, as a domain."""
+    """The domains of an Allowlist text list: each line before #, stripped, as a domain; empty
+    lines left out (a line that is no valid domain is the caller's to skip, DOMAIN)."""
     return [d for d in (legacy_domain(body.strip()) for body, _ in legacy_lines(text)) if d]
 
 

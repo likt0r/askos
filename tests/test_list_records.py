@@ -94,6 +94,26 @@ class RecordTest(unittest.TestCase):
         self.assertRegex(records.refused_entry(e), r"^regex entry \^\(a\+\)\+\$ refused: a quantifier")
 
 
+class AllowlistRecordTest(unittest.TestCase):
+    def entry(self, **fields):
+        return {"domain": "a.example", "scope": "all", "expires": None, "note": "", "added": 0, "added_by": "t",
+                **fields}
+
+    def test_the_proxy_and_the_cli_refuse_the_same_entries(self):
+        for e, why in ((self.entry(scope="Work"), "broken entry (invalid scope Work)"),
+                       (self.entry(scope="v1"), "broken entry (invalid scope v1)"),
+                       (self.entry(note="x" * 201), "broken entry (note too long)"),
+                       (self.entry(expires=1.5), "broken entry (field expires missing or of the wrong type)"),
+                       (self.entry(domain="com"), "broken entry (invalid domain com)")):
+            with self.subTest(why=why), self.assertRaises(ValueError) as caught:
+                records.allowlist_entries(json.dumps({"entries": [e]}))
+            self.assertEqual(str(caught.exception), why)
+        with self.assertRaisesRegex(ValueError, r"^a\.example \(all\) twice$"):
+            records.allowlist_entries(json.dumps({"entries": [self.entry(), self.entry(note="x")]}))
+        both = [self.entry(), self.entry(scope="work")]
+        self.assertEqual(records.allowlist_entries(json.dumps({"entries": both})), both)
+
+
 class LegacyTest(unittest.TestCase):
     def test_text_lists(self):
         text = "Bad.Example. exfil # Report 1\n\n# a comment\nother.example\n"

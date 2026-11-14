@@ -360,11 +360,11 @@ class RefusalTest(allowlist_tests.ProxyTest):
         self.assertIn("[work] ERROR example.org (", self.log())
 
     def test_a_destination_without_a_public_address_gets_access_denied(self):
-        # localhost comes from the hosts file, no DNS needed; the proxy resolves it itself here
-        self.store(entry("localhost", "all"))
-        self.start(upstream=False)
-        self.assertEqual(self.refusal("localhost"), ACCESS_DENIED)
-        self.assertIn("[work] BLOCKED localhost (does not resolve to a public address)\n", self.log())
+        # the test resolver answers with the Host's own address
+        self.store(entry("host.example", "all"))
+        self.start(upstream=False, resolve={"host.example": ["127.0.0.1"]})
+        self.assertEqual(self.refusal("host.example"), ACCESS_DENIED)
+        self.assertIn("[work] BLOCKED host.example (does not resolve to a public address)\n", self.log())
 
 
 class PublicAddressTest(allowlist_tests.ProxyTest):

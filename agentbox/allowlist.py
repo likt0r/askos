@@ -50,17 +50,17 @@ from .errors import Fail, die
 from .network import CLIENT_REASONS, DOMAIN, done, valid_domain
 from .sanitize import clean, field
 
-ALL = "all"
+ALL = list_records.ALL
 # Durations of a Temporary allowlist entry (--for), in seconds
 DURATIONS = {"15min": 15 * 60, "1h": 3600, "8h": 8 * 3600, "7d": 7 * 86400}
 # --temporary without --for; Settings (#22) will make this configurable
-MAX_NOTE = 200
+MAX_NOTE = list_records.MAX_TEXT
 USES_WINDOW = 86400                  # uses are counted over the last 24 hours
 # what the proxy logs per connection an entry allowed (see proxy/agentbox-proxy): a domain,
 # or "regex <pattern>" (a domain is never the single label regex)
 ALLOWED = re.compile(r"\[[a-z0-9-]+\] ALLOWED \S+ \(allowlist (regex )?(\S+) (\S+)\)")
 # besides domain or regex (patterns.py)
-FIELDS = {"scope": str, "expires": (int, type(None)), "note": str, "added": int, "added_by": str}
+FIELDS = list_records.ALLOWLIST_FIELDS
 # the preview of a regex entry: the hosts of the proxy log of these days that it matches,
 # from at most so many of the newest lines, at most so many of them shown
 PREVIEW_DAYS = 7
@@ -171,17 +171,8 @@ def _clipped(text, limit):
     return clean(text, False)[:limit]
 
 
-def _scope_or_note(e):
-    """The Allowlist's own checks of a stored entry (list_records.problem)."""
-    if e["scope"] != ALL and (not registry.NAME.fullmatch(e["scope"]) or registry.reserved(e["scope"])):
-        return f"invalid scope {_clipped(e['scope'], 20)}"
-    if len(e["note"]) > MAX_NOTE:
-        return "note too long"
-    return None
-
-
 def _problem(e):
-    return list_records.problem(e, FIELDS, _clipped, _scope_or_note)
+    return list_records.allowlist_problem(e, _clipped)
 
 
 def _valid(data, path):
@@ -192,8 +183,8 @@ def _valid(data, path):
 
     def broken(why):
         die(f"{path}: {why}", error="action_failed")
-    return entry_store.valid(data["entries"], _problem, broken, _clipped, key=lambda e: (patterns.key(e), e["scope"]),
-                             twice=lambda e: f"{_clipped(patterns.value(e), list_records.MAX_HOST)} ({e['scope']}) twice")
+    return entry_store.valid(data["entries"], _problem, broken, _clipped, key=list_records.allowlist_key,
+                             twice=lambda e: list_records.allowlist_twice(e, _clipped))
 
 
 def legacy_files():
