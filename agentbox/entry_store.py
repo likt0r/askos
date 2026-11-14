@@ -120,4 +120,3 @@ def legacy_lines(path):
     missing."""
     data = state_files.read(path, None)
     return None if data is None else list_records.legacy_lines(data.decode("utf-8", "replace"))
-
