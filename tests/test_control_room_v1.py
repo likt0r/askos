@@ -941,7 +941,8 @@ class PackageTest(unittest.TestCase):
 
     LEAVES = {"agentbox", "agentbox.errors", "agentbox.paths", "agentbox.state_files", "agentbox.sanitize",
               "agentbox.hostsetup", "agentbox.settings", "agentbox.version", "agentbox.registry",
-              "agentbox.vmenv", "agentbox.safeguards", "agentbox.journal", "agentbox.times"}
+              "agentbox.vmenv", "agentbox.safeguards", "agentbox.journal", "agentbox.times",
+              "agentbox.list_records"}
 
     def test_it_imports_only_leaf_modules(self):
         code = ("import importlib.machinery, importlib.util, sys\n"

@@ -130,6 +130,10 @@ _Avoid_: exception, rule, base list entry
 An entry of the Allowlist, the Watchlist, the Legitimate domains or the Harmless marks whose value is a regular expression instead of a domain, matched against the whole host name (no subdomains of its own accord). On the Allowlist it never allows a destination with strong Signals, checked on every connection, and adding it shows what it would allow and needs a confirmation; as a Legitimate domain it lifts only weak Signals (German UI: Regex-Eintrag).
 _Avoid_: wildcard, glob, pattern rule
 
+**List record**:
+The file on the Host that holds one list, `{"entries": [...]}`: the Allowlist, the Watchlist or the Legitimate domains. A broken or duplicate entry makes the whole record broken, with the same text for agentbox, the proxy and the classifier, which read it with the same code (`agentbox/list_records.py`).
+_Avoid_: list file, store, database
+
 **Temporary allowlist entry**:
 An Allowlist entry with an expiry time (15 minutes, 1 hour, 8 hours or 7 days, extendable), after which it allows no new connections and disappears on its own; connections already open keep running (German UI: vorübergehende Freigabe).
 _Avoid_: snooze, pass, temporary exception

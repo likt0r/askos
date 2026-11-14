@@ -18,7 +18,7 @@ import os
 import re
 import time
 
-from . import patterns, paths, programs, state_files, times
+from . import list_records, patterns, paths, programs, scripts, state_files, times
 from .allowlist import _parse
 from .entry_store import given, label
 from .errors import die
@@ -34,8 +34,20 @@ NUMERIC_HOST = re.compile(r"[0-9a-fx.]{1,253}")
 HARMLESS_HEADER = b"# Domains with a Harmless mark, with their subdomains (agentbox mark-harmless/unmark-harmless)\n"
 
 
+_module = None
+
+
+def _classifier_module():
+    """The classifier as a module, for is_address (loaded once; no bytecode is written next
+    to it)."""
+    global _module
+    if _module is None:
+        _module = scripts.load(paths.SUSPICIOUS, "agentbox_suspicious")
+    return _module
+
+
 def harmless_file():
-    return os.path.join(paths.CONF, "harmless")
+    return os.path.join(paths.CONF, list_records.HARMLESS)
 
 
 def seen_file(ctx):
@@ -43,19 +55,8 @@ def seen_file(ctx):
 
 
 def harmless_marks():
-    """The Harmless marks as {"domain": d} or {"regex": p} (a line "regex <pattern>"), as the
-    classifier reads them."""
-    out = []
-    for line in state_files.content_lines(harmless_file()):
-        text = line.decode("utf-8", "replace")
-        parts = text.split()
-        if len(parts) >= 2 and parts[0] == "regex":
-            out.append({"regex": parts[1]})
-            continue
-        domain = text.split("#", 1)[0].strip().lower().rstrip(".")
-        if domain:
-            out.append({"domain": domain})
-    return out
+    """The Harmless marks as {"domain": d} or {"regex": p}, as the classifier reads them."""
+    return list_records.harmless_marks(state_files.read(harmless_file(), b"").decode("utf-8", "replace"))
 
 
 def within(host, domains):
@@ -219,10 +220,11 @@ def unmark_harmless(args):
     f = harmless_file()
     if os.path.isfile(f):
         with state_files.locked(f):
-            data = state_files.read(f)
-            entry = _mark_line(ref)
-            if entry in state_files.lines(data):
-                state_files.write_atomic(f, b"".join(l + b"\n" for l in state_files.lines(data) if l != entry), 0o644)
+            data = state_files.lines(state_files.read(f))
+            mark = list_records.param(ref)
+            kept = [l for l in data if list_records.harmless_marks(l.decode("utf-8", "replace")) != [mark]]
+            if kept != data:            # every line that reads as the mark, as the classifier reads it
+                state_files.write_atomic(f, b"".join(l + b"\n" for l in kept), 0o644)
     done(as_json, f"{label(ref)} no longer marked harmless", **given(ref))
 
 
@@ -243,7 +245,7 @@ def alert_host(d):
         pass
     if DOMAIN.fullmatch(d):
         return d
-    if NUMERIC_HOST.fullmatch(d) and patterns.rules().is_address(d):
+    if NUMERIC_HOST.fullmatch(d) and _classifier_module().is_address(d):
         return d
     die(f"invalid domain: {d}", error="invalid_domain", domain=d)
 
@@ -273,11 +275,11 @@ def alert_view(ctx, rows):
     marked seen or not."""
     harmless_ = harmless_marks()
     quiet = [m["domain"] for m in harmless_ if "domain" in m]
-    compiled = [c for c in (patterns.compiled(m["regex"]) for m in harmless_ if "regex" in m) if c is not None]
+    compiled = [c for c in (list_records.compile_pattern(m["regex"]) for m in harmless_ if "regex" in m) if c is not None]
     marks = seen_marks(ctx)
     out = []
     for e in rows:
-        harmless = within(e["domain"], quiet) or any(patterns.matches(c, e["domain"]) for c in compiled)
+        harmless = within(e["domain"], quiet) or any(list_records.pattern_matches(c, e["domain"]) for c in compiled)
         if harmless and not STRUCTURAL & set(e["tags"]):
             continue
         e["seen"] = e["last"] <= max(marks.get("*", 0), marks.get(e["domain"], 0))

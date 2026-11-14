@@ -24,12 +24,14 @@ Allowlist: /etc/agentbox/allowlist.json (agentbox allow/disallow/...), Eintraege
 mit Domain (gilt auch fuer alle Subdomains), Geltungsbereich (scope: "all" oder
 der Name einer VM) und optional Ablaufzeit (expires, Epoch). Abgelaufene
 Eintraege erlauben keine neuen Verbindungen. Aenderungen greifen ohne Neustart;
-eine kaputte Datei aendert nichts (der letzte gute Stand bleibt). Solange es die
+a broken file, also one with a single broken or second entry (checked as agentbox
+checks them, list_records.allowlist_entries), changes nothing: the last good state
+stays, and a proxy that starts with one allows nothing until it is fixed. Solange es die
 Datei nicht gibt (vor agentbox migrate-allowlist), gelten die alten Listen
-/etc/agentbox/allowlist und allowlist-<vm>, eine Domain pro Zeile.
+/etc/agentbox/allowlist und allowlist-<vm>, eine gueltige Domain pro Zeile.
 
 A Regex entry (ADR 0013) has a pattern (regex) instead of the domain, compiled once
-whenever the file is read again; one that breaks the rules of agentbox-suspicious is
+whenever the file is read again; one that breaks the pattern rules (list_records) is
 left out. It never allows a destination with strong Signals, checked on every connection
 as in Open web ("suspicious: <signals>"), and nothing while the Watchlist cannot be read:
   [<vm>] BLOCKED <host> (Watchlist unreadable, regex entries closed)
@@ -58,9 +60,21 @@ import socket
 import sys
 import time
 
+
+def _package_dir():
+    """Where the package agentbox is: next to proxy/ in a checkout, installed in lib/agentbox
+    under the prefix whose libexec/ holds this program. The proxy imports only its leaf module
+    list_records (tests/test_list_records.py)."""
+    here = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+    checkout = os.path.isfile(os.path.join(here, "agentbox", "__init__.py"))
+    return here if checkout else os.path.join(here, "lib", "agentbox")
+
+
+if _package_dir() not in sys.path:
+    sys.path.insert(0, _package_dir())
+from agentbox import list_records as records  # noqa: E402
+
 CONF_DIR = os.environ.get("AGENTBOX_CONF_DIR", "/etc/agentbox")
-ALLOWLIST = "allowlist.json"
-LEGACY = ("allowlist", "allowlist-{}")     # vor allowlist.json: alle VMs, eine VM
 
 
 def _load_suspicious():
@@ -265,46 +279,34 @@ def client_hello(buf):
 Key = collections.namedtuple("Key", "value scope regex")
 
 
-def _entries(data, ctx):
-    """({Key: ablauf oder None} der Eintraege, die fuer ctx gelten, {pattern: compiled}, the
-    patterns left out with why); Eintraege mit falschen Typen gelten nicht."""
-    if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
-        raise ValueError("entries missing")
+def _entries(text, ctx):
+    """({Key: expiry or None} of the entries that apply to ctx, {pattern: compiled}, the
+    patterns left out with why). A broken or second entry makes the whole record broken
+    (ValueError, list_records.allowlist_entries), with agentbox's checks and texts."""
     out, compiled, refused = {}, {}, {}
-    for e in data["entries"]:
-        if not isinstance(e, dict):
+    for e in records.allowlist_entries(text):
+        if e["scope"] not in (records.ALL, ctx):
             continue
-        domain, pattern, scope, expires = e.get("domain"), e.get("regex"), e.get("scope"), e.get("expires")
-        if scope not in ("all", ctx):
-            continue
-        if expires is not None and (isinstance(expires, bool) or not isinstance(expires, (int, float))):
-            continue
-        if isinstance(pattern, str) and domain is None:
-            why = suspicious.pattern_problem(pattern) if suspicious else ("", "no agentbox-suspicious", None)
+        if "regex" in e:
+            why = records.pattern_problem(e["regex"])
             if why:
-                refused[pattern] = why[1]
+                refused[e["regex"]] = why[1]
                 continue
-            compiled.setdefault(pattern, suspicious.compile_pattern(pattern))
-            out[Key(pattern, scope, True)] = expires
-            continue
-        if not isinstance(domain, str) or pattern is not None:
-            continue
-        domain = domain.strip().lower().rstrip(".")
-        if domain:
-            out[Key(domain, scope, False)] = expires
+            compiled.setdefault(e["regex"], records.compile_pattern(e["regex"]))
+            out[Key(e["regex"], e["scope"], True)] = e["expires"]
+        else:
+            out[Key(e["domain"], e["scope"], False)] = e["expires"]
     return out, compiled, refused
 
 
 def _legacy(ctx):
     """Die alten Listen, bis agentbox sie in allowlist.json uebernommen hat."""
     out = {}
-    for name, scope in zip(LEGACY, ("all", ctx)):
+    for name, scope in zip(records.LEGACY_ALLOWLIST, ("all", ctx)):
         try:
             with open(os.path.join(CONF_DIR, name.format(ctx)), encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    line = line.split("#", 1)[0].strip().lower().rstrip(".")
-                    if line:
-                        out[Key(line, scope, False)] = None
+                out.update((Key(d, scope, False), None) for d in records.legacy_allowlist(f.read())
+                           if records.DOMAIN.fullmatch(d))     # as agentbox takes them over
         except OSError:
             pass
     return out
@@ -319,9 +321,10 @@ class Allowlist:
         self.key = None
         self.entries = {}
         self.compiled = {}
+        self.good = False       # whether allowlist.json was read once since the proxy started
 
     def current(self):
-        path = os.path.join(CONF_DIR, ALLOWLIST)
+        path = os.path.join(CONF_DIR, records.ALLOWLIST)
         try:
             st = os.stat(path)
         except FileNotFoundError:
@@ -335,17 +338,21 @@ class Allowlist:
             self.key = key
             try:
                 with open(path, encoding="utf-8") as f:
-                    self.entries, self.compiled, refused = _entries(json.load(f), self.ctx)
+                    self.entries, self.compiled, refused = _entries(f.read(), self.ctx)
             except (OSError, ValueError) as e:
-                log(self.ctx, f"ERROR {path} unreadable, the previous entries stay ({type(e).__name__})")
+                why = records.printable(str(e), 200) if isinstance(e, ValueError) and str(e) else type(e).__name__
+                kept = ("the previous entries stay" if self.good or self.entries
+                        else "nothing is allowed until it is fixed")
+                log(self.ctx, f"ERROR {path} unreadable ({why}), {kept}")
             else:
+                self.good = True
                 for pattern, why in sorted(refused.items()):
                     log(self.ctx, f"ERROR {path}: regex entry {pattern!r} left out ({why})")
         return self.entries
 
     def matches(self, pattern, host):
         compiled = self.compiled.get(pattern)
-        return bool(compiled and suspicious.pattern_matches(compiled, host))
+        return bool(compiled and records.pattern_matches(compiled, host))
 
 
 def regex_refusal(tags):
@@ -376,15 +383,9 @@ def granting(host, tags, lists, now):
 
 
 def open_until(ctx):
-    """End of the VM's Open web (epoch seconds) from /etc/agentbox/open-<ctx>, or 0 when the
-    web is not open. Reads the file as agentbox does (state_files.open_until): whole seconds,
-    a fraction cut off, anything else (inf, 1e20, nan) counts as closed."""
-    try:
-        with open(f"{CONF_DIR}/open-{ctx}") as f:
-            u = f.read().strip().split(".")[0]
-    except OSError:
-        return 0
-    return int(u) if re.fullmatch(r"\d+", u) and int(u) > time.time() else 0
+    """End of the VM's Open web (epoch seconds), or 0 when the web is not open
+    (list_records.open_until, as agentbox reads it)."""
+    return records.open_until(os.path.join(CONF_DIR, records.OPEN_WEB.format(ctx)))
 
 
 def strong(tags):

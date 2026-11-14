@@ -8,20 +8,19 @@ import os
 import re
 import sys
 
-from . import paths, state_files, vmenv
+from . import list_records, paths, state_files, vmenv
 from .errors import Fail, die
 from .sanitize import clean
 
 # the same pattern guards the token service and the Control Room (a test keeps them equal)
-NAME = re.compile(r"[a-z][a-z0-9-]{1,15}")
+NAME = list_records.VM_NAME
 # Words that stand, or may come to stand, where a VM name may stand: `agentbox focus
 # off`, "all" for Allowlist entries of every VM, the Control Room's areas and the words
 # of its paths (login, logout, activity, ...), its API versions v1, v2, ... and "new" in
 # the UI's /vms/<vm> routes. A VM keeps its name for good, so a reserved word stays
 # reserved once a path no longer uses it, and a new one is reserved before anything uses it.
-RESERVED = {"off", "all", "new", "status", "login", "logout", "activity", "allowlist", "watchlist", "images",
-            "settings", "system", "host", "events", "version", "vms", "github-app"}
-API_VERSION = re.compile(r"v[0-9]+")
+RESERVED = list_records.RESERVED_NAMES
+API_VERSION = list_records.API_VERSION
 IMAGE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 ORCA_BASE = 6800                     # Orca port = ORCA_BASE + network number
 # The Container image cleanup of a record: on or off, and its days. Both fields are
@@ -40,8 +39,7 @@ def record_file(name):
     return os.path.join(paths.REGISTRY, f"{name}.json")
 
 
-def reserved(name):
-    return name in RESERVED or bool(API_VERSION.fullmatch(name))
+reserved = list_records.reserved_name
 
 
 def problem(rec, name):
