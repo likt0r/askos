@@ -255,9 +255,10 @@ flowchart LR
   They are never paused automatically; when the Host sleeps, the VMs sleep with it.
 - What libvirt and systemd say about a VM, its network and a unit is read in one module,
   [agentbox/states.py](agentbox/states.py), which names it in these terms: a VM with a Pause
-  (a managed save) is paused, while a domain libvirt reports as paused (suspended in memory,
-  which Agent Box never does) shows as suspended; a Build's unit counts as running while it
-  is still stopping, a connection to a VM's Orca port no longer counts once it is closing.
+  (a managed save) is paused; the Control Room shows a domain libvirt reports as paused
+  (suspended in memory, which Agent Box never does) as suspended, while `status` keeps
+  libvirt's words; a Build's unit counts as running while it is still stopping, a connection
+  to a VM's Orca port no longer counts once it is closing.
 - Each VM has a lifecycle lock (`/var/lib/agentbox/locks/lifecycle-<vm>.lock`). What
   stops a VM and needs it to stay off holds it for its whole length: Reset (also the
   automatic one, which holds it from its checks on, and the one in `create`), Restart,

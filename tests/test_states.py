@@ -7,12 +7,14 @@ virsh and systemctl answer through a stand-in for subprocess.run; nothing of the
 Run from the repo root: python3 -m unittest discover -s tests
 """
 import os
+import re
 import subprocess
 import sys
 import unittest
 from unittest import mock
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO)
 from agentbox import describe, states  # noqa: E402
 
 CONNECTION = "agentbox-gui-work@7-10.0.0.1:9000-192.168.1.20:51000.service"
@@ -156,6 +158,32 @@ class UnitStateTest(unittest.TestCase):
                                  ((1, "", "Failed to connect to bus"), False), (FileNotFoundError(), False)):
             with self.subTest(answer=answer), asking(show=answer):
                 self.assertIs(states.failed_since("agentbox-build@base.service", 1000), expected)
+
+
+# states.py, and virsh.py, which runs virsh for it and hands over domstate's word
+OWN = {os.path.join(REPO, "agentbox", name) for name in ("states.py", "virsh.py")}
+
+
+class OneModuleTest(unittest.TestCase):
+    # libvirt's and systemd's state words and questions, and a comparison of virsh.state()
+    WORDS = re.compile(r'"(shut off|crashed|pmsuspended|in shutdown|activating|deactivating|reloading|domstate|'
+                       r'is-active|is-enabled|Active|Autostart)"|Managed save|virsh\.state\([^)]*\)\s*[!=]=')
+
+    def test_no_other_module_reads_the_words(self):
+        for directory in ("agentbox", "proxy", "bin", "web"):
+            for root, _, files in os.walk(os.path.join(REPO, directory)):
+                for name in files:
+                    path = os.path.join(root, name)
+                    if path in OWN or "node_modules" in root:
+                        continue
+                    if not (name.endswith(".py") or directory in ("bin", "proxy") or name == "agentbox-web"):
+                        continue
+                    with open(path, errors="replace") as f:
+                        text = f.read()
+                    with self.subTest(path=os.path.relpath(path, REPO)):
+                        self.assertIsNone(self.WORDS.search(text))
+                        if path != os.path.join(REPO, "agentbox", "programs.py"):
+                            self.assertNotRegex(text, r'\[\s*"systemctl"')
 
 
 if __name__ == "__main__":
