@@ -15,7 +15,7 @@ import pwd
 import stat
 import tempfile
 
-from . import list_records, paths
+from . import footprint, list_records, paths
 from .errors import die
 
 
@@ -241,28 +241,15 @@ def write_atomic(path, data, mode=0o644, gid=-1, uid=-1):
         die(f"{path}: {e.strerror}", error="action_failed")
 
 
-def open_web_file(ctx):
-    return os.path.join(paths.CONF, list_records.OPEN_WEB.format(ctx))
-
-
 def open_until(ctx):
     """End of the VM's Open web (epoch seconds), or 0 when the web is not open
     (list_records.open_until, as the proxy reads it)."""
-    return list_records.open_until(open_web_file(ctx))
-
-
-def claude_token_file(ctx):
-    return os.path.join(paths.CONF, "secrets", f"claude-{ctx}")
-
-
-def vm_env_file(ctx):
-    """The VM variables as QEMU passes them in (fw_cfg opt/agentbox/env, vmenv.py)."""
-    return os.path.join(paths.STATE, "vm-env", f"{ctx}.env")
+    return list_records.open_until(footprint.open_web_file(ctx))
 
 
 def claude_token_since(ctx):
     """When the VM's Claude token was stored (epoch seconds), or 0 when there is none."""
-    f = claude_token_file(ctx)
+    f = footprint.claude_token_file(ctx)
     try:
         with open(f, "rb") as fh:
             if fh.read(7) != b"sk-ant-":

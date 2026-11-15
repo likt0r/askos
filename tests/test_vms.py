@@ -18,7 +18,9 @@ import unittest
 from xml.sax.saxutils import unescape
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import vm_records  # noqa: E402
+from agentbox import footprint  # noqa: E402
 from test_registry import AGENTBOX, UNITS, RegistryTest  # noqa: E402
 from vm_records import record  # noqa: E402
 
@@ -567,6 +569,73 @@ class DeleteTest(VmsTest):
             ["daemon-reload"]])
         self.assertIn(["restart", "agentbox-vmnet.service"], self.systemctl())
         self.assertNotIn("lab", json.loads(self.ok("status", "--json")))
+
+    def test_delete_leaves_no_footprint_path_or_runtime_resource(self):
+        # A running VM supplies its QEMU process and pid file; start clears the wakes file first.
+        self.ok("start", "lab")
+        rec = vm_records.read(self.root, "lab")
+
+        def rooted(host_path):
+            return self.path(os.path.relpath(host_path, footprint.host_paths.ROOT or "/"))
+
+        # One interrupted import, plus another VM's archive whose name begins with this VM's.
+        for name in ("lab", "lab-two"):
+            path = rooted(footprint.transfer_file(name, "0123456789ab"))
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(name)
+        own_transfer = rooted(footprint.transfer_file("lab", "0123456789ab"))
+        other_transfer = rooted(footprint.transfer_file("lab-two", "0123456789ab"))
+
+        # Every future fixed path added to footprint.paths is created here without another test edit.
+        catalog = [(host, rooted(host)) for host in footprint.paths(rec)]
+        marker = footprint.delete_marker("lab")
+        for host, path in catalog:
+            with self.subTest(step="create", path=host):
+                if host == marker:
+                    continue
+                if host == footprint.observer_dir("lab"):
+                    os.makedirs(path, exist_ok=True)
+                elif not os.path.lexists(path):
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    with open(path, "w") as f:
+                        f.write("footprint\n")
+                self.assertTrue(os.path.lexists(path), path)
+        nested = os.path.join(rooted(footprint.observer_dir("lab")), "nested")
+        os.makedirs(nested, exist_ok=True)
+        with open(os.path.join(nested, "state"), "w") as f:
+            f.write("observer")
+        with open(rooted(footprint.qemu_pid_file("lab"))) as f:
+            qemu_proc = self.path(f"proc/{f.read().strip()}")
+        self.assertTrue(os.path.isdir(qemu_proc))
+
+        result = self.json("delete", "lab", "--confirm", "lab")
+
+        for host, path in catalog:
+            with self.subTest(step="delete", path=host):
+                self.assertFalse(os.path.lexists(path), host)
+        self.assertFalse(os.path.exists(qemu_proc))
+        self.assertFalse(os.path.lexists(own_transfer))
+        self.assertTrue(os.path.lexists(other_transfer))
+        with open(os.path.join(self.dir, "domains.json")) as f:
+            domain = json.load(f)["agentbox-lab"]
+        self.assertFalse(domain["defined"])
+        self.assertFalse(domain["managed_save"])
+        with open(os.path.join(self.dir, "networks.json")) as f:
+            self.assertNotIn("agentbox-lab", json.load(f))
+        with open(os.path.join(self.dir, "systemctl.json")) as f:
+            enabled = set(json.load(f)["enabled"])
+        for socket in footprint.sockets(rec):
+            self.assertNotIn(socket, enabled)
+        self.assertIn(["stop", "agentbox-gui-lab@*.service", "agentbox-ghvm-lab@*.service"], self.systemctl())
+        self.assertNotIn("abox-lab", self.read("etc/agentbox/vm-input.nft"))
+        self.assertEqual(self.entries("lab"), [])
+        self.assertEqual(len(self.archive()), 1)
+        self.assertRegex(self.archive()[0], ARCHIVED)
+        archive = self.path(f"var/lib/agentbox/archive/{self.archive()[0]}")
+        self.assertEqual(self.read(f"var/lib/agentbox/archive/{self.archive()[0]}"), '{"repos": "unpushed work"}')
+        self.assertEqual((result["data_disk"], result["archive"], result["resumed"]),
+                         ("archived", archive, False))
 
     def test_text_output(self):
         out = self.ok("delete", "lab", "--confirm", "lab").splitlines()

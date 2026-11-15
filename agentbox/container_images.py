@@ -26,7 +26,7 @@ import json
 import os
 import sys
 
-from . import activity, generate, guest, paths, registry, state_files, times, virsh
+from . import activity, footprint, generate, guest, paths, registry, state_files, times, virsh
 from .commands import declare
 from .errors import Fail, die
 from .sanitize import clean
@@ -94,7 +94,7 @@ def _one(rec, say):
         try:
             removed, freed = _answer(ctx, _run(ctx, days))
         except Fail as f:
-            if os.path.exists(generate.delete_marker(ctx)) or not os.path.exists(registry.record_file(ctx)):
+            if os.path.exists(footprint.delete_marker(ctx)) or not os.path.exists(footprint.record_file(ctx)):
                 say(f"{ctx}: skipped, the VM is being deleted")     # delete does not take the lock
                 return _result(ctx, "skipped", "not_running")
             print(f"agentbox: {f.message}", file=sys.stderr, flush=True)

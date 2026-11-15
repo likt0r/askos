@@ -20,7 +20,7 @@ import re
 import tempfile
 import time
 
-from . import activity, hostsetup, lifecycle, paths, programs, registry, settings, state_files, times, virsh, vmenv
+from . import activity, footprint, hostsetup, lifecycle, paths, programs, registry, settings, state_files, times, virsh, vmenv
 from .commands import declare
 from .errors import die
 from .registry import bridge, dom, guest_ip, host_ip, mac
@@ -47,14 +47,6 @@ SAID = {"network": "network created or started", "units": "units written",
         "domain-postponed": "VM definition postponed, the VM is paused"}
 
 
-def data_disk(name):
-    return os.path.join(paths.VMS, f"{name}-data.qcow2")
-
-
-def legacy_owners_file(name):
-    return os.path.join(paths.CONF, "github", f"owners-{name}")
-
-
 # --- migrate -----------------------------------------------------------------
 
 def _memory_mib(name):
@@ -75,22 +67,22 @@ def _disk_gib(path):
 
 def _legacy_owners(name):
     from .credentials import OWNER
-    owners = (line.decode("utf-8", "replace").strip() for line in state_files.content_lines(legacy_owners_file(name)))
+    owners = (line.decode("utf-8", "replace").strip() for line in state_files.content_lines(footprint.legacy_owners_file(name)))
     return [o for o in owners if OWNER.fullmatch(o)]
 
 
 def _migrate_one(name, network):
-    if os.path.exists(registry.record_file(name)):
+    if os.path.exists(footprint.record_file(name)):
         return "unchanged"
-    if os.path.exists(delete_marker(name)):
+    if os.path.exists(footprint.delete_marker(name)):
         return "absent"                  # being deleted: its leftovers must not bring it back
     memory = _memory_mib(name)
-    if memory is None and not os.path.exists(data_disk(name)) and not os.path.exists(legacy_owners_file(name)):
+    if memory is None and not os.path.exists(footprint.data_disk(name)) and not os.path.exists(footprint.legacy_owners_file(name)):
         return "absent"
     registry.save({
         "name": name, "network": network, "orca_port": registry.ORCA_BASE + network, "image": "base",
         "build": None, "memory_mib": memory or DEFAULT_MEMORY_MIB,
-        "data_disk_gib": _disk_gib(data_disk(name)) if os.path.exists(data_disk(name)) else DEFAULT_DATA_DISK_GIB,
+        "data_disk_gib": _disk_gib(footprint.data_disk(name)) if os.path.exists(footprint.data_disk(name)) else DEFAULT_DATA_DISK_GIB,
         "github_owners": _legacy_owners(name),
         "created": times.iso(time.time()),
     })
@@ -102,10 +94,10 @@ def migrate(args):
     the registry. Idempotent; disks, secrets and pairings stay where they are."""
     results = []
     for name, network in LEGACY.items():
-        with state_files.locked(registry.record_file(name)):
+        with state_files.locked(footprint.record_file(name)):
             action = _migrate_one(name, network)
             # from now on the record holds the owners
-            state_files.remove(legacy_owners_file(name), fail=False)
+            state_files.remove(footprint.legacy_owners_file(name), fail=False)
         results.append({"vm": name, "action": action})
         if "--json" not in args:
             print(f"{name}: " + {"migrated": f"taken over into the registry (network {network}, "
@@ -196,10 +188,11 @@ def units(rec):
     port, where every connection wakes the VM if needed, with the client's
     address as actor (socat: SELinux keeps systemd-socket-proxyd off the port)."""
     vm, host, port = rec["name"], host_ip(rec), rec["orca_port"]
+    names = {kind: footprint.unit_name(vm, kind) for kind in footprint.UNIT_KINDS}
     orca_listen = hostsetup.orca_listen(hostsetup.load(), port)
     hardening = "NoNewPrivileges=yes\nProtectSystem=strict\nProtectHome=yes\nPrivateTmp=yes\n"
     return {
-        f"agentbox-proxy-{vm}.socket": f"""[Unit]
+        names["proxy.socket"]: f"""[Unit]
 Description=Allowlist proxy for VM {vm}
 
 [Socket]
@@ -209,7 +202,7 @@ FreeBind=yes
 [Install]
 WantedBy=sockets.target
 """,
-        f"agentbox-proxy-{vm}.service": f"""[Unit]
+        names["proxy.service"]: f"""[Unit]
 Description=Allowlist proxy for VM {vm}
 Requires=agentbox-proxy-{vm}.socket
 
@@ -219,7 +212,7 @@ User={activity.PROXY_USER}
 {journal_access(activity.PROXY_USER)}SyslogIdentifier=agentbox-proxy-{vm}
 LogNamespace={activity.NAMESPACE}
 {hardening}""",
-        f"agentbox-ghvm-{vm}.socket": f"""[Unit]
+        names["ghvm.socket"]: f"""[Unit]
 Description=GitHub App tokens for VM {vm}
 
 [Socket]
@@ -231,7 +224,7 @@ MaxConnections=16
 [Install]
 WantedBy=sockets.target
 """,
-        f"agentbox-ghvm-{vm}@.service": f"""[Unit]
+        names["ghvm@.service"]: f"""[Unit]
 Description=Issue a GitHub App token for VM {vm}
 
 [Service]
@@ -243,7 +236,7 @@ StandardError=journal
 SyslogIdentifier=agentbox-gh-{vm}
 LogNamespace={activity.NAMESPACE}
 {hardening}""",
-        f"agentbox-gui-{vm}.socket": f"""[Unit]
+        names["gui.socket"]: f"""[Unit]
 Description=Orca access to VM {vm}
 
 [Socket]
@@ -254,7 +247,7 @@ MaxConnections=32
 [Install]
 WantedBy=sockets.target
 """,
-        f"agentbox-gui-{vm}@.service": f"""[Unit]
+        names["gui@.service"]: f"""[Unit]
 Description=Orca connection to VM {vm}
 
 [Service]
@@ -266,10 +259,6 @@ StandardError=journal
 TimeoutStartSec=180
 """,
     }
-
-
-def sockets(rec):
-    return [f"agentbox-{kind}-{rec['name']}.socket" for kind in ("proxy", "ghvm", "gui")]
 
 
 def virt_install_args(rec, uuid):
@@ -291,12 +280,12 @@ def virt_install_args(rec, uuid):
         # splits --sysinfo at commas)
         "--sysinfo", f"type=fwcfg,entry0.name=opt/agentbox/context,entry0={vm},"
                      f"entry1.name=opt/agentbox/orca_port,entry1={rec['orca_port']},"
-                     f"entry2.name=opt/agentbox/claude_token,entry2.file={state_files.claude_token_file(vm)},"
+                     f"entry2.name=opt/agentbox/claude_token,entry2.file={footprint.claude_token_file(vm)},"
                      f"entry3.name=opt/agentbox/pairing_address,"
                      f"entry3={hostsetup.pairing_address(hostsetup.load())},"
-                     f"entry4.name=opt/agentbox/env,entry4.file={state_files.vm_env_file(vm)}",
-        "--disk", disk.format(lifecycle.system_disk(vm), "vda"),
-        "--disk", disk.format(data_disk(vm), "vdb") + ",serial=agentbox-data",
+                     f"entry4.name=opt/agentbox/env,entry4.file={footprint.vm_env_file(vm)}",
+        "--disk", disk.format(footprint.system_disk(vm), "vda"),
+        "--disk", disk.format(footprint.data_disk(vm), "vdb") + ",serial=agentbox-data",
         "--network", f"network={dom(vm)},mac={mac(rec)},model=virtio",
         "--serial", "pty", "--console", "pty",
         "--channel", "unix,target.type=virtio,target.name=org.qemu.guest_agent.0",
@@ -321,28 +310,6 @@ def _write_if_changed(path, data, mode, pending):
     return state_files.write_if_changed(path, data, mode, before=lambda: _mark(pending), fail=False)
 
 
-def delete_marker(name):
-    """Marker of a VM that `agentbox delete` is taking down: its record, where its
-    Data disk goes and whether its network is gone. Written before the record is
-    removed and removed last, so an interrupted delete is finished by the next one."""
-    return _pending(f"delete-{name}.json")
-
-
-def being_deleted():
-    """The markers of VMs being deleted; dies on a broken one."""
-    folder = os.path.dirname(_pending(""))
-    markers = []
-    for f in state_files.listdir(folder, fail=False):
-        m = re.fullmatch(r"delete-(.+)\.json", f)
-        if not m:
-            continue
-        marker = state_files.json_object(os.path.join(folder, f))
-        if marker is None or registry.problem(marker.get("record"), m.group(1)):
-            die(f"{os.path.join(folder, f)}: broken marker", error="action_failed", path=os.path.join(folder, f))
-        markers.append(marker)
-    return markers
-
-
 def _apply_pending(what, *systemctl):
     if not os.path.exists(_pending(what)):
         return False
@@ -351,7 +318,7 @@ def _apply_pending(what, *systemctl):
     return True
 
 
-def _virsh(what, *args):
+def virsh_checked(what, *args):
     r = virsh.run(*args)
     if r.returncode != 0:
         programs.fail(r, what, program="virsh")
@@ -361,7 +328,7 @@ def _virsh_define(cmd, xml, what):
     with tempfile.NamedTemporaryFile("w", suffix=".xml") as f:
         f.write(xml)
         f.flush()
-        _virsh(what, cmd, f.name)
+        virsh_checked(what, cmd, f.name)
 
 
 def _qemu():
@@ -422,18 +389,18 @@ def _network(rec):
             changed = "network-redefined"
             if info.get("Active") == "yes":
                 live = _vm_live(rec)
-                _virsh(f"{rec['name']}: stop network", "net-destroy", net)
-                _virsh(f"{rec['name']}: start network", "net-start", net)
+                virsh_checked(f"{rec['name']}: stop network", "net-destroy", net)
+                virsh_checked(f"{rec['name']}: start network", "net-start", net)
                 changed = "network-redefined-running" if live else changed
     else:
         _virsh_define("net-define", network_xml(rec), f"{rec['name']}: create network")
         info = {}
         changed = True
     if info.get("Autostart") != "yes":
-        _virsh(f"{rec['name']}: autostart network", "net-autostart", net)
+        virsh_checked(f"{rec['name']}: autostart network", "net-autostart", net)
         changed = changed or True
     if info.get("Active") != "yes":
-        _virsh(f"{rec['name']}: start network", "net-start", net)
+        virsh_checked(f"{rec['name']}: start network", "net-start", net)
         changed = changed or True
     return changed
 
@@ -443,12 +410,12 @@ def _units(rec):
     it is written, to be listened on again (_rebind)."""
     changed = False
     for name, text in units(rec).items():
-        path = os.path.join(paths.SYSTEMD, name)
+        path = footprint.unit_file(name)
         if name.endswith(".socket"):
             try:
                 with open(path, "rb") as f:
                     if f.read() != text.encode():
-                        _mark(f"socket-{name}")
+                        footprint.mark_socket(name)
             except FileNotFoundError:
                 pass
         changed |= _write_if_changed(path, text.encode(), 0o644, "units")
@@ -463,12 +430,12 @@ def _rebind(rec):
     new socket. Whether one was restarted."""
     done = False
     for name, text in units(rec).items():
-        if not name.endswith(".socket") or not os.path.exists(_pending(f"socket-{name}")):
+        if not name.endswith(".socket") or not os.path.exists(footprint.socket_pending_file(name)):
             continue
         if "Accept=yes" not in text:
             programs.systemctl("stop", name[:-len(".socket")] + ".service")
         programs.systemctl("restart", name)
-        os.remove(_pending(f"socket-{name}"))
+        os.remove(footprint.socket_pending_file(name))
         done = True
     return done
 
@@ -483,14 +450,14 @@ def _storage_pool():
             return False
     xml = f"<pool type='dir'>\n  <name>{POOL}</name>\n  <target>\n    <path>{paths.VMS}</path>\n  </target>\n</pool>\n"
     _virsh_define("pool-define", xml, "create storage pool")
-    _virsh("autostart storage pool", "pool-autostart", POOL)
-    _virsh("start storage pool", "pool-start", POOL)
+    virsh_checked("autostart storage pool", "pool-autostart", POOL)
+    virsh_checked("start storage pool", "pool-start", POOL)
     return True
 
 
 def _data_disk(rec):
     """Created once and kept: repositories, Orca's identity and pairings live there."""
-    path = data_disk(rec["name"])
+    path = footprint.data_disk(rec["name"])
     if os.path.exists(path):
         return False
     programs.run(["qemu-img", "create", "-q", "-f", "qcow2", path, f"{rec['data_disk_gib']}G"], 120,
@@ -504,10 +471,10 @@ def _data_disk(rec):
 def _claude_token(rec):
     """QEMU refuses empty fw_cfg files, so a VM without token gets "none"."""
     gid = _qemu()[1]
-    state_files.directory(os.path.dirname(state_files.claude_token_file(rec["name"])), 0o750, gid)
-    if os.path.exists(state_files.claude_token_file(rec["name"])):
+    state_files.directory(os.path.dirname(footprint.claude_token_file(rec["name"])), 0o750, gid)
+    if os.path.exists(footprint.claude_token_file(rec["name"])):
         return False
-    state_files.write_atomic(state_files.claude_token_file(rec["name"]), b"none\n", 0o640, gid)
+    state_files.write_atomic(footprint.claude_token_file(rec["name"]), b"none\n", 0o640, gid)
     return True
 
 
@@ -523,11 +490,11 @@ def fw_cfg_file(path, data):
 def vm_env(rec):
     """The file of the VM's VM variables (vmenv.py), from its record; a VM picks a change up at
     its next start. Written before the domain is defined, which names it."""
-    return fw_cfg_file(state_files.vm_env_file(rec["name"]), vmenv.fw_cfg(rec.get("env", {})))
+    return fw_cfg_file(footprint.vm_env_file(rec["name"]), vmenv.fw_cfg(rec.get("env", {})))
 
 
 def _observer(rec):
-    return state_files.directory(lifecycle.observer_dir(rec["name"]), 0o700, only_new=True)
+    return state_files.directory(footprint.observer_dir(rec["name"]), 0o700, only_new=True)
 
 
 def domain(rec):
@@ -540,7 +507,7 @@ def domain(rec):
     uuid = r.stdout.strip() if r.returncode == 0 and UUID.fullmatch(r.stdout.strip()) else None
     xml = programs.run(["virt-install", *virt_install_args(rec, uuid)], 120, what=f"{vm}: virt-install",
                        c_locale=True).stdout
-    saved = os.path.join(paths.STATE, "domains", f"{vm}.xml")
+    saved = footprint.domain_file(vm)
     try:
         with open(saved) as f:
             if uuid and f.read() == xml:
@@ -902,7 +869,7 @@ def apply():
     ports_free()                         # so does a service that would keep resolver or proxy from starting
     days = values["activity_retention_days"]
     # a VM being deleted stays isolated until its network is gone
-    isolated = records + [m["record"] for m in being_deleted() if not m.get("network_removed")]
+    isolated = records + [m["record"] for m in footprint.being_deleted() if not m.get("network_removed")]
     _write_if_changed(VM_RULES,
                       nft_rules(sorted(isolated, key=lambda r: r["network"])).encode(), 0o644, "firewall")
     firewall = _apply_pending("firewall", "restart", VMNET)     # before any new bridge comes up
@@ -929,7 +896,7 @@ def apply():
         if _rebind(rec):
             changes[rec["name"]].append("sockets")
     if records:
-        programs.systemctl("enable", "--now", *[s for rec in records for s in sockets(rec)])
+        programs.systemctl("enable", "--now", *[s for rec in records for s in footprint.sockets(rec)])
     return {"vms": changes, "firewall": firewall, "storage": storage, "retention": retention,
             "timers": timers}
 

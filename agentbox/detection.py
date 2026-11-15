@@ -18,7 +18,7 @@ import os
 import re
 import time
 
-from . import list_records, options, patterns, paths, programs, scripts, state_files, times
+from . import footprint, list_records, options, patterns, paths, programs, scripts, state_files, times
 from .commands import declare
 from .entry_store import given, label
 from .errors import die
@@ -48,10 +48,6 @@ def _classifier_module():
 
 def harmless_file():
     return os.path.join(paths.CONF, list_records.HARMLESS)
-
-
-def seen_file(ctx):
-    return os.path.join(paths.STATE, f"alerts-seen-{ctx}.json")
 
 
 def harmless_marks():
@@ -226,7 +222,7 @@ def unmark_harmless(args):
 # --- Alerts marked as seen ----------------------------------------------------
 
 def seen_marks(ctx):
-    marks = state_files.json_object(seen_file(ctx), {})
+    marks = state_files.json_object(footprint.seen_file(ctx), {})
     return {k: v for k, v in marks.items() if isinstance(k, str) and isinstance(v, int) and not isinstance(v, bool)}
 
 
@@ -255,7 +251,7 @@ def mark_seen(args):
         die(f"too many arguments: {names[1]}", error="invalid_argument")
     domain = alert_host(names[0]) if names else None
     now = int(time.time())
-    f = seen_file(ctx)
+    f = footprint.seen_file(ctx)
     with state_files.locked(f):
         marks = {k: v for k, v in seen_marks(ctx).items() if k == "*" or v > now - SEEN_KEEP}
         marks[domain or "*"] = now
