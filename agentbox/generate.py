@@ -22,7 +22,7 @@ import time
 
 from . import activity, footprint, hostsetup, paths, programs, registry, settings, state_files, states, times, virsh, vmenv
 from .commands import declare
-from .errors import die
+from .errors import Fail, die
 from .registry import bridge, dom, guest_ip, host_ip, mac
 
 LEGACY = {"work": 1, "priv": 2}      # the fixed VMs before the registry, with their networks
@@ -369,7 +369,10 @@ def _network(rec):
     the network starts, so an active network whose resolver is not the current one is
     stopped and started again."""
     net = dom(rec["name"])
-    found = states.network(rec["name"])
+    try:
+        found = states.network(rec["name"])
+    except Fail:                # virsh cannot tell: defined as if there were none
+        found = None
     changed = False
     if found is not None:
         active, autostart = found

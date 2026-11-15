@@ -16,6 +16,7 @@ from unittest import mock
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 from agentbox import describe, states  # noqa: E402
+from agentbox.errors import Fail  # noqa: E402
 
 CONNECTION = "agentbox-gui-work@7-10.0.0.1:9000-192.168.1.20:51000.service"
 WORDS = ("running", "shut off", "paused", "in shutdown", "crashed", "pmsuspended", "idle", "blocked")
@@ -110,6 +111,11 @@ class VmStateTest(unittest.TestCase):
                 self.assertEqual(states.network("work"), (active == "yes", autostart == "yes"))
         with asking(net_info=(1, "", "error: failed to get network 'agentbox-work'")):
             self.assertIsNone(states.network("work"))
+        with asking(net_info=(1, "", "error: failed to connect to the hypervisor")), \
+                self.assertRaises(Fail) as caught:
+            states.network("work")
+        self.assertEqual((caught.exception.error, caught.exception.params), ("action_failed",
+                                                                           {"program": "virsh", "vm": "work"}))
 
 
 class UnitStateTest(unittest.TestCase):
@@ -167,7 +173,8 @@ OWN = {os.path.join(REPO, "agentbox", name) for name in ("states.py", "virsh.py"
 class OneModuleTest(unittest.TestCase):
     # libvirt's and systemd's state words and questions, and a comparison of virsh.state()
     WORDS = re.compile(r'"(shut off|crashed|pmsuspended|in shutdown|activating|deactivating|reloading|domstate|'
-                       r'is-active|is-enabled|Active|Autostart)"|Managed save|virsh\.state\([^)]*\)\s*[!=]=')
+                       r'inactive|is-active|is-enabled|Active|Autostart)"|\b(Active|Autostart):|Managed save|'
+                       r'virsh\.state\([^)]*\)\s*[!=]=')
 
     def test_no_other_module_reads_the_words(self):
         for directory in ("agentbox", "proxy", "bin", "web"):

@@ -264,22 +264,13 @@ def _units_off(rec, say):
         say(f"{name}: Orca port, proxy and token service turned off")
 
 
-def _libvirt(kind, name):
-    """virsh's answer about the VM's domain or network; None when libvirt has
-    none, dies when virsh cannot tell."""
-    from . import programs, registry, virsh
-    r = virsh.run("domuuid" if kind == "domain" else "net-info", registry.dom(name))
-    if r.returncode == 0:
-        return r
-    if f"failed to get {kind}" in r.stderr:
-        return None
-    programs.fail(r, f"{name}: virsh", program="virsh", vm=name)
-
-
 def _domain_off(name, say):
-    from . import generate, lifecycle, registry
-    if _libvirt("domain", name) is None:
-        return
+    from . import generate, lifecycle, programs, registry, virsh
+    r = virsh.run("domuuid", registry.dom(name))
+    if r.returncode != 0:
+        if "failed to get domain" in r.stderr:      # libvirt has none
+            return
+        programs.fail(r, f"{name}: virsh", program="virsh", vm=name)
     # no wake starts it between the stop and the undefine (a running domain would outlive it)
     with state_files.vm_lock(name):
         lifecycle.stop(name)        # discards a Pause, shuts down, forces off after the time limit
@@ -288,11 +279,11 @@ def _domain_off(name, say):
 
 
 def _network_off(name, say):
-    from . import generate, registry
-    info = _libvirt("network", name)
-    if info is None:
+    from . import generate, registry, states
+    found = states.network(name)
+    if found is None:
         return
-    if re.search(r"^Active:\s*yes$", info.stdout, re.MULTILINE):
+    if found[0]:                                    # active
         generate.virsh_checked(f"{name}: stopping the network", "net-destroy", registry.dom(name))
     generate.virsh_checked(f"{name}: removing the network", "net-undefine", registry.dom(name))
     say(f"{name}: network {registry.dom(name)} removed")

@@ -18,7 +18,9 @@ from .errors import Fail
 from .registry import dom
 
 RUNNING = "running"        # libvirt's word for a running domain, kept by `status` and the Control Room
-PAUSED = "paused"          # `status`'s and the Control Room's word for a VM with a Pause, not libvirt's
+# `status`'s and the Control Room's word for a VM with a Pause. `status` keeps libvirt's own
+# "paused" (a domain suspended in memory) as it is, so has_pause() is the question for a Pause.
+PAUSED = "paused"
 SHUT_OFF = "shut off"
 MISSING = virsh.MISSING    # libvirt has no such domain, or cannot tell
 
@@ -79,11 +81,13 @@ def has_process(name):
 
 
 def network(name):
-    """The VM's network as libvirt reports it (virsh net-info): (active, autostart), or None
-    when virsh cannot tell, as when libvirt has no such network."""
+    """The VM's network as libvirt reports it (virsh net-info): (active, autostart), None when
+    libvirt has no such network; raises Fail when virsh cannot tell."""
     r = virsh.run("net-info", dom(name))
     if r.returncode != 0:
-        return None
+        if "failed to get network" in r.stderr:
+            return None
+        programs.fail(r, f"{name}: virsh", program="virsh", vm=name)
     info = dict(line.split(":", 1) for line in r.stdout.splitlines() if ":" in line)
     info = {k.strip(): v.strip() for k, v in info.items()}
     return info.get("Active") == "yes", info.get("Autostart") == "yes"
