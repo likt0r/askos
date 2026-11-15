@@ -26,7 +26,7 @@ import json
 import os
 import sys
 
-from . import activity, footprint, guest, paths, registry, state_files, times, virsh
+from . import activity, footprint, guest, paths, registry, state_files, states, times
 from .commands import declare
 from .errors import Fail, die
 from .sanitize import clean
@@ -81,14 +81,14 @@ def _one(rec, say):
     if not enabled:
         say(f"{ctx}: skipped, the Container image cleanup is off")
         return _result(ctx, "skipped", "off")
-    if virsh.state(ctx) != "running":
+    if not states.running(ctx):
         say(f"{ctx}: skipped, the VM is not running")
         return _result(ctx, "skipped", "not_running")
     with state_files.locked_unless_held(footprint.lifecycle_lock(ctx)) as taken:   # vm_lock, never waiting
         if not taken:
             say(f"{ctx}: skipped, another action holds the VM; the next hour tries again")
             return _result(ctx, "skipped", "locked")
-        if virsh.state(ctx) != "running":             # stopped while the lock was taken
+        if not states.running(ctx):             # stopped while the lock was taken
             say(f"{ctx}: skipped, the VM is not running")
             return _result(ctx, "skipped", "not_running")
         try:

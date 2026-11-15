@@ -1009,7 +1009,7 @@ class TakeBackTest(unittest.TestCase):
     def take_back(self, content, active=False):
         with open(self.file, "wb") as f:
             f.write(content)
-        with mock.patch.object(self.images, "active", return_value=active):
+        with mock.patch.object(self.images.states, "build_running", return_value=active):
             self.images._take_back("base", "agentbox-build@base.service", b"mine")
         return os.path.exists(self.file)
 

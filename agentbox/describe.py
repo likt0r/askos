@@ -16,23 +16,17 @@ the wakes and watch found in the VM's start from its wakes file, so it judges as
 import json
 import os
 import re
-import subprocess
 import sys
 import time
 
-from . import footprint, images, lifecycle, paths, registry, responding, settings, state_files, times, virsh, vmenv
+from . import footprint, images, lifecycle, paths, programs, registry, responding, settings, state_files, states, times
+from . import virsh, vmenv
 from .commands import declare
-from .errors import die
+from .errors import Fail, die
 
-# virsh domstate -> state in the Control Room; "paused" there is a Pause (managed save)
-STATES = {"running": "running", "shut off": "stopped", "paused": "suspended", "in shutdown": "shutting_down",
-          "crashed": "crashed", "pmsuspended": "suspended", "idle": "running", "blocked": "running"}
 # A connection to a VM's Orca port is an instance of agentbox-gui-<vm>@.service, named by
 # systemd after the socket: <n>-[<cookie>-]<local address>:<port>-<remote address>:<port>
 GUI_INSTANCE = re.compile(r"agentbox-gui-(" + registry.NAME.pattern + r")@(.+)\.service")
-# States of an Orca connection's unit that count as connected. A deactivating one is being
-# closed, so it is left out; images.active counts it, because a Build stopping still runs.
-ACTIVE = ("active", "activating", "reloading")
 
 
 def iso(epoch):
@@ -44,12 +38,9 @@ def list_units(patterns):
     """[(unit, load, active, sub, description)] of the loaded units matching these
     patterns (systemctl list-units --all), or None when systemctl fails."""
     try:
-        r = subprocess.run(["systemctl", "list-units", "--all", "--plain", "--no-legend", "--no-pager",
-                            "--full", *patterns], capture_output=True, text=True, errors="replace",
-                           timeout=30)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if r.returncode != 0:
+        r = programs.systemctl("list-units", "--all", "--plain", "--no-legend", "--no-pager", "--full", *patterns,
+                               timeout=30)
+    except Fail:
         return None
     rows = []
     for line in r.stdout.splitlines():
@@ -65,7 +56,7 @@ def devices(units):
     out = {}
     for unit, _, active, _, _ in units:
         m = GUI_INSTANCE.fullmatch(unit)
-        if not m or active not in ACTIVE:
+        if not m or not states.connection_open(active):
             continue
         # IPv4 and IPv6 addresses contain no "-": the last two parts are local and remote
         parts = m.group(2).split("-")
@@ -86,11 +77,8 @@ def triggered_by(names):
     if not names:
         return {}
     try:
-        r = subprocess.run(["systemctl", "show", "--no-pager", "--property=Id,TriggeredBy", "--", *names],
-                           capture_output=True, text=True, errors="replace", timeout=5)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if r.returncode != 0:
+        r = programs.systemctl("show", "--no-pager", "--property=Id,TriggeredBy", "--", *names, timeout=5)
+    except Fail:
         return None
     found = {}
     for block in r.stdout.split("\n\n"):        # one block per unit, the properties in systemd's order
@@ -131,12 +119,6 @@ def services(units, triggers=triggered_by):
 UNIT_PATTERNS = ("agentbox-*", "ollama.service")
 
 
-def state_of(raw, paused):
-    if paused:
-        return "paused"
-    return STATES.get(raw, "unknown")
-
-
 class Backing:
     """The Build a System disk was created from, read again only when the disk changed."""
 
@@ -164,9 +146,9 @@ def vm(rec, units, observed, backing, now=None, current=None, starts=None):
     current Build}, starts: responding.starts() (both computed once per round when given)."""
     now = time.time() if now is None else now
     name = rec["name"]
-    paused = lifecycle.has_save(name)
+    pause = states.has_pause(name)
     raw = virsh.state(name)
-    state = state_of(raw, paused)
+    state = states.control_room(raw, pause)
     start = (starts if starts is not None else responding.starts()).get(name)
     if start is None and state == "running":
         start = responding.start(name)         # started after this round read the starts

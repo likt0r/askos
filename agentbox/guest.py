@@ -15,7 +15,7 @@ import re
 import sys
 import time
 
-from . import options, paths, state_files, times, virsh
+from . import options, paths, state_files, states, times, virsh
 from .commands import declare
 from .registry import check, dom
 from .errors import Fail, die
@@ -145,7 +145,7 @@ def numbers(out, keys, below):
 def run_in_vm(ctx, argv, wrapper=JOURNAL, limit=VM_TIMEOUT):
     """Run a wrapper of the Image in the VM (journalctl by default) with these
     arguments; returns (stdout, truncated)."""
-    if virsh.state(ctx) != "running":
+    if not states.running(ctx):
         die(f"{ctx}: the VM is not running (agentbox start {ctx})", 3, error="vm_not_running", vm=ctx)
     code, out, err, truncated = execute(ctx, wrapper, argv, limit + 10)
     if code == 124:
@@ -255,7 +255,7 @@ def find_code(ctx, exclude=()):
     budget = paths.tunable("AGENTBOX_PAIR_SECONDS", 60)
     from . import responding             # responding imports this module (guest-ping)
     with state_files.vm_lock(ctx):       # not in the middle of a Reset (#52)
-        if virsh.state(ctx) != "running":
+        if not states.running(ctx):
             responding.clear(ctx)        # the failed wakes of its last start are over
             virsh.start(ctx)
             budget += 120                # boot, guest agent and Orca need time

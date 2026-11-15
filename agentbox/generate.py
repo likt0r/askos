@@ -20,7 +20,7 @@ import re
 import tempfile
 import time
 
-from . import activity, footprint, hostsetup, lifecycle, paths, programs, registry, settings, state_files, times, virsh, vmenv
+from . import activity, footprint, hostsetup, paths, programs, registry, settings, state_files, states, times, virsh, vmenv
 from .commands import declare
 from .errors import die
 from .registry import bridge, dom, guest_ip, host_ip, mac
@@ -363,43 +363,35 @@ def _resolver_current(rec, xml):
                     for o in _dnsmasq_options(rec)))
 
 
-def _vm_live(rec):
-    """Whether the VM has a QEMU process (running or paused in memory): its network interface
-    stays with it until the process ends."""
-    r = virsh.run("domstate", dom(rec["name"]))
-    return r.returncode == 0 and r.stdout.strip() not in ("shut off", "crashed", "")
-
-
 def _network(rec):
     """The VM's network created, brought to the current definition, autostarted and started:
     True or the key of what it said, else False. libvirt's dnsmasq reads its options only when
     the network starts, so an active network whose resolver is not the current one is
     stopped and started again."""
     net = dom(rec["name"])
-    r = virsh.run("net-info", net)
+    found = states.network(rec["name"])
     changed = False
-    if r.returncode == 0:
+    if found is not None:
+        active, autostart = found
         xml = _network_matches(rec)
-        info = dict(line.split(":", 1) for line in r.stdout.splitlines() if ":" in line)
-        info = {k.strip(): v.strip() for k, v in info.items()}
         if not _resolver_current(rec, xml):
             current = re.search(r"<uuid>([^<]+)</uuid>", xml)
             _virsh_define("net-define", network_xml(rec, current.group(1) if current else None),
                           f"{rec['name']}: define network")
             changed = "network-redefined"
-            if info.get("Active") == "yes":
-                live = _vm_live(rec)
+            if active:
+                live = states.has_process(rec["name"])
                 virsh_checked(f"{rec['name']}: stop network", "net-destroy", net)
                 virsh_checked(f"{rec['name']}: start network", "net-start", net)
                 changed = "network-redefined-running" if live else changed
     else:
         _virsh_define("net-define", network_xml(rec), f"{rec['name']}: create network")
-        info = {}
+        active = autostart = False
         changed = True
-    if info.get("Autostart") != "yes":
+    if not autostart:
         virsh_checked(f"{rec['name']}: autostart network", "net-autostart", net)
         changed = changed or True
-    if info.get("Active") != "yes":
+    if not active:
         virsh_checked(f"{rec['name']}: start network", "net-start", net)
         changed = changed or True
     return changed
@@ -514,7 +506,7 @@ def domain(rec):
                 return None
     except FileNotFoundError:
         pass
-    if uuid and lifecycle.has_save(vm):
+    if uuid and states.has_pause(vm):
         return "domain-postponed"
     _virsh_define("define", xml, f"{vm}: define VM")
     state_files.directory(os.path.dirname(saved), 0o700, only_new=True)

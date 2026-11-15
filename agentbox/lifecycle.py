@@ -16,7 +16,7 @@ import sys
 import time
 import xml.etree.ElementTree as ET
 
-from . import activity, footprint, guest, images, paths, programs, registry, responding, settings, state_files, virsh
+from . import activity, footprint, guest, images, paths, programs, registry, responding, settings, state_files, states, virsh
 from .commands import declare
 from .registry import check, dom
 from .errors import Fail, die
@@ -58,16 +58,6 @@ def _flags(args):
 
 
 # --- what the Host knows about a VM -----------------------------------------
-
-
-def has_save(ctx):
-    """Whether the VM is paused (libvirt holds a managed save of its memory)."""
-    return bool(re.search(r"^Managed save: *yes", virsh.run("dominfo", dom(ctx)).stdout, re.MULTILINE))
-
-
-def vm_state(ctx):
-    """The state as `status --json` names it: "paused" when a managed save exists."""
-    return "paused" if has_save(ctx) else virsh.state(ctx)
 
 
 def _rss_fields(ctx):
@@ -186,7 +176,7 @@ def wake(ctx):
     wait for it; then act on the state it left. The lock is not held while waiting
     for Orca. The outcome goes to the VM's wakes file (responding.py)."""
     with state_files.vm_lock(ctx):
-        started = virsh.state(ctx) != "running"
+        started = not states.running(ctx)
         if started:
             responding.clear(ctx)         # the failed wakes of its last start are over
             _must("start", dom(ctx))
@@ -224,7 +214,7 @@ def _gave_up(ctx, start, waiting):
     The first that finds the VM not responding records an entry that says what does not
     answer (#54); the other failures are none (priv: about 1,870 in one night). A VM
     stopped, paused or started again meanwhile is not one that does not answer."""
-    if virsh.state(ctx) != "running":
+    if not states.running(ctx):
         return "none"
     m = ORCA_ACTOR.fullmatch(activity.actor())
     return responding.wake_failed(ctx, start, waiting, m.group(1) if m else None,
@@ -233,7 +223,7 @@ def _gave_up(ctx, start, waiting):
 
 def pause(ctx, say):
     with state_files.vm_lock(ctx):
-        if virsh.state(ctx) != "running":
+        if not states.running(ctx):
             return
         _must("managedsave", dom(ctx))
         responding.clear(ctx)
@@ -245,27 +235,15 @@ def stop(ctx):
     after the time limit; once it is off, its failed wakes are over. The caller holds
     the VM's lifecycle lock."""
     virsh.run("managedsave-remove", dom(ctx))
-    if virsh.state(ctx) == "running":
+    if states.running(ctx):
         _must("shutdown", dom(ctx))
         for _ in range(paths.tunable("AGENTBOX_SHUTDOWN_SECONDS", 60)):
-            if virsh.state(ctx) != "running":
+            if not states.running(ctx):
                 break
             time.sleep(1)
-        if virsh.state(ctx) == "running":
+        if states.running(ctx):
             _must("destroy", dom(ctx))
     responding.clear(ctx)
-
-
-def _off(ctx):
-    """(True, state) when the domain is shut off or libvirt has none (create defines it
-    after the Reset); (False, state) otherwise, also when virsh cannot tell."""
-    r = virsh.run("domstate", dom(ctx))
-    if r.returncode == 0:
-        st = r.stdout.split("\n")[0].strip()
-        return st == "shut off", st or "unknown"
-    if "failed to get domain" in r.stderr:
-        return True, "not defined"
-    return False, "unknown"
 
 
 def _running_backing(ctx):
@@ -294,7 +272,7 @@ def _check_chain(ctx, base):
     """A VM running on another Build than the one its System disk was just created from
     writes that Build's data into the new disk and no longer boots after its next cold
     start (#52): force it off."""
-    if virsh.state(ctx) != "running":
+    if not states.running(ctx):
         return
     running = _running_backing(ctx)
     if running is None or os.path.basename(running) == os.path.basename(base):
@@ -319,12 +297,12 @@ def reset_as_found(ctx, say):
     was made, on the new one. Returns (whether it ran, the disk file of the Build used)."""
     progress = {}
     with state_files.vm_lock(ctx):
-        ran = virsh.state(ctx) == "running"
+        ran = states.running(ctx)
         try:
             base = _reset(ctx, ran, say, progress)
         except (Fail, KeyboardInterrupt) as e:
             safe = "disk" not in progress or (isinstance(e, KeyboardInterrupt) and "fresh" in progress)
-            if ran and safe and virsh.state(ctx) != "running" and virsh.run("start", dom(ctx)).returncode == 0:
+            if ran and safe and not states.running(ctx) and virsh.run("start", dom(ctx)).returncode == 0:
                 say(f"{ctx} started again" + ("" if "fresh" in progress else " (System disk unchanged)"))
             raise
     return ran, os.path.basename(base)
@@ -343,7 +321,7 @@ def _reset(ctx, start, say, progress=None):
         base = images.disk_for(registry.load(ctx))
         # a VM started meanwhile (not by agentbox, which waits for the lock) keeps using
         # the old disk's chain: never write a new header under it
-        off, st = _off(ctx)
+        off, st = states.off(ctx)
         if not off:
             die(f"{ctx}: the VM is not off ({st}), the System disk stays unchanged", error="vm_not_off", vm=ctx,
                 state=st)
@@ -372,7 +350,7 @@ def _reset(ctx, start, say, progress=None):
 
 def _result(ctx, as_json, lines):
     if as_json:
-        print(json.dumps({"vm": ctx, "state": vm_state(ctx), "message": message(lines)}))
+        print(json.dumps({"vm": ctx, "state": states.status(ctx), "message": message(lines)}))
 
 
 def status(args):
@@ -384,7 +362,7 @@ def status(args):
     if "--json" in args:
         out = {}
         for ctx in registry.names():
-            st = vm_state(ctx)
+            st = states.status(ctx)
             rss = _rss_fields(ctx)
             try:
                 rss_kb = int(rss[0]) if rss and rss[0] else 0
@@ -392,10 +370,10 @@ def status(args):
                 rss_kb = 0
             base = _backing(ctx, "") or ""
             since = _disk_mtime(ctx) or 0
-            states = agent_states(ctx) if st == "running" else {}
+            found = agent_states(ctx) if st == states.RUNNING else {}
             out[ctx] = {"state": st, "rss_kb": rss_kb, "base": base, "system_disk_since": since,
-                        "agents": agents_json(states),
-                        "agents_unknown": states is None,
+                        "agents": agents_json(found),
+                        "agents_unknown": found is None,
                         "open_until": state_files.open_until(ctx),
                         "claude_token_since": state_files.claude_token_since(ctx),
                         "gui_connections": gui_connections(ctx)}
@@ -407,15 +385,13 @@ def status(args):
     row = "{:<%d} {:<12} {:<10} {:<24} {:<8} {}" % max([6, *map(len, vms)])
     print(row.format("VM", "STATE", "RAM", "BASE-DISK", "SYS-AGE", "AGENTS"), flush=True)
     for ctx in vms:
-        st = virsh.state(ctx)
-        if has_save(ctx):
-            st = "paused"
+        st = states.status(ctx)
         mem = "".join("%.1f GB" % (_awk_number(f) / 1048576) for f in _rss_fields(ctx))
         base = _backing(ctx, "-")
         now = int(time.time())
         mtime = _disk_mtime(ctx)
         age = _days(now - (mtime if mtime is not None else now))
-        agents = agents_text(agent_states(ctx)) if st == "running" else "-"
+        agents = agents_text(agent_states(ctx)) if st == states.RUNNING else "-"
         print(row.format(ctx, st, mem or "-", "-" if base is None else base, f"{age} days", agents or "none"),
               flush=True)
     for w in warnings:
@@ -426,7 +402,7 @@ def start_cmd(args):
     """agentbox start <vm> [--json]: start without waiting for Orca."""
     ctx, flags = _flags(args)
     with state_files.vm_lock(ctx):
-        if virsh.state(ctx) != "running":
+        if not states.running(ctx):
             responding.clear(ctx)
             _must("start", dom(ctx))
     say, lines = reporter("--json" in flags)
@@ -495,7 +471,7 @@ def focus_cmd(args):
     if target == "off":
         say("all VMs wake up again when needed")
     if as_json:
-        print(json.dumps({"focus": target, "others": [{"vm": o, "state": vm_state(o)} for o in others],
+        print(json.dumps({"focus": target, "others": [{"vm": o, "state": states.status(o)} for o in others],
                           "message": message(lines)}))
 
 
@@ -594,7 +570,7 @@ def _check_one(ctx, now, say, age_days, update):
     if update is None and _days(now - mtime) < age_days:
         return "skipped", "recent"
     what = f"Reset onto the new Build {update[0]}-{update[1]}" if update else "Reset"
-    if virsh.state(ctx) != "running":
+    if not states.running(ctx):
         _reset(ctx, False, say)
         return "reset", "stopped"
     gui = gui_connections(ctx)
@@ -604,10 +580,10 @@ def _check_one(ctx, now, say, age_days, update):
     if gui > 0:
         say(f"{ctx}: {what} postponed (GUI connected)")
         return "postponed", "gui-connected"
-    states = agents_text(agent_states(ctx))
-    if states == "?" or "working=" in states:
-        say(f"{ctx}: {what} postponed (agents: {states})")
-        return "postponed", "agents-unknown" if states == "?" else "agents-working"
+    agents = agents_text(agent_states(ctx))
+    if agents == "?" or "working=" in agents:
+        say(f"{ctx}: {what} postponed (agents: {agents})")
+        return "postponed", "agents-unknown" if agents == "?" else "agents-working"
     _reset(ctx, True, say)
     return "reset", "idle"
 
@@ -628,10 +604,10 @@ def observe(args):
                  stdout=subprocess.DEVNULL, stderr=None)
     if r.returncode != 0:
         _exit_with(r)
-    states = agent_states(ctx)
-    line = f"{ctx}: the Host observes Orca in the VM. Agents: {agents_text(states)}"
+    found = agent_states(ctx)
+    line = f"{ctx}: the Host observes Orca in the VM. Agents: {agents_text(found)}"
     if "--json" in flags:
-        print(json.dumps({"vm": ctx, "agents": agents_json(states), "agents_unknown": states is None, "message": line}))
+        print(json.dumps({"vm": ctx, "agents": agents_json(found), "agents_unknown": found is None, "message": line}))
     else:
         print(line)
 

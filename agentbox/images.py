@@ -63,7 +63,7 @@ import sys
 import time
 
 from . import activity, footprint, guest, options, paths, programs, registry, safeguards, settings, state_files, times, version
-from . import versions
+from . import states, versions
 from .commands import declare
 from .errors import Fail, die
 from .sanitize import SECRET, clean, entry
@@ -614,7 +614,7 @@ def _reset_after(picks, built, actor, say):
     (lifecycle.reset_as_found). One Activity entry each, naming the Build used; a VM that fails
     does not keep the others from their Reset. Interrupted (systemctl stop), the VMs not reset
     yet are recorded as such."""
-    from . import lifecycle, virsh           # lifecycle imports this module
+    from . import lifecycle                  # lifecycle imports this module
     failed = False
     for n, (vm, image) in enumerate(picks):
         try:
@@ -629,7 +629,7 @@ def _reset_after(picks, built, actor, say):
             ran, used = lifecycle.reset_as_found(vm, say)
         except KeyboardInterrupt:
             for rest, rest_image in picks[n:]:
-                running = virsh.state(rest) == "running"
+                running = states.running(rest)
                 activity.record("reset", "reset.update", f"Reset after the Update of {rest_image} interrupted, the VM "
                                 + ("is running" if running else "is off"), rest, "failed", actor=actor,
                                 params={"image": rest_image, "running": running}, error="interrupted")
@@ -637,7 +637,7 @@ def _reset_after(picks, built, actor, say):
         except Fail as f:
             failed = True
             message = " ".join(f.message.strip().removeprefix("agentbox: ").split()) or f"Exit {f.exit}"
-            running = virsh.state(vm) == "running"
+            running = states.running(vm)
             state = "is running" if running else "stays off"
             say(f"== {vm}: Reset failed: {message}; the VM {state}")
             activity.record("reset", "reset.update", f"Reset after the Update of {image} failed: {message}; "
@@ -702,12 +702,11 @@ def _check_versions(say):
     (versions.check). What fails stays unknown and never stops the update."""
     say(f"== Checking versions: asking npm and GitHub ({versions.FETCH_UNIT}, as agentbox-feeds)")
     try:
-        r = subprocess.run(["systemctl", "start", versions.FETCH_UNIT], capture_output=True, text=True,
-                           errors="replace", timeout=20 * 60)
+        r = programs.systemctl("start", versions.FETCH_UNIT, timeout=20 * 60, ok=None)
         if r.returncode != 0:
             say("Fetch failed: " + programs.summary(r))
-    except (OSError, subprocess.TimeoutExpired) as e:
-        say(f"Fetch failed: {type(e).__name__}")
+    except Fail as f:
+        say(f"Fetch failed: {f.message}")
     say("== Checking versions: package updates and what a new Build would bring")
     try:
         versions.check(say)
@@ -831,7 +830,7 @@ def start_automatic(say):
     targets = ", ".join(wanted)
     # a unit that was started but has not taken the run lock yet counts too
     builds = (UPDATE, "all", *(i["name"] for i in view["images"]))
-    if state_files.held(RUN_LOCK) or any(active(unit(t)) for t in builds):
+    if state_files.held(RUN_LOCK) or any(states.build_running(unit(t)) for t in builds):
         say(f"Automatic update of {targets} not started: a Build is running; the next check tries again")
         activity.record("build", "build.skipped", f"Automatic update of {targets} not started: a Build is "
                         "running; the next check tries again", params={"images": wanted, "reason": "update"})
@@ -858,7 +857,7 @@ def building():
     if state_files.held(RUN_LOCK):
         return True
     names = dict.fromkeys([*available(), *builds(), *(_defined() or [])])
-    if any(active(unit(t)) for t in (UPDATE, "all", *names)):
+    if any(states.build_running(unit(t)) for t in (UPDATE, "all", *names)):
         return True
     for n in state_files.listdir(paths.BUILDS, fail=False):
         if not re.fullmatch(r"request-.+\.json", n):
@@ -893,33 +892,11 @@ def begun_since(started, target):
 
 def unit_failed_since(started, target):
     """Whether agentbox-build@<target> began a run at or after `started` (epoch seconds) that
-    failed (systemd's Result of its latest run, which left the inactive state then): a run that
-    fails before it begins a Build leaves no Build record. False when systemd cannot say."""
-    try:
-        r = subprocess.run(["systemctl", "show", "--timestamp=unix", "--property=Result,InactiveExitTimestamp",
-                            "--", unit(target)], capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    if r.returncode != 0:
-        return False
-    props = dict(line.partition("=")[::2] for line in r.stdout.splitlines())
-    began = re.fullmatch(r"@(\d+)", props.get("InactiveExitTimestamp", "").strip())
-    result = props.get("Result", "").strip()
-    return began is not None and int(began.group(1)) >= started and result not in ("", "success")
+    failed: a run that fails before it begins a Build leaves no Build record (states.failed_since)."""
+    return states.failed_since(unit(target), started)
 
 
 # --- commands ------------------------------------------------------------------------------
-
-def active(name):
-    """Whether a unit of a Build runs, or is about to: deactivating counts, a Build that is
-    stopping may still hold the run lock and write its Image (describe.ACTIVE leaves it out,
-    a connection being closed is no connection)."""
-    try:
-        r = subprocess.run(["systemctl", "is-active", name], capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return r.stdout.strip() in ("active", "activating", "deactivating", "reloading")
-
 
 def _update_vms(image, names):
     """The VMs an Update resets after its Build, with their Image: each must use the Image
@@ -949,7 +926,7 @@ def start(target, resets=(), **request):
     if not os.path.exists(os.path.join(paths.SYSTEMD, TEMPLATE)):
         die(f"{TEMPLATE} is missing, run agentbox regenerate first", error="not_set_up")
     name = unit(target)
-    if active(name):
+    if states.build_running(name):
         if target == UPDATE:
             die(f"an update is running already (journalctl -fu {name})", error="update_running")
         what = "of all Images" if target == "all" else f"of {target}"
@@ -987,7 +964,7 @@ def _take_back(target, name, mine):
     """Remove the request file of a start that failed, if it is still this call's and no unit
     of the target runs to take it."""
     with state_files.locked(REQUEST_LOCK):
-        if active(name) or state_files.read(_request_file(target), None) != mine:
+        if states.build_running(name) or state_files.read(_request_file(target), None) != mine:
             return
         state_files.remove(_request_file(target), fail=False)
 
@@ -1126,7 +1103,7 @@ def images_cmd(args):
     result = overview()
     # an update of everything (Update now, or the automatic one) runs: it may be checking the
     # versions, before any Build of it shows
-    result["updating"] = active(unit(UPDATE))
+    result["updating"] = states.build_running(unit(UPDATE))
     if "--json" in args:
         print(json.dumps(result, ensure_ascii=False))
         return
