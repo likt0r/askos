@@ -212,7 +212,7 @@ def vm_lock(name):
     stay off (Reset, Restart, Pause, delete) holds it for its whole length; everything
     that starts it (start, wake, pair) holds it around "check the state, start". Not
     reentrant: whoever holds it calls only code that does not take it again."""
-    return locked(f"lifecycle-{name}")
+    return locked(footprint.lifecycle_lock(name))
 
 
 def write_atomic(path, data, mode=0o644, gid=-1, uid=-1):

@@ -586,6 +586,11 @@ class DeleteTest(VmsTest):
                 f.write(name)
         own_transfer = rooted(footprint.transfer_file("lab", "0123456789ab"))
         other_transfer = rooted(footprint.transfer_file("lab-two", "0123456789ab"))
+        # an import still running holds its archive locked: delete leaves it to that import
+        running_transfer = rooted(footprint.transfer_file("lab", "fedcba987654"))
+        running = open(running_transfer, "w")
+        self.addCleanup(running.close)
+        fcntl.flock(running, fcntl.LOCK_EX)
 
         # Every future fixed path added to footprint.paths is created here without another test edit.
         catalog = [(host, rooted(host)) for host in footprint.paths(rec)]
@@ -616,6 +621,7 @@ class DeleteTest(VmsTest):
                 self.assertFalse(os.path.lexists(path), host)
         self.assertFalse(os.path.exists(qemu_proc))
         self.assertFalse(os.path.lexists(own_transfer))
+        self.assertTrue(os.path.lexists(running_transfer))
         self.assertTrue(os.path.lexists(other_transfer))
         with open(os.path.join(self.dir, "domains.json")) as f:
             domain = json.load(f)["agentbox-lab"]
@@ -636,6 +642,24 @@ class DeleteTest(VmsTest):
         self.assertEqual(self.read(f"var/lib/agentbox/archive/{self.archive()[0]}"), '{"repos": "unpushed work"}')
         self.assertEqual((result["data_disk"], result["archive"], result["resumed"]),
                          ("archived", archive, False))
+
+    def test_every_path_of_the_footprint_is_one_delete_removes_or_keeps_on_purpose(self):
+        rec = vm_records.read(self.root, "lab")
+        listed = set(footprint.paths(rec))
+        # kept: the archive (the Data disk goes there), QEMU's pid file (libvirt's own);
+        # import archives are listed by transfer_files, which the delete test covers
+        kept = {"archive_path", "qemu_pid_file", "transfer_file"}
+        for fn in vars(footprint).values():
+            if (not callable(fn) or fn.__name__.startswith("_") or getattr(fn, "__module__", None) != footprint.__name__
+                    or not fn.__name__.endswith(("_file", "_disk", "_dir", "_marker"))):
+                continue
+            with self.subTest(fn=fn.__name__):
+                if fn.__name__ in kept:
+                    continue
+                if fn.__name__ in ("unit_file", "socket_pending_file"):
+                    self.assertLessEqual(set(map(fn, footprint.sockets(rec))), listed)
+                else:
+                    self.assertIn(fn("lab"), listed)
 
     def test_text_output(self):
         out = self.ok("delete", "lab", "--confirm", "lab").splitlines()

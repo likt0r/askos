@@ -33,6 +33,9 @@ def system_disk(name):
     return os.path.join(host_paths.VMS, f"{name}-system.qcow2")
 
 
+SYSTEM_DISK = re.compile(r"(.+)-system\.qcow2")      # a System disk's file name, group 1 the VM
+
+
 def archive_path(name):
     """A new, collision-free name in the archive for the VM's Data disk."""
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -91,9 +94,18 @@ def domain_file(name):
     return os.path.join(host_paths.STATE, "domains", f"{name}.xml")
 
 
+QEMU_PIDS = host_paths.host("/run/libvirt/qemu")    # libvirt's pid file of each running domain
+QEMU_PID_FILE = re.compile(r"agentbox-(.+)\.pid")   # its file name, group 1 the VM
+
+
 def qemu_pid_file(name):
     """The QEMU process's pid file, owned by libvirt."""
-    return host_paths.host(f"/run/libvirt/qemu/agentbox-{name}.pid")
+    return os.path.join(QEMU_PIDS, f"agentbox-{name}.pid")
+
+
+def lifecycle_lock(name):
+    """What state_files.vm_lock locks: the VM's lifecycle lock (its file lives in locks/)."""
+    return f"lifecycle-{name}"
 
 
 UNIT_KINDS = ("proxy.socket", "proxy.service", "ghvm.socket", "ghvm@.service", "gui.socket", "gui@.service")

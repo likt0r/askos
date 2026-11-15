@@ -146,7 +146,7 @@ def _leftovers(rec):
     files = [("Data disk", footprint.data_disk(name)), ("System disk", footprint.system_disk(name)),
              ("Claude token", footprint.claude_token_file(name)), ("VM variables", footprint.vm_env_file(name)),
              ("Observer", footprint.observer_dir(name)),
-             *(("units", footprint.unit_file(u)) for u in generate.units(rec))]
+             *(("units", f) for f in footprint.unit_files(rec))]
     found = list(dict.fromkeys(what for what, path in files if os.path.lexists(path)))
     if virsh.run("domuuid", dom(name)).returncode == 0:
         found.append(f"VM {dom(name)}")

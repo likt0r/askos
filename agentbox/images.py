@@ -206,7 +206,7 @@ def in_use():
     System disk cannot be read (then nothing may be deleted)."""
     used = {}
     for n in state_files.listdir(paths.VMS, fail=False):
-        m = re.fullmatch(r"(.+)-system\.qcow2", n)
+        m = footprint.SYSTEM_DISK.fullmatch(n)
         if not m:
             continue
         backing_file = backing(footprint.system_disk(m.group(1)))

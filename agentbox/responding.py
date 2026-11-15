@@ -53,8 +53,8 @@ ORCA_SECONDS = 2                 # time limit of one connection to Orca when che
 PING_SECONDS = 3                 # time limit of the guest-ping
 SLACK = 2                        # seconds a start read from /proc and clock() may disagree
 PROC = paths.host("/proc")
-PIDS = paths.host("/run/libvirt/qemu")       # libvirt's pid file of each running domain
-PID_FILE = re.compile(r"agentbox-(.+)\.pid")
+PIDS = footprint.QEMU_PIDS
+PID_FILE = footprint.QEMU_PID_FILE
 ADDRESS = re.compile(r"[0-9A-Fa-f.:%]{2,64}")
 
 # one start of a VM's QEMU process: at when it started (on clock()), id which start it is
