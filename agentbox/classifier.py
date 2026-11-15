@@ -53,11 +53,11 @@ def _optional(value, kind):
 
 
 def report(domain):
-    """The verdict on a domain (--json): {"signals": [Signal...], "alert", "strong",
-    "harmless_regex", "legitimate_regex": bool, "harmless", "legitimate": the entry or None,
+    """The verdict on a domain (--json): {"domain": as classified, "signals": [Signal...],
+    "alert", "strong", "harmless_regex", "legitimate_regex": bool, "harmless", "legitimate": the entry or None,
     "feeds": {name: state}, ...}."""
-    return _ask(lambda a: isinstance(a, dict) and isinstance(a.get("signals"), list)
-                and all(_signal(s) for s in a["signals"]) and _feeds(a.get("feeds"))
+    return _ask(lambda a: isinstance(a, dict) and isinstance(a.get("domain"), str)
+                and isinstance(a.get("signals"), list) and all(_signal(s) for s in a["signals"]) and _feeds(a.get("feeds"))
                 and all(isinstance(a.get(k), bool) for k in ("alert", "strong", "harmless_regex", "legitimate_regex"))
                 and _optional(a.get("harmless"), str) and _optional(a.get("legitimate"), str), "--json", domain)
 

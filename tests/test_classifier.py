@@ -8,9 +8,9 @@ preview, so the classifier is asked about one host.
 
 Run from the repo root: python3 -m unittest discover -s tests
 """
+import ast
 import json
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -71,6 +71,9 @@ QUESTIONS = {
                 but(GOOD["--json"], signals=[{"signal": "young"}]),
                 but(GOOD["--json"], signals=[{**SIGNAL, "params": {"n": 1}}]),
                 but(GOOD["--json"], signals=[{**SIGNAL, "strong": "no"}]),
+                *(but(GOOD["--json"], signals=[{k: v for k, v in SIGNAL.items() if k != field}])
+                  for field in ("reason", "code", "suppressed")),
+                without(GOOD["--json"], "domain"),
                 but(GOOD["--json"], alert="no"), without(GOOD["--json"], "strong"),
                 but(GOOD["--json"], harmless_regex=None), but(GOOD["--json"], legitimate_regex=1),
                 but(GOOD["--json"], harmless=1), but(GOOD["--json"], legitimate=["pypi.org"])]),
@@ -172,21 +175,32 @@ def sources():
             yield path, f.read()
 
 
+def names(text):
+    """The imported names of a source, as (module, name) for `from .module import name`, and
+    the attributes it reads, as (module, attribute) for `module.attribute`."""
+    for node in ast.walk(ast.parse(text)):
+        if isinstance(node, ast.ImportFrom) and node.level == 1:
+            yield from ((node.module, alias.name) for alias in node.names)
+        elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            yield node.value.id, node.attr
+
+
 class SeamTest(unittest.TestCase):
     def test_only_the_adapter_starts_the_classifier_or_reads_its_answers(self):
         for path, text in sources():
             if os.path.basename(path) in ("classifier.py", "paths.py"):
                 continue
             with self.subTest(path=path):
-                self.assertNotIn("paths.SUSPICIOUS", text)
+                self.assertNotIn(("paths", "SUSPICIOUS"), set(names(text)))
+                self.assertNotIn("libexec/agentbox-suspicious", text.replace(os.sep, "/"))
                 self.assertNotIn("agentbox_suspicious", text)
                 self.assertNotIn("invalid answer", text)
 
     def test_no_module_imports_a_private_helper_of_detection_allowlist_lists_or_the_adapter(self):
-        private = re.compile(r"from \.(?:detection|allowlist|lists|classifier) import [^\n]*\b_\w|\b(?:detection|allowlist|lists|classifier)\._\w")
         for path, text in sources():
             with self.subTest(path=path):
-                self.assertIsNone(private.search(text))
+                self.assertEqual([(m, n) for m, n in names(text)
+                                  if m in ("detection", "allowlist", "lists", "classifier") and n.startswith("_")], [])
 
 
 if __name__ == "__main__":
