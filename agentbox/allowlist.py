@@ -40,12 +40,11 @@ Allowlist entries through.
 import json
 import os
 import re
-import subprocess
 import sys
 import time
 from collections import Counter
 
-from . import activity, durations, entry_store, footprint, list_records, options, paths, patterns, proxy_log, registry, settings, state_files, times
+from . import activity, classifier, durations, entry_store, footprint, list_records, options, paths, patterns, proxy_log, registry, settings, state_files, times
 from .commands import declare
 from .errors import Fail, die
 from .network import DOMAIN, done, valid_domain
@@ -74,11 +73,6 @@ def default_duration():
 
 
 # --- arguments -----------------------------------------------------------------
-
-def _parse(args):
-    """The positional arguments and options already parsed by the dispatcher."""
-    return options.parse(args)
-
 
 def scope_arg(s):
     """"all" or a VM of the registry."""
@@ -116,28 +110,11 @@ def _note(value):
     return entry_store.text(value, "note", MAX_NOTE)
 
 
-def classify(domain):
-    """Signals of a destination from agentbox-suspicious as (text, suspicious, why the
-    hand-maintained Watchlist cannot be read or None). The classifier prints the Signals
-    and exits non-zero on strong suspicion, 3 with the reason on stderr while the
-    Watchlist cannot be read; without a classifier, or when it does not answer in time,
-    every domain counts as suspicious."""
-    try:
-        r = subprocess.run([paths.SUSPICIOUS, domain], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                           env=paths.classifier_env(), timeout=paths.CLASSIFIER_SECONDS)
-    except OSError:
-        return "", True, None
-    except subprocess.TimeoutExpired:
-        return "agentbox-suspicious does not answer", True, None
-    unreadable = clean(r.stderr.decode("utf-8", "replace").strip(), False)[-300:] if r.returncode == 3 else None
-    return r.stdout.decode("utf-8", "replace").rstrip("\n"), r.returncode != 0, unreadable
-
-
 def _signals(domain, opts):
     """Strongly suspicious destinations only with --force, and while the Watchlist cannot
     be read every destination."""
     from .lists import UNREADABLE
-    tags, suspicious, unreadable = classify(domain)
+    tags, suspicious, unreadable = classifier.classify(domain)
     if "force" in opts:
         return
     if unreadable is not None:
@@ -328,20 +305,14 @@ def preview(scope, pattern):
             c[event.kind.lower()] += 1
     hosts = sorted(counts)
     shown = hosts[:PREVIEW_SHOWN]
-    from .detection import _classifier
-    rep = _classifier("--signals", *shown)
-    if not (isinstance(rep, dict) and isinstance(rep.get("hosts"), dict)
-            and all(isinstance(rep["hosts"].get(h), dict) and isinstance(rep["hosts"][h].get("signals"), list)
-                    and isinstance(rep["hosts"][h].get("strong"), bool) for h in shown)
-            and isinstance(rep.get("watchlist_unreadable"), (str, type(None)))):
-        die("agentbox-suspicious: invalid answer", error="action_failed")
-    rows = [{"host": h, **counts[h], "signals": [str(s) for s in rep["hosts"][h]["signals"]],
-             "strong": rep["hosts"][h]["strong"]} for h in shown]
+    signals, watchlist_unreadable = classifier.signals(shown)
+    rows = [{"host": h, **counts[h], "signals": signals[h]["signals"],
+             "strong": signals[h]["strong"]} for h in shown]
     truncated = len(log) >= PREVIEW_LINES
     stamps = [u // 10**6 for u in (times.journal_usec(e) for e, _ in log) if u is not None and u >= 0] if truncated else []
     return {"hosts": rows, "more": len(hosts) - len(shown),
-            "watchlist_unreadable": clean(rep["watchlist_unreadable"], False)[:300]
-            if rep["watchlist_unreadable"] else None, "truncated": truncated,
+            "watchlist_unreadable": clean(watchlist_unreadable, False)[:300] if watchlist_unreadable else None,
+            "truncated": truncated,
             "reaches_back": min(stamps) if stamps else now - PREVIEW_DAYS * 86400, "log_unreadable": unreadable}
 
 
@@ -375,7 +346,7 @@ def show(args):
     VM (its own and those for all VMs), or those for all VMs; with remaining time
     and uses in the last 24 hours. Each row has domain and regex, one of them null, and
     refused: why the rules refuse a stored pattern (it allows nothing until removed), else null."""
-    positional, opts = _parse(args)
+    positional, opts = options.parse(args)
     if len(positional) > 1:
         die("too many arguments: " + clean(positional[1], False)[:60], error="invalid_argument")
     scope = scope_arg(positional[0]) if positional else None
@@ -411,7 +382,7 @@ def allow(args):
     destinations only with --force. With --regex PATTERN in place of the domain a Regex
     entry: refused unless it keeps the rules (patterns.py), and without --confirm-pattern it
     only shows which hosts of the proxy log it would allow (preview)."""
-    positional, opts = _parse(args)
+    positional, opts = options.parse(args)
     scope, ref = _target(positional, opts)
     seconds = _seconds(opts)
     note = _note(opts.get("note"))
@@ -445,7 +416,7 @@ def allow(args):
 def disallow(args):
     """agentbox disallow <vm|all> <domain>|--regex PATTERN [--json]: removes the entry; the
     proxy closes tunnels to it that nothing else allows"""
-    positional, opts = _parse(args)
+    positional, opts = options.parse(args)
     scope, ref = _target(positional, opts)
     with changing() as entries:
         e = find(entries, ref, scope)
@@ -467,7 +438,7 @@ def disallow(args):
 def extend(args):
     """agentbox extend <vm|all> <domain>|--regex PATTERN --for 15min|1h|8h|7d [--force]
     [--json]: a temporary entry runs that much longer (from now, if it has expired)"""
-    positional, opts = _parse(args)
+    positional, opts = options.parse(args)
     scope, ref = _target(positional, opts)
     if "for" not in opts:
         die("extend needs --for 15min, 1h, 8h or 7d", error="invalid_duration")
@@ -491,7 +462,7 @@ def extend(args):
 def make_permanent(args):
     """agentbox make-permanent <vm|all> <domain>|--regex PATTERN [--force] [--json]: a
     temporary entry no longer expires"""
-    positional, opts = _parse(args)
+    positional, opts = options.parse(args)
     scope, ref = _target(positional, opts)
     _no_force(ref, opts)
     if _existing(read()[0], ref, scope)["expires"] is not None and ref[0] == "domain":
@@ -508,7 +479,7 @@ def make_permanent(args):
 def set_note(args):
     """agentbox set-note <vm|all> <domain>|--regex PATTERN --note TEXT [--json]: the
     entry's note (empty to clear it)"""
-    positional, opts = _parse(args)
+    positional, opts = options.parse(args)
     scope, ref = _target(positional, opts)
     if "note" not in opts:
         die("set-note needs --note TEXT", error="invalid_argument", option="--note")
@@ -522,7 +493,7 @@ def set_note(args):
 def expire(args):
     """agentbox expire-allowlist [--json] (timer, every minute): removes expired
     entries and records each expiry in Activity"""
-    positional, opts = _parse(args)
+    positional, opts = options.parse(args)
     if positional:
         die("too many arguments: " + clean(positional[0], False)[:60], error="invalid_argument")
     now = int(time.time())
@@ -549,7 +520,7 @@ def check_regex(args):
     (else the command fails with the reason, as adding it would), which of the hosts it
     matches, and for the Allowlist the preview of what it would allow for the scope (all VMs
     unless --scope)"""
-    positional, opts = _parse(args)
+    positional, opts = options.parse(args)
     lists = ("allowlist", "watchlist", "legitimate", "harmless")
     if not positional or positional[0] not in lists:
         die(f"check-regex needs the list: {', '.join(lists)}", error="invalid_argument")
@@ -581,7 +552,7 @@ def migrate(args):
     """agentbox migrate-allowlist [--json]: entries of the Allowlist files from
     before allowlist.json taken over, every one of them; the files are moved
     aside (<file>.migrated). Running it again changes nothing."""
-    positional, opts = _parse(args)
+    positional, opts = options.parse(args)
     if positional:
         die("too many arguments: " + clean(positional[0], False)[:60], error="invalid_argument")
     path = store_file()

@@ -18,7 +18,7 @@ import os
 import re
 import time
 
-from . import footprint, list_records, options, patterns, paths, programs, scripts, state_files, times
+from . import classifier, footprint, list_records, options, patterns, paths, state_files, times
 from .commands import declare
 from .entry_store import given, label
 from .errors import die
@@ -32,18 +32,6 @@ SEEN_KEEP = 2 * 86400                # Alerts are listed for 24 hours; older mar
 # a name only a resolver reads as an address, before the classifier is asked (alert_host)
 NUMERIC_HOST = re.compile(r"[0-9a-fx.]{1,253}")
 HARMLESS_HEADER = b"# Domains with a Harmless mark, with their subdomains (agentbox mark-harmless/unmark-harmless)\n"
-
-
-_module = None
-
-
-def _classifier_module():
-    """The classifier as a module, for is_address (loaded once; no bytecode is written next
-    to it)."""
-    global _module
-    if _module is None:
-        _module = scripts.load(paths.SUSPICIOUS, "agentbox_suspicious")
-    return _module
 
 
 def harmless_file():
@@ -92,35 +80,6 @@ def domain_arg(d):
 
 # --- check-domain -------------------------------------------------------------
 
-def _classifier(*args):
-    """agentbox-suspicious with the files of this Host (or the test root): its JSON answer."""
-    r = programs.run([paths.SUSPICIOUS, *args], paths.CLASSIFIER_SECONDS, what="agentbox-suspicious",
-                     env=paths.classifier_env())
-    try:
-        return json.loads(r.stdout)
-    except ValueError:
-        die("agentbox-suspicious: invalid answer", error="action_failed")
-
-
-def _signal(s):
-    """A Signal of the classifier's verdict: its name, whether it is strong or suppressed, the
-    reason's English text, code and parameters (text)."""
-    return (isinstance(s, dict) and isinstance(s.get("signal"), str) and isinstance(s.get("reason"), str)
-            and isinstance(s.get("code"), str) and isinstance(s.get("params"), dict)
-            and all(isinstance(k, str) and isinstance(v, str) for k, v in s["params"].items())
-            and isinstance(s.get("strong"), bool) and isinstance(s.get("suppressed"), bool))
-
-
-def report(domain):
-    """The classifier's verdict on a domain."""
-    rep = _classifier("--json", domain)
-    ok = (isinstance(rep, dict) and isinstance(rep.get("signals"), list) and isinstance(rep.get("feeds"), dict)
-          and all(_signal(s) for s in rep["signals"]))
-    if not ok:
-        die("agentbox-suspicious: invalid answer", error="action_failed")
-    return rep
-
-
 def verdict(rep):
     blocked = "blocked in Open web, allowed only with --force"
     if rep.get("harmless"):
@@ -141,7 +100,6 @@ def verdict(rep):
 def feed_line(feeds):
     parts = []
     for name, f in sorted(feeds.items()):
-        f = f if isinstance(f, dict) else {}
         if not f.get("present"):
             parts.append(f"{name} missing")
             continue
@@ -159,7 +117,7 @@ def check_domain(args):
     domain = domain_arg(args[0] if args else "")
     if len(args.positional) > 1:
         die(f"too many arguments: {clean(args.positional[1], False)[:60]}", error="invalid_argument")
-    rep = report(domain)
+    rep = classifier.report(domain)
     if args.values.get("json"):
         print(json.dumps(rep))
         return
@@ -236,7 +194,7 @@ def alert_host(d):
         pass
     if DOMAIN.fullmatch(d):
         return d
-    if NUMERIC_HOST.fullmatch(d) and _classifier_module().is_address(d):
+    if NUMERIC_HOST.fullmatch(d) and classifier.is_address(d):
         return d
     die(f"invalid domain: {d}", error="invalid_domain", domain=d)
 

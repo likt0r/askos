@@ -444,6 +444,10 @@ flowchart LR
   Legitimate domains,
 - random-looking labels and unusual TLDs (weak signals).
 
+agentbox asks the classifier only through `agentbox/classifier.py`, which starts it and checks
+each kind of JSON answer once: one of the wrong shape ends the command with
+`agentbox-suspicious: invalid answer`.
+
 **Legitimate domains** (registries, vendors, distributions; no hosting services such as
 `amazonaws.com` or `vercel.app`) get no pattern Signals except the blockchain pattern, and
 Feed hits for one or a subdomain of it do not count, so a broken feed cannot stop normal work
