@@ -38,7 +38,7 @@ import re
 import time
 
 from . import activity, allowlist, footprint, generate, images, lifecycle, paths, registry, settings, state_files
-from . import options, times, virsh, vmenv
+from . import options, states, times, virsh, vmenv
 from .commands import declare
 from .credentials import OWNER
 from .errors import Fail, die
@@ -255,7 +255,7 @@ def set_memory(args):
     with state_files.locked(paths.REGISTRY):                 # no regenerate defines the domain meanwhile
         with state_files.locked(footprint.record_file(name)):     # no set-owners writes the record back
             with state_files.vm_lock(name):              # no Pause, start or Reset between check and define
-                if lifecycle.has_save(name):
+                if states.has_pause(name):
                     die(f"{name} is paused, its saved memory belongs to the previous memory limit: "
                         f"first resume it (agentbox start {name}), then try again", error="vm_paused", vm=name)
                 rec = registry.load(name)
@@ -272,7 +272,7 @@ def set_memory(args):
                 state = virsh.state(name)
     changed = before != memory or defined is not None
     # libvirt has no domain (missing) or it is off: the next start uses the new definition
-    applies = None if not changed else "next_start" if state in ("shut off", virsh.MISSING) else "next_restart"
+    applies = None if not changed else "next_start" if states.starts_anew(state) else "next_restart"
     what = f"{name}: memory limit " + (f"{before} -> {memory} MiB" if before != memory else f"{memory} MiB")
     if not changed:
         activity.unchanged()
@@ -339,8 +339,8 @@ def set_container_cleanup(args):
 def _applies(name, changed):
     """(state, applies) after a change of what the VM gets at its start: next_start when it is
     off (or libvirt has no domain), next_restart when it runs or is paused, None unchanged."""
-    state = lifecycle.vm_state(name)
-    return state, None if not changed else "next_start" if state in ("shut off", virsh.MISSING) else "next_restart"
+    state = states.status(name)
+    return state, None if not changed else "next_start" if states.starts_anew(state) else "next_restart"
 
 
 def _change_env(name, change):

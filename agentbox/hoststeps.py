@@ -18,7 +18,7 @@ import subprocess
 import sys
 import tempfile
 
-from . import activity, classifier, detection, firewall, generate, list_records, lists, paths, programs, state_files
+from . import activity, classifier, detection, firewall, generate, list_records, lists, paths, programs, state_files, states
 from .errors import die
 
 # the hand-maintained lists as (record, the text file it is migrated from); the Allowlist the
@@ -352,10 +352,10 @@ def libvirt_zone():
 def enable(unit, start=True):
     """The unit enabled (at boot) and, with start, running; only what is not so already."""
     said = []
-    if programs.systemctl("is-enabled", unit, timeout=60, ok=None).stdout.strip() != "enabled":
+    if not states.enabled(unit, timeout=60):
         programs.systemctl("enable", unit, timeout=300)
         said.append(f"{unit} enabled")
-    if start and programs.systemctl("is-active", unit, timeout=60, ok=None).returncode != 0:
+    if start and not states.started(unit, timeout=60):
         programs.systemctl("start", unit, timeout=300)
         said.append(f"{unit} started")
     return said

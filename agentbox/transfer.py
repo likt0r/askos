@@ -38,7 +38,7 @@ import sys
 import tarfile
 import time
 
-from . import activity, footprint, guest, lifecycle, paths, programs, responding, state_files, times, virsh
+from . import activity, footprint, guest, lifecycle, paths, programs, responding, state_files, states, times, virsh
 from .commands import declare
 from .errors import Fail, die
 from .registry import check, dom
@@ -339,9 +339,9 @@ def _add(tar, source, rel, skipped, counts):
 def _ready(ctx):
     """The VM runs and its guest agent answers; started if it was off. The caller holds
     the VM's lifecycle lock."""
-    if lifecycle.has_save(ctx):
+    if states.has_pause(ctx):
         die(f"{ctx}: the VM is paused; start it first (agentbox start {ctx})", error="vm_paused", vm=ctx)
-    if virsh.state(ctx) == "running":
+    if states.running(ctx):
         return
     responding.clear(ctx)                     # the failed wakes of its last start are over
     lifecycle._must("start", dom(ctx))
@@ -482,7 +482,7 @@ def import_cmd(args):
     """agentbox import <vm> <folder> [<target>] [--json]"""
     ctx, source, target, as_json = parse(args)
     check_source(source)
-    if lifecycle.has_save(ctx):
+    if states.has_pause(ctx):
         die(f"{ctx}: the VM is paused; start it first (agentbox start {ctx})", error="vm_paused", vm=ctx)
     try:
         state_files.directory(paths.TRANSFERS, 0o711)      # QEMU must reach the file (it runs as qemu)
