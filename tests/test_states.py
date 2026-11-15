@@ -190,7 +190,7 @@ class OneModuleTest(unittest.TestCase):
                     with self.subTest(path=os.path.relpath(path, REPO)):
                         self.assertIsNone(self.WORDS.search(text))
                         if path != os.path.join(REPO, "agentbox", "programs.py"):
-                            self.assertNotRegex(text, r'\[\s*"systemctl"')
+                            self.assertNotRegex(text, r'[\[(]\s*["\']systemctl["\']')
 
 
 if __name__ == "__main__":

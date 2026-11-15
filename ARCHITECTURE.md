@@ -253,8 +253,8 @@ flowchart LR
   System disk came from (not when pinned to a Build), but only when no Orca client is
   connected and no agent is working (read from Orca as the Observer).
   They are never paused automatically; when the Host sleeps, the VMs sleep with it.
-- What libvirt and systemd say about a VM, its network and a unit is read in one module,
-  [agentbox/states.py](agentbox/states.py), which names it in these terms: a VM with a Pause
+- What libvirt and systemd say about the state of a VM, its network and a unit is read in one
+  module, [agentbox/states.py](agentbox/states.py), which names it in these terms: a VM with a Pause
   (a managed save) is paused; the Control Room shows a domain libvirt reports as paused
   (suspended in memory, which Agent Box never does) as suspended, while `status` keeps
   libvirt's words; a Build's unit counts as running while it is still stopping, a connection
