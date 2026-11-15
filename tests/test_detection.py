@@ -30,6 +30,7 @@ import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import proxy_layout  # noqa: E402
 import vm_records  # noqa: E402
 from client_hello import ACCESS_DENIED, client_hello  # noqa: E402
 from journal_writers import proxy, write_passwd  # noqa: E402
@@ -404,7 +405,8 @@ class SelfTest(unittest.TestCase):
     def test_fails_when_detection_regresses(self):
         # a classifier that typo-checks short names again: the proxy next to it now
         # raises an Alert for pypx.example
-        with tempfile.TemporaryDirectory() as d:
+        with tempfile.TemporaryDirectory() as prefix:
+            d = proxy_layout.libexec(prefix)
             shutil.copy(PROXY, d)
             with open(SUSPICIOUS) as f:
                 source = f.read()
@@ -445,7 +447,7 @@ class CliTest(unittest.TestCase):
         write(os.path.join(self.conf, "legitimate-domains"), LEGITIMATE)
         libexec = os.path.join(self.root, "usr", "libexec")
         os.makedirs(libexec)
-        shutil.copy2(SUSPICIOUS, libexec)
+        os.symlink(SUSPICIOUS, os.path.join(libexec, "agentbox-suspicious"))
         os.makedirs(os.path.join(self.dir, "bin"))
         with open(os.path.join(self.dir, "bin", "journalctl"), "w") as f:
             f.write(FAKE_JOURNALCTL.replace("PYTHON", sys.executable, 1).replace("DIR", repr(self.dir), 1))
@@ -599,6 +601,14 @@ class HarmlessCliTest(CliTest):
         self.assertEqual(self.run_agentbox("unmark-harmless", "other.example", "--json"),
                          (0, '{"domain": "other.example", "regex": null, '
                              '"message": "other.example no longer marked harmless"}\n', ""))
+
+    def test_unmark_removes_every_line_that_reads_as_the_mark(self):
+        # hand edits the classifier reads as githbu.com: a second word, a comment, case, a dot
+        write(os.path.join(self.conf, "harmless"),
+              HEADER + b"githbu.com extra\nGithbu.COM. # note\nfresh.example\n")
+        self.assertEqual(self.run_agentbox("harmless"), (0, "githbu.com\ngithbu.com\nfresh.example\n", ""))
+        self.assertEqual(self.run_agentbox("unmark-harmless", "githbu.com")[0], 0)
+        self.assertEqual(self.read_conf("harmless"), HEADER + b"fresh.example\n")
 
     def test_without_list(self):
         self.assertEqual(self.run_agentbox("harmless", "--json"), (0, "[]\n", ""))

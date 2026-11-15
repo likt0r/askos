@@ -58,19 +58,19 @@ import json
 import os
 import time
 
-from . import activity, entry_store, paths, patterns, settings, state_files
+from . import activity, entry_store, list_records, paths, patterns, settings, state_files
 from .allowlist import MAX_NOTE, _parse
 from .detection import _classifier, domain_arg, feed_line
 from .errors import Fail, die
 from .network import DOMAIN, done
 from .sanitize import clean
 
-MAX_SOURCE = 200
-# the fields of an entry besides domain or regex (patterns.py)
-WATCHLIST = {"title": "Watchlist", "file": "watchlist.json", "legacy": "suspicious-domains",
-             "fields": {"category": str, "source": str, "note": str, "added": int, "added_by": str}}
-LEGITIMATE = {"title": "Legitimate domains", "file": "legitimate.json", "legacy": "legitimate-domains",
-              "fields": {"note": str, "added": int, "added_by": str}}
+MAX_SOURCE = list_records.MAX_TEXT
+# the files, the fields of an entry besides domain or regex, and its checks (list_records.py)
+WATCHLIST = {"title": "Watchlist", "file": list_records.WATCHLIST, "legacy": list_records.LEGACY_WATCHLIST,
+             "fields": list_records.WATCH_FIELDS, "problem": list_records.watch_problem}
+LEGITIMATE = {"title": "Legitimate domains", "file": list_records.LEGITIMATE, "legacy": list_records.LEGACY_LEGITIMATE,
+              "fields": list_records.LEGITIMATE_FIELDS, "problem": list_records.legitimate_problem}
 # what migrate-lists says when there is nothing to take over
 NOTHING_TO_MIGRATE = "Watchlist and Legitimate domains: nothing to take over"
 # what an unreadable Watchlist means (the Control Room answers watchlist_unreadable)
@@ -138,39 +138,16 @@ def _category(value):
 
 # --- storage ---------------------------------------------------------------------
 
-def _problem(kind, e):
-    """What is wrong with an entry, or None. The classifier checks the entries of both
-    records the same way, with the same texts byte for byte (agentbox-suspicious, _problem):
-    a value in a text has its unprintable characters shown as ? by the classifier's own
-    printable (_printable)."""
-    def category_or_text(e):
-        if "category" in kind["fields"] and e["category"] not in categories():
-            return f"unknown category {_printable(e['category'], 20)}"
-        if len(e["note"]) > MAX_NOTE or len(e.get("source", "")) > MAX_SOURCE:
-            return "text too long"
-        return None
-
-    return entry_store.problem(e, kind["fields"], _printable, category_or_text)
-
-
-def _printable(text, limit):
-    """A value in a message as the classifier shows it: unprintable characters as ?, at most
-    limit characters."""
-    return patterns.rules().printable(text, limit)
-
-
 def _valid(kind, entries, path):
     """The entries; ends the command at a broken or duplicate one. Such a record is
     unreadable for the classifier as well: for the Watchlist the proxy keeps Open web
     closed, for the Legitimate domains it counts only the built-in ones."""
     def broken(why):
-        # the classifier's reasons, byte for byte (see _problem)
         if kind is WATCHLIST:
             raise Unreadable(f"{path}: {why}")
         die(f"{LEGITIMATE_UNREADABLE}: {path}: {why}", error="legitimate_unreadable")
 
-    # a second entry is named as the classifier names it (_checked), byte for byte
-    return entry_store.valid(entries, lambda e: _problem(kind, e), broken, _printable)
+    return entry_store.valid(entries, kind["problem"], broken, list_records.printable)
 
 
 def _entry(kind, domain, now, added_by, category="", source="", note="", ref=None):
@@ -204,7 +181,7 @@ def _from_legacy(kind, path, now):
         parts = body.split()
         if not parts:
             continue
-        domain = entry_store.legacy_domain(parts[0])
+        domain = list_records.legacy_domain(parts[0])
         comment = " ".join(comment.split())[:MAX_SOURCE]
         if domain in builtin:
             continue
@@ -245,11 +222,11 @@ def _load(kind, create=False):
     is what the classifier calls unreadable (watchlist_unreadable): the proxy lets
     nothing through Open web then, and the message says so. Only a command that
     creates the record (create, watch-add) goes on without one. The reasons are the
-    classifier's, byte for byte (see _problem)."""
+    classifier's (list_records)."""
     path = record_file(kind)
     try:
         with open(path, encoding="utf-8") as f:
-            data = json.load(f)
+            return list_records.entries(f.read()), None
     except FileNotFoundError:
         legacy = legacy_file(kind)
         if os.path.exists(legacy):
@@ -259,12 +236,8 @@ def _load(kind, create=False):
         return None, None
     except OSError as e:
         why = f"{path}: {e.strerror}"
-    except ValueError:
-        why = f"{path}: not valid JSON"
-    else:
-        if isinstance(data, dict) and isinstance(data.get("entries"), list):
-            return data["entries"], None
-        why = f"{path}: no list entries"
+    except ValueError as e:
+        why = f"{path}: {'not valid JSON' if isinstance(e, UnicodeDecodeError) else e}"
     if kind is WATCHLIST:
         raise Unreadable(why)
     die(f"{LEGITIMATE_UNREADABLE}: {why}", error="legitimate_unreadable")

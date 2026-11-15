@@ -10,14 +10,14 @@ import json
 import re
 import time
 
-from . import activity, settings, state_files, times
+from . import activity, list_records, settings, state_files, times
 from .registry import check
 from .errors import die
 from .sanitize import field
 from .state_files import open_web_file
 
 # lowercase labels of letters, digits and inner hyphens, at least two of them
-DOMAIN = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+")
+DOMAIN = list_records.DOMAIN
 # proxy lines: "[<vm>] <event>"
 BLOCKED = re.compile(r"\[[a-z0-9-]+\] BLOCKED ([a-z0-9.-]+) \((.*)\)")
 ALERT = re.compile(r"\[[a-z0-9-]+\] ALERT (\S+) \[(.*)\]")

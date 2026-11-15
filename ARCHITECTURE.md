@@ -368,7 +368,9 @@ flowchart LR
   expiry (15 minutes, 1 hour, 8 hours or 7 days; a **Temporary allowlist entry**), a note, and
   who added it when. Only the
   `agentbox` CLI writes it (`allow`, `disallow`, `extend`, `make-permanent`, `set-note`);
-  a broken file leaves the proxy with the entries it read before. `agentbox
+  a broken file, also one with a single broken or second entry (the proxy checks the
+  entries as the CLI does, `agentbox/list_records.py`), leaves the proxy with the entries it
+  read before, and a proxy that starts with one allows nothing until it is fixed. `agentbox
   migrate-allowlist` (run by `agentbox setup`) took over the earlier files
   `/etc/agentbox/allowlist` and `allowlist-<vm>`, every entry of them, and moved them aside
   as `*.migrated`; until then the proxy reads those.
@@ -382,8 +384,8 @@ flowchart LR
   `regex <pattern>` among the Harmless marks, `--regex PATTERN` on the CLI). It matches with
   `re.fullmatch` against the lowercased host name without its trailing dot, only hosts of at
   most 253 printable ASCII characters, and covers no subdomains of its own accord. The rules
-  live in the classifier (`pattern_problem`), which the proxy loads and agentbox loads the
-  same way, so both judge a pattern alike when it is added and whenever a list is read: at
+  live in the list records (`agentbox/list_records.py`, `pattern_problem`), which the proxy,
+  the classifier and agentbox import alike, so all judge a pattern alike when it is added and whenever a list is read: at
   most 200 printable ASCII characters without spaces, it compiles, no uppercase letters,
   backreferences or lookarounds, no quantifier or alternative inside a repeated group, at
   most two quantifiers in a row that can take the same characters (the host comes from the
@@ -1250,8 +1252,9 @@ Files `agentbox` opens or runs itself are moved under `AGENTBOX_ROOT` in tests; 
 names for others (in units, for `sudo`) are the Host's even there. The programs in
 `libexec` that load one another (the proxy and the
 Feeds the classifier, its self-test the proxy, the backend its readings) look next to
-themselves, so they work the same in a checkout. Only the two starters find the package
-on their own: `bin/agentbox` and `agentbox-web` look next to themselves in a checkout and
+themselves, so they work the same in a checkout. The programs that import the package find
+it on their own: `bin/agentbox` and `agentbox-web`, and the proxy and the classifier, which
+import only its leaf module `list_records`, look next to themselves in a checkout and
 otherwise in `lib/agentbox` under their own prefix.
 
 ## What it does not protect against

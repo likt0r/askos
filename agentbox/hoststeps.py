@@ -18,13 +18,14 @@ import subprocess
 import sys
 import tempfile
 
-from . import activity, detection, firewall, generate, lists, paths, programs, state_files
+from . import activity, detection, firewall, generate, list_records, lists, paths, programs, state_files
 from .errors import die
 
 # the hand-maintained lists as (record, the text file it is migrated from); the Allowlist the
 # same way
-LISTS = (("watchlist.json", "suspicious-domains"), ("legitimate.json", "legitimate-domains"))
-ALLOWLIST = ("allowlist.json", "allowlist")
+LISTS = ((list_records.WATCHLIST, list_records.LEGACY_WATCHLIST),
+         (list_records.LEGITIMATE, list_records.LEGACY_LEGITIMATE))
+ALLOWLIST = (list_records.ALLOWLIST, list_records.LEGACY_ALLOWLIST[0])
 LIBVIRT_GROUP = "libvirt"
 # the package's service users (rpm/agentbox.sysusers): never the owner, never who runs setup
 SERVICE_USERS = ("agentbox-web", "agentbox-proxy", "agentbox-feeds", "agentbox-gh")

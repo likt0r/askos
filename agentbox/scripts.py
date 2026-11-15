@@ -1,5 +1,5 @@
 """Programs of the Release that agentbox loads as modules, to apply the same rules as they do:
-the classifier (agentbox-suspicious, patterns.py) and the choice of Orca's release
+the classifier (agentbox-suspicious, detection.py) and the choice of Orca's release
 (vm/build/orca-release, versions.py). Loading runs only their definitions (each guards its
 main), and writes no bytecode next to them."""
 import types
