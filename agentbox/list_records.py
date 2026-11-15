@@ -373,22 +373,30 @@ def problem(e, fields, shown=printable, extra=None):
     return extra(e) if extra else None
 
 
-def _watch_or_legitimate(e):
-    if "category" in e and e["category"] not in CATEGORIES:
-        return f"unknown category {printable(e['category'], 20)}"
-    if len(e["note"]) > MAX_TEXT or len(e.get("source", "")) > MAX_TEXT:
+def _texts(e):
+    """A note or source too long; a field the list does not have (a source of a Legitimate
+    domain that is no text) is ignored."""
+    source = e.get("source")
+    if len(e["note"]) > MAX_TEXT or (isinstance(source, str) and len(source) > MAX_TEXT):
         return "text too long"
     return None
 
 
+def _watch(e):
+    if e["category"] not in CATEGORIES:
+        return f"unknown category {printable(e['category'], 20)}"
+    return _texts(e)
+
+
 def watch_problem(e):
     """What is wrong with an entry of the Watchlist, else None."""
-    return problem(e, WATCH_FIELDS, extra=_watch_or_legitimate)
+    return problem(e, WATCH_FIELDS, extra=_watch)
 
 
 def legitimate_problem(e):
-    """What is wrong with an entry of the Legitimate domains, else None."""
-    return problem(e, LEGITIMATE_FIELDS, extra=_watch_or_legitimate)
+    """What is wrong with an entry of the Legitimate domains, else None: fields of other lists
+    (a category copied from the Watchlist) are ignored."""
+    return problem(e, LEGITIMATE_FIELDS, extra=_texts)
 
 
 def reserved_name(name):

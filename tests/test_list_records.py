@@ -100,6 +100,15 @@ class RecordTest(unittest.TestCase):
         del both[1]["domain"]
         self.assertEqual(records.checked(both, records.watch_problem), both)
 
+    def test_a_legitimate_domain_ignores_fields_of_other_lists(self):
+        # a Watchlist entry copied into legitimate.json: as on main, its category and a source
+        # that is no text are not checked, and nothing raises
+        base = {"domain": "a.example", "note": "", "added": 0, "added_by": "t"}
+        for extra in ({"category": 1}, {"category": "foo"}, {"category": "exfil"}, {"source": 1}):
+            with self.subTest(extra=extra):
+                self.assertIsNone(records.legitimate_problem({**base, **extra}))
+        self.assertEqual(records.legitimate_problem({**base, "source": "x" * 201}), "text too long")
+
     def test_a_refused_pattern_is_no_broken_entry(self):
         e = {"regex": "^(a+)+$", "note": "", "added": 0, "added_by": "t"}
         self.assertIsNone(records.legitimate_problem(e))
