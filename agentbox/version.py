@@ -9,6 +9,7 @@ import json
 import re
 
 from . import paths
+from .commands import declare
 from .errors import die
 
 VERSION_FILE = paths.VERSION
@@ -64,4 +65,7 @@ def version(args):
         print(f"agentbox {release()}")
 
 
-COMMANDS = {"version": version}
+DECLARATIONS = {
+    "version": declare(version, "agentbox version [--json]", options={"json": False}, needs_root=False,
+                        read_only=True),
+}

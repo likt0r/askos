@@ -45,14 +45,13 @@ import sys
 import time
 from collections import Counter
 
-from . import activity, entry_store, list_records, options, paths, patterns, registry, settings, state_files, times
+from . import activity, durations, entry_store, list_records, options, paths, patterns, registry, settings, state_files, times
+from .commands import declare
 from .errors import Fail, die
 from .network import CLIENT_REASONS, DOMAIN, done, valid_domain
 from .sanitize import clean, field
 
 ALL = list_records.ALL
-# Durations of a Temporary allowlist entry (--for), in seconds
-DURATIONS = {"15min": 15 * 60, "1h": 3600, "8h": 8 * 3600, "7d": 7 * 86400}
 # --temporary without --for; Settings (#22) will make this configurable
 MAX_NOTE = list_records.MAX_TEXT
 USES_WINDOW = 86400                  # uses are counted over the last 24 hours
@@ -81,9 +80,9 @@ def default_duration():
 
 # --- arguments -----------------------------------------------------------------
 
-def _parse(args, known):
-    """(positional arguments, options), for the Allowlist and the lists (exit code 1)."""
-    return options.parse(args, known, exit=1)
+def _parse(args):
+    """The positional arguments and options already parsed by the dispatcher."""
+    return options.parse(args)
 
 
 def scope_arg(s):
@@ -109,12 +108,12 @@ def _seconds(opts):
     if "for" in opts and "temporary" in opts:
         die("--for and --temporary not together", error="invalid_duration")
     if "temporary" in opts:
-        return DURATIONS[default_duration()]
+        return durations.DURATIONS[default_duration()][0]
     if "for" in opts:
-        if opts["for"] not in DURATIONS:
+        if opts["for"] not in durations.DURATIONS:
             die("--for must be 15min, 1h, 8h or 7d", error="invalid_duration",
                 value=clean(str(opts["for"]), False)[:20])
-        return DURATIONS[opts["for"]]
+        return durations.DURATIONS[opts["for"]][0]
     return None
 
 
@@ -385,7 +384,7 @@ def show(args):
     VM (its own and those for all VMs), or those for all VMs; with remaining time
     and uses in the last 24 hours. Each row has domain and regex, one of them null, and
     refused: why the rules refuse a stored pattern (it allows nothing until removed), else null."""
-    positional, opts = _parse(args, {"json": False})
+    positional, opts = _parse(args)
     if len(positional) > 1:
         die("too many arguments: " + clean(positional[1], False)[:60], error="invalid_argument")
     scope = scope_arg(positional[0]) if positional else None
@@ -421,8 +420,7 @@ def allow(args):
     destinations only with --force. With --regex PATTERN in place of the domain a Regex
     entry: refused unless it keeps the rules (patterns.py), and without --confirm-pattern it
     only shows which hosts of the proxy log it would allow (preview)."""
-    positional, opts = _parse(args, {"for": True, "temporary": False, "note": True, "force": False, "regex": True,
-                                     "confirm-pattern": False, "json": False})
+    positional, opts = _parse(args)
     scope, ref = _target(positional, opts)
     seconds = _seconds(opts)
     note = _note(opts.get("note"))
@@ -456,7 +454,7 @@ def allow(args):
 def disallow(args):
     """agentbox disallow <vm|all> <domain>|--regex PATTERN [--json]: removes the entry; the
     proxy closes tunnels to it that nothing else allows"""
-    positional, opts = _parse(args, {"regex": True, "json": False})
+    positional, opts = _parse(args)
     scope, ref = _target(positional, opts)
     with changing() as entries:
         e = find(entries, ref, scope)
@@ -478,7 +476,7 @@ def disallow(args):
 def extend(args):
     """agentbox extend <vm|all> <domain>|--regex PATTERN --for 15min|1h|8h|7d [--force]
     [--json]: a temporary entry runs that much longer (from now, if it has expired)"""
-    positional, opts = _parse(args, {"for": True, "force": False, "regex": True, "json": False})
+    positional, opts = _parse(args)
     scope, ref = _target(positional, opts)
     if "for" not in opts:
         die("extend needs --for 15min, 1h, 8h or 7d", error="invalid_duration")
@@ -502,7 +500,7 @@ def extend(args):
 def make_permanent(args):
     """agentbox make-permanent <vm|all> <domain>|--regex PATTERN [--force] [--json]: a
     temporary entry no longer expires"""
-    positional, opts = _parse(args, {"force": False, "regex": True, "json": False})
+    positional, opts = _parse(args)
     scope, ref = _target(positional, opts)
     _no_force(ref, opts)
     if _existing(read()[0], ref, scope)["expires"] is not None and ref[0] == "domain":
@@ -519,7 +517,7 @@ def make_permanent(args):
 def set_note(args):
     """agentbox set-note <vm|all> <domain>|--regex PATTERN --note TEXT [--json]: the
     entry's note (empty to clear it)"""
-    positional, opts = _parse(args, {"note": True, "regex": True, "json": False})
+    positional, opts = _parse(args)
     scope, ref = _target(positional, opts)
     if "note" not in opts:
         die("set-note needs --note TEXT", error="invalid_argument", option="--note")
@@ -533,7 +531,7 @@ def set_note(args):
 def expire(args):
     """agentbox expire-allowlist [--json] (timer, every minute): removes expired
     entries and records each expiry in Activity"""
-    positional, opts = _parse(args, {"json": False})
+    positional, opts = _parse(args)
     if positional:
         die("too many arguments: " + clean(positional[0], False)[:60], error="invalid_argument")
     now = int(time.time())
@@ -560,7 +558,7 @@ def check_regex(args):
     (else the command fails with the reason, as adding it would), which of the hosts it
     matches, and for the Allowlist the preview of what it would allow for the scope (all VMs
     unless --scope)"""
-    positional, opts = _parse(args, {"regex": True, "scope": True, "json": False})
+    positional, opts = _parse(args)
     lists = ("allowlist", "watchlist", "legitimate", "harmless")
     if not positional or positional[0] not in lists:
         die(f"check-regex needs the list: {', '.join(lists)}", error="invalid_argument")
@@ -592,7 +590,7 @@ def migrate(args):
     """agentbox migrate-allowlist [--json]: entries of the Allowlist files from
     before allowlist.json taken over, every one of them; the files are moved
     aside (<file>.migrated). Running it again changes nothing."""
-    positional, opts = _parse(args, {"json": False})
+    positional, opts = _parse(args)
     if positional:
         die("too many arguments: " + clean(positional[0], False)[:60], error="invalid_argument")
     path = store_file()
@@ -618,6 +616,34 @@ def migrate(args):
          skipped=skipped)
 
 
-COMMANDS = {"allowlist": show, "allow": allow, "disallow": disallow, "extend": extend,
-            "make-permanent": make_permanent, "set-note": set_note, "expire-allowlist": expire,
-            "migrate-allowlist": migrate, "check-regex": check_regex}
+DECLARATIONS = {
+    "allowlist": declare(show, "agentbox allowlist [<vm>|all] [--json]", options={"json": False},
+                         read_only=True, control_room=True, option_exit=1),
+    "allow": declare(allow, "agentbox allow <vm|all> <domain>|--regex PATTERN [--confirm-pattern] [--for D|--temporary] [--note TEXT] [--force] [--json]",
+                     options={"regex": True, "confirm-pattern": False, "for": True, "temporary": False,
+                              "note": True, "force": False, "json": False}, option_exit=1,
+                     control_room=True, kind="allowlist",
+                     describe=activity.listed("Allow {}", "for", temporary=True, force=True)),
+    "disallow": declare(disallow, "agentbox disallow <vm|all> <domain> [--regex PATTERN] [--json]",
+                        options={"regex": True, "json": False}, option_exit=1, control_room=True,
+                        kind="allowlist", describe=activity.listed("Remove the Allowlist entry {}")),
+    "extend": declare(extend, "agentbox extend <vm|all> <domain> --for D [--regex PATTERN] [--force] [--json]",
+                      options={"for": True, "regex": True, "force": False, "json": False}, option_exit=1,
+                      control_room=True, kind="allowlist",
+                      describe=activity.listed("Extend the Allowlist entry {}", "by", force=True)),
+    "make-permanent": declare(make_permanent, "agentbox make-permanent <vm|all> <domain> [--regex PATTERN] [--force] [--json]",
+                              options={"regex": True, "force": False, "json": False}, option_exit=1,
+                              control_room=True, kind="allowlist",
+                              describe=activity.listed("Make the Allowlist entry {} permanent", force=True)),
+    "set-note": declare(set_note, "agentbox set-note <vm|all> <domain> --note TEXT [--regex PATTERN] [--json]",
+                        options={"note": True, "regex": True, "json": False}, option_exit=1, control_room=True,
+                        kind="allowlist", describe=activity.listed("Note on the Allowlist entry {}")),
+    "expire-allowlist": declare(expire, "agentbox expire-allowlist [--json]", options={"json": False},
+                                 own_entries=True, kind="allowlist", option_exit=1),
+    "migrate-allowlist": declare(migrate, "agentbox migrate-allowlist [--json]", options={"json": False},
+                                   kind="allowlist", describe=lambda a: activity.said("Take over the old Allowlist files"),
+                                  option_exit=1),
+    "check-regex": declare(check_regex, "agentbox check-regex <list> --regex PATTERN [<host>...] [--scope vm|all] [--json]",
+                           options={"regex": True, "scope": True, "json": False}, read_only=True,
+                           control_room=True, option_exit=1),
+}

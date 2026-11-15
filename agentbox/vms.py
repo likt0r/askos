@@ -41,6 +41,7 @@ import time
 
 from . import activity, allowlist, detection, generate, images, lifecycle, paths, registry, responding, settings, state_files
 from . import options, programs, times, virsh, vmenv
+from .commands import declare
 from .credentials import OWNER
 from .errors import Fail, die
 from .registry import dom
@@ -49,13 +50,6 @@ from .sanitize import clean
 MIN_MEMORY_MIB = 1024
 MAX_MEMORY_MIB = 1048576             # when the Host's memory is unknown
 MAX_DATA_DISK_GIB = 16384
-# option -> takes a value (options.parse); --owner may repeat
-CREATE_OPTIONS = {"image": True, "memory-mib": True, "data-disk-gib": True, "owner": options.MANY,
-                  "container-image-cleanup": True, "container-image-cleanup-days": True,
-                  "copy-allowlist-from": True, "json": False}
-DELETE_OPTIONS = {"confirm": True, "delete-data-disk": False, "json": False}
-
-
 # --- create ------------------------------------------------------------------
 
 def _new_name(name):
@@ -167,7 +161,7 @@ def create(args):
     """agentbox create <vm> [--image I] [--memory-mib N] [--data-disk-gib N]
     [--container-image-cleanup on|off] [--container-image-cleanup-days N] [--owner O]...
     [--copy-allowlist-from VM] [--json]"""
-    positional, opts = options.parse(args, CREATE_OPTIONS, exit=1)
+    positional, opts = options.parse(args)
     if len(positional) != 1:
         die("create <vm> [--image I] [--memory-mib N] [--data-disk-gib N] [--owner O]... "
             "[--container-image-cleanup on|off] [--container-image-cleanup-days N] "
@@ -358,7 +352,7 @@ def _files(name, say):
 
 def delete(args):
     """agentbox delete <vm> --confirm <vm> [--delete-data-disk] [--json]"""
-    positional, opts = options.parse(args, DELETE_OPTIONS, exit=1)
+    positional, opts = options.parse(args)
     if len(positional) != 1:
         die("delete <vm> --confirm <vm> [--delete-data-disk]", error="invalid_argument")
     name = positional[0]
@@ -394,7 +388,7 @@ def set_memory(args):
     """agentbox set-memory <vm> <mib> [--json]: the VM's memory limit, from 1024 MiB up to
     the Host's memory; applies at the VM's next start, so a running VM at its next
     Restart or Reset. Refused while the VM is paused."""
-    positional, opts = options.parse(args, {"json": False}, exit=1)
+    positional, opts = options.parse(args)
     if len(positional) != 2:
         die("set-memory <vm> <mib> [--json]", error="invalid_argument")
     name = registry.check(positional[0])
@@ -443,7 +437,7 @@ def set_container_cleanup(args):
     Container image cleanup, on or off and after how many days an unused Container image
     goes (1 to 365). Whatever state the VM is in; takes effect the next time the cleanup
     runs. A call that changes nothing records nothing."""
-    positional, opts = options.parse(args, {"days": True, "json": False}, exit=1)
+    positional, opts = options.parse(args)
     usage = "set-container-image-cleanup <vm> [on|off] [--days N] [--json]"
     if (not 1 <= len(positional) <= 2                       # the VM and on or off, nothing else
             or len(positional) == 2 and positional[1] not in ("on", "off")
@@ -558,7 +552,7 @@ def _env_answer(name, opts, before, after, state, applies, defined, what):
 def set_env(args):
     """agentbox set-env <vm> NAME=VALUE [NAME=VALUE ...] [--replace] [--json]: add or change VM
     variables; --replace makes these the whole list (none: no VM variables)."""
-    positional, opts = options.parse(args, {"replace": False, "json": False}, exit=1)
+    positional, opts = options.parse(args)
     if not positional or len(positional) == 1 and "replace" not in opts:
         die("set-env <vm> NAME=VALUE [NAME=VALUE ...] [--replace] [--json]", error="invalid_argument")
     name = registry.check(positional[0])
@@ -571,7 +565,7 @@ def set_env(args):
 def unset_env(args):
     """agentbox unset-env <vm> NAME [NAME ...] [--json]: remove VM variables; names the VM
     does not have change nothing."""
-    positional, opts = options.parse(args, {"json": False}, exit=1)
+    positional, opts = options.parse(args)
     if len(positional) < 2:
         die("unset-env <vm> NAME [NAME ...] [--json]", error="invalid_argument")
     name = registry.check(positional[0])
@@ -582,7 +576,7 @@ def unset_env(args):
 
 def env(args):
     """agentbox env <vm> [--json]: the VM's VM variables, names and values."""
-    positional, opts = options.parse(args, {"json": False}, exit=1)
+    positional, opts = options.parse(args)
     if len(positional) != 1:
         die("env <vm> [--json]", error="invalid_argument")
     name = registry.check(positional[0])
@@ -601,6 +595,34 @@ def env(args):
                   f"(agentbox unset-env {name} {n} removes it)")
 
 
-COMMANDS = {"create": create, "delete": delete, "set-memory": set_memory,
-            "set-container-image-cleanup": set_container_cleanup, "set-env": set_env,
-            "unset-env": unset_env, "env": env}
+DECLARATIONS = {
+    "create": declare(create, "agentbox create <vm> [--image I] [--memory-mib N] [--data-disk-gib N] [--owner O]... [--container-image-cleanup on|off] [--container-image-cleanup-days N] [--copy-allowlist-from VM] [--json]",
+                      options={"image": True, "memory-mib": True, "data-disk-gib": True, "owner": options.MANY,
+                               "container-image-cleanup": True, "container-image-cleanup-days": True,
+                               "copy-allowlist-from": True, "json": False}, control_room=True, option_exit=1,
+                      describe=lambda a: activity.said(
+                          "Create the VM" + (f" with Image {activity.name(a.values.get('image'), settings.IMAGE)}"
+                                             if activity.name(a.values.get("image"), settings.IMAGE) else ""),
+                          image=activity.name(a.values.get("image"), settings.IMAGE))),
+    "delete": declare(delete, "agentbox delete <vm> --confirm <vm> [--delete-data-disk] [--json]",
+                      options={"confirm": True, "delete-data-disk": False, "json": False}, control_room=True,
+                      option_exit=1,
+                       describe=lambda a: activity.said("Delete the VM and its Data disk", delete_data_disk=True)
+                       if "delete-data-disk" in a.values else activity.said("Delete the VM")),
+    "set-memory": declare(set_memory, "agentbox set-memory <vm> <mib> [--json]", options={"json": False},
+                           control_room=True, option_exit=1,
+                           describe=lambda a: activity.said(f"Memory limit {a.positional[1]} MiB", mib=a.positional[1])
+                           if len(a.positional) > 1 and re.fullmatch(r"[0-9]{1,9}", a.positional[1])
+                           else activity.said("Change the memory limit")),
+    "set-container-image-cleanup": declare(
+        set_container_cleanup, "agentbox set-container-image-cleanup <vm> [on|off] [--days N] [--json]",
+        options={"days": True, "json": False}, control_room=True, option_exit=1,
+         describe=lambda a: activity.said("Set the Container image cleanup")),
+    "set-env": declare(set_env, "agentbox set-env <vm> NAME=VALUE [NAME=VALUE ...] [--replace] [--json]",
+                       options={"replace": False, "json": False}, control_room=True, option_exit=1,
+                       describe=activity._set_env),
+    "unset-env": declare(unset_env, "agentbox unset-env <vm> NAME [NAME ...] [--json]", options={"json": False},
+                         describe=activity._unset_env, option_exit=1),
+    "env": declare(env, "agentbox env <vm> [--json]", options={"json": False}, read_only=True,
+                   option_exit=1),
+}

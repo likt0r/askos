@@ -27,6 +27,11 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(options.parse(["--note=a=b", "--lines=5"], KNOWN), ([], {"note": "a=b", "lines": "5"}))
         self.assertEqual(options.parse([], KNOWN), ([], {}))
 
+    def test_a_handler_takes_the_dispatchers_parsed_result(self):
+        parsed = options.Parsed(["work", "--note", "hello"], ["work"], {"note": "hello"})
+        self.assertEqual(options.parse(parsed), (["work"], {"note": "hello"}))
+        self.assertEqual(list(parsed), ["work", "--note", "hello"])
+
     def test_a_value_is_taken_as_given_also_when_it_looks_like_an_option(self):
         self.assertEqual(options.parse(["--note", "--json"], KNOWN), ([], {"note": "--json"}))
         self.assertEqual(options.parse(["--note", ""], KNOWN), ([], {"note": ""}))

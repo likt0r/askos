@@ -26,7 +26,8 @@ import os
 import re
 import subprocess
 
-from . import guest, lifecycle, options, paths, state_files, times
+from . import activity, guest, lifecycle, options, paths, state_files, times
+from .commands import declare
 from .errors import die
 from .registry import check
 from .sanitize import clean
@@ -97,7 +98,7 @@ def devices(ctx):
 
 def pairings(args):
     """agentbox pairings <vm> [--json]"""
-    pos, opts = options.parse(args, {"json": False})
+    pos, opts = options.parse(args)
     if len(pos) != 1:
         die("pairings <vm> [--json]", 2, error="invalid_argument")
     ctx = check(pos[0])
@@ -116,7 +117,7 @@ def pairings(args):
 
 def unpair(args):
     """agentbox unpair <vm> <device-id> [--json]: always a refusal, Orca cannot do it."""
-    pos, _ = options.parse(args, {"json": False})
+    pos, _ = options.parse(args)
     if len(pos) != 2:
         die("unpair <vm> <device>", 2, error="invalid_argument")
     ctx = check(pos[0])
@@ -135,7 +136,7 @@ def unpair(args):
 
 def revoke_all(args):
     """agentbox revoke-pairings <vm> --confirm <vm> [--json]"""
-    pos, opts = options.parse(args, {"confirm": True, "json": False})
+    pos, opts = options.parse(args)
     if len(pos) != 1:
         die("revoke-pairings <vm> --confirm <vm> [--json]", 2, error="invalid_argument")
     ctx = check(pos[0])
@@ -169,5 +170,13 @@ def revoke_all(args):
         die("Observer not paired again", 8, error="action_failed", vm=ctx)
 
 
-COMMANDS = {"pairings": pairings, "unpair": unpair, "revoke-pairings": revoke_all}
-NO_ROOT = set()
+DECLARATIONS = {
+    "pairings": declare(pairings, "agentbox pairings <vm> [--json]", options={"json": False},
+                         read_only=True, control_room=True),
+    "unpair": declare(unpair, "agentbox unpair <vm> <device> [--json]", options={"json": False},
+                       control_room=True, kind="pairing",
+                       describe=lambda a: activity.said("Remove a single device")),
+    "revoke-pairings": declare(revoke_all, "agentbox revoke-pairings <vm> --confirm <vm> [--json]",
+                                options={"confirm": True, "json": False}, control_room=True, kind="pairing",
+                                describe=lambda a: activity.said("Revoke all pairings")),
+}

@@ -34,7 +34,8 @@ import subprocess
 import sys
 import time
 
-from . import activity, options, paths, registry, state_files
+from . import activity, ids, options, paths, registry, state_files
+from .commands import declare
 from .errors import Fail, die
 from .sanitize import clean, redact
 
@@ -42,7 +43,7 @@ API = "https://api.github.com"
 CONF_DIR = os.path.join(paths.CONF, "github")
 CONF_FILE = os.path.join(CONF_DIR, "app.conf")
 SERVICE_USER = "agentbox-gh"         # the token service; only it reads the key (rpm/agentbox.sysusers)
-APP_ID = re.compile(r"[1-9][0-9]{0,11}")
+APP_ID = ids.APP_ID
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,99}")
 MAX_KEY = 16 * 1024                  # a 4096-bit RSA key in PEM is about 3.3 KiB
 RSA = bytes.fromhex("06092a864886f70d010101")   # DER of the OID rsaEncryption
@@ -415,11 +416,15 @@ def _local(iso):
         return iso or "?"
 
 
+def _vm_prefix(raw):
+    """Check the VM first, so an unknown one is reported before an option error (as logs does)."""
+    return f"{registry.check(raw[0])}: " if raw else ""
+
+
 def github_tokens(args):
     """agentbox github-tokens <vm> [--since T] [--until T] [--lines N] [--json]"""
     vm = registry.check(args[0] if args else "")
-    _, opts = options.parse(args[1:], {**{k: activity.CHECKS[k] for k in ("since", "until", "lines")},
-                                       "json": False}, positional=False)
+    _, opts = options.parse(args)
     as_json = opts.pop("json", False)
     result = tokens(vm, opts)
     if as_json:
@@ -439,5 +444,25 @@ def github_tokens(args):
         print("agentbox: there are more entries (raise --lines or narrow --since)", file=sys.stderr)
 
 
-COMMANDS = {"set-github-app": set_github_app, "remove-github-app": remove_github_app, "github-app": github_app,
-            "github-tokens": github_tokens}
+DECLARATIONS = {
+    "set-github-app": declare(set_github_app, "agentbox set-github-app <app-id> [--no-prompt] [--json]",
+                               options={"no-prompt": False, "json": False}, control_room=True,
+                               kind="credentials",
+                               allow_unknown=True,
+                               describe=lambda a: (f"Add or replace the GitHub App (App ID {a.positional[0]})",
+                                                   {"app_id": a.positional[0]})
+                               if a.positional and APP_ID.fullmatch(a.positional[0])
+                               else ("Add or replace the GitHub App", {})),
+    "remove-github-app": declare(remove_github_app, "agentbox remove-github-app <app-id> [--json]",
+                                  options={"json": False}, control_room=True, kind="credentials", allow_unknown=True,
+                                  describe=lambda a: (f"Remove the GitHub App (App ID {a.positional[0]})",
+                                                      {"app_id": a.positional[0]})
+                                  if a.positional and APP_ID.fullmatch(a.positional[0])
+                                  else ("Remove a GitHub App", {})),
+    "github-app": declare(github_app, "agentbox github-app [--json]", options={"json": False},
+                           read_only=True, control_room=True, allow_unknown=True),
+    "github-tokens": declare(github_tokens, "agentbox github-tokens <vm> [--since T] [--until T] [--lines N] [--json]",
+                              options={**{k: activity.CHECKS[k] for k in ("since", "until", "lines")},
+                                       "json": False}, read_only=True, control_room=True, positional=False,
+                              option_offset=1, prefix=_vm_prefix),
+}

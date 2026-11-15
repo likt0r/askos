@@ -1,18 +1,16 @@
-"""Command dispatch. Each module contributes COMMANDS (name -> handler(args)).
+"""Command dispatch. Each handler module contributes declarations (name -> command facts).
 
 The dispatcher takes the global option --actor before or right after the command
-and records every command in Activity (activity.py), except the read-only ones
-listed in activity.READ_ONLY: a new command is recorded without doing anything,
-and a new read-only command belongs in that list. Called through sudo by the
-Control Room (agentbox-web), it runs only CONTROL_ROOM_COMMANDS and never --force.
+and records every command in Activity (activity.py), except commands declared
+read-only or as recording their own entries. Called through sudo by the Control
+Room (agentbox-web), it runs only declared Control Room commands and never --force.
 """
 import json
 import os
-import re
 import sys
 
 from . import activity, allowlist, container_images, credentials, describe, detection, generate, github, guest
-from . import images, lifecycle, lists, maintenance, network, pairings, paths, settings, setup, transfer
+from . import images, lifecycle, lists, maintenance, network, options, pairings, paths, settings, setup, transfer
 from . import version, versions, vms, watch
 from .errors import Fail
 
@@ -24,17 +22,15 @@ Controls the agent VMs on this Host.
   agentbox version [--json]                          the version of this Release (also: agentbox --version)
   agentbox describe [<vm>] [--json]                  VMs for the Control Room: state, agents, System disk,
                                                      Image and Build, connected devices
-  agentbox setup [--mode local|network] [--bind A --home-network N] [--web-port P]
-                [--cert-name N] [--owner-user U] [--password-file F | --password-stdin] [--force] [--json]
+  agentbox setup [--mode local|network] [--bind A --home-network N] [--web-port P] [--cert-name N] [--owner-user U] [--password-file F|--password-stdin] [--force] [--json]
                                                      set up the Host: Host setup, Control Room password,
                                                      certificate, Host steps (groups, lists, firewall, units,
                                                      migrations), service; local: this machine only,
                                                      network: also home network N; without options on a
                                                      Host that is set up, only the Host steps
   agentbox watch                                     (Control Room) events as JSON lines until stdin ends
-  agentbox create <vm> [--image I] [--memory-mib N] [--data-disk-gib N] [--owner O]...
-                [--container-image-cleanup on|off] [--container-image-cleanup-days N]
-                [--copy-allowlist-from VM] [--json]    new VM; network and Orca port are picked automatically
+  agentbox create <vm> [--image I] [--memory-mib N] [--data-disk-gib N] [--owner O]... [--container-image-cleanup on|off] [--container-image-cleanup-days N] [--copy-allowlist-from VM] [--json]
+                new VM; network and Orca port are picked automatically
   agentbox delete <vm> --confirm <vm> [--delete-data-disk] [--json]
                 delete a VM; its Data disk is archived, or deleted with --delete-data-disk
   agentbox set-memory <vm> <mib> [--json]            memory limit (1024 MiB up to the Host's memory); applies
@@ -49,7 +45,10 @@ Controls the agent VMs on this Host.
                 add or change VM variables (--replace: these are all of them); names a Safeguard or
                 Agent Box reads are refused; applies from the next start, for a running VM after a Restart
   agentbox unset-env <vm> NAME [NAME ...] [--json]   remove VM variables; applies like set-env
-  agentbox start|wake|pause|restart <vm> [--json]
+  agentbox start <vm> [--json]
+  agentbox wake <vm> [--json]
+  agentbox pause <vm> [--json]
+  agentbox restart <vm> [--json]
   agentbox reset <vm> [--no-start] [--json]          fresh System disk from the VM's Image
   agentbox focus <vm|off> [--json]                   pause every other VM
   agentbox pair <vm> [--json]                        show the current Orca Pairing code (starts the VM if needed)
@@ -60,27 +59,29 @@ Controls the agent VMs on this Host.
   agentbox import <vm> <folder> [<target>] [--json]
                 copy a folder of the Host into the VM, unpacked, to ~/code/<target> (default: the folder's
                 name); of a Git repository .git and the files Git does not ignore; starts the VM if needed
-  agentbox logs <vm> [--unit U] [--priority P] [--since T] [--until T] [--boot current|all]
-                [--grep TEXT] [--lines N] [--after-cursor C] [--json]   the VM's journal
+  agentbox logs <vm> [--unit U] [--priority P] [--since T] [--until T] [--boot current|all] [--grep TEXT] [--lines N] [--after-cursor C] [--json]
+                the VM's journal
   agentbox set-claude-token <vm> [--no-prompt] [--json]   token from `claude setup-token` (stdin)
-  agentbox blocked|alerts <vm> [--json]
+  agentbox blocked <vm> [--json]
+  agentbox alerts <vm> [--json]
   agentbox allowlist [<vm>|all] [--json]             Allowlist entries (all, a VM's, those for all VMs)
                                                      with time left and use in the last 24 hours
-  agentbox allow <vm|all> <domain> [--for 15min|1h|8h|7d | --temporary] [--note TEXT] [--force] [--json]
+  agentbox allow <vm|all> <domain>|--regex PATTERN [--confirm-pattern] [--for D|--temporary] [--note TEXT] [--force] [--json]
                 Allowlist entry for one VM or all, permanent or temporary (suspicious ones only
                 with --force)
-  agentbox allow <vm|all> --regex PATTERN [--confirm-pattern] [--for ...|--temporary] [--note TEXT] [--json]
                 Regex entry: never allows strong Signals; without --confirm-pattern it only shows
                 which hosts of the proxy log of the last 7 days it would allow
-  agentbox check-regex <allowlist|watchlist|legitimate|harmless> --regex PATTERN [<host>...]
-                [--scope vm|all] [--json]            whether the pattern can be an entry of that list,
+  agentbox check-regex <list> --regex PATTERN [<host>...] [--scope vm|all] [--json]
+                whether the pattern can be an entry of that list,
                                                      which hosts it matches, for the Allowlist the preview
                 Every command of the four lists takes --regex PATTERN in place of <domain>: a Regex
                 entry, matched with re.fullmatch against the whole host name (ADR 0013)
-  agentbox disallow <vm|all> <domain> [--json]       remove an Allowlist entry, close open tunnels to it
-  agentbox extend <vm|all> <domain> --for 15min|1h|8h|7d [--force] [--json]   extend a temporary one
-  agentbox make-permanent <vm|all> <domain> [--force] [--json]
-  agentbox set-note <vm|all> <domain> --note TEXT [--json]
+  agentbox disallow <vm|all> <domain> [--regex PATTERN] [--json]
+                remove an Allowlist entry, close open tunnels to it
+  agentbox extend <vm|all> <domain> --for D [--regex PATTERN] [--force] [--json]
+                extend a temporary one
+  agentbox make-permanent <vm|all> <domain> [--regex PATTERN] [--force] [--json]
+  agentbox set-note <vm|all> <domain> --note TEXT [--regex PATTERN] [--json]
   agentbox expire-allowlist [--json]                 (timer, every minute) remove expired Allowlist entries
   agentbox migrate-allowlist [--json]                take over the old Allowlist files once
   agentbox open-web <vm> <minutes> [--json]          allow every public domain for a while (Open web)
@@ -88,23 +89,26 @@ Controls the agent VMs on this Host.
   agentbox mark-seen <vm> [<domain>] [--json]        mark Alerts (all, or one domain's) as seen
   agentbox check-domain <domain> [--json]            a domain's Signals with their reasons
   agentbox watchlist [--json]                        the Watchlist kept by hand, state of the HaGeZi lists
-  agentbox watch-add <domain> --category C [--source S] [--note TEXT] [--force] [--json]
+  agentbox watch-add <domain>|--regex PATTERN --category C [--source S] [--note TEXT] [--force] [--json]
                 Watchlist entry (with subdomains), category exfil, c2, tunnel, paste, phishing,
                 blockchain or payload; downgrading a strong one only with --force
-  agentbox watch-remove <domain> [--force] [--json]  remove an entry (strong ones only with --force)
-  agentbox watch-set-note <domain> --note TEXT [--json]
+  agentbox watch-remove <domain>|--regex PATTERN [--force] [--json]
+                remove an entry (strong ones only with --force)
+  agentbox watch-set-note <domain>|--regex PATTERN --note TEXT [--json]
   agentbox legitimate [--json]                       Legitimate domains (added and built-in)
-  agentbox legitimate-add <domain> [--note TEXT] [--force] [--json]
+  agentbox legitimate-add <domain>|--regex PATTERN [--note TEXT] [--force] [--json]
                 no more pattern Signals (except blockchain) and HaGeZi hits for it and its
                 subdomains (HaGeZi hits below github.io, githubusercontent.com and
                 claudeusercontent.com still count); lifting strong Signals only with --force
-  agentbox legitimate-remove <domain> [--json]       remove an added one (built-in ones stay)
-  agentbox legitimate-set-note <domain> --note TEXT [--json]
+  agentbox legitimate-remove <domain>|--regex PATTERN [--json]
+                remove an added one (built-in ones stay)
+  agentbox legitimate-set-note <domain>|--regex PATTERN --note TEXT [--json]
   agentbox migrate-lists [--json]                    take over the Watchlist and Legitimate domains from
                                                      the old text files once
   agentbox harmless [--json]                         domains with a Harmless mark (no Alerts)
-  agentbox mark-harmless <domain> [--json]           no more Alerts (blocks stay)
-  agentbox unmark-harmless <domain> [--json]
+  agentbox mark-harmless <domain> [--regex PATTERN] [--json]
+                no more Alerts (blocks stay)
+  agentbox unmark-harmless <domain> [--regex PATTERN] [--json]
   agentbox owners <vm> [--json]                      GitHub owners for App tokens
   agentbox set-owners <vm> <owner>... [--json]
   agentbox set-github-app <app-id> [--no-prompt] [--json]   add a GitHub App or replace its private key
@@ -135,8 +139,8 @@ Controls the agent VMs on this Host.
                                                      and what a new Build would bring
   agentbox containerfile <image> [--json]            the Image's Containerfile in the installed Release (what
                                                      its next Build takes), as text
-  agentbox build <image>|--all [--json]              Build from the installed Release (unit agentbox-build@<image>)
-  agentbox build <image> --reset <vm> [--reset <vm>]... [--json]
+  agentbox build <image>|--all [--reset <vm>]... [--json]
+                Build from the installed Release (unit agentbox-build@<image>)
                 Update: a Build and, if it succeeds, a Reset of these VMs onto it (sessions in them
                 end, the Data disk stays; a failed Build resets nothing)
   agentbox update-now [--reset <vm>]... [--json]    Update now (unit agentbox-build@update): check versions,
@@ -155,48 +159,30 @@ Controls the agent VMs on this Host.
   agentbox settings [--json]                         Settings (defaults, what applies only later)
   agentbox set-settings KEY=VALUE... [--json]        change Settings (VALUE default: the default); all or
                                                      nothing, dependent timers and units are generated
-  agentbox activity [--kind K[,K]] [--vm VM] [--since T] [--until T] [--search TEXT]
-                [--lines N] [--json]                 Activity: sign-ins, actions, Allowlist changes, Alerts,
+  agentbox activity [--kind K[,K]] [--vm VM] [--since T] [--until T] [--search TEXT] [--lines N] [--json]
+                Activity: sign-ins, actions, Allowlist changes, Alerts,
                                                      GitHub tokens, pairing, Builds, automatic Resets, Settings
 
 With --json, a failure also goes to stderr as one JSON object:
   {"error": "<code>", "message": "<text>", "params": {...}}"""
 
-COMMANDS = {**guest.COMMANDS, **lifecycle.COMMANDS, **network.COMMANDS, **credentials.COMMANDS,
-            **generate.COMMANDS, **vms.COMMANDS, **activity.COMMANDS, **detection.COMMANDS,
-            **pairings.COMMANDS, **settings.COMMANDS, **github.COMMANDS, **allowlist.COMMANDS,
-            **images.COMMANDS, **describe.COMMANDS, **watch.COMMANDS, **lists.COMMANDS,
-            **setup.COMMANDS, **version.COMMANDS, **versions.COMMANDS, **transfer.COMMANDS,
-            **maintenance.COMMANDS, **container_images.COMMANDS}
-
-# The options that take a value, as USAGE shows them ("--note TEXT", "--for 15min|1h|...").
-# Given as --note VALUE, the value is the next argument, whatever it looks like.
-VALUED = frozenset(re.findall(r"(--[a-z][a-z-]*) (?:[A-Z<]|[a-z0-9]+\|)", USAGE))
+MODULES = (lifecycle, version, describe, setup, watch, vms, pairings, transfer, guest, credentials, network,
+           allowlist, detection, lists, generate, settings, github, images, versions, activity, maintenance,
+           container_images)
+DECLARATIONS = {name: declaration for module in MODULES for name, declaration in module.DECLARATIONS.items()}
 
 
 # The Control Room's backend (web/agentbox-web) runs agentbox through sudo as this user. Its
 # sudoers rule (rpm/agentbox-web.sudoers) lets the first argument be only one of these commands;
 # agentbox itself limits what it runs, which holds also should sudo's matching be got around.
 CONTROL_ROOM_USER = "agentbox-web"
+GLOBAL_OPTIONS = {"actor": True}
 # The commands the backend runs, and no others (tests/test_control_room_sudo.py checks that it
 # calls exactly these). Never --force: what lifts strong Signals, allows a destination while the
 # Watchlist cannot be read or replaces a Host setup is the CLI's at the Host (ADR 0009).
-CONTROL_ROOM_COMMANDS = frozenset({
-    # VMs
-    "describe", "create", "delete", "start", "pause", "restart", "reset", "focus", "set-memory",
-    "set-env", "set-image", "set-owners", "set-container-image-cleanup", "logs", "blocked", "alerts", "mark-seen",
-    "open-web", "close-web", "pair", "pairings", "unpair", "revoke-pairings", "set-claude-token",
-    "github-tokens",
-    # Allowlist, Watchlist, Legitimate domains, Harmless marks
-    "allowlist", "allow", "disallow", "extend", "make-permanent", "set-note", "check-regex",
-    "check-domain", "watchlist", "watch-add", "watch-remove", "watch-set-note", "legitimate",
-    "legitimate-add", "legitimate-remove", "legitimate-set-note", "harmless", "mark-harmless",
-    "unmark-harmless",
-    # Images and Builds
-    "images", "containerfile", "build", "build-log", "update-now",
-    # GitHub App, Settings, Activity, the event helper
-    "github-app", "set-github-app", "remove-github-app", "settings", "set-settings", "activity", "watch",
-})
+def control_room_commands():
+    """The commands declared for the Control Room."""
+    return frozenset(name for name, declaration in DECLARATIONS.items() if declaration.control_room)
 
 
 def check_control_room(cmd, args):
@@ -204,7 +190,7 @@ def check_control_room(cmd, args):
     caller): only its commands, never --force. Before anything runs, nothing recorded."""
     if os.environ.get("SUDO_USER") != CONTROL_ROOM_USER:
         return
-    if cmd not in CONTROL_ROOM_COMMANDS:
+    if cmd not in control_room_commands():
         raise Fail(f"{cmd} is not for the Control Room: only the CLI at the Host runs it",
                    error="control_room_refused", command=cmd)
     if any(a == "--force" or a.startswith("--force=") for a in args):
@@ -212,54 +198,67 @@ def check_control_room(cmd, args):
                    error="control_room_refused", command=cmd, option="--force")
 
 
-def wants_json(args):
-    """--json is among the arguments, and not as the value of an option (`--note --json`)."""
+def wants_json(args, known=None):
+    """--json is among the arguments, and not as the value of a declared valued option."""
+    known = known or {}
     value = False
     for a in args:
         if value:
             value = False
         elif a == "--json":
             return True
-        elif a in VALUED:
+        elif a.startswith("--") and a[2:].partition("=")[0] in known \
+                and known[a[2:].partition("=")[0]] is not False and "=" not in a:
             value = True
     return False
 
 
 def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
-    as_json = wants_json(args)
+    as_json = wants_json(args, GLOBAL_OPTIONS)
     try:
         actor, args = activity.take_actor(args)
-        as_json = wants_json(args)
+        as_json = wants_json(args, GLOBAL_OPTIONS)
         cmd = args.pop(0) if args else "status"
         if cmd == "--version":
             cmd = "version"
-        if cmd not in COMMANDS:
+        if cmd not in DECLARATIONS:
             print(USAGE, file=sys.stderr)
             return 1
+        declaration = DECLARATIONS[cmd]
+        as_json = wants_json(args, {**declaration.options, **GLOBAL_OPTIONS})
         # --actor also right after the command: the Control Room passes the command first,
         # which its sudoers rule pins
         after, args = activity.take_actor(args)
         if after is not None:
             if actor is not None:
                 raise Fail("--actor given twice", 2, error="invalid_argument", option="--actor")
-            actor, as_json = after, wants_json(args)
+            actor, as_json = after, wants_json(args, {**declaration.options, **GLOBAL_OPTIONS})
         check_control_room(cmd, args)
-        # Everything except logs and pair needs the files under /etc/agentbox and
-        # /var/lib/agentbox, which belong to root. AGENTBOX_ROOT (tests) redirects them.
-        if os.geteuid() != 0 and cmd not in guest.NO_ROOT | versions.NO_ROOT and not paths.ROOT:
+        # Commands declared with needs_root require root; AGENTBOX_ROOT (tests) redirects
+        # their paths under /etc/agentbox and /var/lib/agentbox.
+        if os.geteuid() != 0 and declaration.needs_root and not paths.ROOT:
             raise Fail(f"{cmd} needs root: sudo agentbox {' '.join([cmd, *args])}", error="sudo_failed",
                        command=cmd)
         # the actor (--actor, else the user) of every Activity entry of this call
         activity.set_actor(actor)
         # A checkout's CLI would write units and the like naming the files under /usr,
         # which need not be there or be its own (paths.py)
-        if not paths.INSTALLED and not paths.ROOT and cmd not in activity.READ_ONLY:
+        if not paths.INSTALLED and not paths.ROOT and not declaration.read_only:
             raise Fail(f"{cmd}: this agentbox is not installed ({paths.CODE}) and does not change the Host, "
                        "its units would name files that need not exist here; use the installed one: "
                        f"sudo agentbox {' '.join([cmd, *args])}", error="action_failed", command=cmd)
-        with activity.command(cmd, args):
-            COMMANDS[cmd](args)
+        def parse_command():
+            prefix = declaration.prefix(args) if callable(declaration.prefix) else declaration.prefix
+            positional, values = options.parse(args[declaration.option_offset:],
+                                               {**declaration.options, "json": False},
+                                               exit=declaration.option_exit, prefix=prefix,
+                                               positional=declaration.positional,
+                                               allow_unknown=declaration.allow_unknown)
+            return options.Parsed(args, positional, values)
+
+        with activity.command(cmd, args, declaration, parse_command) as parsed:
+            declaration.handler(parsed)
         return 0
     except Fail as f:
         sys.stdout.flush()

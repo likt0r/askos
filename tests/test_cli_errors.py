@@ -8,8 +8,11 @@ Run from the repo root: python3 -m unittest discover -s tests
 """
 import json
 import os
+import re
 import sys
 import unittest
+from dataclasses import replace
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_lifecycle import REPO, START_ERROR, LifecycleTest  # noqa: E402
@@ -46,6 +49,50 @@ class JsonFailureTest(LifecycleTest):
         self.scenario(state="shut off")
         self.assertEqual(self.failure("logs", "work", exit_code=3)["error"], "vm_not_running")
 
+    def test_unknown_option_codes_and_legacy_command_validation(self):
+        expected = {
+            "describe": "describe [<vm>] [--json]",
+            "images": "images [--json]",
+            "set-settings": "set-settings KEY=VALUE... [--json] (VALUE default: the default value); each key only once",
+            "maintenance": "maintenance [--json]",
+        }
+        for command, message in expected.items():
+            with self.subTest(command=command):
+                said = self.failure(command, "--x", exit_code=1)
+                self.assertEqual((said["error"], said["message"]), ("invalid_argument", message))
+        said = self.failure("start", "nope", "--x", exit_code=1)
+        self.assertEqual((said["error"], said["params"]), ("vm_not_found", {"vm": "nope"}))
+        self.assertEqual(self.run_agentbox("focus", "off", "--x")[0], 0)
+        self.assertEqual(self.run_agentbox("status", "--x")[0], 0)
+
+    def test_logs_checks_and_cleans_the_vm_before_prefixing_option_errors(self):
+        code, out, err = self.run_agentbox("logs", "\x1b[31mnope", "--lines=many")
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(err, "agentbox: No such VM: [31mnope\n")
+
+    def test_github_tokens_checks_the_vm_before_its_options(self):
+        code, out, err = self.run_agentbox("github-tokens", "nope", "--bogus")
+        self.assertEqual((code, out, err), (1, "", "agentbox: No such VM: nope\n"))
+
+    def test_usage_lines_and_declarations_have_the_same_options(self):
+        lines = [line.strip() for line in cli.USAGE.splitlines()
+                 if line.strip().startswith("agentbox ") and not line.strip().startswith("agentbox [")]
+        declarations = cli.DECLARATIONS
+        for name, declaration in declarations.items():
+            with self.subTest(command=name):
+                matches = [line for line in lines if line == declaration.usage
+                           or line.startswith(declaration.usage + " ")]
+                self.assertEqual(len(matches), 1, declaration.usage)
+                declared = set(re.findall(r"--([a-z][a-z-]*)", declaration.usage))
+                self.assertEqual(declared, set(declaration.options))
+        for line in lines:
+            command = line.split()[1]
+            self.assertIn(command, declarations, line)
+            declaration = declarations[command]
+            syntax = re.split(r"\s{2,}", line, maxsplit=1)[0]
+            shown = set(re.findall(r"--([a-z][a-z-]*)", syntax))
+            self.assertEqual(shown, set(declaration.options), line)
+
     def test_the_global_option_fails_the_same_way(self):
         said = self.failure("--actor=", "status", exit_code=2)
         self.assertEqual(said["error"], "invalid_argument")
@@ -58,8 +105,11 @@ class JsonFailureTest(LifecycleTest):
         said = self.failure("set-note", "nope", "x.org", "--note", "--json")
         self.assertEqual((said["error"], said["params"]), ("vm_not_found", {"vm": "nope"}))
         # every option USAGE shows with a value, none of the flags
-        self.assertLessEqual({"--actor", "--note", "--for", "--confirm", "--since", "--reset", "--mode"}, cli.VALUED)
-        self.assertEqual(cli.VALUED & {"--json", "--force", "--temporary", "--all", "--no-start", "--no-prompt"},
+        valued = {"--" + option for declaration in cli.DECLARATIONS.values()
+                  for option, kind in declaration.options.items() if kind is not False}
+        valued |= {"--" + name for name, kind in cli.GLOBAL_OPTIONS.items() if kind is not False}
+        self.assertLessEqual({"--actor", "--note", "--for", "--confirm", "--since", "--reset", "--mode"}, valued)
+        self.assertEqual(valued & {"--json", "--force", "--temporary", "--all", "--no-start", "--no-prompt"},
                          set())
 
     def test_another_program_s_own_error_output(self):
@@ -69,6 +119,25 @@ class JsonFailureTest(LifecycleTest):
         code, out, err = self.run_agentbox("start", "work", "--json")
         self.assertEqual((code, out), (1, ""))
         self.assertEqual(json.loads(err), {"error": "action_failed", "message": START_ERROR.strip(), "params": {}})
+
+    def test_dispatch_parses_once_for_the_handler_and_activity_description(self):
+        original = cli.DECLARATIONS["focus"]
+        received = []
+
+        def describe(parsed):
+            received.append(parsed)
+            return "Focus off", {"off": True}
+
+        replacement = replace(original, handler=received.append, describe=describe)
+        with mock.patch.object(cli, "DECLARATIONS", {**cli.DECLARATIONS, "focus": replacement}), \
+                mock.patch.object(cli.os, "geteuid", return_value=0), \
+                mock.patch.object(cli.paths, "ROOT", True), \
+                mock.patch.object(cli.activity, "record"), \
+                mock.patch.object(cli.options, "parse", wraps=cli.options.parse) as parse:
+            self.assertEqual(cli.main(["focus", "off"]), 0)
+        self.assertEqual(parse.call_count, 1)
+        self.assertIs(received[0], received[1])
+        self.assertEqual(received[0].positional, ("off",))
 
 
 if __name__ == "__main__":

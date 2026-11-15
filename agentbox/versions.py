@@ -61,6 +61,7 @@ import sys
 import time
 
 from . import paths, programs, safeguards, scripts, settings, state_files, times
+from .commands import declare
 from .errors import Fail, die
 from .sanitize import clean
 
@@ -597,5 +598,9 @@ def check_versions(args):
         images.start_automatic(say)
 
 
-COMMANDS = {"check-versions": check_versions, "fetch-versions": fetch_versions}
-NO_ROOT = {"fetch-versions"}        # runs as agentbox-feeds
+DECLARATIONS = {
+    "check-versions": declare(check_versions, "agentbox check-versions [--json]", options={"json": False},
+                               own_entries=True),
+    "fetch-versions": declare(fetch_versions, "agentbox fetch-versions [--json]", options={"json": False},
+                               needs_root=False, own_entries=True),
+}

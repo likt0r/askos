@@ -21,6 +21,7 @@ import sys
 import time
 
 from . import images, lifecycle, paths, registry, responding, settings, state_files, times, virsh, vmenv
+from .commands import declare
 from .errors import die
 
 # virsh domstate -> state in the Control Room; "paused" there is a Pause (managed save)
@@ -300,4 +301,7 @@ def describe(args):
         print(f"agentbox: {p['problem']}", file=sys.stderr)
 
 
-COMMANDS = {"describe": describe}
+DECLARATIONS = {
+    "describe": declare(describe, "agentbox describe [<vm>] [--json]", options={"json": False},
+                        read_only=True, control_room=True, allow_unknown=True),
+}

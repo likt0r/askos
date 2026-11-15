@@ -4,8 +4,8 @@
 Laeuft als System-User agentbox-web (nicht root). Jede Aktion ist genau ein
 Aufruf von `sudo -n agentbox <befehl> ...` mit festen Argumenten, der Befehl
 zuerst: die sudoers-Regel laesst dort nur die Befehle dieses Dienstes zu, und
-agentbox fuehrt fuer agentbox-web selbst nur sie aus (CONTROL_ROOM_COMMANDS in
-agentbox/cli.py, tests/test_control_room_sudo.py haelt Regel, Liste und Aufrufe
+agentbox fuehrt fuer agentbox-web selbst nur sie aus (agentbox/cli.py declarations,
+tests/test_control_room_sudo.py haelt Regel, Deklarationen und Aufrufe
 gleich), nie mit --force; Kontext und Werte prueft agentbox ebenfalls. Jeder
 Aufruf nennt direkt nach dem Befehl mit --actor das Geraet (aus dem
 User-Agent) und die Adresse des Browsers; agentbox vermerkt damit jede Aktion
@@ -54,7 +54,7 @@ def _package_dir():
 
 
 sys.path.insert(0, _package_dir())
-from agentbox import hostsetup, journal, paths, registry, settings, version, vmenv  # noqa: E402
+from agentbox import hostsetup, ids, journal, paths, registry, settings, version, vmenv  # noqa: E402
 from agentbox.errors import Fail  # noqa: E402
 
 CONF = os.environ.get("AGENTBOX_WEB_CONF", "/etc/agentbox/web")
@@ -247,7 +247,7 @@ IMAGE_NAME = settings.IMAGE
 BUILD_ID = settings.BUILD_ID
 BUILD_LOG_FILTERS = {"after_cursor": "--after-cursor", "lines": "--lines"}
 TOKEN_FILTERS = {"since": "--since", "until": "--until", "lines": "--lines"}
-APP_ID = re.compile(r"[1-9][0-9]{0,11}")
+APP_ID = ids.APP_ID
 
 
 # --- HTTP -------------------------------------------------------------------

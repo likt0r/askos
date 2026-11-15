@@ -42,6 +42,7 @@ import tempfile
 from getpass import getpass
 
 from . import firewall, generate, hoststeps, hostsetup, paths, programs, state_files
+from .commands import declare
 from .errors import Fail, die
 
 MIN_PASSWORD = 16
@@ -62,37 +63,18 @@ def _usage(message, **params):
 
 
 def _parse(args):
-    opts = {"mode": hostsetup.LOCAL, "web_port": None, "cert_name": None, "owner_user": None, "password": None,
-            "force": False, "json": False, "bind": None, "home_network": None, "given": []}
-    args = list(args)
-    while args:
-        a = args.pop(0)
-        if a != "--json":
-            opts["given"].append(a)
-        value = lambda: args.pop(0) if args else _usage(f"{a} needs a value", option=a)      # noqa: E731
-        if a == "--mode":
-            opts["mode"] = value()
-        elif a == "--web-port":
-            v = value()
-            if not v.isdigit():
-                _usage(f"--web-port: not a port number: {v!r}", option="--web-port")
-            opts["web_port"] = int(v)
-        elif a == "--cert-name":
-            opts["cert_name"] = value()
-        elif a == "--owner-user":
-            opts["owner_user"] = value()
-        elif a in NETWORK_OPTIONS:
-            opts[NETWORK_OPTIONS[a]] = value()
-        elif a == "--password-file":
-            opts["password"] = ("file", value())
-        elif a == "--password-stdin":
-            opts["password"] = ("stdin", None)
-        elif a == "--force":
-            opts["force"] = True
-        elif a == "--json":
-            opts["json"] = True
-        else:
-            _usage(f"unknown option: {a}", option=a)
+    values = args.values
+    opts = {"mode": values.get("mode", hostsetup.LOCAL), "web_port": values.get("web-port"),
+            "cert_name": values.get("cert-name"), "owner_user": values.get("owner-user"),
+            "password": ("file", values["password-file"]) if "password-file" in values else
+                        ("stdin", None) if "password-stdin" in values else None,
+            "force": values.get("force", False), "json": values.get("json", False),
+            "bind": values.get("bind"), "home_network": values.get("home-network"),
+            "given": ["--" + name for name in values if name != "json"]}
+    if opts["web_port"] is not None:
+        if not opts["web_port"].isdigit():
+            _usage(f"--web-port: not a port number: {opts['web_port']!r}", option="--web-port")
+        opts["web_port"] = int(opts["web_port"])
     if opts["mode"] not in (hostsetup.LOCAL, hostsetup.NETWORK):
         _usage("--mode: local or network", option="--mode")
     given = [o for o, k in NETWORK_OPTIONS.items() if opts[k] is not None]
@@ -382,4 +364,11 @@ def setup(args):
         print(f"Certificate fingerprint (compare it in the browser on the first visit): {fingerprint}")
 
 
-COMMANDS = {"setup": setup}
+DECLARATIONS = {
+    "setup": declare(setup, "agentbox setup [--mode local|network] [--bind A --home-network N] [--web-port P] [--cert-name N] [--owner-user U] [--password-file F|--password-stdin] [--force] [--json]",
+                     options={"mode": True, "bind": True, "home-network": True, "web-port": True,
+                              "cert-name": True, "owner-user": True, "password-file": True,
+                              "password-stdin": False, "force": False, "json": False},
+                     positional=False,
+                     describe=lambda a: ("Set up the Host", {})),
+}

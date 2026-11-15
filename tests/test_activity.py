@@ -245,6 +245,21 @@ class RecordTest(ActivityTest):
             "AGENTBOX_PARAM_TEMPORARY": "true", "AGENTBOX_ERROR": "domain_suspicious",
             "AGENTBOX_ERROR_PARAM_DOMAIN": "evil.example"})
 
+    def test_parse_failures_use_the_command_description_and_parameters(self):
+        self.run_agentbox("set-github-app", "MIIEvQIBADANBgkqhk iG9w0BAQEFAASC", "--no-prompt=1")
+        self.run_agentbox("watch-add", "drop.example", "--category", "secret", "--bogus")
+        self.run_agentbox("allow", "all", "a.org", "--bogus")
+        entries = self.entries()
+        self.assertEqual([e["AGENTBOX_DESCRIPTION"] for e in entries], [
+            "Add or replace the GitHub App: --no-prompt takes no value",
+            "Watchlist: add drop.example: unknown option: --bogus",
+            "Allow a.org for all VMs: unknown option: --bogus",
+        ])
+        params = [{k.removeprefix("AGENTBOX_PARAM_"): v for k, v in e.items()
+                   if k.startswith("AGENTBOX_PARAM_")} for e in entries]
+        self.assertEqual(params, [{}, {"DOMAIN": "drop.example"}, {"DOMAIN": "a.org", "SCOPE": "all"}])
+        self.assertNotIn("secret", self.raw().decode("utf-8", "replace"))
+
     def test_parameters_per_command(self):
         images = self.path("var/lib/agentbox/images")
         open(os.path.join(images, "base-20261101.qcow2"), "w").close()
@@ -300,12 +315,13 @@ class RecordTest(ActivityTest):
         # in this process: neither comes from a command on purpose (focus off names no VM, so
         # nothing on the Host is looked at)
         sys.path.insert(0, REPO)
-        from agentbox import activity
+        from agentbox import activity, cli, options
         sent = []
         with mock.patch.object(activity, "_send", sent.append), mock.patch.object(activity, "_actor", "timer"):
             for exc in (KeyboardInterrupt, KeyError):
                 with self.subTest(exc=exc), self.assertRaises(exc):
-                    with activity.command("focus", ["off"]):
+                    parsed = options.Parsed(["off"], ["off"], {})
+                    with activity.command("focus", ["off"], cli.DECLARATIONS["focus"], lambda: parsed):
                         raise exc("x")
         fields = [dict(line.split("=", 1) for line in data.decode().splitlines()) for data in sent]
         self.assertEqual([(f["AGENTBOX_ERROR"], f["AGENTBOX_DESCRIPTION"], f["AGENTBOX_PARAM_OFF"],
@@ -1139,11 +1155,12 @@ class ControlRoomWordsTest(unittest.TestCase):
             return f.read()
 
     def recorded_actions(self):
-        """The commands DESCRIBE words, the sign-ins, Alerts, and the action of every
+        """The command declarations word, the sign-ins, Alerts, and the action of every
         activity.record() call in agentbox/."""
         sys.path.insert(0, REPO)
-        from agentbox import activity, maintenance
-        actions = set(activity.DESCRIBE) | activity.SIGN_INS | {"alert"} | {a for a, _ in activity.GITHUB.values()}
+        from agentbox import activity, cli, maintenance
+        actions = {name for name, declaration in cli.DECLARATIONS.items() if declaration.describe}
+        actions |= activity.SIGN_INS | {"alert"} | {a for a, _ in activity.GITHUB.values()}
         folder = os.path.join(REPO, "agentbox")
         for name in sorted(os.listdir(folder)):
             if not name.endswith(".py"):

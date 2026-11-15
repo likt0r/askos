@@ -49,6 +49,7 @@ import threading
 import time
 
 from . import activity, describe, images, lifecycle, maintenance, paths, registry, responding, times
+from .commands import declare
 from .errors import Fail, die
 from .sanitize import PAIR_ANY, SECRET, entry as journal_entry, field
 
@@ -469,4 +470,6 @@ def watch(args):
         poller.wake.clear()
 
 
-COMMANDS = {"watch": watch}
+DECLARATIONS = {
+    "watch": declare(watch, "agentbox watch", options={}, read_only=True, control_room=True),
+}

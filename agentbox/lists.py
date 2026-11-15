@@ -59,6 +59,7 @@ import os
 import time
 
 from . import activity, entry_store, list_records, paths, patterns, settings, state_files
+from .commands import declare
 from .allowlist import MAX_NOTE, _parse
 from .detection import _classifier, domain_arg, feed_line
 from .errors import Fail, die
@@ -327,7 +328,7 @@ def watchlist(args):
     cannot be read, why (unreadable) in place of its entries; the Feeds still show. A Regex
     entry the rules refuse is listed (refused) and makes it unreadable for Open web, as for
     the proxy, until it is removed."""
-    positional, opts = _parse(args, {"json": False})
+    positional, opts = _parse(args)
     if positional:
         die("too many arguments: " + clean(positional[0], False)[:60], error="invalid_argument")
     try:
@@ -359,8 +360,7 @@ def watch_add(args):
     file from before) it creates the record, which opens Open web again: only with
     --force, so the Control Room can never recreate a deleted Watchlist. A pattern needs
     no breadth check here."""
-    positional, opts = _parse(args, {"category": True, "source": True, "note": True, "force": False,
-                                     "regex": True, "json": False})
+    positional, opts = _parse(args)
     ref = _target(positional, opts)
     if ref[0] == "regex":
         patterns.checked(ref[1], broad=False)
@@ -404,7 +404,7 @@ def watch_add(args):
 def watch_remove(args):
     """agentbox watch-remove <domain>|--regex PATTERN [--force] [--json]: the Watchlist entry
     goes; one of a strong category only with --force"""
-    positional, opts = _parse(args, {"force": False, "regex": True, "json": False})
+    positional, opts = _parse(args)
     ref = _target(positional, opts)
     with changing(WATCHLIST) as entries:
         e = find(entries, ref)
@@ -424,7 +424,7 @@ def watch_remove(args):
 def watch_set_note(args):
     """agentbox watch-set-note <domain>|--regex PATTERN --note TEXT [--json]: the entry's note
     (empty to clear it)"""
-    positional, opts = _parse(args, {"note": True, "regex": True, "json": False})
+    positional, opts = _parse(args)
     ref = _target(positional, opts)
     if "note" not in opts:
         die("watch-set-note needs --note TEXT", error="invalid_argument", option="--note")
@@ -441,7 +441,7 @@ def watch_set_note(args):
 
 def legitimate(args):
     """agentbox legitimate [--json]: the Legitimate domains, the Host's and the built-in ones"""
-    positional, opts = _parse(args, {"json": False})
+    positional, opts = _parse(args)
     if positional:
         die("too many arguments: " + clean(positional[0], False)[:60], error="invalid_argument")
     own = read(LEGITIMATE)[0]
@@ -485,7 +485,7 @@ def legitimate_add(args):
     """agentbox legitimate-add <domain>|--regex PATTERN [--note N] [--force] [--json]: a new
     Legitimate domain (with its subdomains); one that would lift strong Signals only with
     --force. A pattern lifts only weak Signals, so it needs no --force and takes none."""
-    positional, opts = _parse(args, {"note": True, "force": False, "regex": True, "json": False})
+    positional, opts = _parse(args)
     ref = _target(positional, opts)
     note = entry_store.text(opts.get("note"), "note", MAX_NOTE)
     if ref[0] == "regex":
@@ -518,7 +518,7 @@ def legitimate_add(args):
 def legitimate_remove(args):
     """agentbox legitimate-remove <domain>|--regex PATTERN [--json]: the Host's entry goes;
     built-in domains stay (a Host's leftover entry for one goes)"""
-    positional, opts = _parse(args, {"regex": True, "json": False})
+    positional, opts = _parse(args)
     ref = _target(positional, opts)
     builtin = ref[0] == "domain" and ref[1] in genuine()
     with changing(LEGITIMATE) as entries:
@@ -542,7 +542,7 @@ def legitimate_remove(args):
 
 def legitimate_set_note(args):
     """agentbox legitimate-set-note <domain>|--regex PATTERN --note TEXT [--json]"""
-    positional, opts = _parse(args, {"note": True, "regex": True, "json": False})
+    positional, opts = _parse(args)
     ref = _target(positional, opts)
     if "note" not in opts:
         die("legitimate-set-note needs --note TEXT", error="invalid_argument", option="--note")
@@ -568,7 +568,7 @@ def migrate(args):
     none and says so: Open web stays closed. Each migration, and an empty record of the
     Legitimate domains it creates, is an Activity entry of its own. With nothing to
     migrate, a record that cannot be read is a warning (agentbox setup goes on)."""
-    positional, opts = _parse(args, {"json": False})
+    positional, opts = _parse(args)
     if positional:
         die("too many arguments: " + clean(positional[0], False)[:60], error="invalid_argument")
     result, said, notes = {}, [], []
@@ -608,7 +608,32 @@ def migrate(args):
     done("json" in opts, "; ".join(said + notes) or NOTHING_TO_MIGRATE, **result)
 
 
-COMMANDS = {"watchlist": watchlist, "watch-add": watch_add, "watch-remove": watch_remove,
-            "watch-set-note": watch_set_note, "legitimate": legitimate, "legitimate-add": legitimate_add,
-            "legitimate-remove": legitimate_remove, "legitimate-set-note": legitimate_set_note,
-            "migrate-lists": migrate}
+DECLARATIONS = {
+    "watchlist": declare(watchlist, "agentbox watchlist [--json]", options={"json": False}, read_only=True,
+                          control_room=True, option_exit=1),
+    "watch-add": declare(watch_add, "agentbox watch-add <domain>|--regex PATTERN --category C [--source S] [--note TEXT] [--force] [--json]",
+                         options={"regex": True, "category": True, "source": True, "note": True,
+                                  "force": False, "json": False}, option_exit=1, control_room=True,
+                         describe=activity._watch_add),
+    "watch-remove": declare(watch_remove, "agentbox watch-remove <domain>|--regex PATTERN [--force] [--json]",
+                            options={"regex": True, "force": False, "json": False}, option_exit=1,
+                            control_room=True, describe=activity._domain("Watchlist: remove {}", force=True)),
+    "watch-set-note": declare(watch_set_note, "agentbox watch-set-note <domain>|--regex PATTERN --note TEXT [--json]",
+                              options={"regex": True, "note": True, "json": False}, option_exit=1,
+                              control_room=True, describe=activity._domain("Watchlist: note on {}")),
+    "legitimate": declare(legitimate, "agentbox legitimate [--json]", options={"json": False}, read_only=True,
+                          control_room=True, option_exit=1),
+    "legitimate-add": declare(legitimate_add, "agentbox legitimate-add <domain>|--regex PATTERN [--note TEXT] [--force] [--json]",
+                              options={"regex": True, "note": True, "force": False, "json": False},
+                              option_exit=1, control_room=True,
+                              describe=activity._domain("Add the Legitimate domain {}", force=True)),
+    "legitimate-remove": declare(legitimate_remove, "agentbox legitimate-remove <domain>|--regex PATTERN [--json]",
+                                 options={"regex": True, "json": False}, option_exit=1, control_room=True,
+                                 describe=activity._domain("Remove the Legitimate domain {}")),
+    "legitimate-set-note": declare(legitimate_set_note, "agentbox legitimate-set-note <domain>|--regex PATTERN --note TEXT [--json]",
+                                   options={"regex": True, "note": True, "json": False}, option_exit=1,
+                                   control_room=True, describe=activity._domain("Note on the Legitimate domain {}")),
+    "migrate-lists": declare(migrate, "agentbox migrate-lists [--json]", options={"json": False},
+                              describe=lambda a: activity.said("Take over the Watchlist and the Legitimate domains from the text files"),
+                              option_exit=1),
+}

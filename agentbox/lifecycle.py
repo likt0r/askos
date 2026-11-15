@@ -17,6 +17,7 @@ import time
 import xml.etree.ElementTree as ET
 
 from . import activity, guest, images, paths, programs, registry, responding, settings, state_files, virsh
+from .commands import declare
 from .registry import check, dom
 from .errors import Fail, die
 
@@ -642,5 +643,27 @@ def observe(args):
         print(line)
 
 
-COMMANDS = {"status": status, "start": start_cmd, "wake": wake_cmd, "pause": pause_cmd, "reset": reset_cmd,
-            "restart": restart_cmd, "focus": focus_cmd, "observe": observe}
+DECLARATIONS = {
+    "status": declare(status, "agentbox status [--json]", options={"json": False}, read_only=True,
+                       allow_unknown=True),
+    "start": declare(start_cmd, "agentbox start <vm> [--json]", options={"json": False},
+                      control_room=True, allow_unknown=True,
+                      describe=lambda a: activity.said("Start")),
+    "wake": declare(wake_cmd, "agentbox wake <vm> [--json]", options={"json": False},
+                    describe=lambda a: activity.said("Wake")),
+    "pause": declare(pause_cmd, "agentbox pause <vm> [--json]", options={"json": False},
+                      control_room=True, describe=lambda a: activity.said("Pause")),
+    "reset": declare(reset_cmd, "agentbox reset <vm> [--no-start] [--json]",
+                     options={"no-start": False, "json": False}, control_room=True,
+                      describe=lambda a: activity.said("Reset without start", no_start=True)
+                      if "no-start" in a.values else activity.said("Reset")),
+    "restart": declare(restart_cmd, "agentbox restart <vm> [--json]", options={"json": False},
+                        control_room=True, describe=lambda a: activity.said("Restart")),
+    "focus": declare(focus_cmd, "agentbox focus <vm|off> [--json]", options={"json": False},
+                      control_room=True, allow_unknown=True,
+                      describe=lambda a: activity.said("Focus off", off=True) if a.positional and a.positional[0] == "off"
+                      else activity.said(f"Focus on {a.positional[0] if a.positional else ''}",
+                                         target=activity.name(a.positional[0] if a.positional else ""))),
+    "observe": declare(observe, "agentbox observe <vm> [--json]", options={"json": False},
+                        kind="pairing", describe=lambda a: activity.said("Pair the Host as Observer")),
+}

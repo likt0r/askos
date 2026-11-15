@@ -323,7 +323,7 @@ class LocalOnlyTest(SetupTest):
         self.assertFalse(os.path.exists(self.path("etc/agentbox/host.json")))
 
     def test_refuses_options_and_modes_it_does_not_know(self):
-        for args in (["--bogus"], ["--mode", "both"], ["--mode"], ["--cert-name", "a b"], ["--owner-user", "x/y"]):
+        for args in (["--bogus"], ["network"], ["--mode", "both"], ["--mode"], ["--cert-name", "a b"], ["--owner-user", "x/y"]):
             with self.subTest(args):
                 code, _, err = self.setup_run(*args, "--password-file", self.password_file)
                 self.assertEqual(code, 2, err)

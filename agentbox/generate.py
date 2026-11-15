@@ -21,6 +21,7 @@ import tempfile
 import time
 
 from . import activity, hostsetup, lifecycle, paths, programs, registry, settings, state_files, times, virsh, vmenv
+from .commands import declare
 from .errors import die
 from .registry import bridge, dom, guest_ip, host_ip, mac
 
@@ -968,4 +969,9 @@ def regenerate(args):
     print("\n".join(lines) or "everything up to date")
 
 
-COMMANDS = {"migrate": migrate, "regenerate": regenerate}
+DECLARATIONS = {
+    "migrate": declare(migrate, "agentbox migrate [--json]", options={"json": False},
+                       describe=lambda a: activity.said("Take over work and priv into the VM registry")),
+    "regenerate": declare(regenerate, "agentbox regenerate [--json]", options={"json": False},
+                            describe=lambda a: activity.said("Generate the configuration from the VM registry")),
+}
