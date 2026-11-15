@@ -747,6 +747,17 @@ class RegistryLookupTest(RegistryTest):
         with open(TOKEND) as f:
             self.assertIn(f're.compile(r"{registry.NAME.pattern}")', f.read())
 
+    def test_image_name_pattern_is_the_same_everywhere(self):
+        sys.path.insert(0, REPO)
+        from agentbox import images, registry, settings
+        for name, valid in (("base", True), ("rust-2", True), ("a" * 32, True),
+                            ("a" * 33, False), ("rust_2", False), ("rust.2", False)):
+            with self.subTest(name=name):
+                self.assertEqual(bool(registry.IMAGE.fullmatch(name)), valid)
+                self.assertEqual(bool(images.NAME.fullmatch(name)), valid)
+        self.assertIs(registry.IMAGE, settings.IMAGE)
+        self.assertIs(images.NAME, settings.IMAGE)
+
 
 class TokenServiceTest(unittest.TestCase):
     """agentbox-gh-tokend refuses before it talks to GitHub."""

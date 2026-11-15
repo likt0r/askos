@@ -8,7 +8,7 @@ import os
 import re
 import sys
 
-from . import paths, state_files, vmenv
+from . import paths, settings, state_files, vmenv
 from .errors import Fail, die
 from .sanitize import clean
 
@@ -22,7 +22,7 @@ NAME = re.compile(r"[a-z][a-z0-9-]{1,15}")
 RESERVED = {"off", "all", "new", "status", "login", "logout", "activity", "allowlist", "watchlist", "images",
             "settings", "system", "host", "events", "version", "vms", "github-app"}
 API_VERSION = re.compile(r"v[0-9]+")
-IMAGE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+IMAGE = settings.IMAGE
 ORCA_BASE = 6800                     # Orca port = ORCA_BASE + network number
 # The Container image cleanup of a record: on or off, and its days. Both fields are
 # optional: a record without them means the cleanup on and 7 days, and no code rewrites
