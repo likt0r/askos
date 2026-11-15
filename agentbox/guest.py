@@ -289,10 +289,9 @@ def pair(args):
 from . import activity
 DECLARATIONS = {
     "logs": declare(logs, "agentbox logs <vm> [--unit U] [--priority P] [--since T] [--until T] [--boot current|all] [--grep TEXT] [--lines N] [--after-cursor C] [--json]",
-                    options={**CHECKS, "json": False}, needs_root=False, read_only=True, control_room=True,
-                    order=24, prefix=_logs_prefix, positional=False,
+                    options={**CHECKS, "json": False}, needs_root=False, read_only=True, control_room=True, prefix=_logs_prefix, positional=False,
                     option_offset=1),
     "pair": declare(pair, "agentbox pair <vm> [--json]", options={"json": False}, needs_root=False,
                     control_room=True, kind="pairing",
-                    describe=lambda a: activity.said("Show the Pairing code"), order=16),
+                    describe=lambda a: activity.said("Show the Pairing code")),
 }

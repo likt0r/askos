@@ -471,5 +471,5 @@ def watch(args):
 
 
 DECLARATIONS = {
-    "watch": declare(watch, "agentbox watch", options={}, read_only=True, control_room=True, order=4),
+    "watch": declare(watch, "agentbox watch", options={}, read_only=True, control_room=True),
 }

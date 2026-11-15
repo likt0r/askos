@@ -378,7 +378,7 @@ def weekly_check(args):
 
 DECLARATIONS = {
     "maintenance": declare(maintenance, "agentbox maintenance [--json]", options={"json": False},
-                            own_entries=True, allow_unknown=True, order=121),
+                            own_entries=True, allow_unknown=True),
     "weekly-check": declare(weekly_check, "agentbox weekly-check [--json]", options={"json": False},
-                             own_entries=True, order=126),
+                             own_entries=True),
 }

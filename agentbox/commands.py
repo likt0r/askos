@@ -21,7 +21,7 @@ class Declaration:
 
 
 def declare(handler, usage, *, options=None, needs_root=True, control_room=False, read_only=False,
-            own_entries=False, kind="action", describe=None, order=0, option_exit=2, prefix="", positional=True,
+            own_entries=False, kind="action", describe=None, option_exit=2, prefix="", positional=True,
             allow_unknown=False, option_offset=0):
     """Keep all command facts beside its handler; usage is also the operator reference."""
     return Declaration(handler, usage, options or {}, needs_root, control_room, read_only, own_entries,

@@ -313,8 +313,8 @@ def _describe_settings(args):
 
 DECLARATIONS = {
     "settings": declare(_show, "agentbox settings [--json]", options={"json": False}, read_only=True,
-                         control_room=True, order=155),
+                         control_room=True),
     "set-settings": declare(_set, "agentbox set-settings KEY=VALUE... [--json]", options={"json": False},
                              control_room=True, kind="settings", describe=_describe_settings,
-                             allow_unknown=True, order=156),
+                             allow_unknown=True),
 }

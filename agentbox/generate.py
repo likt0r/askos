@@ -971,8 +971,7 @@ def regenerate(args):
 
 DECLARATIONS = {
     "migrate": declare(migrate, "agentbox migrate [--json]", options={"json": False},
-                       describe=lambda a: activity.said("Take over work and priv into the VM registry"), order=117),
+                       describe=lambda a: activity.said("Take over work and priv into the VM registry")),
     "regenerate": declare(regenerate, "agentbox regenerate [--json]", options={"json": False},
-                            describe=lambda a: activity.said("Generate the configuration from the VM registry"),
-                           order=118),
+                            describe=lambda a: activity.said("Generate the configuration from the VM registry")),
 }

@@ -369,6 +369,5 @@ DECLARATIONS = {
                      options={"mode": True, "bind": True, "home-network": True, "web-port": True,
                               "cert-name": True, "owner-user": True, "password-file": True,
                               "password-stdin": False, "force": False, "json": False},
-                     describe=lambda a: ("Set up the Host", {}),
-                     order=3),
+                     describe=lambda a: ("Set up the Host", {})),
 }

@@ -416,6 +416,11 @@ def _local(iso):
         return iso or "?"
 
 
+def _vm_prefix(raw):
+    """Check the VM first, so an unknown one is reported before an option error (as logs does)."""
+    return f"{registry.check(raw[0])}: " if raw else ""
+
+
 def github_tokens(args):
     """agentbox github-tokens <vm> [--since T] [--until T] [--lines N] [--json]"""
     vm = registry.check(args[0] if args else "")
@@ -447,17 +452,17 @@ DECLARATIONS = {
                                describe=lambda a: (f"Add or replace the GitHub App (App ID {a.positional[0]})",
                                                    {"app_id": a.positional[0]})
                                if a.positional and APP_ID.fullmatch(a.positional[0])
-                               else ("Add or replace the GitHub App", {}), order=110),
+                               else ("Add or replace the GitHub App", {})),
     "remove-github-app": declare(remove_github_app, "agentbox remove-github-app <app-id> [--json]",
                                   options={"json": False}, control_room=True, kind="credentials", allow_unknown=True,
                                   describe=lambda a: (f"Remove the GitHub App (App ID {a.positional[0]})",
                                                       {"app_id": a.positional[0]})
                                   if a.positional and APP_ID.fullmatch(a.positional[0])
-                                  else ("Remove a GitHub App", {}), order=112),
+                                  else ("Remove a GitHub App", {})),
     "github-app": declare(github_app, "agentbox github-app [--json]", options={"json": False},
-                           read_only=True, control_room=True, allow_unknown=True, order=113),
+                           read_only=True, control_room=True, allow_unknown=True),
     "github-tokens": declare(github_tokens, "agentbox github-tokens <vm> [--since T] [--until T] [--lines N] [--json]",
                               options={**{k: activity.CHECKS[k] for k in ("since", "until", "lines")},
                                        "json": False}, read_only=True, control_room=True, positional=False,
-                              option_offset=1, order=115),
+                              option_offset=1, prefix=_vm_prefix),
 }

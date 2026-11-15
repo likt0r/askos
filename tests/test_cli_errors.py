@@ -70,6 +70,10 @@ class JsonFailureTest(LifecycleTest):
         self.assertEqual((code, out), (1, ""))
         self.assertEqual(err, "agentbox: No such VM: [31mnope\n")
 
+    def test_github_tokens_checks_the_vm_before_its_options(self):
+        code, out, err = self.run_agentbox("github-tokens", "nope", "--bogus")
+        self.assertEqual((code, out, err), (1, "", "agentbox: No such VM: nope\n"))
+
     def test_usage_lines_and_declarations_have_the_same_options(self):
         lines = [line.strip() for line in cli.USAGE.splitlines()
                  if line.strip().startswith("agentbox ") and not line.strip().startswith("agentbox [")]

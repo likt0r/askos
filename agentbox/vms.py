@@ -603,26 +603,26 @@ DECLARATIONS = {
                       describe=lambda a: activity.said(
                           "Create the VM" + (f" with Image {activity.name(a.values.get('image'), settings.IMAGE)}"
                                              if activity.name(a.values.get("image"), settings.IMAGE) else ""),
-                          image=activity.name(a.values.get("image"), settings.IMAGE)), order=5),
+                          image=activity.name(a.values.get("image"), settings.IMAGE))),
     "delete": declare(delete, "agentbox delete <vm> --confirm <vm> [--delete-data-disk] [--json]",
                       options={"confirm": True, "delete-data-disk": False, "json": False}, control_room=True,
                       option_exit=1,
                        describe=lambda a: activity.said("Delete the VM and its Data disk", delete_data_disk=True)
-                       if "delete-data-disk" in a.values else activity.said("Delete the VM"), order=6),
+                       if "delete-data-disk" in a.values else activity.said("Delete the VM")),
     "set-memory": declare(set_memory, "agentbox set-memory <vm> <mib> [--json]", options={"json": False},
                            control_room=True, option_exit=1,
                            describe=lambda a: activity.said(f"Memory limit {a.positional[1]} MiB", mib=a.positional[1])
                            if len(a.positional) > 1 and re.fullmatch(r"[0-9]{1,9}", a.positional[1])
-                           else activity.said("Change the memory limit"), order=7),
+                           else activity.said("Change the memory limit")),
     "set-container-image-cleanup": declare(
         set_container_cleanup, "agentbox set-container-image-cleanup <vm> [on|off] [--days N] [--json]",
         options={"days": True, "json": False}, control_room=True, option_exit=1,
-         describe=lambda a: activity.said("Set the Container image cleanup"), order=8),
+         describe=lambda a: activity.said("Set the Container image cleanup")),
     "set-env": declare(set_env, "agentbox set-env <vm> NAME=VALUE [NAME=VALUE ...] [--replace] [--json]",
                        options={"replace": False, "json": False}, control_room=True, option_exit=1,
-                       describe=activity._set_env, order=9),
+                       describe=activity._set_env),
     "unset-env": declare(unset_env, "agentbox unset-env <vm> NAME [NAME ...] [--json]", options={"json": False},
-                         describe=activity._unset_env, option_exit=1, order=10),
+                         describe=activity._unset_env, option_exit=1),
     "env": declare(env, "agentbox env <vm> [--json]", options={"json": False}, read_only=True,
-                   option_exit=1, order=0),
+                   option_exit=1),
 }

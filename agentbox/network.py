@@ -173,16 +173,16 @@ def close_web(args):
 
 DECLARATIONS = {
     "blocked": declare(blocked, "agentbox blocked <vm> [--json]", options={"json": False},
-                       read_only=True, control_room=True, order=0),
+                       read_only=True, control_room=True),
     "alerts": declare(alerts, "agentbox alerts <vm> [--json]", options={"json": False},
-                      read_only=True, control_room=True, order=0),
+                      read_only=True, control_room=True),
     "open-web": declare(open_web, "agentbox open-web <vm> <minutes> [--json]", options={"json": False},
                         control_room=True, kind="allowlist",
                          describe=lambda a: activity.said(
                             f"Open web for {a.positional[1] if len(a.positional) > 1 else ''} minutes",
                             minutes=(a.positional[1] if len(a.positional) > 1 and
-                                     re.fullmatch(r"[0-9]{1,6}", a.positional[1]) else None)), order=36),
+                                     re.fullmatch(r"[0-9]{1,6}", a.positional[1]) else None))),
     "close-web": declare(close_web, "agentbox close-web <vm> [--json]", options={"json": False},
                          control_room=True, kind="allowlist",
-                          describe=lambda a: activity.said("Close Open web"), order=37),
+                          describe=lambda a: activity.said("Close Open web")),
 }

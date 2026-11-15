@@ -142,5 +142,5 @@ def cleanup(args):
 
 DECLARATIONS = {
     "cleanup-container-images": declare(cleanup, "agentbox cleanup-container-images [--json]",
-                                        options={"json": False}, own_entries=True, order=130),
+                                        options={"json": False}, own_entries=True),
 }

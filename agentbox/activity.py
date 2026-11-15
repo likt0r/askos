@@ -885,5 +885,5 @@ def activity(args):
 DECLARATIONS = {
     "activity": declare(activity, "agentbox activity [--kind K[,K]] [--vm VM] [--since T] [--until T] [--search TEXT] [--lines N] [--json]",
                          options={**CHECKS, "json": False}, read_only=True, control_room=True,
-                         positional=False, order=158),
+                         positional=False),
 }

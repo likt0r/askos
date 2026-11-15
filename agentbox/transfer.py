@@ -533,5 +533,5 @@ def import_cmd(args):
 
 DECLARATIONS = {
     "import": declare(import_cmd, "agentbox import <vm> <folder> [<target>] [--json]",
-                       options={"json": False}, describe=activity._import, order=60),
+                       options={"json": False}, describe=activity._import),
 }

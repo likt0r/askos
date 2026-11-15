@@ -1329,7 +1329,7 @@ def set_image(args):
 
 DECLARATIONS = {
     "images": declare(images_cmd, "agentbox images [--json]", options={"json": False}, read_only=True,
-                       control_room=True, allow_unknown=True, order=133),
+                       control_room=True, allow_unknown=True),
     "build": declare(build_cmd, "agentbox build <image>|--all [--reset <vm>]... [--json]",
                       options={"all": False, "reset": options.MANY, "json": False}, control_room=True,
                       kind="build",
@@ -1337,17 +1337,17 @@ DECLARATIONS = {
                           a, "Start a Build of all Images", all=True) if "all" in a.values else
                           activity._then_reset(a, f"Start a Build of {a.positional[0] if a.positional else ''}",
                                                 image=activity.name(a.positional[0] if a.positional else "",
-                                                                    settings.IMAGE)), order=138),
-    "build-run": declare(build_run, "agentbox build-run <image>|all", options={}, own_entries=True, order=148),
+                                                                    settings.IMAGE))),
+    "build-run": declare(build_run, "agentbox build-run <image>|all", options={}, own_entries=True),
     "build-log": declare(build_log, "agentbox build-log <image> [<build>] [--after-cursor C] [--lines N] [--json]",
-                         options={**LOG_CHECKS, "json": False}, read_only=True, control_room=True, order=144),
+                         options={**LOG_CHECKS, "json": False}, read_only=True, control_room=True),
     "set-image": declare(set_image, "agentbox set-image <vm> <image> [--build B] [--json]",
                          options={"build": True, "json": False}, control_room=True, kind="build",
-                         describe=activity._set_image, order=146),
+                         describe=activity._set_image),
     "update-now": declare(update_now_cmd, "agentbox update-now [--reset <vm>]... [--json]",
                            options={"reset": options.MANY, "json": False}, control_room=True, kind="build",
                            describe=lambda a: activity._then_reset(
-                               a, "Update now: check the versions, build every Image with an update"), order=142),
+                               a, "Update now: check the versions, build every Image with an update")),
     "containerfile": declare(containerfile_cmd, "agentbox containerfile <image> [--json]",
-                              options={"json": False}, read_only=True, control_room=True, order=136),
+                              options={"json": False}, read_only=True, control_room=True),
 }

@@ -600,7 +600,7 @@ def check_versions(args):
 
 DECLARATIONS = {
     "check-versions": declare(check_versions, "agentbox check-versions [--json]", options={"json": False},
-                               own_entries=True, order=0),
+                               own_entries=True),
     "fetch-versions": declare(fetch_versions, "agentbox fetch-versions [--json]", options={"json": False},
-                               needs_root=False, own_entries=True, order=0),
+                               needs_root=False, own_entries=True),
 }

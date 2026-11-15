@@ -67,5 +67,5 @@ def version(args):
 
 DECLARATIONS = {
     "version": declare(version, "agentbox version [--json]", options={"json": False}, needs_root=False,
-                        read_only=True, order=1),
+                        read_only=True),
 }

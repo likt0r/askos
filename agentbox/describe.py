@@ -303,5 +303,5 @@ def describe(args):
 
 DECLARATIONS = {
     "describe": declare(describe, "agentbox describe [<vm>] [--json]", options={"json": False},
-                        read_only=True, control_room=True, allow_unknown=True, order=2),
+                        read_only=True, control_room=True, allow_unknown=True),
 }

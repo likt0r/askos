@@ -172,11 +172,11 @@ def revoke_all(args):
 
 DECLARATIONS = {
     "pairings": declare(pairings, "agentbox pairings <vm> [--json]", options={"json": False},
-                         read_only=True, control_room=True, order=17),
+                         read_only=True, control_room=True),
     "unpair": declare(unpair, "agentbox unpair <vm> <device> [--json]", options={"json": False},
                        control_room=True, kind="pairing",
-                       describe=lambda a: activity.said("Remove a single device"), order=18),
+                       describe=lambda a: activity.said("Remove a single device")),
     "revoke-pairings": declare(revoke_all, "agentbox revoke-pairings <vm> --confirm <vm> [--json]",
                                 options={"confirm": True, "json": False}, control_room=True, kind="pairing",
-                                describe=lambda a: activity.said("Revoke all pairings"), order=19),
+                                describe=lambda a: activity.said("Revoke all pairings")),
 }
