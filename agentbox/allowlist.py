@@ -306,7 +306,7 @@ def preview(scope, pattern):
     hosts = sorted(counts)
     shown = hosts[:PREVIEW_SHOWN]
     signals, watchlist_unreadable = classifier.signals(shown)
-    rows = [{"host": h, **counts[h], "signals": [str(s) for s in signals[h]["signals"]],
+    rows = [{"host": h, **counts[h], "signals": signals[h]["signals"],
              "strong": signals[h]["strong"]} for h in shown]
     truncated = len(log) >= PREVIEW_LINES
     stamps = [u // 10**6 for u in (times.journal_usec(e) for e, _ in log) if u is not None and u >= 0] if truncated else []

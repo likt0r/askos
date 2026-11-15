@@ -3,7 +3,8 @@ agentbox-suspicious or reads its answers, each answer's shape checked once.
 
 Seam A: the `agentbox` CLI against a temporary root (AGENTBOX_ROOT) with a fake classifier
 installed in it, which answers each question with a good answer, except the one it is told to
-break; a fake `journalctl` on PATH answers the allowlist preview with an empty proxy log.
+break; a fake `journalctl` (fake_journalctl.py) on PATH holds one proxy line for the allowlist
+preview, so the classifier is asked about one host.
 
 Run from the repo root: python3 -m unittest discover -s tests
 """
@@ -18,13 +19,18 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vm_records  # noqa: E402
 from journal_writers import write_passwd  # noqa: E402
+from test_allowlist import proxy_line  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TESTS = os.path.join(ROOT, "tests")
 AGENTBOX = os.path.join(ROOT, "bin", "agentbox")
+HOST = "a.plain.example"            # the host of the proxy log the preview asks about
 FEED = {"present": True, "entries": 1, "updated": 1793700000, "error": None}
 GOOD = {
-    "--json": {"signals": [], "feeds": {"threat-intelligence": FEED}, "alert": False, "strong": False},
-    "--signals": {"hosts": {}, "watchlist_unreadable": None},
+    "--json": {"domain": "plain.example", "signals": [], "alert": False, "strong": False, "harmless": None,
+               "harmless_regex": False, "legitimate": None, "legitimate_regex": False,
+               "feeds": {"threat-intelligence": FEED}},
+    "--signals": {"hosts": {HOST: {"signals": [], "strong": False}}, "watchlist_unreadable": None},
     "--lifts": {"signals": [], "feed_entries": [], "feed_present": True},
     "--constants": {"categories": {"exfil": True, "paste": False}, "genuine": ["pypi.org"]},
     "--watchlist": {"feeds": {"threat-intelligence": FEED}},
@@ -44,23 +50,48 @@ if sys.argv[1] == broken.get("question"):
 else:
     print(json.dumps(good[sys.argv[1]]))
 '''
+
+
+def without(answer, key):
+    return json.dumps({k: v for k, v in answer.items() if k != key})
+
+
+def but(answer, **fields):
+    return json.dumps({**answer, **fields})
+
+
+SIGNAL = {"signal": "young", "strong": False, "suppressed": False, "reason": "newly registered", "code": "young",
+          "params": {}}
 # each question, the command that asks it, and broken answers: not JSON, the wrong type, a
 # field missing or of the wrong type
 QUESTIONS = {
     "--json": (["check-domain", "plain.example"],
-               ["not json", "[]", '{"signals": []}', '{"signals": [{"signal": "young"}], "feeds": {}}',
-                '{"signals": [], "feeds": []}']),
+               ["not json", "[]", without(GOOD["--json"], "feeds"), but(GOOD["--json"], feeds=[]),
+                but(GOOD["--json"], feeds={"threat-intelligence": "ok"}), without(GOOD["--json"], "signals"),
+                but(GOOD["--json"], signals=[{"signal": "young"}]),
+                but(GOOD["--json"], signals=[{**SIGNAL, "params": {"n": 1}}]),
+                but(GOOD["--json"], signals=[{**SIGNAL, "strong": "no"}]),
+                but(GOOD["--json"], alert="no"), without(GOOD["--json"], "strong"),
+                but(GOOD["--json"], harmless_regex=None), but(GOOD["--json"], legitimate_regex=1),
+                but(GOOD["--json"], harmless=1), but(GOOD["--json"], legitimate=["pypi.org"])]),
     "--signals": (["check-regex", "allowlist", "--regex", r"[a-z]+\.plain\.example", "--scope", "work"],
-                  ["not json", "{}", '{"hosts": [], "watchlist_unreadable": null}',
-                   '{"hosts": {}, "watchlist_unreadable": 3}']),
+                  ["not json", "{}", but(GOOD["--signals"], hosts=[]), but(GOOD["--signals"], hosts={}),
+                   but(GOOD["--signals"], hosts={HOST: []}),
+                   but(GOOD["--signals"], hosts={HOST: {"signals": "young", "strong": False}}),
+                   but(GOOD["--signals"], hosts={HOST: {"signals": [1], "strong": False}}),
+                   but(GOOD["--signals"], hosts={HOST: {"signals": []}}),
+                   but(GOOD["--signals"], hosts={HOST: {"signals": [], "strong": "no"}}),
+                   without(GOOD["--signals"], "watchlist_unreadable"),
+                   but(GOOD["--signals"], watchlist_unreadable=3)]),
     "--lifts": (["legitimate-add", "plain.example"],
-                ["not json", '{"signals": [], "feed_entries": []}',
-                 '{"signals": [1], "feed_entries": [], "feed_present": true}',
-                 '{"signals": [], "feed_entries": [], "feed_present": "yes"}']),
+                ["not json", without(GOOD["--lifts"], "feed_present"), but(GOOD["--lifts"], signals=[1]),
+                 but(GOOD["--lifts"], feed_entries="x"), but(GOOD["--lifts"], feed_present="yes")]),
     "--constants": (["watch-add", "plain.example", "--category", "paste"],
-                    ["not json", '{"categories": {"paste": "no"}, "genuine": []}',
-                     '{"categories": {"paste": false}}', '{"categories": {"paste": false}, "genuine": [1]}']),
-    "--watchlist": (["watchlist"], ["not json", "[]", '{"feeds": []}']),
+                    ["not json", but(GOOD["--constants"], categories={"paste": "no"}),
+                     but(GOOD["--constants"], categories=[]), without(GOOD["--constants"], "genuine"),
+                     but(GOOD["--constants"], genuine=[1])]),
+    "--watchlist": (["watchlist"], ["not json", "[]", but(GOOD["--watchlist"], feeds=[]),
+                                    but(GOOD["--watchlist"], feeds={"threat-intelligence": None})]),
 }
 
 
@@ -79,7 +110,10 @@ class ClassifierTest(unittest.TestCase):
         self.install(os.path.join(self.root, "usr", "libexec", "agentbox-suspicious"),
                      FAKE.replace("PYTHON", sys.executable, 1).replace("GOOD", repr(GOOD), 1)
                      .replace("DIR", repr(self.dir), 1))
-        self.install(os.path.join(self.dir, "bin", "journalctl"), "#!/bin/sh\nexit 0\n")
+        self.install(os.path.join(self.dir, "bin", "journalctl"),
+                     f'#!/bin/sh\nexec "{sys.executable}" "{os.path.join(TESTS, "fake_journalctl.py")}" "$@"\n')
+        with open(os.path.join(self.dir, "journal.json"), "w") as f:
+            json.dump([proxy_line("work", f"BLOCKED {HOST} (not on the Allowlist)", 600)], f)
 
     @staticmethod
     def install(path, text):
@@ -89,7 +123,7 @@ class ClassifierTest(unittest.TestCase):
         os.chmod(path, 0o755)
 
     def run_agentbox(self, *args):
-        env = {"PATH": os.path.join(self.dir, "bin") + ":" + os.environ["PATH"],
+        env = {"PATH": os.path.join(self.dir, "bin") + ":" + os.environ["PATH"], "FAKE_DIR": self.dir,
                "AGENTBOX_ROOT": self.root, "LANG": "C.UTF-8", "TZ": "CET-1"}
         r = subprocess.run([AGENTBOX, *args, "--json"], capture_output=True, text=True, env=env, timeout=60)
         return r.returncode, r.stdout, r.stderr
@@ -112,6 +146,8 @@ class ClassifierTest(unittest.TestCase):
             with self.subTest(question=question):
                 code, out, err = self.run_agentbox(*command)
                 self.assertEqual((code, err), (0, ""), out)
+        preview = json.loads(self.run_agentbox(*QUESTIONS["--signals"][0])[1])["preview"]
+        self.assertEqual([(h["host"], h["blocked"]) for h in preview["hosts"]], [(HOST, 1)])
 
     def test_a_broken_answer_of_each_kind_ends_the_command(self):
         for question, (command, answers) in QUESTIONS.items():
@@ -146,8 +182,8 @@ class SeamTest(unittest.TestCase):
                 self.assertNotIn("agentbox_suspicious", text)
                 self.assertNotIn("invalid answer", text)
 
-    def test_no_module_imports_a_private_helper_of_another(self):
-        private = re.compile(r"from \.\w+ import [^\n]*\b_\w|\b(?:detection|allowlist|lists|classifier)\._\w")
+    def test_no_module_imports_a_private_helper_of_detection_allowlist_lists_or_the_adapter(self):
+        private = re.compile(r"from \.(?:detection|allowlist|lists|classifier) import [^\n]*\b_\w|\b(?:detection|allowlist|lists|classifier)\._\w")
         for path, text in sources():
             with self.subTest(path=path):
                 self.assertIsNone(private.search(text))

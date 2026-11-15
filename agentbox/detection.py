@@ -100,7 +100,6 @@ def verdict(rep):
 def feed_line(feeds):
     parts = []
     for name, f in sorted(feeds.items()):
-        f = f if isinstance(f, dict) else {}
         if not f.get("present"):
             parts.append(f"{name} missing")
             continue

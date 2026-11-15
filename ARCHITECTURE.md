@@ -445,7 +445,7 @@ flowchart LR
 - random-looking labels and unusual TLDs (weak signals).
 
 agentbox asks the classifier only through `agentbox/classifier.py`, which starts it and checks
-each kind of answer once: an answer of the wrong shape ends the command with
+each kind of JSON answer once: one of the wrong shape ends the command with
 `agentbox-suspicious: invalid answer`.
 
 **Legitimate domains** (registries, vendors, distributions; no hosting services such as

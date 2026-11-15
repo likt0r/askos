@@ -281,11 +281,12 @@ def self_test():
                         f.write('{"entries": []}\n')
             except OSError as e:
                 die(f"{e.filename}: {e.strerror}", error="action_failed", path=e.filename)
-        said = classifier.self_test(folder)
-    if said is not None:
+        failed = classifier.self_test(folder)
+    if failed is not None:
+        said, otherwise = failed
         for copy, source in copies.items():        # the Host's files, not the copies
             said = said.replace(copy, source)
-        die(said[:600], error="action_failed")
+        die(said[:600] or otherwise, error="action_failed")
     return ["passed"]
 
 

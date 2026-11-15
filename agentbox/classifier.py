@@ -44,19 +44,31 @@ def _signal(s):
             and isinstance(s.get("strong"), bool) and isinstance(s.get("suppressed"), bool))
 
 
+def _feeds(value):
+    return isinstance(value, dict) and all(isinstance(f, dict) for f in value.values())
+
+
+def _optional(value, kind):
+    return value is None or isinstance(value, kind)
+
+
 def report(domain):
-    """The verdict on a domain (--json): {"signals": [Signal...], "feeds": {name: state}, ...}."""
+    """The verdict on a domain (--json): {"signals": [Signal...], "alert", "strong",
+    "harmless_regex", "legitimate_regex": bool, "harmless", "legitimate": the entry or None,
+    "feeds": {name: state}, ...}."""
     return _ask(lambda a: isinstance(a, dict) and isinstance(a.get("signals"), list)
-                and isinstance(a.get("feeds"), dict) and all(_signal(s) for s in a["signals"]), "--json", domain)
+                and all(_signal(s) for s in a["signals"]) and _feeds(a.get("feeds"))
+                and all(isinstance(a.get(k), bool) for k in ("alert", "strong", "harmless_regex", "legitimate_regex"))
+                and _optional(a.get("harmless"), str) and _optional(a.get("legitimate"), str), "--json", domain)
 
 
 def signals(hosts):
     """The Signals of hosts (--signals) as ({host: {"signals": [...], "strong": bool}}, why the
     Watchlist cannot be read or None)."""
     a = _ask(lambda a: isinstance(a, dict) and isinstance(a.get("hosts"), dict)
-             and all(isinstance(a["hosts"].get(h), dict) and isinstance(a["hosts"][h].get("signals"), list)
+             and all(isinstance(a["hosts"].get(h), dict) and _strings(a["hosts"][h].get("signals"))
                      and isinstance(a["hosts"][h].get("strong"), bool) for h in hosts)
-             and isinstance(a.get("watchlist_unreadable"), (str, type(None))), "--signals", *hosts)
+             and "watchlist_unreadable" in a and _optional(a["watchlist_unreadable"], str), "--signals", *hosts)
     return a["hosts"], a["watchlist_unreadable"]
 
 
@@ -84,7 +96,7 @@ def constants():
 def feeds():
     """The state of the Feeds (--watchlist): {name: {"present": bool, "entries", "updated",
     "error"}}."""
-    return _ask(lambda a: isinstance(a, dict) and isinstance(a.get("feeds"), dict), "--watchlist")["feeds"]
+    return _ask(lambda a: isinstance(a, dict) and _feeds(a.get("feeds")), "--watchlist")["feeds"]
 
 
 def classify(domain):
@@ -105,7 +117,7 @@ def classify(domain):
 
 def self_test(conf):
     """The detection self-test (--self-test) with the lists in the folder conf: None when it
-    passed, else why it failed (its FAILED lines, else its stderr or exit code)."""
+    passed, else why it failed as (its FAILED lines, its stderr or exit code)."""
     try:
         r = subprocess.run([sys.executable, "-I", "-B", paths.SUSPICIOUS, "--self-test"], capture_output=True,
                            text=True, env=dict(os.environ, AGENTBOX_CONF_DIR=conf), timeout=SELF_TEST_SECONDS)
@@ -113,8 +125,8 @@ def self_test(conf):
         die(f"{paths.SUSPICIOUS}: {e}", error="action_failed")
     if r.returncode == 0:
         return None
-    said = "; ".join(line.split(None, 1)[-1] for line in r.stdout.splitlines() if line.startswith("FAILED"))
-    return said or r.stderr.strip()[-300:] or f"exit {r.returncode}"
+    return ("; ".join(line.split(None, 1)[-1] for line in r.stdout.splitlines() if line.startswith("FAILED")),
+            r.stderr.strip()[-300:] or f"exit {r.returncode}")
 
 
 _module = None
