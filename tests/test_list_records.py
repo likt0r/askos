@@ -1,6 +1,6 @@
 """The list records (agentbox/list_records.py): the files, entry checks and texts the CLI, the
-proxy and the classifier share, and the seam between them: the proxy programs import that one
-leaf module of the package, and the RPM restarts the proxies when it changes."""
+proxy and the classifier share, and the seam between them: the proxy programs import only its
+leaf modules list_records and proxy_log, and the RPM restarts the proxies when one changes."""
 import json
 import os
 import re
@@ -15,6 +15,8 @@ sys.path.insert(0, REPO)
 from agentbox import list_records as records  # noqa: E402
 
 PROGRAMS = ("agentbox-proxy", "agentbox-suspicious", "agentbox-feeds")
+# the package modules they import: leaves that import only the standard library
+LEAVES = {"agentbox", "agentbox.list_records", "agentbox.proxy_log"}
 # a proxy program loaded as a module (its main is guarded), then the package modules it imported
 IMPORTS = """
 import importlib.machinery, importlib.util, json, sys
@@ -39,12 +41,12 @@ class SeamTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         return set(json.loads(r.stdout))
 
-    def test_the_proxy_programs_import_only_list_records(self):
+    def test_the_proxy_programs_import_only_the_leaf_modules(self):
         """They run as their own users: nothing of the CLI (activity, images, github) comes with
-        it, and list_records itself imports only the standard library."""
+        it, and the leaf modules themselves import only the standard library."""
         for program in PROGRAMS:
             with self.subTest(program=program):
-                self.assertEqual(self.imports(program), {"agentbox", "agentbox.list_records"})
+                self.assertEqual(self.imports(program), LEAVES)
 
     def test_the_rpm_restarts_the_proxies_when_a_module_they_import_changes(self):
         with open(os.path.join(REPO, "rpm", "agentbox.spec")) as f:
@@ -63,7 +65,7 @@ class SeamTest(unittest.TestCase):
         for program in PROGRAMS:
             with open(os.path.join(REPO, "proxy", program)) as f:
                 imports = re.findall(r"^\s*(?:from|import)\s+(agentbox\S*)", f.read(), re.M)
-            self.assertLessEqual(set(imports), {"agentbox", "agentbox.list_records"}, program)
+            self.assertLessEqual(set(imports), LEAVES, program)
 
     def test_patterns_py_no_longer_loads_the_classifier(self):
         with open(os.path.join(REPO, "agentbox", "patterns.py")) as f:

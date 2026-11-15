@@ -62,8 +62,8 @@ Requires:       e2fsprogs
 # VMs, not to the Host. Keep them byte for byte (no shebang rewriting) and take no
 # dependencies from them.
 # the proxy code: the proxy, the classifier it loads and what of the package both import
-# (the package itself and list_records; tests/test_list_records.py checks this list against their imports)
-%global proxy_code %{_libexecdir}/agentbox-proxy %{_libexecdir}/agentbox-suspicious %{_prefix}/lib/agentbox/agentbox/__init__.py %{_prefix}/lib/agentbox/agentbox/list_records.py
+# (the package itself and the leaf modules; tests/test_list_records.py checks this list against their imports)
+%global proxy_code %{_libexecdir}/agentbox-proxy %{_libexecdir}/agentbox-suspicious %{_prefix}/lib/agentbox/agentbox/__init__.py %{_prefix}/lib/agentbox/agentbox/list_records.py %{_prefix}/lib/agentbox/agentbox/proxy_log.py
 %global __brp_mangle_shebangs_exclude_from ^%{_datadir}/agentbox/vm/
 %global __requires_exclude_from ^%{_datadir}/agentbox/vm/
 
