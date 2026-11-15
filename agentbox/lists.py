@@ -58,10 +58,10 @@ import json
 import os
 import time
 
-from . import activity, entry_store, list_records, paths, patterns, proxy_log, settings, state_files
+from . import activity, classifier, entry_store, list_records, options, paths, patterns, proxy_log, settings, state_files
 from .commands import declare
-from .allowlist import MAX_NOTE, _parse
-from .detection import _classifier, domain_arg, feed_line
+from .allowlist import MAX_NOTE
+from .detection import domain_arg, feed_line
 from .errors import Fail, die
 from .network import DOMAIN, done
 from .sanitize import clean
@@ -99,28 +99,12 @@ def legacy_file(kind):
     return os.path.join(paths.CONF, kind["legacy"])
 
 
-_constants = None
-
-
-def constants():
-    """The classifier's categories ({category: strong}) and built-in Legitimate domains."""
-    global _constants
-    if _constants is None:
-        c = _classifier("--constants")
-        if not (isinstance(c, dict) and isinstance(c.get("categories"), dict) and isinstance(c.get("genuine"), list)
-                and all(isinstance(k, str) and isinstance(v, bool) for k, v in c["categories"].items())
-                and all(isinstance(d, str) for d in c["genuine"])):
-            die("agentbox-suspicious: invalid answer", error="action_failed")
-        _constants = c
-    return _constants
-
-
 def categories():
-    return constants()["categories"]
+    return classifier.constants()["categories"]
 
 
 def genuine():
-    return set(constants()["genuine"])
+    return set(classifier.constants()["genuine"])
 
 
 # --- arguments -------------------------------------------------------------------
@@ -328,7 +312,7 @@ def watchlist(args):
     cannot be read, why (unreadable) in place of its entries; the Feeds still show. A Regex
     entry the rules refuse is listed (refused) and makes it unreadable for Open web, as for
     the proxy, until it is removed."""
-    positional, opts = _parse(args)
+    positional, opts = options.parse(args)
     if positional:
         die("too many arguments: " + clean(positional[0], False)[:60], error="invalid_argument")
     try:
@@ -336,11 +320,9 @@ def watchlist(args):
         entries, unreadable = [_shown(e) for e in _sorted(stored)], refused_watchlist(stored)
     except Unreadable as e:
         entries, unreadable = [], e.why
-    rep = _classifier("--watchlist")
-    if not (isinstance(rep, dict) and isinstance(rep.get("feeds"), dict)):
-        die("agentbox-suspicious: invalid answer", error="action_failed")
+    feeds = classifier.feeds()
     conf = settings.load()
-    result = {"entries": entries, "unreadable": unreadable, "feeds": rep["feeds"],
+    result = {"entries": entries, "unreadable": unreadable, "feeds": feeds,
               "feed_interval_hours": conf["feed_interval_hours"], "young_domain_days": conf["young_domain_days"]}
     if "json" in opts:
         print(json.dumps(result, ensure_ascii=False))
@@ -360,7 +342,7 @@ def watch_add(args):
     file from before) it creates the record, which opens Open web again: only with
     --force, so the Control Room can never recreate a deleted Watchlist. A pattern needs
     no breadth check here."""
-    positional, opts = _parse(args)
+    positional, opts = options.parse(args)
     ref = _target(positional, opts)
     if ref[0] == "regex":
         patterns.checked(ref[1], broad=False)
@@ -404,7 +386,7 @@ def watch_add(args):
 def watch_remove(args):
     """agentbox watch-remove <domain>|--regex PATTERN [--force] [--json]: the Watchlist entry
     goes; one of a strong category only with --force"""
-    positional, opts = _parse(args)
+    positional, opts = options.parse(args)
     ref = _target(positional, opts)
     with changing(WATCHLIST) as entries:
         e = find(entries, ref)
@@ -424,7 +406,7 @@ def watch_remove(args):
 def watch_set_note(args):
     """agentbox watch-set-note <domain>|--regex PATTERN --note TEXT [--json]: the entry's note
     (empty to clear it)"""
-    positional, opts = _parse(args)
+    positional, opts = options.parse(args)
     ref = _target(positional, opts)
     if "note" not in opts:
         die("watch-set-note needs --note TEXT", error="invalid_argument", option="--note")
@@ -441,7 +423,7 @@ def watch_set_note(args):
 
 def legitimate(args):
     """agentbox legitimate [--json]: the Legitimate domains, the Host's and the built-in ones"""
-    positional, opts = _parse(args)
+    positional, opts = options.parse(args)
     if positional:
         die("too many arguments: " + clean(positional[0], False)[:60], error="invalid_argument")
     own = read(LEGITIMATE)[0]
@@ -463,11 +445,7 @@ def legitimate(args):
 def _refuse_lifts(domain):
     """Ends the command when making the domain legitimate would lift strong Signals (the
     classifier's --lifts), or when that cannot be checked without the threat-intelligence list."""
-    rep = _classifier("--lifts", domain)
-    if not (isinstance(rep, dict) and isinstance(rep.get("signals"), list) and isinstance(rep.get("feed_entries"), list)
-            and all(isinstance(s, str) for s in rep["signals"] + rep["feed_entries"])
-            and isinstance(rep.get("feed_present"), bool)):
-        die("agentbox-suspicious: invalid answer", error="action_failed")
+    rep = classifier.lifts(domain)
     why = []
     if rep["signals"]:
         why.append(", ".join(rep["signals"]))
@@ -485,7 +463,7 @@ def legitimate_add(args):
     """agentbox legitimate-add <domain>|--regex PATTERN [--note N] [--force] [--json]: a new
     Legitimate domain (with its subdomains); one that would lift strong Signals only with
     --force. A pattern lifts only weak Signals, so it needs no --force and takes none."""
-    positional, opts = _parse(args)
+    positional, opts = options.parse(args)
     ref = _target(positional, opts)
     note = entry_store.text(opts.get("note"), "note", MAX_NOTE)
     if ref[0] == "regex":
@@ -518,7 +496,7 @@ def legitimate_add(args):
 def legitimate_remove(args):
     """agentbox legitimate-remove <domain>|--regex PATTERN [--json]: the Host's entry goes;
     built-in domains stay (a Host's leftover entry for one goes)"""
-    positional, opts = _parse(args)
+    positional, opts = options.parse(args)
     ref = _target(positional, opts)
     builtin = ref[0] == "domain" and ref[1] in genuine()
     with changing(LEGITIMATE) as entries:
@@ -542,7 +520,7 @@ def legitimate_remove(args):
 
 def legitimate_set_note(args):
     """agentbox legitimate-set-note <domain>|--regex PATTERN --note TEXT [--json]"""
-    positional, opts = _parse(args)
+    positional, opts = options.parse(args)
     ref = _target(positional, opts)
     if "note" not in opts:
         die("legitimate-set-note needs --note TEXT", error="invalid_argument", option="--note")
@@ -568,7 +546,7 @@ def migrate(args):
     none and says so: Open web stays closed. Each migration, and an empty record of the
     Legitimate domains it creates, is an Activity entry of its own. With nothing to
     migrate, a record that cannot be read is a warning (agentbox setup goes on)."""
-    positional, opts = _parse(args)
+    positional, opts = options.parse(args)
     if positional:
         die("too many arguments: " + clean(positional[0], False)[:60], error="invalid_argument")
     result, said, notes = {}, [], []

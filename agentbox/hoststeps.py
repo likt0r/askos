@@ -18,7 +18,7 @@ import subprocess
 import sys
 import tempfile
 
-from . import activity, detection, firewall, generate, list_records, lists, paths, programs, state_files
+from . import activity, classifier, detection, firewall, generate, list_records, lists, paths, programs, state_files
 from .errors import die
 
 # the hand-maintained lists as (record, the text file it is migrated from); the Allowlist the
@@ -281,16 +281,11 @@ def self_test():
                         f.write('{"entries": []}\n')
             except OSError as e:
                 die(f"{e.filename}: {e.strerror}", error="action_failed", path=e.filename)
-        try:
-            r = subprocess.run([sys.executable, "-I", "-B", paths.SUSPICIOUS, "--self-test"], capture_output=True,
-                               text=True, env=dict(os.environ, AGENTBOX_CONF_DIR=folder), timeout=300)
-        except (OSError, subprocess.TimeoutExpired) as e:
-            die(f"{paths.SUSPICIOUS}: {e}", error="action_failed")
-    if r.returncode != 0:
-        said = "; ".join(line.split(None, 1)[-1] for line in r.stdout.splitlines() if line.startswith("FAILED"))
+        said = classifier.self_test(folder)
+    if said is not None:
         for copy, source in copies.items():        # the Host's files, not the copies
             said = said.replace(copy, source)
-        die(said[:600] or r.stderr.strip()[-300:] or f"exit {r.returncode}", error="action_failed")
+        die(said[:600], error="action_failed")
     return ["passed"]
 
 
