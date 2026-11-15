@@ -58,7 +58,7 @@ import json
 import os
 import time
 
-from . import activity, entry_store, list_records, paths, patterns, settings, state_files
+from . import activity, entry_store, list_records, paths, patterns, proxy_log, settings, state_files
 from .commands import declare
 from .allowlist import MAX_NOTE, _parse
 from .detection import _classifier, domain_arg, feed_line
@@ -75,7 +75,7 @@ LEGITIMATE = {"title": "Legitimate domains", "file": list_records.LEGITIMATE, "l
 # what migrate-lists says when there is nothing to take over
 NOTHING_TO_MIGRATE = "Watchlist and Legitimate domains: nothing to take over"
 # what an unreadable Watchlist means (the Control Room answers watchlist_unreadable)
-UNREADABLE = "Watchlist unreadable, Open web closed"
+UNREADABLE = proxy_log.OPEN_WEB_CLOSED       # the proxy's reason for what it then blocks
 # and an unreadable record of the Legitimate domains (legitimate_unreadable); the classifier
 # then counts only the built-in ones, which only adds Signals
 LEGITIMATE_UNREADABLE = "Legitimate domains unreadable"

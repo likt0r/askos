@@ -2,38 +2,23 @@
 Open web. The Allowlist itself is in allowlist.py.
 
 The proxy writes one journal line per event under the identifier
-agentbox-proxy-<vm>, into the journald namespace of Activity, with the
-keywords ALLOWED, BLOCKED and ALERT (and CLOSED, ERROR). Lines the VM's proxy
-did not write are ignored (activity.trusted).
+agentbox-proxy-<vm>, into the journald namespace of Activity, in the format of
+proxy_log (ALLOWED, BLOCKED, ALERT, CLOSED, ERROR). Lines the VM's proxy did not
+write are ignored (activity.trusted).
 """
 import json
 import re
 import time
 
-from . import activity, list_records, settings, state_files, times
+from . import activity, list_records, proxy_log, settings, state_files, times
 from .commands import declare
 from .registry import check
 from .errors import die
-from .sanitize import field
 from .state_files import open_web_file
 
 # lowercase labels of letters, digits and inner hyphens, at least two of them
 DOMAIN = list_records.DOMAIN
-# proxy lines: "[<vm>] <event>"
-BLOCKED = re.compile(r"\[[a-z0-9-]+\] BLOCKED ([a-z0-9.-]+) \((.*)\)")
-ALERT = re.compile(r"\[[a-z0-9-]+\] ALERT (\S+) \[(.*)\]")
 LOG_WINDOW = 86400
-# why the proxy blocked a destination (the reasons of its BLOCKED lines, proxy/agentbox-proxy, part
-# of the log format) as a stable code the Control Room words (docs/control-room-api.md)
-BLOCK_REASONS = {"not on the Allowlist": "not-allowed", "Watchlist unreadable, Open web closed": "watchlist-unreadable",
-                 # a Regex entry matched, but allows nothing while the Watchlist cannot be read
-                 "Watchlist unreadable, regex entries closed": "watchlist-unreadable",
-                 "does not resolve to a public address": "not-public",
-                 # a connection the proxy took no destination from: the line names the client
-                 "not a TLS handshake": "not-tls", "no server name": "no-server-name"}
-# the reasons of BLOCKED lines that name the client's address, not a destination
-CLIENT_REASONS = ("not a TLS handshake", "no server name")
-BLOCK_SUSPICIOUS = re.compile(r"suspicious: ([a-z0-9-]+(?:,[a-z0-9-]+)*)")
 
 
 def valid_domain(d):
@@ -57,61 +42,51 @@ def done(as_json, message, **fields):
 # --- proxy log ---------------------------------------------------------------
 
 def proxy_journal(ctx):
-    """The VM's proxy lines with Alerts and blocked destinations of the last 24 hours,
-    oldest first, as (epoch seconds, message): only those its proxy wrote, from the
-    Activity namespace it logs into and the default journal it logged into before."""
-    entries = activity._journal((time.time() - LOG_WINDOW, None), [f"agentbox-proxy-{ctx}"], (activity.PROXY_USER,),
-                                grep=r"^\[[a-z0-9-]+\] (ALERT|BLOCKED) ")
-    lines = []
-    for e in reversed(entries):
-        usec = times.journal_usec(e)
-        if usec is not None:
-            lines.append((usec // 10**6, field(e, "MESSAGE", limit=None) or ""))
-    return lines
+    """The VM's Alerts and blocked destinations of the last 24 hours, oldest first, as
+    (epoch seconds, proxy_log.Event)."""
+    lines = activity.proxy_lines((time.time() - LOG_WINDOW, None), [ctx], ("ALERT", "BLOCKED"))
+    return [(usec // 10**6, event) for usec, event in ((times.journal_usec(e), event) for e, event in reversed(lines))
+            if usec is not None]
 
 
 def block_reason(why):
     """The code and parameters of a BLOCKED line's reason: the Signals that kept it blocked in
     Open web for `suspicious`; no code for a reason this does not know."""
-    m = BLOCK_SUSPICIOUS.fullmatch(why)
-    if m:
-        return {"code": "suspicious", "params": {"signals": ", ".join(m.group(1).split(","))}}
-    return {"code": BLOCK_REASONS.get(why), "params": {}}
+    code = proxy_log.block_code(why)
+    signals = why[len(proxy_log.SUSPICIOUS):].split(",") if code == "suspicious" else None
+    return {"code": code, "params": {"signals": ", ".join(signals)} if signals else {}}
 
 
 def blocked_rows(log):
     """Blocked domains, newest first, with the Signals of their last Alert."""
     signals = {}
-    for _, message in log:
-        v = ALERT.fullmatch(message)
-        if v:
-            signals[v.group(1)] = v.group(2).split(",")
+    for _, event in log:
+        if event.kind == "ALERT":
+            signals[event.host] = list(event.signals)
     seen = {}
-    for t, message in log:
-        m = BLOCKED.fullmatch(message)
-        if not m:
+    for t, event in log:
+        if event.kind != "BLOCKED":
             continue
-        host, why = m.group(1), m.group(2)
+        host, why = event.host, event.reason
         # the reason stays the one of the first block; a line naming the client's address is a
         # row apart from a destination of the same text
-        e = seen.setdefault((host, why in CLIENT_REASONS),
+        e = seen.setdefault((host, why in proxy_log.CLIENT_REASONS),
                             {"domain": host, "count": 0, "last": 0, "reason": why, **block_reason(why)})
         e["count"] += 1
         e["last"] = max(e["last"], t)
     rows = sorted(seen.values(), key=lambda e: -e["last"])
     for e in rows:
-        e["suspicious"] = [] if e["reason"] in CLIENT_REASONS else signals.get(e["domain"], [])
+        e["suspicious"] = [] if e["reason"] in proxy_log.CLIENT_REASONS else signals.get(e["domain"], [])
     return rows
 
 
 def alert_rows(log):
     """Alerts grouped by destination, newest first, with the Signals of the first one."""
     seen = {}
-    for t, message in log:
-        m = ALERT.fullmatch(message)
-        if not m:
+    for t, event in log:
+        if event.kind != "ALERT":
             continue
-        host, tags = m.group(1), m.group(2).split(",")
+        host, tags = event.host, list(event.signals)
         e = seen.setdefault(host, {"domain": host, "tags": tags, "count": 0, "first": t, "last": 0})
         e["count"] += 1
         e["last"] = max(e["last"], t)

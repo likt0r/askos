@@ -91,6 +91,7 @@ def _package_dir():
 if _package_dir() not in sys.path:
     sys.path.insert(0, _package_dir())
 from agentbox import list_records as records  # noqa: E402
+from agentbox import proxy_log  # noqa: E402
 from agentbox.list_records import (CATEGORIES, PATTERN_HOST, compile_pattern, pattern_matches,  # noqa: E402,F401
                                    pattern_problem, printable, refused_entry)
 
@@ -771,11 +772,8 @@ SELFTEST_REGEX_CASES = [
 ]
 # ... that never allows strong Signals, checked on every connection; and nothing while the
 # Watchlist cannot be read (checked last, with Open web closed)
-SELFTEST_REGEX_BLOCKED = [("y.exfil-selftest.example", "suspicious: exfil")]
-SELFTEST_REGEX_UNREADABLE = ("free1-selftest.example", "Watchlist unreadable, regex entries closed")
-# Lines of the proxy log
-LOG_ALERT = re.compile(r"\] ALERT (\S+) \[(.*)\]$")
-LOG_BLOCKED = re.compile(r"\] BLOCKED (\S+) \((.*)\)$")
+SELFTEST_REGEX_BLOCKED = [("y.exfil-selftest.example", proxy_log.suspicious(["exfil"]))]
+SELFTEST_REGEX_UNREADABLE = ("free1-selftest.example", proxy_log.REGEX_CLOSED)
 
 
 def _client_hello(host):
@@ -936,12 +934,11 @@ def self_test():
         alerts, blocks = {}, {}
         with open(log, encoding="utf-8", errors="replace") as f:
             for line in f:
-                m = LOG_ALERT.search(line.rstrip("\n"))
-                if m:
-                    alerts[m.group(1)] = set(m.group(2).split(","))
-                m = LOG_BLOCKED.search(line.rstrip("\n"))
-                if m:
-                    blocks[m.group(1)] = m.group(2)
+                e = proxy_log.parse(line.rstrip("\n"))
+                if e and e.kind == "ALERT":
+                    alerts[e.host] = set(e.signals)
+                elif e and e.kind == "BLOCKED":
+                    blocks[e.host] = e.reason
         for host, want, exact in cases:
             got = alerts.get(host, set())
             ok = (got == want if exact else want <= got) and answers[host] == REFUSED

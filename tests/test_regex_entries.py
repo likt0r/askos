@@ -812,7 +812,7 @@ class SelfTestTest(unittest.TestCase):
             d = proxy_layout.libexec(prefix)
             with open(PROXY) as f:
                 source = f.read()
-            old = "    if strong(tags):\n        return f\"suspicious: {','.join(tags)}\""
+            old = "    if strong(tags):\n        return lines.suspicious(tags)"
             self.assertIn(old, source)
             write(os.path.join(d, "agentbox-proxy"), source.replace(old, "    if False:\n        return \"\""), 0o755)
             shutil.copy(SUSPICIOUS, d)

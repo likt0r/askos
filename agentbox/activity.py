@@ -50,7 +50,7 @@ import sys
 import threading
 import time
 
-from . import durations, guest, ids, journal, options, paths, registry, settings, times, vmenv
+from . import durations, guest, ids, journal, options, paths, proxy_log, registry, settings, times, vmenv
 from .commands import declare
 from .errors import Fail, die
 from .sanitize import clean, field, message_text, redact
@@ -577,9 +577,7 @@ CHECKS = {
     "search": guest.CHECKS["grep"],              # the same check: one line, at most 200 characters
     "lines": guest.CHECKS["lines"],
 }
-# Alerts as the proxy logs them, and the token service's lines
-# (github-app/agentbox-gh-tokend)
-ALERT = re.compile(r"\[[a-z0-9-]+\] ALERT (\S+) \[([^\]]*)\]")
+# the token service's lines (github-app/agentbox-gh-tokend)
 TOKEN = re.compile(r"\[[a-z0-9-]+\] (token for|refused:|error:) (.*)")
 GITHUB = {"token for": ("github.token", "ok"), "refused:": ("github.refused", "failed"),
           "error:": ("github.error", "failed")}
@@ -636,6 +634,17 @@ def _journal(window, identifiers, writers, matches=(), grep=None, cap=None, name
         return _journal(window, identifiers, writers, matches, grep, None, namespace, prefix)
     count_untrusted(len(entries) - len(kept))
     return kept
+
+
+def proxy_lines(window, vms, kinds, cap=None):
+    """The proxy lines of these kinds (proxy_log) in the time window, newest first, as (journal
+    entry, Event): of these VMs, or (None) of every VM that ever logged, deleted ones included;
+    only the lines the proxies' user wrote, from the Activity namespace they log into and the
+    default journal they logged into before."""
+    entries = _journal(window, None if vms is None else [f"agentbox-proxy-{n}" for n in vms], (PROXY_USER,),
+                       grep=proxy_log.grep(*kinds), cap=cap, prefix="agentbox-proxy-")
+    events = ((e, proxy_log.parse(field(e, "MESSAGE", limit=None) or "")) for e in entries)
+    return [(e, event) for e, event in events if event and event.kind in kinds]
 
 
 def _json(line):
@@ -724,8 +733,7 @@ def _per_vm(e, prefix):
 def _alerts(window, kinds, vm, cap):
     """Alerts from the proxy log (agentbox-proxy-<vm>): of one VM, or of every VM
     that ever logged, deleted ones included."""
-    for e in _journal(window, [f"agentbox-proxy-{vm}"] if vm else None, (PROXY_USER,),
-                      grep=r"^\[[a-z0-9-]+\] ALERT ", cap=cap, prefix="agentbox-proxy-"):
+    for e, _ in proxy_lines(window, [vm] if vm else None, ("ALERT",), cap):
         entry = alert_entry(e)
         if entry:
             yield entry
@@ -734,14 +742,14 @@ def _alerts(window, kinds, vm, cap):
 def alert_entry(e):
     """A proxy line with an Alert as a timeline entry, with the code `alert` and the
     destination and its Signals as parameters (also as _domain and _signals), or None."""
-    m, base, name = ALERT.fullmatch(_text(e, "MESSAGE") or ""), _base(e), _per_vm(e, "agentbox-proxy")
-    if not (m and base and name):
+    event, base, name = proxy_log.parse(_text(e, "MESSAGE") or ""), _base(e), _per_vm(e, "agentbox-proxy")
+    if not (event and event.kind == "ALERT" and base and name):
         return None
-    signals = [s for s in m.group(2).replace(",", " ").split() if s]
+    signals = [s for s in " ".join(event.signals).split() if s]
     return {**base, "vm": name, "actor": f"VM {name}", "kind": "alert", "action": "alert", "outcome": "ok",
-            "description": f"Alert: {m.group(1)} ({m.group(2)})", "code": "alert",
-            "params": {"domain": m.group(1), **({"signals": ", ".join(signals)} if signals else {})},
-            "_domain": m.group(1), "_signals": signals}
+            "description": f"Alert: {event.host} ({','.join(event.signals)})", "code": "alert",
+            "params": {"domain": event.host, **({"signals": ", ".join(signals)} if signals else {})},
+            "_domain": event.host, "_signals": signals}
 
 
 def _token_request(action, rest):

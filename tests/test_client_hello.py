@@ -60,7 +60,7 @@ class ParserTest(unittest.TestCase):
     def name(self, data):
         return proxy.client_hello(data)
 
-    def refused(self, data, reason=proxy.NOT_TLS):
+    def refused(self, data, reason=proxy.lines.NOT_TLS):
         with self.assertRaises(proxy.Refused) as caught:
             proxy.client_hello(data)
         self.assertEqual(caught.exception.reason, reason)
@@ -183,7 +183,7 @@ class ParserTest(unittest.TestCase):
             try:
                 result = proxy.client_hello(bytes(data))
             except proxy.Refused as e:
-                self.assertIn(e.reason, (proxy.NOT_TLS, "no server name"), tried)
+                self.assertIn(e.reason, (proxy.lines.NOT_TLS, proxy.lines.NO_SERVER_NAME), tried)
             except Exception as e:
                 self.fail(f"{tried}: {e!r}")
             else:
@@ -330,9 +330,9 @@ class UnresolvableTest(unittest.TestCase):
                     return theirs.recv(100)
             with mock.patch.object(proxy, "CONF_DIR", conf), mock.patch.object(proxy, "suspicious", None), \
                     mock.patch.object(proxy, "resolve_public", unencodable), \
-                    mock.patch.object(proxy, "log", lambda ctx, msg: said.append(msg)):
+                    mock.patch.object(proxy, "log", said.append):
                 self.assertEqual(asyncio.run(run()), ACCESS_DENIED)
-        self.assertEqual(said, ["BLOCKED example.org (does not resolve to a public address)"])
+        self.assertEqual(said, ["[work] BLOCKED example.org (does not resolve to a public address)"])
 
 
 class RefusalTest(allowlist_tests.ProxyTest):

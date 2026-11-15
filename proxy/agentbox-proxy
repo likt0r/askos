@@ -7,15 +7,9 @@ sends every name, or a Unix socket for tests. Each connection starts with a TLS
 ClientHello, whose server name (SNI) is the destination; the proxy resolves that name
 itself and connects to it on port 443. What is not a TLS handshake, or names no
 server, is refused. Destinations in the LAN or on localhost are refused even when an
-allowed domain resolves there. Every connection is logged (English, agentbox reads
-these lines):
-  [<vm>] ALLOWED <host> (allowlist <domain> <scope>)   or (open web)
-  [<vm>] ALLOWED <host> (allowlist regex <pattern> <scope>)   a Regex entry
-  [<vm>] BLOCKED <host> (<reason>)
-  [<vm>] BLOCKED <client address> (not a TLS handshake)   or (no server name)
-  [<vm>] ALERT <host> [<signal>,...]
-  [<vm>] CLOSED <host> (<reason>)       tunnel closed by the proxy (ADR 0005)
-  [<vm>] ERROR <host> (<error>)         destination unreachable
+allowed domain resolves there. Every connection is logged as an English line that
+agentbox reads back, ALLOWED, BLOCKED, ALERT, CLOSED or ERROR, written with the
+package's leaf module proxy_log (agentbox/proxy_log.py), which owns their format.
 A refused connection gets a fatal TLS alert (access_denied for a blocked destination,
 unrecognized_name without a server name, internal_error for an unreachable
 destination), so the client reports why; bytes that are no TLS get nothing.
@@ -63,8 +57,8 @@ import time
 
 def _package_dir():
     """Where the package agentbox is: next to proxy/ in a checkout, installed in lib/agentbox
-    under the prefix whose libexec/ holds this program. The proxy imports only its leaf module
-    list_records (tests/test_list_records.py)."""
+    under the prefix whose libexec/ holds this program. The proxy imports only its leaf modules
+    list_records and proxy_log (tests/test_list_records.py)."""
     here = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
     checkout = os.path.isfile(os.path.join(here, "agentbox", "__init__.py"))
     return here if checkout else os.path.join(here, "lib", "agentbox")
@@ -73,6 +67,7 @@ def _package_dir():
 if _package_dir() not in sys.path:
     sys.path.insert(0, _package_dir())
 from agentbox import list_records as records  # noqa: E402
+from agentbox import proxy_log as lines  # noqa: E402
 
 CONF_DIR = os.environ.get("AGENTBOX_CONF_DIR", "/etc/agentbox")
 
@@ -141,8 +136,9 @@ OPEN = "open"            # Tunnel, den nur das offene Web erlaubt
 ACCESS_DENIED, UNRECOGNIZED_NAME, INTERNAL_ERROR = 49, 112, 80
 
 
-def log(ctx, msg):
-    print(f"[{ctx}] {msg}", file=sys.stderr, flush=True)
+def log(line):
+    """One line of the proxy log (proxy_log)."""
+    print(line, file=sys.stderr, flush=True)
 
 
 # --- ClientHello -----------------------------------------------------------------
@@ -152,7 +148,6 @@ HANDSHAKE, ALERT_RECORD, FATAL, CLIENT_HELLO, SERVER_NAME, HOST_NAME = 22, 21, 2
 HOST = re.compile(r"[a-z0-9.-]{1,253}")
 # a label as domain entries have them: letters, digits and inner hyphens, at most 63
 LABEL = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")
-NOT_TLS = "not a TLS handshake"
 
 
 class Refused(Exception):
@@ -172,7 +167,7 @@ class Reader:
 
     def take(self, n):
         if self.pos + n > len(self.data):
-            raise Refused(NOT_TLS)
+            raise Refused(lines.NOT_TLS)
         self.pos += n
         return self.data[self.pos - n:self.pos]
 
@@ -190,7 +185,7 @@ class Reader:
 def _host_name(name):
     name = name.decode("ascii", "replace").lower().rstrip(".")
     if not HOST.fullmatch(name) or not all(LABEL.fullmatch(label) for label in name.split(".")):
-        raise Refused("no server name", UNRECOGNIZED_NAME)
+        raise Refused(lines.NO_SERVER_NAME, UNRECOGNIZED_NAME)
     return name
 
 
@@ -204,21 +199,21 @@ def _server_name(body):
     r.vector(2)                     # cipher suites
     r.vector(1)                     # compression methods
     if r.done():
-        raise Refused("no server name", UNRECOGNIZED_NAME)
+        raise Refused(lines.NO_SERVER_NAME, UNRECOGNIZED_NAME)
     extensions = Reader(r.vector(2))
     if not r.done():
-        raise Refused(NOT_TLS)
+        raise Refused(lines.NOT_TLS)
     found = {}
     while not extensions.done():
         kind, data = extensions.number(2), extensions.vector(2)
         if kind in found:           # RFC 8446, 4.2: never twice; which one would the server read?
-            raise Refused(NOT_TLS)
+            raise Refused(lines.NOT_TLS)
         found[kind] = data
     if SERVER_NAME in found:
         extension = Reader(found[SERVER_NAME])
         names = Reader(extension.vector(2))
         if not extension.done():        # bytes after the list of names
-            raise Refused(NOT_TLS)
+            raise Refused(lines.NOT_TLS)
         hosts = []
         while not names.done():
             name_type, name = names.number(1), names.vector(2)
@@ -227,7 +222,7 @@ def _server_name(body):
         # RFC 6066, 3: one name of a type; with several the destination might pick another one
         if len(hosts) == 1:
             return _host_name(hosts[0])
-    raise Refused("no server name", UNRECOGNIZED_NAME)
+    raise Refused(lines.NO_SERVER_NAME, UNRECOGNIZED_NAME)
 
 
 class Hello:
@@ -250,7 +245,7 @@ class Hello:
             pos = self.pos
             kind, major, length = buf[pos], buf[pos + 1], int.from_bytes(buf[pos + 3:pos + 5], "big")
             if kind != HANDSHAKE or major != 3 or not 0 < length <= RECORD_LIMIT:
-                raise Refused(NOT_TLS)
+                raise Refused(lines.NOT_TLS)
             if len(buf) < pos + 5 + length:
                 return None
             self.hello += buf[pos + 5:pos + 5 + length]
@@ -260,7 +255,7 @@ class Hello:
             if len(hello) < 4:
                 continue
             if hello[0] != CLIENT_HELLO:
-                raise Refused(NOT_TLS)
+                raise Refused(lines.NOT_TLS)
             size = int.from_bytes(hello[1:4], "big")
             if len(hello) >= 4 + size:
                 return _server_name(bytes(hello[4:4 + size]))
@@ -343,11 +338,11 @@ class Allowlist:
                 why = records.printable(str(e), 200) if isinstance(e, ValueError) and str(e) else type(e).__name__
                 kept = ("the previous entries stay" if self.good or self.entries
                         else "nothing is allowed until it is fixed")
-                log(self.ctx, f"ERROR {path} unreadable ({why}), {kept}")
+                log(lines.message(self.ctx, f"ERROR {path} unreadable ({why}), {kept}"))
             else:
                 self.good = True
                 for pattern, why in sorted(refused.items()):
-                    log(self.ctx, f"ERROR {path}: regex entry {pattern!r} left out ({why})")
+                    log(lines.message(self.ctx, f"ERROR {path}: regex entry {pattern!r} left out ({why})"))
         return self.entries
 
     def matches(self, pattern, host):
@@ -360,9 +355,9 @@ def regex_refusal(tags):
     strong Signals, or the Watchlist cannot be read (which Signals are strong is unknown
     then), checked on every connection the way Open web does it."""
     if not suspicious or suspicious.watchlist_unreadable():
-        return "Watchlist unreadable, regex entries closed"
+        return lines.REGEX_CLOSED
     if strong(tags):
-        return f"suspicious: {','.join(tags)}"
+        return lines.suspicious(tags)
     return None
 
 
@@ -401,15 +396,15 @@ def decide(ctx, lists, host, tags, now):
     if open_until(ctx):
         # without a readable Watchlist it is unknown what would have to stay blocked: nothing passes
         if suspicious and suspicious.watchlist_unreadable():
-            return None, "Watchlist unreadable, Open web closed"
+            return None, lines.OPEN_WEB_CLOSED
         # in Open web destinations with strong Signals stay blocked (unless allowed)
         if strong(tags):
-            return None, f"suspicious: {','.join(tags)}"
+            return None, lines.suspicious(tags)
         return OPEN, None
     # a Regex entry matches, but does not allow it (strong Signals, or no Watchlist)
     if refused:
         return None, refused
-    return None, "not on the Allowlist"
+    return None, lines.NOT_ALLOWED
 
 
 def logged(ctx, grant):
@@ -418,9 +413,9 @@ def logged(ctx, grant):
     domains = [k for k in grant if not k.regex]
     if domains:
         k = max(domains, key=lambda k: (len(k.value), k.scope == ctx))
-        return f"allowlist {k.value} {k.scope}"
+        return "domain", k.value, k.scope
     k = min(grant, key=lambda k: (k.scope != ctx, k.value))
-    return f"allowlist regex {k.value} {k.scope}"
+    return "regex", k.value, k.scope
 
 
 # --- Tunnel ----------------------------------------------------------------------
@@ -451,7 +446,7 @@ def withdraw(ctx, lists, now, revoked, web_ended, is_open):
         elif is_open and not strong(t.tags):
             t.grant = OPEN
         else:
-            log(ctx, f"CLOSED {t.host} ({'Open web ended' if t.grant == OPEN else 'removed from the Allowlist'})")
+            log(lines.closed(ctx, t.host, lines.OPEN_WEB_ENDED if t.grant == OPEN else lines.REMOVED))
             tunnels.discard(t)
             t.close()
 
@@ -475,7 +470,7 @@ async def watch(ctx, lists):
             if revoked or ended:
                 withdraw(ctx, lists, now, revoked, ended, is_open)
         except Exception as e:      # der Waechter darf nie stehen bleiben
-            log(ctx, f"ERROR check of open tunnels failed ({type(e).__name__}: {e})")
+            log(lines.message(ctx, f"ERROR check of open tunnels failed ({type(e).__name__}: {e})"))
 
 
 # --- Verbindungen ---------------------------------------------------------------
@@ -556,11 +551,11 @@ async def read_hello(reader, hello):
     server; EOFError when the client leaves before sending anything."""
     while True:
         if len(hello.buf) >= HELLO_LIMIT:
-            raise Refused(NOT_TLS)
+            raise Refused(lines.NOT_TLS)
         chunk = await reader.read(HELLO_LIMIT - len(hello.buf))
         if not chunk:
             if hello.buf:
-                raise Refused(NOT_TLS)
+                raise Refused(lines.NOT_TLS)
             raise EOFError
         host = hello.feed(chunk)
         if host is not None:
@@ -574,13 +569,13 @@ async def handle(ctx, lists, reader, writer):
     try:
         head, host = await asyncio.wait_for(read_hello(reader, hello), HELLO_SECONDS)
     except Refused as e:
-        log(ctx, f"BLOCKED {client} ({e.reason})")
+        log(lines.blocked(ctx, client, e.reason))
         await refuse(reader, writer, e.alert)
         return
     except asyncio.TimeoutError:
         # a ClientHello begun and not finished in time; a client that sent nothing leaves no line
         if hello.buf:
-            log(ctx, f"BLOCKED {client} ({NOT_TLS})")
+            log(lines.blocked(ctx, client, lines.NOT_TLS))
         writer.close()
         return
     except (EOFError, ConnectionError):
@@ -591,11 +586,11 @@ async def handle(ctx, lists, reader, writer):
     alert = suspicious.alerting(host, tags) if tags else []     # without the harmless ones
     if alert:
         # a line of its own, so agentbox and the Control Room can collect Alerts
-        log(ctx, f"ALERT {host} [{','.join(alert)}]")
+        log(lines.alert(ctx, host, alert))
     now = time.time()
     grant, why = decide(ctx, lists, host, tags, now)
     if grant is None:
-        log(ctx, f"BLOCKED {host} ({why})")
+        log(lines.blocked(ctx, host, why))
         await refuse(reader, writer, ACCESS_DENIED)
         return
     try:
@@ -603,14 +598,14 @@ async def handle(ctx, lists, reader, writer):
     except (OSError, UnicodeError):     # UnicodeError: a name the IDNA codec refuses
         addrs = None
     if not addrs:
-        log(ctx, f"BLOCKED {host} (does not resolve to a public address)")
+        log(lines.blocked(ctx, host, lines.NOT_PUBLIC))
         await refuse(reader, writer, ACCESS_DENIED)
         return
 
     try:
         up_reader, up_writer = await connect_any(addrs)
     except (OSError, asyncio.TimeoutError) as e:
-        log(ctx, f"ERROR {host} ({e})")
+        log(lines.error(ctx, host, e))
         await refuse(reader, writer, INTERNAL_ERROR)
         return
     # access may have ended while the name was resolved and the connection made: decide
@@ -618,13 +613,13 @@ async def handle(ctx, lists, reader, writer):
     grant, why = decide(ctx, lists, host, tags, now)
     if grant is None:
         up_writer.close()
-        log(ctx, f"BLOCKED {host} ({why})")
+        log(lines.blocked(ctx, host, why))
         await refuse(reader, writer, ACCESS_DENIED)
         return
     if grant == OPEN:
-        log(ctx, f"ALLOWED {host} (open web)")
+        log(lines.allowed(ctx, host))
     else:
-        log(ctx, f"ALLOWED {host} ({logged(ctx, grant)})")
+        log(lines.allowed(ctx, host, logged(ctx, grant)))
     tunnel = Tunnel(host, tags, grant, (writer, up_writer))
     tunnels.add(tunnel)
     try:
@@ -650,7 +645,7 @@ async def main():
     start = asyncio.start_unix_server if sock.family == socket.AF_UNIX else asyncio.start_server
     server = await start(lambda r, w: handle(ctx, lists, r, w), sock=sock)
     watcher = asyncio.create_task(watch(ctx, lists))   # Referenz halten, sonst raeumt Python ihn ab
-    log(ctx, "ready")
+    log(lines.message(ctx, "ready"))
     async with server:
         await server.serve_forever()
     watcher.cancel()

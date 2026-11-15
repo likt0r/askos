@@ -45,19 +45,16 @@ import sys
 import time
 from collections import Counter
 
-from . import activity, durations, entry_store, list_records, options, paths, patterns, registry, settings, state_files, times
+from . import activity, durations, entry_store, list_records, options, paths, patterns, proxy_log, registry, settings, state_files, times
 from .commands import declare
 from .errors import Fail, die
-from .network import CLIENT_REASONS, DOMAIN, done, valid_domain
-from .sanitize import clean, field
+from .network import DOMAIN, done, valid_domain
+from .sanitize import clean
 
 ALL = list_records.ALL
 # --temporary without --for; Settings (#22) will make this configurable
 MAX_NOTE = list_records.MAX_TEXT
 USES_WINDOW = 86400                  # uses are counted over the last 24 hours
-# what the proxy logs per connection an entry allowed (see proxy/agentbox-proxy): a domain,
-# or "regex <pattern>" (a domain is never the single label regex)
-ALLOWED = re.compile(r"\[[a-z0-9-]+\] ALLOWED \S+ \(allowlist (regex )?(\S+) (\S+)\)")
 # besides domain or regex (patterns.py)
 FIELDS = list_records.ALLOWLIST_FIELDS
 # the preview of a regex entry: the hosts of the proxy log of these days that it matches,
@@ -65,8 +62,6 @@ FIELDS = list_records.ALLOWLIST_FIELDS
 PREVIEW_DAYS = 7
 PREVIEW_LINES = paths.tunable("AGENTBOX_PREVIEW_LINES", 200_000)
 PREVIEW_SHOWN = 100
-# proxy lines with a host; a BLOCKED line for a client reason names the VM's address instead
-LOGGED = re.compile(r"\[[a-z0-9-]+\] (ALLOWED|BLOCKED) ([a-z0-9.-]+) \((.*)\)")
 
 
 def store_file():
@@ -293,18 +288,16 @@ def drop_vm(name):
 def uses(now):
     """Connections each entry allowed in the last 24 hours, {(("domain", domain) or ("regex",
     pattern), scope): n}, from the proxy logs of every VM; None when the journal cannot be read."""
-    idents = [f"agentbox-proxy-{n}" for n in registry.names()]
     try:
-        log = activity._journal((now - USES_WINDOW, None), idents, (activity.PROXY_USER,),
-                                grep=r"^\[[a-z0-9-]+\] ALLOWED ")
+        log = activity.proxy_lines((now - USES_WINDOW, None), registry.names(), ("ALLOWED",))
     except Fail as f:
         print(f"agentbox: uses not readable ({f.message})", file=sys.stderr)
         return None
     counts = Counter()
-    for e in log:
-        m = ALLOWED.fullmatch(field(e, "MESSAGE", limit=1024) or "")
-        if m:
-            counts[(("regex" if m.group(1) else "domain", m.group(2)), m.group(3))] += 1
+    for _, event in log:
+        if event.entry:
+            kind, value, scope = event.entry
+            counts[((kind, value), scope)] += 1
     return counts
 
 
@@ -321,20 +314,19 @@ def preview(scope, pattern):
     now = int(time.time())
     names = registry.names() if scope == ALL else [scope]
     try:
-        log, unreadable = activity._journal((now - PREVIEW_DAYS * 86400, None), [f"agentbox-proxy-{n}" for n in names],
-                                            (activity.PROXY_USER,), grep=r"^\[[a-z0-9-]+\] (ALLOWED|BLOCKED) ",
-                                            cap=PREVIEW_LINES), None
+        log, unreadable = activity.proxy_lines((now - PREVIEW_DAYS * 86400, None), names, ("ALLOWED", "BLOCKED"),
+                                               cap=PREVIEW_LINES), None
     except Fail as f:
         log, unreadable = [], f.message
     compiled = list_records.compile_pattern(pattern)
     counts = {}
-    for e in log:
-        m = LOGGED.fullmatch(field(e, "MESSAGE", limit=1024) or "")
-        if m and m.group(3) in CLIENT_REASONS:
+    for _, event in log:
+        # a BLOCKED line for a client reason names the VM's address, not a host
+        if event.reason in proxy_log.CLIENT_REASONS:
             continue
-        if m and compiled is not None and list_records.pattern_matches(compiled, m.group(2)):
-            c = counts.setdefault(m.group(2), {"allowed": 0, "blocked": 0})
-            c["allowed" if m.group(1) == "ALLOWED" else "blocked"] += 1
+        if compiled is not None and list_records.pattern_matches(compiled, event.host):
+            c = counts.setdefault(event.host, {"allowed": 0, "blocked": 0})
+            c[event.kind.lower()] += 1
     hosts = sorted(counts)
     shown = hosts[:PREVIEW_SHOWN]
     from .detection import _classifier
@@ -347,7 +339,7 @@ def preview(scope, pattern):
     rows = [{"host": h, **counts[h], "signals": [str(s) for s in rep["hosts"][h]["signals"]],
              "strong": rep["hosts"][h]["strong"]} for h in shown]
     truncated = len(log) >= PREVIEW_LINES
-    stamps = [u // 10**6 for u in map(times.journal_usec, log) if u is not None and u >= 0] if truncated else []
+    stamps = [u // 10**6 for u in (times.journal_usec(e) for e, _ in log) if u is not None and u >= 0] if truncated else []
     return {"hosts": rows, "more": len(hosts) - len(shown),
             "watchlist_unreadable": clean(rep["watchlist_unreadable"], False)[:300]
             if rep["watchlist_unreadable"] else None, "truncated": truncated,
