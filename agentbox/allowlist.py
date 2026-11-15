@@ -45,7 +45,7 @@ import sys
 import time
 from collections import Counter
 
-from . import activity, durations, entry_store, list_records, options, paths, patterns, proxy_log, registry, settings, state_files, times
+from . import activity, durations, entry_store, footprint, list_records, options, paths, patterns, proxy_log, registry, settings, state_files, times
 from .commands import declare
 from .errors import Fail, die
 from .network import DOMAIN, done, valid_domain
@@ -252,8 +252,7 @@ def _existing(entries, ref, scope):
 
 def _remove_legacy(name):
     """A legacy file of the VM, and its migrated copy, go as well."""
-    path = os.path.join(paths.CONF, list_records.LEGACY_ALLOWLIST[1].format(name))
-    for p in (path, path + ".migrated"):
+    for p in (footprint.legacy_allowlist_file(name), footprint.legacy_allowlist_migrated_file(name)):
         state_files.remove(p)
 
 
@@ -277,7 +276,7 @@ def drop_vm(name):
         before = len(entries)
         entries[:] = [e for e in entries if e["scope"] != name]
         gone = len(entries) != before
-    legacy = os.path.join(paths.CONF, list_records.LEGACY_ALLOWLIST[1].format(name))
+    legacy = footprint.legacy_allowlist_file(name)
     gone = gone or os.path.exists(legacy)
     _remove_legacy(name)
     return gone

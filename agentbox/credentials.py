@@ -24,12 +24,12 @@ import stat
 import subprocess
 import sys
 
-from . import activity, registry, state_files
+from . import activity, footprint, registry, state_files
 from .commands import declare
 from .errors import die
 from .registry import check
 from .sanitize import clean
-from .state_files import claude_token_file
+from .footprint import claude_token_file
 
 OWNER = re.compile(r"[A-Za-z0-9-]{1,39}")
 ANTHROPIC = "https://api.anthropic.com/v1/messages"
@@ -62,7 +62,7 @@ def set_owners(args):
     for o in names:
         if not OWNER.fullmatch(o):
             die(f"invalid GitHub name: {o}", error="invalid_github_owner", owner=o)
-    with state_files.locked(registry.record_file(ctx)):
+    with state_files.locked(footprint.record_file(ctx)):
         registry.save({**registry.load(ctx), "github_owners": names})
     if "--json" in args[1:]:
         print(json.dumps({"vm": ctx, "owners": names}, ensure_ascii=False))

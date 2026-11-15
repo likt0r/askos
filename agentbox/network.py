@@ -14,7 +14,7 @@ from . import activity, list_records, proxy_log, settings, state_files, times
 from .commands import declare
 from .registry import check
 from .errors import die
-from .state_files import open_web_file
+from .footprint import open_web_file
 
 # lowercase labels of letters, digits and inner hyphens, at least two of them
 DOMAIN = list_records.DOMAIN

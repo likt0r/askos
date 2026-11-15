@@ -1,5 +1,5 @@
 """Which systemd states count as running: a Build unit while it stops still runs
-(images._active), an Orca connection while it closes no longer counts (describe.devices).
+(images.active), an Orca connection while it closes no longer counts (describe.devices).
 
 Run from the repo root: python3 -m unittest discover -s tests
 """
@@ -19,7 +19,7 @@ class UnitStateTest(unittest.TestCase):
     def build_active(self, state):
         answer = subprocess.CompletedProcess([], 0 if state == "active" else 3, stdout=state + "\n", stderr="")
         with mock.patch.object(images.subprocess, "run", return_value=answer):
-            return images._active("agentbox-build@base.service")
+            return images.active("agentbox-build@base.service")
 
     def test_a_build_stopping_still_runs(self):
         for state in ("active", "activating", "deactivating", "reloading"):

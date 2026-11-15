@@ -20,7 +20,7 @@ import subprocess
 import sys
 import time
 
-from . import images, lifecycle, paths, registry, responding, settings, state_files, times, virsh, vmenv
+from . import footprint, images, lifecycle, paths, registry, responding, settings, state_files, times, virsh, vmenv
 from .commands import declare
 from .errors import die
 
@@ -31,7 +31,7 @@ STATES = {"running": "running", "shut off": "stopped", "paused": "suspended", "i
 # systemd after the socket: <n>-[<cookie>-]<local address>:<port>-<remote address>:<port>
 GUI_INSTANCE = re.compile(r"agentbox-gui-(" + registry.NAME.pattern + r")@(.+)\.service")
 # States of an Orca connection's unit that count as connected. A deactivating one is being
-# closed, so it is left out; images._active counts it, because a Build stopping still runs.
+# closed, so it is left out; images.active counts it, because a Build stopping still runs.
 ACTIVE = ("active", "activating", "reloading")
 
 
@@ -144,14 +144,14 @@ class Backing:
         self.cache = {}
 
     def __call__(self, name):
-        disk = lifecycle.system_disk(name)
+        disk = footprint.system_disk(name)
         try:
             st = os.stat(disk)
         except OSError:
             return None, None
         key = (st.st_mtime_ns, st.st_size, st.st_ino)
         if self.cache.get(name, (None,))[0] != key:
-            backing = images._backing(disk)
+            backing = images.backing(disk)
             self.cache[name] = (key, backing)
         return int(st.st_mtime), self.cache[name][1]
 

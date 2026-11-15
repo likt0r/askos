@@ -44,7 +44,7 @@ import socket
 import sys
 import time
 
-from . import activity, guest, paths, registry, state_files
+from . import activity, footprint, guest, paths, registry, state_files
 from .errors import Fail
 
 # what judge() makes of a VM libvirt reports as running
@@ -53,8 +53,8 @@ ORCA_SECONDS = 2                 # time limit of one connection to Orca when che
 PING_SECONDS = 3                 # time limit of the guest-ping
 SLACK = 2                        # seconds a start read from /proc and clock() may disagree
 PROC = paths.host("/proc")
-PIDS = paths.host("/run/libvirt/qemu")       # libvirt's pid file of each running domain
-PID_FILE = re.compile(r"agentbox-(.+)\.pid")
+PIDS = footprint.QEMU_PIDS
+PID_FILE = footprint.QEMU_PID_FILE
 ADDRESS = re.compile(r"[0-9A-Fa-f.:%]{2,64}")
 
 # one start of a VM's QEMU process: at when it started (on clock()), id which start it is
@@ -123,7 +123,7 @@ def starts():
         if not m or not registry.NAME.fullmatch(m.group(1)):
             continue
         try:
-            with open(os.path.join(PIDS, file)) as f:
+            with open(footprint.qemu_pid_file(m.group(1))) as f:
                 d = os.path.join(PROC, str(int(f.read().strip())))
             with open(f"{d}/cmdline", "rb") as f:
                 if _domain(f.read().decode(errors="replace").split("\0")) != registry.dom(m.group(1)):
@@ -244,10 +244,6 @@ def record_incident(name, guest_agent, actor=None):
 
 # --- the wakes file ------------------------------------------------------------------
 
-def wakes_file(name):
-    return os.path.join(paths.STATE, f"wakes-{name}.json")
-
-
 def _number(v):
     return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
 
@@ -256,7 +252,7 @@ def _read(name, start, any_start=False):
     """The wakes record of this start of the VM ({} when there is none, or it belongs to
     another start; start None: a start that could not be read); any_start: the record of
     whichever start was last (a VM that does not run)."""
-    rec = state_files.json_object(wakes_file(name))
+    rec = state_files.json_object(footprint.wakes_file(name))
     if rec is None or (not any_start and rec.get("start") != _id(start)):
         return {}
     return rec
@@ -286,7 +282,7 @@ def wakes(name, start, any_start=False):
 
 
 def _write(name, rec):
-    state_files.write_json(wakes_file(name), rec, indent=None)
+    state_files.write_json(footprint.wakes_file(name), rec, indent=None)
 
 
 def _news(known, at):
@@ -315,7 +311,7 @@ def wake_reached(name, waited_for):
     known = wakes(name, waited_for)
     if not (_news(known, at) or known["count"]):
         return
-    with state_files.locked(wakes_file(name)):
+    with state_files.locked(footprint.wakes_file(name)):
         current = start(name)
         if _id(current) != _id(waited_for):
             return                   # the VM stopped or started again meanwhile
@@ -338,7 +334,7 @@ def wake_failed(name, waited_for, waiting, address, incident):
     now = int(time.time())
     if address is not None and not ADDRESS.fullmatch(address):
         address = None
-    with state_files.locked(wakes_file(name)):
+    with state_files.locked(footprint.wakes_file(name)):
         current = start(name)
         if _id(current) != _id(waited_for):
             return "none"
@@ -364,7 +360,7 @@ def looked(name, at_start, seen, incident):
     no entry yet, incident() records it, under the file's lock as in wake_failed. True when
     the file changed."""
     at = seen["checked"]
-    with state_files.locked(wakes_file(name)):
+    with state_files.locked(footprint.wakes_file(name)):
         current = start(name)
         if _id(current) != _id(at_start):
             return False             # the VM stopped or started again meanwhile
@@ -397,11 +393,11 @@ def clear(name):
     if not os.access(paths.STATE, os.W_OK):
         return
     try:
-        with state_files.locked(wakes_file(name)):
-            os.unlink(wakes_file(name))
+        with state_files.locked(footprint.wakes_file(name)):
+            os.unlink(footprint.wakes_file(name))
     except FileNotFoundError:
         pass
     except OSError as e:
-        print(f"agentbox: {wakes_file(name)}: {e.strerror}", file=sys.stderr, flush=True)
+        print(f"agentbox: {footprint.wakes_file(name)}: {e.strerror}", file=sys.stderr, flush=True)
     except Fail as f:
         print(f"agentbox: {f.message}", file=sys.stderr, flush=True)

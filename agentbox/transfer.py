@@ -38,7 +38,7 @@ import sys
 import tarfile
 import time
 
-from . import activity, guest, lifecycle, paths, programs, responding, state_files, times, virsh
+from . import activity, footprint, guest, lifecycle, paths, programs, responding, state_files, times, virsh
 from .commands import declare
 from .errors import Fail, die
 from .registry import check, dom
@@ -445,24 +445,14 @@ def _sweep(own=None):
         full = os.path.join(paths.TRANSFERS, name)
         if not name.endswith(".tar") or full == own:
             continue
-        try:
-            fd = os.open(full, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
-        except OSError:
-            continue
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            os.unlink(full)
-        except OSError:
-            pass                                 # locked by a running import, or gone
-        finally:
-            os.close(fd)
+        footprint.sweep_transfer(full)
 
 
 def _create_locked(ctx):
     """A new tar file, held under an exclusive lock: (path, fd). A sweep that locked the file
     between its creation and our lock removed it: then another file."""
     while True:
-        tar = os.path.join(paths.TRANSFERS, f"{ctx}-{secrets.token_hex(6)}.tar")
+        tar = footprint.transfer_file(ctx, secrets.token_hex(6))
         fd = os.open(tar, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)

@@ -26,7 +26,7 @@ import os
 import re
 import subprocess
 
-from . import activity, guest, lifecycle, options, paths, state_files, times
+from . import activity, footprint, guest, lifecycle, options, paths, state_files, times
 from .commands import declare
 from .errors import die
 from .registry import check
@@ -50,7 +50,7 @@ def _iso(ms):
 def observer_ids(ctx):
     """Device IDs the Host's own Orca data directory names as its paired device(s).
     None when the Host is no Observer of this VM (no data directory)."""
-    d = lifecycle.observer_dir(ctx)
+    d = footprint.observer_dir(ctx)
     if not os.path.isdir(d):
         return None
     ids = set()
@@ -142,8 +142,8 @@ def revoke_all(args):
     ctx = check(pos[0])
     if opts.get("confirm") != ctx:
         die(f"revoking only with --confirm {ctx}", 2, error="confirmation_required", vm=ctx)
-    say, lines = lifecycle._reporter("json" in opts)
-    observer = lifecycle.observer_dir(ctx)
+    say, lines = lifecycle.reporter("json" in opts)
+    observer = footprint.observer_dir(ctx)
     was_observer = os.path.isdir(observer)
     old = guest.boot_codes(ctx)            # codes of the old identity are no use afterwards
     out, _ = guest.run_in_vm(ctx, ["revoke-all"], DEVICES, REVOKE_LIMIT)
@@ -165,7 +165,7 @@ def revoke_all(args):
         say(f"{ctx}: the Host is Observer again" if repaired
             else f"{ctx}: the Host could not pair again, repeat agentbox observe {ctx}")
     if "json" in opts:
-        print(json.dumps({"vm": ctx, "observer_repaired": repaired, "message": lifecycle._message(lines)}))
+        print(json.dumps({"vm": ctx, "observer_repaired": repaired, "message": lifecycle.message(lines)}))
     if repaired is False:
         die("Observer not paired again", 8, error="action_failed", vm=ctx)
 

@@ -8,7 +8,7 @@ or the first Orca connection does, so a VM made for later costs no memory.
 
 `agentbox delete` takes down everything regenerate made for a VM, deletes its
 System disk and archives its Data disk unless told to delete it. It first moves
-the record into a marker (generate.delete_marker), so nothing wakes or
+the record into a marker (footprint.delete_marker), so nothing wakes or
 regenerates the VM any more; running it again finishes an interrupted delete.
 
 Both hold the registry lock for their whole run, as regenerate does, so two
@@ -32,15 +32,13 @@ the record, then the file QEMU passes into the VM at its next start. The domain 
 file and is not defined again, so a paused VM is not refused: it resumes with the variables
 of its last boot and gets the new ones at its next Restart or Reset.
 """
-import datetime
 import json
 import os
 import re
-import shutil
 import time
 
-from . import activity, allowlist, detection, generate, images, lifecycle, paths, registry, responding, settings, state_files
-from . import options, programs, times, virsh, vmenv
+from . import activity, allowlist, footprint, generate, images, lifecycle, paths, registry, settings, state_files
+from . import options, times, virsh, vmenv
 from .commands import declare
 from .credentials import OWNER
 from .errors import Fail, die
@@ -134,7 +132,7 @@ def _owners(names):
 
 def _free_network(records):
     """The lowest network number no VM uses, counting VMs still being deleted."""
-    used = {r["network"] for r in records} | {m["record"]["network"] for m in generate.being_deleted()}
+    used = {r["network"] for r in records} | {m["record"]["network"] for m in footprint.being_deleted()}
     for n in range(1, 255):
         if n not in used:
             return n
@@ -145,10 +143,10 @@ def _leftovers(rec):
     """What an earlier VM of this name left behind; a new VM must not take it over
     (its Claude token, its Orca identity on the Data disk, a network with another number)."""
     name = rec["name"]
-    files = [("Data disk", generate.data_disk(name)), ("System disk", lifecycle.system_disk(name)),
-             ("Claude token", state_files.claude_token_file(name)), ("VM variables", state_files.vm_env_file(name)),
-             ("Observer", lifecycle.observer_dir(name)),
-             *(("units", os.path.join(paths.SYSTEMD, u)) for u in generate.units(rec))]
+    files = [("Data disk", footprint.data_disk(name)), ("System disk", footprint.system_disk(name)),
+             ("Claude token", footprint.claude_token_file(name)), ("VM variables", footprint.vm_env_file(name)),
+             ("Observer", footprint.observer_dir(name)),
+             *(("units", f) for f in footprint.unit_files(rec))]
     found = list(dict.fromkeys(what for what, path in files if os.path.lexists(path)))
     if virsh.run("domuuid", dom(name)).returncode == 0:
         found.append(f"VM {dom(name)}")
@@ -177,15 +175,15 @@ def create(args):
                                           defaults["default_container_image_cleanup_days"]))
     owners = _owners(opts.get("owner", []))
     source = opts.get("copy-allowlist-from")
-    say, lines = lifecycle._reporter("json" in opts)
+    say, lines = lifecycle.reporter("json" in opts)
     with state_files.locked(paths.REGISTRY):
         records = registry.all_records()         # a broken registry stops create, as it stops regenerate
         generate.ports_free()                    # so does a service holding the resolver's or the proxy's ports
         if source is not None and source not in [r["name"] for r in records]:
             die("No such VM: " + clean(source, False)[:40], error="vm_not_found", vm=clean(source, False)[:40])
-        if os.path.exists(registry.record_file(name)):
+        if os.path.exists(footprint.record_file(name)):
             die(f"{name} exists already", error="vm_exists", vm=name)
-        if os.path.exists(generate.delete_marker(name)):
+        if os.path.exists(footprint.delete_marker(name)):
             die(f"{name} is being deleted, first finish agentbox delete {name} --confirm {name}",
                 error="vm_being_deleted", vm=name)
         n = _free_network(records)
@@ -198,7 +196,7 @@ def create(args):
             die(f"{name}: leftovers of an earlier VM exist ({', '.join(left)}), remove them first",
                 error="vm_leftovers", vm=name, leftovers=left)
         copied = allowlist.start_vm(name, source)
-        state_files.remove(state_files.open_web_file(name))
+        state_files.remove(footprint.open_web_file(name))
         registry.save(rec)
         say(f"{name}: entered into the registry (network {n}, Orca port {rec['orca_port']})")
         if source:
@@ -220,135 +218,10 @@ def create(args):
         print(json.dumps({"vm": name, **{k: rec[k] for k in ("network", "orca_port", "image", "memory_mib",
                                                               "data_disk_gib", "container_image_cleanup",
                                                               "container_image_cleanup_days", "github_owners")},
-                          "allowlist_from": source, "message": lifecycle._message(lines)}, ensure_ascii=False))
+                          "allowlist_from": source, "message": lifecycle.message(lines)}, ensure_ascii=False))
 
 
 # --- delete ------------------------------------------------------------------
-
-def _archive_path(name):
-    """A new name in the archive for the VM's Data disk."""
-    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    base = os.path.join(paths.ARCHIVE, f"{name}-data-{stamp}")
-    path, n = base + ".qcow2", 1
-    while os.path.lexists(path):
-        n += 1
-        path = f"{base}-{n}.qcow2"
-    return path
-
-
-def _write_marker(name, marker):
-    path = generate.delete_marker(name)
-    state_files.directory(os.path.dirname(path), 0o700, only_new=True)
-    state_files.write_json(path, marker, 0o600)
-
-
-def _begin(name, say):
-    """The VM's marker, written before its record is removed: (marker, resumed)."""
-    marker = next((m for m in generate.being_deleted() if m["record"]["name"] == name), None)
-    record = registry.record_file(name)
-    if not os.path.exists(record):
-        if marker is None:
-            die(f"No such VM: {name}", error="vm_not_found", vm=name)
-        say(f"{name}: resuming the delete")
-        return marker, True
-    with state_files.locked(record):         # no set-owners writes it back meanwhile
-        rec = registry.load(name)
-        # a record that came back (migrate, by hand) means its network may be back as well
-        marker = {"archive": _archive_path(name), **(marker or {}), "record": rec, "network_removed": False}
-        _write_marker(name, marker)
-        state_files.remove(record)
-    say(f"{name}: removed from the registry")
-    return marker, False
-
-
-def _units_off(rec, say):
-    """The Orca port, proxy and token service of the VM stop and their units go."""
-    name = rec["name"]
-    files = [os.path.join(paths.SYSTEMD, u) for u in generate.units(rec)]
-    present = [s for s in generate.sockets(rec) if os.path.exists(os.path.join(paths.SYSTEMD, s))]
-    if present:
-        programs.systemctl("disable", "--now", *present)        # the proxy service stops with its socket
-    # open connections run in instances of their own (patterns: nothing to stop is fine)
-    programs.systemctl("stop", f"agentbox-gui-{name}@*.service", f"agentbox-ghvm-{name}@*.service")
-    removed = [f for f in files if state_files.remove(f)]
-    programs.systemctl("daemon-reload")
-    if present or removed:
-        say(f"{name}: Orca port, proxy and token service turned off")
-
-
-def _libvirt(kind, name):
-    """virsh's answer about the VM's domain or network; None when libvirt has
-    none, dies when virsh cannot tell."""
-    r = virsh.run("domuuid" if kind == "domain" else "net-info", dom(name))
-    if r.returncode == 0:
-        return r
-    if f"failed to get {kind}" in r.stderr:
-        return None
-    programs.fail(r, f"{name}: virsh", program="virsh", vm=name)
-
-
-def _domain_off(name, say):
-    if _libvirt("domain", name) is None:
-        return
-    # no wake starts it between the stop and the undefine (a running domain would outlive it)
-    with state_files.vm_lock(name):
-        lifecycle._stop(name)        # discards a Pause, shuts down, forces off after the time limit
-        generate._virsh(f"{name}: removing the VM", "undefine", dom(name), "--managed-save")
-    say(f"{name}: VM stopped and removed")
-
-
-def _network_off(name, say):
-    info = _libvirt("network", name)
-    if info is None:
-        return
-    if re.search(r"^Active:\s*yes$", info.stdout, re.MULTILINE):
-        generate._virsh(f"{name}: stopping the network", "net-destroy", dom(name))
-    generate._virsh(f"{name}: removing the network", "net-undefine", dom(name))
-    say(f"{name}: network {dom(name)} removed")
-
-
-def _disks(name, archive, delete_data, say):
-    """System disk deleted; Data disk archived or deleted. Returns (what, archive path)."""
-    if state_files.remove(lifecycle.system_disk(name)):
-        say(f"{name}: System disk deleted")
-    data = generate.data_disk(name)
-    if not os.path.lexists(data):
-        if os.path.lexists(archive):         # archived before the delete was interrupted
-            say(f"{name}: Data disk archived: {archive}")
-            return "archived", archive
-        return "missing", None
-    if delete_data:
-        state_files.remove(data)
-        say(f"{name}: Data disk deleted")
-        return "deleted", None
-    try:
-        state_files.directory(paths.ARCHIVE, 0o700, only_new=True)
-        if os.path.lexists(archive):
-            die(f"{archive} exists already", error="action_failed", vm=name)
-        os.rename(data, archive)
-    except OSError as e:
-        die(f"moving the Data disk to {archive}: {e.strerror}", error="action_failed", vm=name)
-    say(f"{name}: Data disk archived: {archive}")
-    return "archived", archive
-
-
-def _files(name, say):
-    responding.clear(name)           # bookkeeping only, never fails (the stop removed it already)
-    gone = [state_files.remove(f) for f in (state_files.claude_token_file(name), state_files.vm_env_file(name),
-                                 state_files.open_web_file(name),
-                                 generate.legacy_owners_file(name), detection.seen_file(name),
-                                 os.path.join(paths.STATE, "domains", f"{name}.xml"))]
-    gone.append(allowlist.drop_vm(name))
-    observer = lifecycle.observer_dir(name)
-    if os.path.isdir(observer):
-        try:
-            shutil.rmtree(observer)
-        except OSError as e:
-            die(f"{observer}: {e.strerror}", error="action_failed", vm=name)
-        gone.append(True)
-    if any(gone):
-        say(f"{name}: Claude token, VM variables, Allowlist entries and Observer removed")
-
 
 def delete(args):
     """agentbox delete <vm> --confirm <vm> [--delete-data-disk] [--json]"""
@@ -360,26 +233,12 @@ def delete(args):
         die("No such VM: " + clean(name, False)[:40], error="vm_not_found", vm=clean(name, False)[:40])
     if opts.get("confirm") != name:
         die(f"deleting only with --confirm {name}", error="confirmation_required", vm=name)
-    say, lines = lifecycle._reporter("json" in opts)
-    with state_files.locked(paths.REGISTRY):
-        registry.all_records()           # a broken registry stops delete before any change
-        generate.ports_free()            # so does a service holding the resolver's or the proxy's ports
-        marker, resumed = _begin(name, say)
-        _units_off(marker["record"], say)
-        _domain_off(name, say)
-        _network_off(name, say)
-        if not marker["network_removed"]:
-            marker["network_removed"] = True     # from now on regenerate leaves its nftables rule out
-            _write_marker(name, marker)
-        data, archive = _disks(name, marker["archive"], "delete-data-disk" in opts, say)
-        _files(name, say)
-        for line in generate.report(generate.apply()):
-            say(line)
-        state_files.remove(generate.delete_marker(name))
+    say, lines = lifecycle.reporter("json" in opts)
+    data, archive, resumed = footprint.delete(name, "delete-data-disk" in opts, say)
     say(f"{name} deleted")
     if "json" in opts:
         print(json.dumps({"vm": name, "data_disk": data, "archive": archive, "resumed": resumed,
-                          "message": lifecycle._message(lines)}))
+                          "message": lifecycle.message(lines)}))
 
 
 # --- set-memory --------------------------------------------------------------
@@ -394,7 +253,7 @@ def set_memory(args):
     name = registry.check(positional[0])
     memory = _whole(positional[1], "memory limit (MiB)", MIN_MEMORY_MIB, _host_memory_mib(), "invalid_memory")
     with state_files.locked(paths.REGISTRY):                 # no regenerate defines the domain meanwhile
-        with state_files.locked(registry.record_file(name)):     # no set-owners writes the record back
+        with state_files.locked(footprint.record_file(name)):     # no set-owners writes the record back
             with state_files.vm_lock(name):              # no Pause, start or Reset between check and define
                 if lifecycle.has_save(name):
                     die(f"{name} is paused, its saved memory belongs to the previous memory limit: "
@@ -447,7 +306,7 @@ def set_container_cleanup(args):
     on = positional[1] == "on" if len(positional) == 2 else None
     days = _cleanup_days(opts["days"]) if "days" in opts else None
     with state_files.locked(paths.REGISTRY):             # no regenerate reads a half-changed registry
-        with state_files.locked(registry.record_file(name)):    # no other call writes the record meanwhile
+        with state_files.locked(footprint.record_file(name)):    # no other call writes the record meanwhile
             rec = registry.load(name)
             before_on, before_days = registry.cleanup(rec)
             now = (before_on if on is None else on, before_days if days is None else days)
@@ -494,7 +353,7 @@ def _change_env(name, change):
     start or Pause between the change and the answer saying when it applies), as set-memory
     does. Returns (before, after, state, applies, defined), defined as generate.domain."""
     with state_files.locked(paths.REGISTRY):
-        with state_files.locked(registry.record_file(name)):
+        with state_files.locked(footprint.record_file(name)):
             with state_files.vm_lock(name):
                 rec = registry.load(name)
                 before = dict(rec.get("env", {}))

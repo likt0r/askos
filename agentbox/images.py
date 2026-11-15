@@ -62,7 +62,7 @@ import subprocess
 import sys
 import time
 
-from . import activity, guest, options, paths, programs, registry, safeguards, settings, state_files, times, version
+from . import activity, footprint, guest, options, paths, programs, registry, safeguards, settings, state_files, times, version
 from . import versions
 from .commands import declare
 from .errors import Fail, die
@@ -194,7 +194,7 @@ def builds():
     return out
 
 
-def _backing(disk):
+def backing(disk):
     """Base name of the backing file of a disk; "" without one; None when unreadable."""
     info = programs.disk_info(disk)
     backing = info.get("backing-filename", "") if info is not None else None
@@ -206,14 +206,14 @@ def in_use():
     System disk cannot be read (then nothing may be deleted)."""
     used = {}
     for n in state_files.listdir(paths.VMS, fail=False):
-        m = re.fullmatch(r"(.+)-system\.qcow2", n)
+        m = footprint.SYSTEM_DISK.fullmatch(n)
         if not m:
             continue
-        backing = _backing(os.path.join(paths.VMS, n))
-        if backing is None:
+        backing_file = backing(footprint.system_disk(m.group(1)))
+        if backing_file is None:
             return None
-        if backing:
-            used.setdefault(backing, []).append(m.group(1))
+        if backing_file:
+            used.setdefault(backing_file, []).append(m.group(1))
     return used
 
 
@@ -831,7 +831,7 @@ def start_automatic(say):
     targets = ", ".join(wanted)
     # a unit that was started but has not taken the run lock yet counts too
     builds = (UPDATE, "all", *(i["name"] for i in view["images"]))
-    if state_files.held(RUN_LOCK) or any(_active(unit(t)) for t in builds):
+    if state_files.held(RUN_LOCK) or any(active(unit(t)) for t in builds):
         say(f"Automatic update of {targets} not started: a Build is running; the next check tries again")
         activity.record("build", "build.skipped", f"Automatic update of {targets} not started: a Build is "
                         "running; the next check tries again", params={"images": wanted, "reason": "update"})
@@ -858,7 +858,7 @@ def building():
     if state_files.held(RUN_LOCK):
         return True
     names = dict.fromkeys([*available(), *builds(), *(_defined() or [])])
-    if any(_active(unit(t)) for t in (UPDATE, "all", *names)):
+    if any(active(unit(t)) for t in (UPDATE, "all", *names)):
         return True
     for n in state_files.listdir(paths.BUILDS, fail=False):
         if not re.fullmatch(r"request-.+\.json", n):
@@ -910,7 +910,7 @@ def unit_failed_since(started, target):
 
 # --- commands ------------------------------------------------------------------------------
 
-def _active(name):
+def active(name):
     """Whether a unit of a Build runs, or is about to: deactivating counts, a Build that is
     stopping may still hold the run lock and write its Image (describe.ACTIVE leaves it out,
     a connection being closed is no connection)."""
@@ -949,7 +949,7 @@ def start(target, resets=(), **request):
     if not os.path.exists(os.path.join(paths.SYSTEMD, TEMPLATE)):
         die(f"{TEMPLATE} is missing, run agentbox regenerate first", error="not_set_up")
     name = unit(target)
-    if _active(name):
+    if active(name):
         if target == UPDATE:
             die(f"an update is running already (journalctl -fu {name})", error="update_running")
         what = "of all Images" if target == "all" else f"of {target}"
@@ -987,7 +987,7 @@ def _take_back(target, name, mine):
     """Remove the request file of a start that failed, if it is still this call's and no unit
     of the target runs to take it."""
     with state_files.locked(REQUEST_LOCK):
-        if _active(name) or state_files.read(_request_file(target), None) != mine:
+        if active(name) or state_files.read(_request_file(target), None) != mine:
             return
         state_files.remove(_request_file(target), fail=False)
 
@@ -1126,7 +1126,7 @@ def images_cmd(args):
     result = overview()
     # an update of everything (Update now, or the automatic one) runs: it may be checking the
     # versions, before any Build of it shows
-    result["updating"] = _active(unit(UPDATE))
+    result["updating"] = active(unit(UPDATE))
     if "--json" in args:
         print(json.dumps(result, ensure_ascii=False))
         return
@@ -1304,7 +1304,7 @@ def set_image(args):
     vm = registry.check(positional[0])
     image = _image_name(positional[1])
     build = _build_id(opts["build"]) if "build" in opts else None
-    with state_files.locked(registry.record_file(vm)):
+    with state_files.locked(footprint.record_file(vm)):
         with state_files.locked(paths.IMAGES):            # no prune between this check and the save
             if build:
                 info = builds().get(image, {}).get(build)

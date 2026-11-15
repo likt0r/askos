@@ -4,10 +4,9 @@ Everything else about a VM (network, Orca port, units, disks, its libvirt
 definition) is derived from its record by `agentbox regenerate`.
 """
 import json
-import os
 import sys
 
-from . import list_records, paths, settings, state_files, vmenv
+from . import footprint, list_records, paths, settings, state_files, vmenv
 from .errors import Fail, die
 from .sanitize import clean
 
@@ -32,10 +31,6 @@ FIELDS = {"name": str, "network": int, "orca_port": int, "image": str, "build": 
 # Fields a record may lack: the VM variables (vmenv.py), none when missing, and the
 # Container image cleanup (CLEANUP_DEFAULT when missing)
 OPTIONAL = {"env": dict, "container_image_cleanup": bool, "container_image_cleanup_days": int}
-
-
-def record_file(name):
-    return os.path.join(paths.REGISTRY, f"{name}.json")
 
 
 reserved = list_records.reserved_name
@@ -78,7 +73,7 @@ def load(name):
         die("no VM given", error="vm_not_found")
     if not NAME.fullmatch(name):
         die("No such VM: " + clean(name, False)[:40], error="vm_not_found", vm=clean(name, False)[:40])
-    f = record_file(name)
+    f = footprint.record_file(name)
     try:
         with open(f, encoding="utf-8") as fh:
             rec = json.load(fh)
@@ -137,7 +132,7 @@ def save(rec):
     if why:
         die(f"record for {rec.get('name')} invalid ({why})", error="action_failed")
     state_files.directory(paths.REGISTRY, 0o755, only_new=True)     # the token service reads it as agentbox-gh
-    state_files.write_json(record_file(rec["name"]), rec)
+    state_files.write_json(footprint.record_file(rec["name"]), rec)
 
 
 def check(name):

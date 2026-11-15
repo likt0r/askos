@@ -16,7 +16,7 @@ import sys
 import time
 import xml.etree.ElementTree as ET
 
-from . import activity, guest, images, paths, programs, registry, responding, settings, state_files, virsh
+from . import activity, footprint, guest, images, paths, programs, registry, responding, settings, state_files, virsh
 from .commands import declare
 from .registry import check, dom
 from .errors import Fail, die
@@ -36,7 +36,7 @@ def _must(*args):
         _exit_with(r)
 
 
-def _reporter(as_json):
+def reporter(as_json):
     """say(line) prints at once in text mode, as the Bash version did; the lines
     are collected as well, for the JSON result."""
     lines = []
@@ -48,7 +48,7 @@ def _reporter(as_json):
     return say, lines
 
 
-def _message(lines):
+def message(lines):
     return "\n".join(lines) if lines else None
 
 
@@ -58,13 +58,6 @@ def _flags(args):
 
 
 # --- what the Host knows about a VM -----------------------------------------
-
-def system_disk(ctx):
-    return os.path.join(paths.VMS, f"{ctx}-system.qcow2")
-
-
-def observer_dir(ctx):
-    return os.path.join(paths.STATE, f"observer-{ctx}")
 
 
 def has_save(ctx):
@@ -98,14 +91,14 @@ def _awk_number(s):
 
 def _backing(ctx, missing):
     """File name of the Image Build the System disk was created from; None if unreadable."""
-    info = programs.disk_info(system_disk(ctx))
+    info = programs.disk_info(footprint.system_disk(ctx))
     backing = info.get("backing-filename", missing) if info is not None else None
     return os.path.basename(backing) if isinstance(backing, str) else None
 
 
 def _disk_mtime(ctx):
     try:
-        return int(os.stat(system_disk(ctx)).st_mtime)
+        return int(os.stat(footprint.system_disk(ctx)).st_mtime)
     except OSError:
         return None
 
@@ -131,7 +124,7 @@ def gui_connections(ctx):
 # --- Orca in the VM, reached from the Host as its own Paired device ---------
 
 def orca_cli(ctx, *args, stdout=subprocess.PIPE, stderr=subprocess.PIPE):
-    env = dict(os.environ, ORCA_USER_DATA_PATH=observer_dir(ctx))
+    env = dict(os.environ, ORCA_USER_DATA_PATH=footprint.observer_dir(ctx))
     try:
         return subprocess.run([paths.ORCA, *args], stdout=stdout, stderr=stderr, text=True,
                               errors="replace", env=env, timeout=ORCA_TIMEOUT)
@@ -145,7 +138,7 @@ def agent_states(ctx):
     """Agent states according to Orca (its hooks in Claude, Codex, OpenCode) as
     {state: count} sorted by state, e.g. {"waiting": 2, "working": 1}; empty
     when no agent runs; None when unknown (no Observer, Orca not answering)."""
-    if not os.path.isdir(observer_dir(ctx)):
+    if not os.path.isdir(footprint.observer_dir(ctx)):
         return None
     r = orca_cli(ctx, "worktree", "ps", "--json", "--environment", ctx, stderr=subprocess.DEVNULL)
     # A failing Orca CLI means unknown. (The Bash version printed "?" twice
@@ -222,7 +215,7 @@ def _bookkeeping(step, ctx, *args):
         print(f"agentbox: {f.message}", file=sys.stderr, flush=True)
         return None
     except OSError as e:                 # e.g. the file's lock
-        print(f"agentbox: {responding.wakes_file(ctx)}: {e.strerror or e}", file=sys.stderr, flush=True)
+        print(f"agentbox: {footprint.wakes_file(ctx)}: {e.strerror or e}", file=sys.stderr, flush=True)
         return None
 
 
@@ -247,7 +240,7 @@ def pause(ctx, say):
     say(f"{ctx} paused")
 
 
-def _stop(ctx):
+def stop(ctx):
     """Discard a Pause, shut the VM down and force it off if it is still running
     after the time limit; once it is off, its failed wakes are over. The caller holds
     the VM's lifecycle lock."""
@@ -286,7 +279,7 @@ def _running_backing(ctx):
         root = ET.fromstring(r.stdout)
     except ET.ParseError:
         return None
-    want = os.path.realpath(system_disk(ctx))
+    want = os.path.realpath(footprint.system_disk(ctx))
     for disk in root.iter("disk"):
         source, target = disk.find("source"), disk.find("target")
         # the System disk: by its file, else by its device (generate: vda)
@@ -342,8 +335,8 @@ def _reset(ctx, start, say, progress=None):
     the System disk now comes from. `progress` gets "disk" once the System disk is being
     replaced and "fresh" once it is."""
     progress = {} if progress is None else progress
-    _stop(ctx)
-    disk = system_disk(ctx)
+    stop(ctx)
+    disk = footprint.system_disk(ctx)
     sys.stdout.flush()
     # no Build goes (images.prune) between choosing it and creating the disk on it
     with state_files.locked(paths.IMAGES):
@@ -379,7 +372,7 @@ def _reset(ctx, start, say, progress=None):
 
 def _result(ctx, as_json, lines):
     if as_json:
-        print(json.dumps({"vm": ctx, "state": vm_state(ctx), "message": _message(lines)}))
+        print(json.dumps({"vm": ctx, "state": vm_state(ctx), "message": message(lines)}))
 
 
 def status(args):
@@ -436,7 +429,7 @@ def start_cmd(args):
         if virsh.state(ctx) != "running":
             responding.clear(ctx)
             _must("start", dom(ctx))
-    say, lines = _reporter("--json" in flags)
+    say, lines = reporter("--json" in flags)
     say(f"{ctx} is running")
     _result(ctx, "--json" in flags, lines)
 
@@ -463,7 +456,7 @@ def wake_cmd(args):
 def pause_cmd(args):
     """agentbox pause <vm> [--json]"""
     ctx, flags = _flags(args)
-    say, lines = _reporter("--json" in flags)
+    say, lines = reporter("--json" in flags)
     pause(ctx, say)
     _result(ctx, "--json" in flags, lines)
 
@@ -471,7 +464,7 @@ def pause_cmd(args):
 def reset_cmd(args):
     """agentbox reset <vm> [--no-start] [--json]"""
     ctx, flags = _flags(args)
-    say, lines = _reporter("--json" in flags)
+    say, lines = reporter("--json" in flags)
     reset(ctx, "--no-start" not in flags, say)
     _result(ctx, "--json" in flags, lines)
 
@@ -480,9 +473,9 @@ def restart_cmd(args):
     """agentbox restart <vm> [--json]: reboot, keeping the System disk."""
     ctx, flags = _flags(args)
     with state_files.vm_lock(ctx):
-        _stop(ctx)
+        stop(ctx)
         _must("start", dom(ctx))
-    say, lines = _reporter("--json" in flags)
+    say, lines = reporter("--json" in flags)
     say(f"{ctx} restarted")
     _result(ctx, "--json" in flags, lines)
 
@@ -491,7 +484,7 @@ def focus_cmd(args):
     """agentbox focus <vm|off> [--json]: pause every other VM."""
     target = args[0] if args else ""
     as_json = "--json" in args[1:]
-    say, lines = _reporter(as_json)
+    say, lines = reporter(as_json)
     if not target:
         die("focus <vm>|off", error="invalid_argument")
     if target != "off":
@@ -503,7 +496,7 @@ def focus_cmd(args):
         say("all VMs wake up again when needed")
     if as_json:
         print(json.dumps({"focus": target, "others": [{"vm": o, "state": vm_state(o)} for o in others],
-                          "message": _message(lines)}))
+                          "message": message(lines)}))
 
 
 def weekly_check(args):
@@ -537,7 +530,7 @@ def reset_check(as_json=False):
         _record_check(name, "failed", "error", None, problem, "action_failed")
         failed = failed or 1
     for ctx in (r["name"] for r in records):
-        say, lines = _reporter(as_json)
+        say, lines = reporter(as_json)
         update = failure = None
         try:
             with state_files.vm_lock(ctx):
@@ -553,7 +546,7 @@ def reset_check(as_json=False):
             lines.append(text)
             action, reason, failure = "failed", "error", f
         results.append({"vm": ctx, "action": action, "reason": reason,
-                        "update": "-".join(update) if update else None, "message": _message(lines)})
+                        "update": "-".join(update) if update else None, "message": message(lines)})
         _record_check(ctx, action, reason, update, lines[-1] if lines else "", failure and failure.error,
                       failure and failure.params)
     return results, failed
@@ -595,7 +588,7 @@ def _update_due(ctx):
 def _check_one(ctx, now, say, age_days, update):
     """What the daily check does with one VM: (action, reason). Due by age, or for an update
     (the newer Build it would take, else None)."""
-    mtime = _disk_mtime(ctx) if os.path.isfile(system_disk(ctx)) else None
+    mtime = _disk_mtime(ctx) if os.path.isfile(footprint.system_disk(ctx)) else None
     if mtime is None:
         return "skipped", "no-system-disk"
     if update is None and _days(now - mtime) < age_days:
@@ -623,7 +616,7 @@ def observe(args):
     """agentbox observe <vm> [--json]: pair the Host with the VM's Orca as Observer."""
     ctx, flags = _flags(args)
     wake(ctx)
-    d = observer_dir(ctx)
+    d = footprint.observer_dir(ctx)
     try:
         state_files.directory(d, 0o700)
     except OSError as e:

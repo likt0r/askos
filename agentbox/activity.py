@@ -50,7 +50,7 @@ import sys
 import threading
 import time
 
-from . import durations, guest, ids, journal, options, paths, proxy_log, registry, settings, times, vmenv
+from . import durations, footprint, guest, ids, journal, options, paths, proxy_log, registry, settings, times, vmenv
 from .commands import declare
 from .errors import Fail, die
 from .sanitize import clean, field, message_text, redact
@@ -388,7 +388,7 @@ def _failure_params(params):
 def _known_vm(args):
     """The first argument, if a VM of that name is registered."""
     name = _arg(args, 0)
-    if registry.NAME.fullmatch(name) and name not in registry.RESERVED and os.path.exists(registry.record_file(name)):
+    if registry.NAME.fullmatch(name) and name not in registry.RESERVED and os.path.exists(footprint.record_file(name)):
         return name
     return None
 

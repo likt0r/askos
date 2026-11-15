@@ -48,7 +48,7 @@ import sys
 import threading
 import time
 
-from . import activity, describe, images, lifecycle, maintenance, paths, registry, responding, times
+from . import activity, describe, footprint, images, lifecycle, maintenance, paths, registry, responding, times
 from .commands import declare
 from .errors import Fail, die
 from .sanitize import PAIR_ANY, SECRET, entry as journal_entry, field
@@ -255,7 +255,7 @@ class Poller:
         except Fail as f:
             kept, problem = False, f.message.strip()
         except Exception as e:
-            kept, problem = False, f"{responding.wakes_file(name)}: {type(e).__name__}"
+            kept, problem = False, f"{footprint.wakes_file(name)}: {type(e).__name__}"
         if problem is not None and problem != self.unkept.get(name):
             warn(problem)
         self.unkept[name] = problem
