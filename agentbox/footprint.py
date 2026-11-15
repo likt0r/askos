@@ -160,6 +160,11 @@ def transfer_files(name):
     return tuple(os.path.join(host_paths.TRANSFERS, f) for f in sorted(names) if pattern.fullmatch(f))
 
 
+def unit_instances(name):
+    """Patterns of the instances the VM's Orca port and token service start per connection."""
+    return tuple(unit_name(name, kind).replace("@.", "@*.") for kind in ("gui@.service", "ghvm@.service"))
+
+
 def unit_files(rec):
     return tuple(unit_file(unit) for unit in unit_names(rec))
 
@@ -169,18 +174,19 @@ def socket_pending_files(rec):
 
 
 def paths(rec):
-    """Every existing or possible fixed per-VM path delete must remove, plus import archives.
+    """Every fixed per-VM path a delete removes.
 
     The delete marker belongs here too, although it exists only while a delete runs. Left out:
-    the archive (delete keeps the Data disk there), lock files (state_files.locked; unlinking
-    one another process holds would break its lock) and QEMU's pid file (libvirt's own).
+    the archive (delete keeps the Data disk there), import archives (transfer_files: delete
+    removes those no running import holds), lock files (state_files.locked; unlinking one
+    another process holds would break its lock) and QEMU's pid file (libvirt's own).
     """
     name = rec["name"]
     return (record_file(name), data_disk(name), system_disk(name), delete_marker(name),
             legacy_owners_file(name), legacy_allowlist_file(name), legacy_allowlist_migrated_file(name),
             observer_dir(name), open_web_file(name), claude_token_file(name), vm_env_file(name),
             seen_file(name), wakes_file(name), domain_file(name),
-            *unit_files(rec), *socket_pending_files(rec), *transfer_files(name))
+            *unit_files(rec), *socket_pending_files(rec))
 
 
 def being_deleted():
@@ -251,7 +257,7 @@ def _units_off(rec, say):
     if present:
         programs.systemctl("disable", "--now", *present)        # the proxy service stops with its socket
     # open connections run in instances of their own (patterns: nothing to stop is fine)
-    programs.systemctl("stop", f"agentbox-gui-{name}@*.service", f"agentbox-ghvm-{name}@*.service")
+    programs.systemctl("stop", *unit_instances(name))
     removed = [f for f in files if state_files.remove(f)]
     programs.systemctl("daemon-reload")
     if present or removed:

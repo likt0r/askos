@@ -1217,7 +1217,9 @@ restart, and an update of the RPM that changes their code restarts those that ru
 ## Where the files live
 
 Every path to a file of Agent Box comes from one module,
-[agentbox/paths.py](agentbox/paths.py), whose docstring holds this layout. What a Release
+[agentbox/paths.py](agentbox/paths.py), whose docstring holds this layout; the paths of
+one VM's files are built from it in [agentbox/footprint.py](agentbox/footprint.py), which
+also removes them when the VM is deleted. What a Release
 installs lies under the prefix `/usr`, where the RPM puts it
 ([ADR 0009](docs/adr/0009-agent-box-ships-as-a-fedora-rpm.md)), so the units, the sudoers
 rule and the Control Room's `sudo` call name the installed Release's files. A checkout

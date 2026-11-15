@@ -26,7 +26,7 @@ import json
 import os
 import sys
 
-from . import activity, footprint, generate, guest, paths, registry, state_files, times, virsh
+from . import activity, footprint, guest, paths, registry, state_files, times, virsh
 from .commands import declare
 from .errors import Fail, die
 from .sanitize import clean

@@ -4,7 +4,6 @@ Everything else about a VM (network, Orca port, units, disks, its libvirt
 definition) is derived from its record by `agentbox regenerate`.
 """
 import json
-import os
 import sys
 
 from . import footprint, list_records, paths, settings, state_files, vmenv
