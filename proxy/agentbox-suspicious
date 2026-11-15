@@ -757,7 +757,7 @@ SELFTEST_OPEN = [("x.exfil-selftest.example", "exfil"), ("api.evil-selftest.exam
                  ("www.npm-selftest.example", "lookalike"), ("c2-8-selftest.example", "c2"),
                  ("pypi-2-selftest.example", "lookalike")]
 # danach, mit kaputter Verdachtsliste: das offene Web laesst auch Unauffaelliges nicht durch
-SELFTEST_UNREADABLE = ("free-selftest.example", "Watchlist unreadable")
+SELFTEST_UNREADABLE = ("free-selftest.example", proxy_log.OPEN_WEB_CLOSED)
 # One Regex entry per list (ADR 0013), in lists of only the test entries, which replace the
 # Host's for the cases after the first ones (the text files from before have no patterns)
 SELFTEST_REGEX = {"watchlist": r"^c2-[0-9]+-selftest\.example$", "legitimate": r"^mirror[0-9]+-selftest\.example$",

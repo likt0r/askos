@@ -98,7 +98,7 @@ runs.
 - **The Control Room, the expiry timer** of temporary Allowlist entries **and the timer of the
   Container image cleanup** restart if they run.
 - **The proxies of the VMs restart only when the update changes their code** (`agentbox-proxy`,
-  the classifier `agentbox-suspicious` it loads, or the package's `list_records` both import). Their sockets
+  the classifier `agentbox-suspicious` it loads, or the package's leaf modules `list_records` and `proxy_log` both import). Their sockets
   stay open, so a VM loses only its open connections; new ones wait for the restart. A proxy
   that does not run stays stopped. If the restart fails, the next update tries it again
   (until the Host restarts, which starts the proxies with the new code anyway).

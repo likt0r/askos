@@ -46,7 +46,7 @@ def proxy_journal(ctx):
     (epoch seconds, proxy_log.Event)."""
     lines = activity.proxy_lines((time.time() - LOG_WINDOW, None), [ctx], ("ALERT", "BLOCKED"))
     return [(usec // 10**6, event) for usec, event in ((times.journal_usec(e), event) for e, event in reversed(lines))
-            if usec is not None]
+            if usec is not None and event]
 
 
 def block_reason(why):

@@ -2,10 +2,11 @@
 import os
 import sys
 import unittest
+from unittest import mock
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
-from agentbox import proxy_log as log  # noqa: E402
+from agentbox import activity, network, proxy_log as log  # noqa: E402
 from agentbox.proxy_log import Event  # noqa: E402
 
 SIGNALS = ("exfil", "young", "look-alike", "[weak]", "c2(x)", "a]b") + tuple(f"s{n}" for n in range(60))
@@ -73,6 +74,35 @@ class RoundTripTest(unittest.TestCase):
     def test_grep(self):
         self.assertEqual(log.grep("ALERT"), r"^\[[a-z0-9-]+\] ALERT ")
         self.assertEqual(log.grep("ALLOWED", "BLOCKED"), r"^\[[a-z0-9-]+\] (ALLOWED|BLOCKED) ")
+
+
+
+def entry(message, usec=1793700000000000):
+    return {"MESSAGE": message, "SYSLOG_IDENTIFIER": "agentbox-proxy-work", "__REALTIME_TIMESTAMP": str(usec)}
+
+
+class ReaderTest(unittest.TestCase):
+    """What agentbox makes of the lines it reads back."""
+
+    def test_proxy_lines_keeps_every_entry_read_so_a_cut_off_read_shows(self):
+        read = [entry(log.allowed("work", "a.example")), entry("[work] ALLOWED a.example (elsewhere)"),
+                entry(log.alert("work", "a.example", ["exfil"])), entry(log.blocked("work", "x" * 2000, log.NOT_ALLOWED))]
+        with mock.patch.object(activity, "_journal", return_value=read) as journal:
+            got = activity.proxy_lines((0, None), ["work"], ("ALLOWED", "BLOCKED"), cap=4)
+        self.assertEqual(journal.call_args.kwargs["grep"], log.grep("ALLOWED", "BLOCKED"))
+        self.assertEqual([event for _, event in got],
+                         [log.parse(read[0]["MESSAGE"]), None, None, log.parse(read[3]["MESSAGE"])])
+
+    def test_a_client_address_of_any_family_is_a_row_without_signals(self):
+        rows = network.blocked_rows([(1, log.parse(log.blocked("work", "fe80::1", log.NOT_TLS))),
+                                     (2, log.parse(log.blocked("work", "10.0.0.2", log.NO_SERVER_NAME)))])
+        self.assertEqual([(r["domain"], r["code"], r["suspicious"]) for r in rows],
+                         [("10.0.0.2", "no-server-name", []), ("fe80::1", "not-tls", [])])
+
+    def test_an_alert_entry_takes_every_signal(self):
+        e = activity.alert_entry(entry(log.alert("work", "a.example", ["ex]fil", "young"])))
+        self.assertEqual((e["_domain"], e["_signals"], e["description"]),
+                         ("a.example", ["ex]fil", "young"], "Alert: a.example (ex]fil,young)"))
 
 
 if __name__ == "__main__":

@@ -638,13 +638,14 @@ def _journal(window, identifiers, writers, matches=(), grep=None, cap=None, name
 
 def proxy_lines(window, vms, kinds, cap=None):
     """The proxy lines of these kinds (proxy_log) in the time window, newest first, as (journal
-    entry, Event): of these VMs, or (None) of every VM that ever logged, deleted ones included;
-    only the lines the proxies' user wrote, from the Activity namespace they log into and the
-    default journal they logged into before."""
+    entry, Event, or None for an entry that is no such line; each counts towards cap): of these
+    VMs, or (None) of every VM that ever logged, deleted ones included; only the lines the
+    proxies' user wrote, from the Activity namespace they log into and the default journal they
+    logged into before."""
     entries = _journal(window, None if vms is None else [f"agentbox-proxy-{n}" for n in vms], (PROXY_USER,),
                        grep=proxy_log.grep(*kinds), cap=cap, prefix="agentbox-proxy-")
-    events = ((e, proxy_log.parse(field(e, "MESSAGE", limit=None) or "")) for e in entries)
-    return [(e, event) for e, event in events if event and event.kind in kinds]
+    return [(e, event if event and event.kind in kinds else None)
+            for e, event in ((e, proxy_log.parse(field(e, "MESSAGE", limit=None) or "")) for e in entries)]
 
 
 def _json(line):

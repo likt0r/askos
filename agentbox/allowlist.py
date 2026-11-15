@@ -295,7 +295,7 @@ def uses(now):
         return None
     counts = Counter()
     for _, event in log:
-        if event.entry:
+        if event and event.entry:
             kind, value, scope = event.entry
             counts[((kind, value), scope)] += 1
     return counts
@@ -322,7 +322,7 @@ def preview(scope, pattern):
     counts = {}
     for _, event in log:
         # a BLOCKED line for a client reason names the VM's address, not a host
-        if event.reason in proxy_log.CLIENT_REASONS:
+        if not event or event.reason in proxy_log.CLIENT_REASONS:
             continue
         if compiled is not None and list_records.pattern_matches(compiled, event.host):
             c = counts.setdefault(event.host, {"allowed": 0, "blocked": 0})
