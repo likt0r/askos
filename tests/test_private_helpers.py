@@ -31,6 +31,10 @@ def uses(source, own, modules):
                 parts = a.name.split(".")
                 if parts[0] == "agentbox" and len(parts) == 2 and parts[1] in modules:
                     alias[a.asname or a.name] = parts[1]
+                if parts[0] == "agentbox":
+                    # `import agentbox[.x] [as ab]`: ab.y names module y as well
+                    package = a.asname if a.asname and len(parts) == 1 else "agentbox"
+                    alias.update({f"{package}.{m}": m for m in modules})
         elif isinstance(node, ast.ImportFrom):
             module = node.module or ""
             if node.level == 1 or module.split(".")[0] == "agentbox":
@@ -66,10 +70,11 @@ class PrivateHelperTest(unittest.TestCase):
         source = ("from . import images\nfrom .generate import _mark, public\nimport agentbox.images as im\n"
                   "from agentbox import generate as g\nfrom .own import _fine\n"
                   "images._records()\nim._backing(1)\ng._pending('x')\nimages.public()\nos._exit(0)\n"
-                  "images.__name__\nimport agentbox.generate\nagentbox.generate._virsh()\n")
+                  "images.__name__\nimport agentbox.generate\nagentbox.generate._virsh()\n"
+                  "import agentbox as ab\nab.images._records()\nagentbox.own._fine()\n")
         self.assertEqual(uses(source, "own", modules),
                          [(2, "from .generate import _mark"), (6, "images._records"), (7, "im._backing"),
-                          (8, "g._pending"), (13, "agentbox.generate._virsh")])
+                          (8, "g._pending"), (13, "agentbox.generate._virsh"), (15, "ab.images._records")])
 
     def test_a_module_may_use_its_own_private_helpers(self):
         self.assertEqual(uses("from . import own\nown._helper()\n", "own", {"own"}), [])
