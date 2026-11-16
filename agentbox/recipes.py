@@ -16,7 +16,7 @@ import sys
 import tarfile
 import time
 
-from . import activity, images, options, paths, state_files, states, times
+from . import activity, images, options, paths, state_files, times
 from .commands import declare
 from .errors import Fail, die
 from .sanitize import clean
@@ -575,10 +575,13 @@ def recipe_remove_cmd(args):
             if vms:
                 die(f"Recipe {name}: its Image is used by {', '.join(vms)}", error="image_in_use",
                     image=name, vms=vms)
+            # build --all and an Update take every Recipe at their start, before this Image's
+            # Build has a record: while any Build runs or is about to, nothing is removed
             running = any(rec.get("image") == name and rec.get("status") == "running"
-                          for rec in images.build_records()) or states.build_running(images.unit(name))
+                          for rec in images.build_records()) or images.building()
             if running:
-                die(f"Recipe {name}: a Build of its Image is running", error="build_running", image=name)
+                die(f"Recipe {name}: a Build is running, which may build this Recipe; remove it once the Build "
+                    "has ended", error="build_running", image=name)
             shutil.rmtree(_folder(name))
         message = f"Recipe {name} removed ({digest}); its Builds stay"
         result = {"name": name, "sha256": digest, "removed": True, "message": message}

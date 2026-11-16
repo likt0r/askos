@@ -403,6 +403,21 @@ class StorageTest(RecipeTest):
         self.assertEqual(json.loads(err)["error"], "image_in_use")
         self.assertTrue(os.path.exists(self.tar_path()))
 
+    def test_remove_refused_while_any_build_run_holds_the_run_lock(self):
+        # build --all or an Update takes every Recipe at its start, before this Image's record exists
+        self.set_recipe()
+        lock = self.path("var/lib/agentbox/locks/build-run.lock")
+        os.makedirs(os.path.dirname(lock), exist_ok=True)
+        held = open(lock, "a")
+        self.addCleanup(held.close)
+        fcntl.flock(held, fcntl.LOCK_EX)
+        said = self.raw_json("recipe-remove", "dms", code=1)
+        self.assertEqual(said["error"], "build_running")
+        self.assertTrue(os.path.exists(self.tar_path()))
+        held.close()
+        self.raw_json("recipe-remove", "dms")
+        self.assertFalse(os.path.exists(self.tar_path()))
+
     def test_remove_refused_while_a_build_runs(self):
         self.set_recipe()
         self.write("var/lib/agentbox/builds/dms-20261116-100000.json", json.dumps(

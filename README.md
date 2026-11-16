@@ -511,7 +511,8 @@ Activity.
 An **Image** is defined in this repository, ships with each Release and is built on the Host
 from the installed Release's files (`/usr/share/agentbox/vm`). Editing happens here, through
 reviewed commits, never in the Control Room; a change reaches a Host with the next Release it
-installs, and its VMs with their next Reset after a Build.
+installs, and its VMs with their next Reset after a Build. The owner can also define Images on
+their own Host, without a Release, as **Recipes** (below).
 
 - `vm/Containerfile` is the **Base image**: Fedora bootc with the agents, Orca and every
   **Safeguard** (`vm/files/`, and `package-safeguards`, which writes the package minimum age
@@ -525,6 +526,23 @@ installs, and its VMs with their next Reset after a Build.
   FROM ${BASE}
   RUN dnf -y install --setopt=install_weak_deps=False clang lld && dnf clean all
   ```
+
+A **Recipe** is an Image the owner writes on the Host ([ADR 0018](docs/adr/0018-recipes-define-images-on-the-host.md)):
+a directory with a top-level `Containerfile` that starts `FROM ${BASE}`, as above, and any
+other files it copies in (scripts, units, binaries). `agentbox recipe-pack` packs it into a
+tar without root, and `sudo agentbox recipe-set` stores it under `/etc/agentbox/recipes`,
+keeping the last 10 versions (`agentbox recipe-versions`, `recipe-restore`):
+
+```sh
+agentbox recipe-pack ./dms | sudo agentbox recipe-set dms
+sudo agentbox build dms
+sudo agentbox set-image work dms        # from its next Reset
+```
+
+The name must not be one of the Release's Images. A Recipe's Build goes through the same
+check as every other Image; podman reads the tar as its build context, and the Host never
+unpacks it. `agentbox recipes` lists them, `recipe-show` shows their files, and
+`recipe-remove` removes one that no VM uses (its Builds stay).
 
 A **Build** runs as the systemd unit `agentbox-build@<image>.service`; its journal is its
 log (`agentbox build-log <image>`, or `journalctl -u agentbox-build@<image>`). It takes
