@@ -344,7 +344,7 @@ def _ready(ctx):
     if states.running(ctx):
         return
     responding.clear(ctx)                     # the failed wakes of its last start are over
-    lifecycle._must("start", dom(ctx))
+    lifecycle.must("start", dom(ctx))
     deadline = time.monotonic() + paths.tunable("AGENTBOX_BOOT_SECONDS", 180)
     while not guest.ping(ctx):
         if time.monotonic() > deadline:
@@ -523,5 +523,5 @@ def import_cmd(args):
 
 DECLARATIONS = {
     "import": declare(import_cmd, "agentbox import <vm> <folder> [<target>] [--json]",
-                       options={"json": False}, describe=activity._import),
+                       options={"json": False}, describe=activity.describe_import),
 }

@@ -299,7 +299,7 @@ def _pending(what):
     return os.path.join(paths.STATE, "pending", what)
 
 
-def _mark(pending):
+def mark_pending(pending):
     state_files.directory(os.path.dirname(_pending(pending)), 0o700, only_new=True)
     open(_pending(pending), "w").close()
 
@@ -307,13 +307,15 @@ def _mark(pending):
 def _write_if_changed(path, data, mode, pending):
     """Write when different; the pending marker comes first, so a run that dies
     before applying leaves it for the next run."""
-    return state_files.write_if_changed(path, data, mode, before=lambda: _mark(pending), fail=False)
+    return state_files.write_if_changed(path, data, mode, before=lambda: mark_pending(pending), fail=False)
 
 
-def _apply_pending(what, *systemctl):
+def apply_pending(what, *systemctl, timeout=120):
+    """systemctl with these arguments when `what` is pending, then the marker goes;
+    whether it ran."""
     if not os.path.exists(_pending(what)):
         return False
-    programs.systemctl(*systemctl)
+    programs.systemctl(*systemctl, timeout=timeout)
     os.remove(_pending(what))
     return True
 
@@ -522,7 +524,7 @@ def _activity_journal(days):
     journald picks a changed retention up on restart (it keeps the log streams
     of the services meanwhile). Returns the days when they changed, else None."""
     _write_if_changed(activity.JOURNALD_CONF, activity.journald_conf(days).encode(), 0o644, "journald")
-    changed = _apply_pending("journald", "try-restart", f"{JOURNALD}.service")
+    changed = apply_pending("journald", "try-restart", f"{JOURNALD}.service")
     programs.systemctl("enable", "--now", f"{JOURNALD}.socket")
     return days if changed else None
 
@@ -741,10 +743,10 @@ def _feeds(values):
 def _builds():
     """The unit of the Builds. Returns whether it changed."""
     if os.path.exists(_pending("rebuild")):        # its marker before the Maintenance window (#49)
-        _mark("builds")
+        mark_pending("builds")
         os.remove(_pending("rebuild"))
     _write_if_changed(os.path.join(paths.SYSTEMD, BUILD_UNIT), BUILD_SERVICE.encode(), 0o644, "builds")
-    return _apply_pending("builds", "daemon-reload")
+    return apply_pending("builds", "daemon-reload")
 
 
 def _versions(values):
@@ -867,7 +869,7 @@ def apply():
     isolated = records + [m["record"] for m in footprint.being_deleted() if not m.get("network_removed")]
     _write_if_changed(VM_RULES,
                       nft_rules(sorted(isolated, key=lambda r: r["network"])).encode(), 0o644, "firewall")
-    firewall = _apply_pending("firewall", "restart", VMNET)     # before any new bridge comes up
+    firewall = apply_pending("firewall", "restart", VMNET)     # before any new bridge comes up
     retention = _activity_journal(days)     # before units that log into it start
     storage = _storage_pool() if records else False
     changes = {}
@@ -886,7 +888,7 @@ def apply():
     timers = _builds() or timers
     timers = _versions(values) or timers
     timers = _maintenance(values) or timers
-    _apply_pending("units", "daemon-reload")
+    apply_pending("units", "daemon-reload")
     for rec in records:
         if _rebind(rec):
             changes[rec["name"]].append("sockets")
