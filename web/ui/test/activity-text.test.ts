@@ -188,6 +188,7 @@ describe('Activity in the UI language', () => {
       app_id: '1', settings: 'maintenance_time', reason: 'idle', signals: 'young', images: 'base', release: '0.3.0',
       repository: 'a/b', request: 'a/b', folder: '/home/a/foo', files: '3', bytes: '120', env: 'A=1', names: 'A',
       enabled: 'true', days: '7', removed: '2', freed_bytes: '2048', time: '02:00',
+      name: 'dms', sha256: 'a1b2c3', version: '20261116-120000', created: 'true',
     }
     // a reason the sentence knows, where it is a code of its own
     const reasons: Record<string, string> = { 'wake.not-responding': 'system-not-booted', 'github.refused': 'not-installed',
