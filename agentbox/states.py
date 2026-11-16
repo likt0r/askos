@@ -1,11 +1,12 @@
 """A VM's and a unit's state in GLOSSARY terms: the one module that reads libvirt's and
 systemd's state words (#105).
 
-VMs and their networks, from libvirt (virsh): a VM runs when libvirt reports its domain as running. A **Pause**
-is a managed save of its memory (has_pause); libvirt reports such a VM as shut off, and
-`status` and the Control Room call it PAUSED. libvirt's own "paused" and "pmsuspended" (a
-domain suspended in memory, which Agent Box never does) are no Pause: the Control Room
-calls them "suspended".
+VMs and their networks, from libvirt (virsh): a VM runs when libvirt reports its domain as
+"running", "idle" or "blocked"; `status` and the Control Room call all three "running". A
+**Pause** is a managed save of its memory (has_pause); libvirt reports such a VM as shut off,
+and `status` and the Control Room call it PAUSED. libvirt's own "paused" and "pmsuspended" (a
+domain suspended in memory, which Agent Box never does) are no Pause: the Control Room calls
+them "suspended".
 
 Units, from systemd (programs.systemctl): what each question about a unit's state counts.
 A Build's unit counts as running while it is still stopping (build_running); a connection
@@ -17,7 +18,8 @@ from . import programs, virsh
 from .errors import Fail
 from .registry import dom
 
-RUNNING = "running"        # libvirt's word for a running domain, kept by `status` and the Control Room
+RUNNING = "running"        # the canonical word for a running domain in `status` and the Control Room
+RUNNING_WORDS = (RUNNING, "idle", "blocked")     # libvirt's words for a domain that is live
 # `status`'s and the Control Room's word for a VM with a Pause. `status` keeps libvirt's own
 # "paused" (a domain suspended in memory) as it is, so has_pause() is the question for a Pause.
 PAUSED = "paused"
@@ -25,8 +27,8 @@ SHUT_OFF = "shut off"
 MISSING = virsh.MISSING    # libvirt has no such domain, or cannot tell
 
 # libvirt's word -> the state the Control Room shows (a VM with a Pause is PAUSED instead)
-CONTROL_ROOM = {RUNNING: "running", SHUT_OFF: "stopped", "paused": "suspended", "in shutdown": "shutting_down",
-                "crashed": "crashed", "pmsuspended": "suspended", "idle": "running", "blocked": "running"}
+CONTROL_ROOM = {**dict.fromkeys(RUNNING_WORDS, "running"), SHUT_OFF: "stopped", "paused": "suspended",
+                "in shutdown": "shutting_down", "crashed": "crashed", "pmsuspended": "suspended"}
 # libvirt's words of a domain without a QEMU process
 NO_PROCESS = (SHUT_OFF, "crashed", MISSING)
 
@@ -39,14 +41,17 @@ def has_pause(name):
 
 
 def running(name):
-    """Whether libvirt reports the VM as running."""
-    return virsh.state(name) == RUNNING
+    """Whether libvirt reports the VM as running (including idle or blocked)."""
+    return virsh.state(name) in RUNNING_WORDS
 
 
 def status(name):
-    """The state as `status` names it: PAUSED when the VM has a Pause, else libvirt's word
-    (RUNNING, SHUT_OFF, ...; MISSING when libvirt has no domain or cannot tell)."""
-    return PAUSED if has_pause(name) else virsh.state(name)
+    """The state as `status` names it: PAUSED when the VM has a Pause, RUNNING for every live
+    domain, else libvirt's word (SHUT_OFF, ...; MISSING when libvirt has no domain or cannot tell)."""
+    if has_pause(name):
+        return PAUSED
+    word = virsh.state(name)
+    return RUNNING if word in RUNNING_WORDS else word
 
 
 def control_room(word, pause):
