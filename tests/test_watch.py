@@ -342,7 +342,9 @@ class SnapshotTest(WatchTest):
         self.assertEqual([s["unit"] for s in services],
                          ["agentbox-feeds.timer", "agentbox-proxy-work.service", "ollama.service"])
         self.assertEqual(services[2], {"unit": "ollama.service", "load": "loaded", "active": "failed",
-                                       "sub": "failed", "description": "Ollama Service", "triggered_by": []})
+                                       "sub": "failed", "description": "Ollama Service", "state": "failed",
+                                       "triggered_by": []})
+        self.assertIs(event["updating"], False)
 
     def test_services_name_the_timer_or_socket_that_starts_them(self):
         feeds = ["agentbox-feeds.service", "loaded", "inactive", "dead", "HaGeZi-Listen holen"]
@@ -369,6 +371,20 @@ class SnapshotTest(WatchTest):
         units = self.event("services", lambda d: any(s["triggered_by"] for s in d["units"]
                                                      if s["unit"] == "agentbox-maintenance.service"))["units"]
         self.assertEqual([s["triggered_by"] for s in units if s["unit"] == "agentbox-maintenance.timer"], [[]])
+
+    def test_services_say_whether_the_update_runs_also_while_it_stops(self):
+        vms = {"priv": {"state": "shut off", "managed_save": True}}
+
+        def update(active, sub):
+            return [*UNITS, ["agentbox-build@update.service", "loaded", active, sub, "Build agentbox update"]]
+        self.scenario(vms=vms, systemctl_units=update("active", "running"))
+        self.start()
+        self.assertIs(self.event("services")["updating"], True)
+        self.scenario(vms=vms, systemctl_units=update("deactivating", "stop-sigterm"))
+        event = self.event("services", lambda d: any(u["state"] == "stopping" for u in d["units"]))
+        self.assertIs(event["updating"], True)
+        self.scenario(vms=vms, systemctl_units=update("inactive", "dead"))
+        self.assertIs(self.event("services", lambda d: not d["updating"])["updating"], False)
 
     def test_services_say_when_the_maintenance_window_s_timer_is_missing(self):
         # an update from before the Maintenance window, before regenerate: the old Reset timer is

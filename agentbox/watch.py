@@ -167,7 +167,8 @@ class Poller:
                     emit("vm", v)
         self.vms, self.problems = vms, snap["problems"]
         if units is not None:
-            found = {"units": describe.services(units, self.triggers), "warnings": maintenance.warnings()}
+            found = {"units": describe.services(units, self.triggers), "warnings": maintenance.warnings(),
+                     "updating": describe.updating(units)}
             if found != self.services:
                 emit("services", found)
                 self.services = found

@@ -5,7 +5,8 @@
 const { t, te } = useI18n()
 const live = useLive()
 
-interface Unit { unit: string, load: string, active: string, sub: string, description: string, triggered_by?: string[] | null }
+// state: the backend's word for the unit (#115); the UI compares no systemd state itself
+interface Unit { unit: string, load: string, active: string, sub: string, description: string, state?: string, triggered_by?: string[] | null }
 interface Group { unit: Unit, started: Unit[] }
 interface Warning { code: string, message: string }
 const units = computed<Unit[] | null>(() => {
@@ -33,10 +34,10 @@ function triggers(u: Unit): string[] {
 }
 
 /** A unit that should run: a service (or socket) that is not active. Timers and one-shot
- * services (a Build, the Reset check) are fine inactive between their runs. */
+ * services (a Build, the Reset check) are fine stopped between their runs. */
 function color(u: Unit): 'success' | 'error' | 'warning' | 'neutral' {
-  if (u.active === 'failed' || u.load === 'not-found' || u.load === 'error') return 'error'
-  if (u.active === 'active' || u.active === 'activating' || u.active === 'reloading') return 'success'
+  if (u.state === 'failed') return 'error'
+  if (u.state === 'running') return 'success'
   return 'neutral'
 }
 
@@ -67,7 +68,7 @@ const failed = computed(() => (units.value ?? []).filter(u => color(u) === 'erro
 /** systemd's state; for a unit a timer or socket starts, inactive between its runs, what it waits for. */
 function stateText(u: Unit) {
   const by = triggers(u)
-  if (by.length && u.active === 'inactive' && color(u) === 'neutral') {
+  if (by.length && u.state === 'stopped') {
     if (by.some(n => n.endsWith('.socket'))) return t('system.services.startsOnConnection')
     if (by.some(n => n.endsWith('.timer'))) return t('system.services.waitsForTimer')
     return t('system.services.waitsForTrigger')

@@ -8,8 +8,10 @@ domain suspended in memory, which Agent Box never does) are no Pause: the Contro
 calls them "suspended".
 
 Units, from systemd (programs.systemctl): what each question about a unit's state counts.
-A Build's unit counts as running while it is still stopping (build_running); a connection
-to a VM's Orca port that is being closed is no connection (connection_open).
+A Build's unit counts as running while it is still stopping (build_running, build_active); a
+connection to a VM's Orca port that is being closed is no connection (connection_open). The
+Control Room gets a unit's state as unit_state() names it and whether the update runs, and
+compares no systemd word itself (#115).
 """
 import re
 
@@ -95,20 +97,41 @@ def network(name):
 
 # --- units -----------------------------------------------------------------------------------
 
+# systemd's ActiveStates of a unit that runs or is about to
+UNIT_RUNNING = ("active", "activating", "reloading")
+STOPPING = "deactivating"
+
+
+def build_active(active):
+    """Whether a unit of a Build in this ActiveState runs, or is about to: deactivating counts,
+    a Build that is stopping may still hold the run lock and write its Image."""
+    return active in UNIT_RUNNING or active == STOPPING
+
+
 def build_running(unit):
-    """Whether a unit of a Build runs, or is about to: deactivating counts, a Build that is
-    stopping may still hold the run lock and write its Image. False when systemd cannot say."""
+    """build_active() of the unit as systemd reports it now; False when systemd cannot say."""
     try:
         r = programs.systemctl("is-active", unit, timeout=30, ok=None)
     except Fail:
         return False
-    return r.stdout.strip() in ("active", "activating", "deactivating", "reloading")
+    return build_active(r.stdout.strip())
 
 
 def connection_open(active):
     """Whether a connection to a VM's Orca port (an instance unit, by its ActiveState from
     list-units) counts as connected: one being closed (deactivating) does not."""
-    return active in ("active", "activating", "reloading")
+    return active in UNIT_RUNNING
+
+
+def unit_state(load, active):
+    """The state the Control Room shows for a unit, from its LoadState and ActiveState:
+    "failed" (it failed, or systemd has no such unit or cannot load it), "running" (also
+    while it starts or reloads), "stopping", else "stopped"."""
+    if active == "failed" or load in ("not-found", "error"):
+        return "failed"
+    if active in UNIT_RUNNING:
+        return "running"
+    return "stopping" if active == STOPPING else "stopped"
 
 
 def started(unit, timeout):
