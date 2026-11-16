@@ -133,6 +133,35 @@ class UnitStateTest(unittest.TestCase):
         self.assertFalse(self.build_running(FileNotFoundError()))
         self.assertFalse(self.build_running(subprocess.TimeoutExpired("systemctl", 30)))
 
+    def test_the_update_runs_while_its_unit_stops_as_a_build_does(self):
+        update = "agentbox-build@update.service"
+        for word in ("active", "activating", "deactivating", "reloading", "inactive", "failed"):
+            with self.subTest(word=word):
+                expected = word not in ("inactive", "failed")
+                self.assertIs(states.build_active(word), expected)
+                self.assertIs(describe.updating([(update, "loaded", word, "running", "")]), expected)
+                # another Build's unit is no update
+                self.assertFalse(describe.updating([("agentbox-build@base.service", "loaded", word, "running", "")]))
+        self.assertFalse(describe.updating([]))
+
+    def test_the_control_room_gets_a_unit_s_state_in_its_own_words(self):
+        for load, active, expected in (("loaded", "active", "running"), ("loaded", "activating", "running"),
+                                       ("loaded", "reloading", "running"), ("loaded", "deactivating", "stopping"),
+                                       ("loaded", "inactive", "stopped"), ("loaded", "failed", "failed"),
+                                       ("not-found", "inactive", "failed"), ("error", "inactive", "failed"),
+                                       ("bad-setting", "inactive", "failed"),
+                                       ("masked", "inactive", "stopped")):
+            with self.subTest(load=load, active=active):
+                self.assertEqual(states.unit_state(load, active), expected)
+                [row] = describe.services([("agentbox-feeds.service", load, active, "dead", "")], lambda names: {})
+                self.assertEqual(row["state"], expected)
+        for active, sub, text in (("active", "running", "active (running)"), ("failed", "failed", "failed"),
+                                  ("inactive", "", "inactive"), ("deactivating", "stop-sigterm", "deactivating (stop-sigterm)")):
+            with self.subTest(active=active, sub=sub):
+                self.assertEqual(states.unit_text(active, sub), text)
+                [row] = describe.services([("agentbox-feeds.service", "loaded", active, sub, "")], lambda names: {})
+                self.assertEqual(row["text"], text)
+
     def test_a_connection_being_closed_is_no_connection(self):
         for word in ("active", "activating", "reloading"):
             with self.subTest(word=word):

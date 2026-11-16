@@ -114,9 +114,6 @@ export function githubLink(url: unknown): string | null {
   return typeof url === 'string' && /^https:\/\/github\.com\/\S+$/.test(url) ? url : null
 }
 
-/** The unit of Update now and of the automatic update (`agentbox-build@update`). */
-export const UPDATE_UNIT = 'agentbox-build@update.service'
-
 export interface ToolRow {
   tool: Tool
   name: string

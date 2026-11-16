@@ -595,8 +595,12 @@ describe('System page: Build log', () => {
 describe('System page: services', () => {
   useFreshApp()
 
-  const unit = (name: string, active: string, over: Record<string, unknown> = {}) =>
-    ({ unit: name, load: 'loaded', active, sub: active === 'active' ? 'running' : active, description: `${name} description`, ...over })
+  // a unit by the backend's state (#115), with systemd's words the row shows beside it
+  const SYSTEMD: Record<string, string> = { running: 'active', stopping: 'deactivating', stopped: 'inactive', failed: 'failed' }
+  const unit = (name: string, state: string, over: Record<string, unknown> = {}) => {
+    const u = { unit: name, load: 'loaded', active: SYSTEMD[state], sub: state === 'running' ? 'running' : SYSTEMD[state], description: `${name} description`, state, ...over }
+    return { text: `${u.active} (${u.sub})`, ...u }
+  }
 
   it('says so until the first services event', async () => {
     const { wrapper } = await openSystem()
@@ -608,11 +612,11 @@ describe('System page: services', () => {
     const { wrapper, es } = await openSystem()
     es.emit('services', {
       units: [
-        unit('agentbox-allowlist.service', 'active'),
-        unit('ollama.service', 'active'),
+        unit('agentbox-allowlist.service', 'running'),
+        unit('ollama.service', 'running'),
         unit('agentbox-web.service', 'failed', { sub: 'failed' }),
-        unit('agentbox-reset.timer', 'inactive', { sub: 'dead' }),
-        unit('agentbox-gone.service', 'inactive', { load: 'not-found', sub: 'dead' }),
+        unit('agentbox-reset.timer', 'stopped', { sub: 'dead' }),
+        unit('agentbox-gone.service', 'failed', { load: 'not-found', active: 'inactive', sub: 'dead' }),
       ],
     })
     await flushPromises()
@@ -632,7 +636,7 @@ describe('System page: services', () => {
     es.emit('services', { units: [unit('a.service', 'failed')] })
     await flushPromises()
     expect(wrapper.find('[data-testid="services-failed"]').exists()).toBe(true)
-    es.emit('services', { units: [unit('a.service', 'active')] })
+    es.emit('services', { units: [unit('a.service', 'running')] })
     await flushPromises()
     expect(wrapper.find('[data-testid="services-failed"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="service-row"]').attributes('data-color')).toBe('success')
@@ -641,7 +645,7 @@ describe('System page: services', () => {
   it('warns while the timer of the Maintenance window is missing, in the user\'s language', async () => {
     const { wrapper, es } = await openSystem()
     const message = 'The timer of the Maintenance window (agentbox-maintenance.timer) is missing: sudo agentbox regenerate creates it'
-    es.emit('services', { units: [unit('agentbox-weekly.timer', 'active')], warnings: [{ code: 'maintenance_timer_missing', message }] })
+    es.emit('services', { units: [unit('agentbox-weekly.timer', 'running')], warnings: [{ code: 'maintenance_timer_missing', message }] })
     await flushPromises()
     const warning = wrapper.find('[data-testid="services-warning"]')
     expect(warning.attributes('data-code')).toBe('maintenance_timer_missing')
@@ -654,7 +658,7 @@ describe('System page: services', () => {
     es.emit('services', { units: [], warnings: [{ code: 'something_new', message: 'Something is missing' }] })
     await flushPromises()
     expect(wrapper.find('[data-testid="services-warning"]').text()).toContain('Something is missing')
-    es.emit('services', { units: [unit('agentbox-maintenance.timer', 'active')], warnings: [] })
+    es.emit('services', { units: [unit('agentbox-maintenance.timer', 'running')], warnings: [] })
     await flushPromises()
     expect(wrapper.find('[data-testid="services-warning"]').exists()).toBe(false)
   })
@@ -670,16 +674,16 @@ describe('System page: services', () => {
     const { wrapper, es } = await openSystem()
     es.emit('services', {
       units: [
-        unit('agentbox-feeds.service', 'inactive', { sub: 'dead', triggered_by: ['agentbox-feeds.timer'] }),
-        unit('agentbox-feeds.timer', 'active', { sub: 'waiting', triggered_by: [] }),
-        unit('agentbox-proxy-priv.service', 'active', { triggered_by: ['agentbox-proxy-priv.socket'] }),
-        unit('agentbox-proxy-priv.socket', 'active', { triggered_by: [] }),
-        unit('agentbox-proxy-work.service', 'inactive', { sub: 'dead', triggered_by: ['agentbox-proxy-work.socket'] }),
-        unit('agentbox-proxy-work.socket', 'active', { sub: 'listening', triggered_by: [] }),
+        unit('agentbox-feeds.service', 'stopped', { sub: 'dead', triggered_by: ['agentbox-feeds.timer'] }),
+        unit('agentbox-feeds.timer', 'running', { sub: 'waiting', triggered_by: [] }),
+        unit('agentbox-proxy-priv.service', 'running', { triggered_by: ['agentbox-proxy-priv.socket'] }),
+        unit('agentbox-proxy-priv.socket', 'running', { triggered_by: [] }),
+        unit('agentbox-proxy-work.service', 'stopped', { sub: 'dead', triggered_by: ['agentbox-proxy-work.socket'] }),
+        unit('agentbox-proxy-work.socket', 'running', { sub: 'listening', triggered_by: [] }),
         unit('agentbox-maintenance.service', 'failed', { sub: 'failed', triggered_by: ['agentbox-maintenance.timer'] }),
-        unit('agentbox-maintenance.timer', 'active', { sub: 'waiting', triggered_by: [] }),
-        unit('agentbox-versions-fetch.service', 'inactive', { sub: 'dead', triggered_by: null }),
-        unit('agentbox-web.service', 'active', { triggered_by: [] }),
+        unit('agentbox-maintenance.timer', 'running', { sub: 'waiting', triggered_by: [] }),
+        unit('agentbox-versions-fetch.service', 'stopped', { sub: 'dead', triggered_by: null }),
+        unit('agentbox-web.service', 'running', { triggered_by: [] }),
       ],
     })
     await flushPromises()
@@ -714,13 +718,42 @@ describe('System page: services', () => {
     expect(row('agentbox-versions-fetch.service').text()).toContain('inactive (dead)')
   })
 
+  it('shows a stopping unit as neither running nor failed, and not as waiting', async () => {
+    const { wrapper, es } = await openSystem()
+    es.emit('services', {
+      units: [
+        unit('agentbox-build@base.service', 'stopping', { sub: 'stop-sigterm', triggered_by: ['agentbox-maintenance.timer'] }),
+        unit('agentbox-maintenance.timer', 'running', { sub: 'waiting', triggered_by: [] }),
+      ],
+    })
+    await flushPromises()
+    const row = wrapper.find('[data-testid="service-row"][data-unit="agentbox-build@base.service"]')
+    expect(row.attributes('data-color')).toBe('neutral')
+    expect(row.text()).toContain('deactivating (stop-sigterm)')
+    // systemd's words as the backend wrote them
+    es.emit('services', { units: [unit('a.service', 'stopped', { text: 'inactive' })] })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="service-row"][data-unit="a.service"]').text()).toContain('inactive')
+    expect(wrapper.find('[data-testid="service-row"][data-unit="a.service"]').text()).not.toContain('(')
+    expect(row.text()).not.toContain('waits')
+    expect(wrapper.find('[data-testid="services-failed"]').exists()).toBe(false)
+  })
+
+  it('takes the state from the backend, not from systemd\'s words', async () => {
+    const { wrapper, es } = await openSystem()
+    es.emit('services', { units: [unit('a.service', 'failed', { active: 'active', sub: 'running' })] })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="service-row"]').attributes('data-color')).toBe('error')
+    expect(wrapper.find('[data-testid="services-failed"]').text()).toBe('1 not running')
+  })
+
   it('names the wait in German, also when the trigger is not listed', async () => {
     const { wrapper, es } = await openSystem()
     es.emit('services', {
       units: [
-        unit('agentbox-feeds.service', 'inactive', { sub: 'dead', triggered_by: ['agentbox-feeds.timer'] }),
-        unit('agentbox-feeds.timer', 'active', { sub: 'waiting', triggered_by: [] }),
-        unit('agentbox-proxy-work.service', 'inactive', { sub: 'dead', triggered_by: ['agentbox-proxy-work.socket'] }),
+        unit('agentbox-feeds.service', 'stopped', { sub: 'dead', triggered_by: ['agentbox-feeds.timer'] }),
+        unit('agentbox-feeds.timer', 'running', { sub: 'waiting', triggered_by: [] }),
+        unit('agentbox-proxy-work.service', 'stopped', { sub: 'dead', triggered_by: ['agentbox-proxy-work.socket'] }),
       ],
     })
     await useNuxtApp().$i18n.setLocale('de')
@@ -814,7 +847,7 @@ describe('System page: structure and language', () => {
   it('shows its texts in German', async () => {
     const { wrapper, es } = await openSystem({ 'POST /builds': { status: 409, body: { error: { code: 'build_running', message: 'A build is already running' } } } })
     es.emit('host-reboot', { needed: true, packages: ['kernel-core'], checked: '2026-11-03T06:00:00Z' })
-    es.emit('services', { units: [{ unit: 'a.service', load: 'loaded', active: 'failed', sub: 'failed', description: 'a' }] })
+    es.emit('services', { units: [{ unit: 'a.service', load: 'loaded', active: 'failed', sub: 'failed', description: 'a', state: 'failed', text: 'failed' }] })
     await useNuxtApp().$i18n.setLocale('de')
     await flushPromises()
     const text = wrapper.find('[data-testid="system-page"]').text()

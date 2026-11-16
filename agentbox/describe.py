@@ -108,12 +108,20 @@ def services(units, triggers=triggered_by):
     for unit, load, active, sub, description in units:
         if GUI_INSTANCE.fullmatch(unit) or re.fullmatch(r"agentbox-ghvm-.+@.+\.service", unit):
             continue
-        rows.append({"unit": unit, "load": load, "active": active, "sub": sub, "description": description})
+        rows.append({"unit": unit, "load": load, "active": active, "sub": sub, "description": description,
+                     "state": states.unit_state(load, active), "text": states.unit_text(active, sub)})
     rows.sort(key=lambda r: r["unit"])
     found = triggers([r["unit"] for r in rows])
     for r in rows:
         r["triggered_by"] = None if found is None else found.get(r["unit"])
     return rows
+
+
+def updating(units):
+    """Whether the update of every Image runs, from list_units() rows: its unit counts as a
+    Build's does (states.build_active); before its first run systemd does not list it."""
+    update = images.unit(images.UPDATE)
+    return any(unit == update and states.build_active(active) for unit, _, active, _, _ in units)
 
 
 UNIT_PATTERNS = ("agentbox-*", "ollama.service")

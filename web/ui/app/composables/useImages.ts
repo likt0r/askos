@@ -1,7 +1,7 @@
 // Images and Builds of the System page: the overview from GET /images kept current by `build`
 // events, rebuilds, Update now (#114), and the log of a Build (live from `build-log` events; the
 // log endpoint fills the gaps: after a reconnect that could not resume, or when lines were
-// skipped). Whether an update of every Image runs comes from the `services` event (its unit),
+// skipped). Whether an update of every Image runs comes from the `services` event (`updating`),
 // before that from the overview.
 import { computed, onScopeDispose, reactive, ref, watch } from 'vue'
 import type { BuildEvent, BuildLog, BuildLogEvent, ImagesOverview, LogLine } from '~/utils/images'
@@ -75,11 +75,11 @@ export function useImages() {
     if (again) await fetchLog(image, build)
   }
 
-  // the update's unit by the last `services` event; null before one
-  const ACTIVE = ['active', 'activating', 'deactivating', 'reloading']
+  // whether the update runs by the last `services` event (the backend decides, also while its
+  // unit still stops); null before one
   const updateUnit = computed<boolean | null>(() => {
-    const units = (live.state.services as { units?: { unit: string, active: string }[] } | null)?.units
-    return Array.isArray(units) ? units.some(u => u.unit === UPDATE_UNIT && ACTIVE.includes(u.active)) : null
+    const updating = (live.state.services as { updating?: unknown } | null)?.updating
+    return typeof updating === 'boolean' ? updating : null
   })
   const updating = computed(() => updateUnit.value ?? overview.value?.updating ?? false)
   // an update that ended may have built nothing, so no `build` event tells

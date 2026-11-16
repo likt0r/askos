@@ -128,18 +128,25 @@ describe('Update now', () => {
     expect(text('images-updating')).toContain('An update is running')
   })
 
-  it('follows the unit of the update in the services event, and reloads when it ends', async () => {
+  it('follows the update in the services event, also while its unit stops, and reloads when it ends', async () => {
     let reads = 0
     fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': () => { reads++; return images() } } as never)
     const { es } = await openApp('/system', [vm('work')])
     expect(exists('images-updating')).toBe(false)
-    const unit = (active: string) => ({ units: [{ unit: 'agentbox-build@update.service', load: 'loaded', active, sub: active === 'active' ? 'running' : 'dead', description: '' }] })
-    es.emit('services', unit('active'))
+    // the backend says whether the update runs (`updating`), also while its unit still stops
+    const unit = (active: string, sub: string, state: string, updating: boolean) =>
+      ({ units: [{ unit: 'agentbox-build@update.service', load: 'loaded', active, sub, description: '', state }], updating })
+    es.emit('services', unit('active', 'running', 'running', true))
     await flushPromises()
     expect(exists('images-updating')).toBe(true)
     expect(byTestId('images-update-now').attributes('disabled')).toBeDefined()
     const before = reads
-    es.emit('services', unit('inactive'))
+    es.emit('services', unit('deactivating', 'stop-sigterm', 'stopping', true))
+    await flushPromises()
+    expect(exists('images-updating')).toBe(true)
+    expect(byTestId('images-update-now').attributes('disabled')).toBeDefined()
+    expect(reads).toBe(before)
+    es.emit('services', unit('inactive', 'dead', 'stopped', false))
     await flushPromises()
     expect(exists('images-updating')).toBe(false)
     expect(reads).toBeGreaterThan(before)
