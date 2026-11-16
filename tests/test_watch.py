@@ -636,6 +636,20 @@ class DescribeTest(WatchTest):
         # running without an Observer: agents unknown
         self.assertIsNone(work["agents"])
 
+    def test_idle_is_running_for_the_control_room_and_status(self):
+        self.scenario(vms={"work": {"state": "idle"}, "priv": {"state": "shut off"}})
+        self.orca_answers()
+        code, out, err = self.run_agentbox("describe", "work", "--json")
+        self.assertEqual((code, err), (0, ""))
+        control_room = json.loads(out)
+        code, out, err = self.run_agentbox("status", "--json")
+        self.assertEqual((code, err), (0, ""))
+        cli = json.loads(out)["work"]
+        self.assertEqual((control_room["state"], control_room["libvirt_state"], cli["state"]),
+                         ("running", "idle", "running"))
+        # status treats it as running when it asks the Observer, too
+        self.assertTrue(cli["agents_unknown"])
+
     def test_the_vm_variables_of_the_record(self):
         vm_records.write(self.root, vm_records.record("work", 1, env={"DATABASE_URL": "postgres://db/x", "A": ""}),
                          vm_records.record("priv", 2))

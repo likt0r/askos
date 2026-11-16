@@ -367,6 +367,12 @@ class PairTest(AgentboxTest):
         self.assertEqual(out, CODE + "\n")
         self.assertEqual(len(self.calls("start")), 1)
 
+    def test_idle_vm_is_not_started_again(self):
+        self.scenario(state="idle", responses=[{"entries": [entry(f"Pairing: {CODE}")]}])
+        code, out, err = self.run_agentbox("pair", "priv")
+        self.assertEqual((code, out, err), (0, CODE + "\n", ""))
+        self.assertEqual(self.calls("start"), [])
+
 
 class FilterTest(AgentboxTest):
     """#6: fixed, validated filters."""

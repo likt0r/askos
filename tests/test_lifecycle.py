@@ -281,6 +281,11 @@ class StartTest(LifecycleTest):
         self.assertEqual(self.run_agentbox("start", "priv"), (0, "priv is running\n", ""))
         self.assertEqual(self.vm_calls(), [])
 
+    def test_idle_vm_stays(self):
+        self.scenario(vms={"priv": {"state": "idle", "start_fails": "active"}})
+        self.assertEqual(self.run_agentbox("start", "priv"), (0, "priv is running\n", ""))
+        self.assertEqual(self.vm_calls(), [])
+
     def test_resumes_a_paused_vm(self):
         self.scenario(vms={"work": {"state": "shut off", "managed_save": True}})
         self.run_agentbox("start", "work")
@@ -307,6 +312,13 @@ class WakeTest(LifecycleTest):
         self.orca_listens()
         self.assertEqual(self.run_agentbox("wake", "work"), (0, "", ""))
         self.assertEqual(self.vm_calls(), [("start", "agentbox-work")])
+
+    def test_idle_vm_is_woken_without_starting_it_again(self):
+        self.scenario(vms={"work": {"state": "idle", "start_fails": "active"}})
+        self.orca_listens()
+        code, out, err = self.run_agentbox("wake", "work", "--json")
+        self.assertEqual((code, out, err), (0, '{"vm": "work", "state": "running", "message": null}\n', ""))
+        self.assertEqual(self.vm_calls(), [])
 
     def test_gives_up_when_orca_does_not_answer(self):
         self.orca_silent()

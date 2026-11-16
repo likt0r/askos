@@ -52,8 +52,8 @@ def dominfo(saved):
 
 class VmStateTest(unittest.TestCase):
     def test_running_only_when_libvirt_says_so(self):
-        for word, expected in (("running", True), ("shut off", False), ("paused", False), ("idle", False),
-                               (None, False)):
+        for word, expected in (("running", True), ("idle", True), ("blocked", True), ("shut off", False),
+                               ("paused", False), (None, False)):
             with self.subTest(word=word), asking(domstate=domstate(word)):
                 self.assertIs(states.running("work"), expected)
 
@@ -67,7 +67,7 @@ class VmStateTest(unittest.TestCase):
             self.assertEqual(states.status("work"), "paused")
         for word in WORDS:
             with self.subTest(word=word), asking(dominfo=dominfo(False), domstate=domstate(word)):
-                self.assertEqual(states.status("work"), word)
+                self.assertEqual(states.status("work"), "running" if word in ("running", "idle", "blocked") else word)
         with asking(dominfo=dominfo(False), domstate=domstate(None)):
             self.assertEqual(states.status("work"), "missing")
 

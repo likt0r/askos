@@ -256,6 +256,15 @@ class WhichVmsTest(CleanupTest):
                 self.assertEqual([c for c in self.calls() if c["cmd"] != "guest-ping"], [])
         self.assertEqual(self.entries(), [])
 
+    def test_an_idle_vm_is_cleaned_without_being_started(self):
+        self.scenario(vms={"work": {"state": "idle", "start_fails": "active"}, "priv": {"state": "shut off"}})
+        self.work.podman(images=[image(1)])
+        self.work.usage({iid(1): at(30)})
+        results, err = self.cleanup()
+        self.assertEqual((results["work"]["outcome"], results["work"]["removed"]), ("removed", 1), err)
+        self.assertEqual(self.work.images(), [])
+        self.assertEqual(self.calls("start"), [])
+
     def test_a_vm_whose_lifecycle_lock_is_held_is_skipped_this_hour(self):
         locks = self.path("var/lib/agentbox/locks")
         os.makedirs(locks, exist_ok=True)
