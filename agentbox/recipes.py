@@ -59,6 +59,7 @@ def _containerfile_instruction(data, member):
             _invalid(member, "its first instruction other than ARG must be FROM ${BASE}"
                              " (or FROM $BASE, with an optional AS stage)")
         return
+    _invalid(member, "it has no FROM ${BASE}")
 
 
 def _hash_member(archive, member, keep=False):
@@ -564,7 +565,9 @@ def recipe_remove_cmd(args):
     name, digest = positional[0], None
     try:
         _name(name)
-        with state_files.locked(_folder(name)):
+        # set-image checks and saves a VM's Image holding the lock of the Images directory:
+        # holding it too, no VM can take the Image between this check and the removal
+        with state_files.locked(_folder(name)), state_files.locked(paths.IMAGES):
             _, summary = _load(name)
             digest = summary["sha256"]
             _, users = images.pinned()

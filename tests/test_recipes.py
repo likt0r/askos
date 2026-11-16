@@ -4,6 +4,7 @@ The real CLI runs with AGENTBOX_ROOT and the fake programs of test_images.py. In
 archives never reach the stored recipe.tar; Builds hand the checked bytes to fake podman
 on stdin, which records the tar's members and Containerfile.
 """
+import fcntl
 import gzip
 import hashlib
 import io
@@ -14,6 +15,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+import time
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -192,7 +194,8 @@ class CheckTest(RecipeTest):
 
     def test_first_instruction_must_be_from_base(self):
         for content in ("FROM fedora\n", "RUN true\nFROM ${BASE}\n", "FROM ${OTHER}\n", "FROM ${base}\n",
-                        "FROM --platform=linux/amd64 ${BASE}\n", "FROM ${BASE} AS\n"):
+                        "FROM --platform=linux/amd64 ${BASE}\n", "FROM ${BASE} AS\n",
+                        "", "# only a comment\n", "ARG BASE\n"):
             with self.subTest(content=content):
                 self.refused(archive([file("Containerfile", content.encode())]), "FROM ${BASE}")
 
@@ -377,6 +380,28 @@ class StorageTest(RecipeTest):
         self.assertTrue(os.path.exists(self.tar_path()))
         [entry] = self.activity("recipe.remove")
         self.assertEqual((entry["AGENTBOX_OUTCOME"], entry["AGENTBOX_ERROR"]), ("failed", "image_in_use"))
+
+    def test_remove_waits_for_a_set_image_between_its_check_and_its_save(self):
+        self.set_recipe()
+        # set-image holds the lock of the Images directory from its check to its save
+        lock = self.path("var/lib/agentbox/locks/images.lock")
+        os.makedirs(os.path.dirname(lock), exist_ok=True)
+        held = open(lock, "a")
+        self.addCleanup(held.close)
+        fcntl.flock(held, fcntl.LOCK_EX)
+        env = {"PATH": os.path.join(self.dir, "bin") + ":" + os.environ["PATH"], "FAKE_VIRSH_DIR": self.dir,
+               "FAKE_DIR": self.dir, "AGENTBOX_ROOT": self.root, "LANG": "C.UTF-8", "TZ": "UTC"}
+        p = subprocess.Popen([AGENTBOX, "recipe-remove", "dms", "--json"], env=env, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE)
+        self.addCleanup(lambda: p.poll() is None and p.kill())
+        time.sleep(1)
+        self.assertIsNone(p.poll(), "recipe-remove did not wait for the lock")
+        vm_records.write(self.root, record("work", 1, image="dms"), record("priv", 2))    # set-image's save
+        held.close()
+        _, err = p.communicate(timeout=30)
+        self.assertEqual(p.returncode, 1)
+        self.assertEqual(json.loads(err)["error"], "image_in_use")
+        self.assertTrue(os.path.exists(self.tar_path()))
 
     def test_remove_refused_while_a_build_runs(self):
         self.set_recipe()
