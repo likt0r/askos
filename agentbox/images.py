@@ -445,12 +445,8 @@ def _stamp():
     return time.strftime("%Y%m%d-%H%M%S")
 
 
-def _build_one(image, src, release, days, orca, actor, unit_name, say, reason=None):
-    """Build one Image from the Release's files in the unit unit_name, the Base image with
-    the package minimum age `days` and Orca's release `orca` (orca_version, "" for the
-    newest old enough); the Build's id when it became the current Build, else False. The
-    Activity entries of an update's Builds have the reason "update"."""
-    what = "Update: " if reason == "update" else ""
+def _new_build(image, release, days, orca, actor, unit_name):
+    """A new Build id and its first, running record."""
     build = _stamp()
     while os.path.exists(record_file(image, build)) or os.path.exists(build_file(image, build)):
         time.sleep(1)
@@ -461,96 +457,92 @@ def _build_one(image, src, release, days, orca, actor, unit_name, say, reason=No
            "actor": actor, "agents": None, "tools": None, "problems": [], "error": None, "safeguards": None,
            "container": False}
     _save(rec)
-    tag = CONTAINER.format(image, build)
-    out = os.path.join(paths.IMAGES, f".build-{image}-{build}")
-    os.makedirs(out)
-    try:
-        try:
-            if image == BASE:
-                say(f"== {image}: building the container image (package minimum age: {days} days; Orca: "
-                    + (f"{orca}, pinned in orca_version)" if orca else "the newest release at least that old)"))
-                _podman("build", "--pull=newer", "--no-cache", "--build-arg", f"PACKAGE_MIN_AGE_DAYS={days}",
-                        "--build-arg", f"ORCA_VERSION={orca}",
-                        "-t", tag, "-f", os.path.join(src, "vm", "Containerfile"), src,
-                        timeout=4 * 3600, what="podman build")
-                base = None
-            else:
-                context = os.path.join(src, "vm", "images", image)
-                if not os.path.isfile(os.path.join(context, "Containerfile")):
-                    raise _Failed(f"Image {image} does not exist in Release {release} (vm/images/{image}/Containerfile)")
-                base_build, base = _base_for_derived()
-                # a derived Image keeps the Base Build's safeguards, its package age included,
-                # and its Orca
-                days = base["package_min_age_days"]
-                rec.update(base_build=base_build, package_min_age_days=days, orca_version=base.get("orca_version"))
-                _save(rec)
-                say(f"== {image}: building the container image on the Base Build {base_build}")
-                _podman("build", "--pull=missing", "--no-cache", "--build-arg",
-                        f"BASE={CONTAINER.format(BASE, base_build)}", "-t", tag,
-                        "-f", os.path.join(context, "Containerfile"), context, timeout=4 * 3600, what="podman build")
-            rec.update(step="check", container=True)
-            _save(rec)
-            say(f"== {image}: checking the Safeguards")
-            manifest, agents, tools = _check(image, tag, days, base)
-            rec.update(step="disk", agents=agents, tools=tools, safeguards=manifest if image == BASE else None)
-            _save(rec)
-            say(f"== {image}: all Safeguards present. Creating the disk (bootc-image-builder)")
-            with open(os.path.join(out, "config.toml"), "w") as f:
-                f.write(DISK_CONFIG)
-            _podman("run", "--rm", "--privileged", "--pull=newer", "--security-opt", "label=type:unconfined_t",
-                    "-v", f"{out}:/output", "-v", f"{os.path.join(out, 'config.toml')}:/config.toml:ro",
-                    "-v", f"{STORAGE}:{STORAGE}", BUILDER, "--type", "qcow2", "--rootfs", "xfs",
-                    "--config", "/config.toml", tag, timeout=2 * 3600, what="bootc-image-builder")
-            disk = os.path.join(out, "qcow2", "disk.qcow2")
-            if not os.path.isfile(disk):
-                raise _Failed("bootc-image-builder created no disk")
-            os.chmod(disk, 0o644)
-            os.replace(disk, build_file(image, build))
-            rec.update(status="ok", step="done", finished=int(time.time()), container=image == BASE)
-            _save(rec)
-            with state_files.locked(paths.IMAGES):
-                _switch(image, build)
-            say(f"== {image}: Build {build} is the current one (applies to VMs from their next Reset)")
-        except _Failed as f:
-            rec.update(status=f.status, finished=int(time.time()), error=f.message, problems=f.problems,
-                       container=False)
-            _save(rec)
-            _rmi(tag)
-            state_files.remove(build_file(image, build), fail=False)
-            if f.status == "rejected":
-                say(f"== {image}: Build {build} rejected, a Safeguard is missing or weakened:")
-                for p in f.problems:
-                    say(f"   {p}")
-            else:
-                say(f"== {image}: Build {build} failed: {f.message}")
-            say(f"The previous Build stays in use ({current(image) or 'none'})")
-            activity.record("build", f"build.{f.status}",
-                            f"{what}Build {image}-{build} " + ("rejected: " if f.status == "rejected" else "failed: ")
-                            + f.message, outcome="failed", actor=actor,
-                            # no error code: what failed, in English, for the Control Room to show
-                            params={"image": image, "build": build, "reason": reason, "message": f.message})
-            _save({**rec, "ended": int(time.time())})
-            return False
-        except (Fail, OSError, KeyboardInterrupt) as e:
-            message = "interrupted" if isinstance(e, KeyboardInterrupt) else \
-                e.message.strip() if isinstance(e, Fail) else f"{e.strerror or e}"
-            rec.update(status="failed", finished=int(time.time()), error=message, container=False)
-            _save(rec)
-            _rmi(tag)
-            state_files.remove(build_file(image, build), fail=False)
-            say(f"== {image}: Build {build} failed: {message}")
-            error = "interrupted" if isinstance(e, KeyboardInterrupt) else e.error if isinstance(e, Fail) else None
-            activity.record("build", "build.failed", f"{what}Build {image}-{build} failed: {message}",
-                            outcome="failed", actor=actor,
-                            params={"image": image, "build": build, "reason": reason,
-                                    "message": None if error else message},
-                            error=error, error_params=e.params if isinstance(e, Fail) else None)
-            _save({**rec, "ended": int(time.time())})
-            if isinstance(e, KeyboardInterrupt):
-                raise
-            return False
-    finally:
-        shutil.rmtree(out, ignore_errors=True)
+    return build, rec
+
+
+def _build_container(image, src, release, days, orca, rec, tag, say):
+    """Build the Image's container image and return its Base Build record, or None for the Base image."""
+    if image == BASE:
+        say(f"== {image}: building the container image (package minimum age: {days} days; Orca: "
+            + (f"{orca}, pinned in orca_version)" if orca else "the newest release at least that old)"))
+        _podman("build", "--pull=newer", "--no-cache", "--build-arg", f"PACKAGE_MIN_AGE_DAYS={days}",
+                "--build-arg", f"ORCA_VERSION={orca}",
+                "-t", tag, "-f", os.path.join(src, "vm", "Containerfile"), src,
+                timeout=4 * 3600, what="podman build")
+        return None
+    context = os.path.join(src, "vm", "images", image)
+    if not os.path.isfile(os.path.join(context, "Containerfile")):
+        raise _Failed(f"Image {image} does not exist in Release {release} (vm/images/{image}/Containerfile)")
+    base_build, base = _base_for_derived()
+    # a derived Image keeps the Base Build's safeguards, its package age included, and its Orca
+    days = base["package_min_age_days"]
+    rec.update(base_build=base_build, package_min_age_days=days, orca_version=base.get("orca_version"))
+    _save(rec)
+    say(f"== {image}: building the container image on the Base Build {base_build}")
+    _podman("build", "--pull=missing", "--no-cache", "--build-arg",
+            f"BASE={CONTAINER.format(BASE, base_build)}", "-t", tag,
+            "-f", os.path.join(context, "Containerfile"), context, timeout=4 * 3600, what="podman build")
+    return base
+
+
+def _make_disk(image, build, tag, out, say):
+    """Create the Image's System disk from its checked container image."""
+    say(f"== {image}: all Safeguards present. Creating the disk (bootc-image-builder)")
+    with open(os.path.join(out, "config.toml"), "w") as f:
+        f.write(DISK_CONFIG)
+    _podman("run", "--rm", "--privileged", "--pull=newer", "--security-opt", "label=type:unconfined_t",
+            "-v", f"{out}:/output", "-v", f"{os.path.join(out, 'config.toml')}:/config.toml:ro",
+            "-v", f"{STORAGE}:{STORAGE}", BUILDER, "--type", "qcow2", "--rootfs", "xfs",
+            "--config", "/config.toml", tag, timeout=2 * 3600, what="bootc-image-builder")
+    disk = os.path.join(out, "qcow2", "disk.qcow2")
+    if not os.path.isfile(disk):
+        raise _Failed("bootc-image-builder created no disk")
+    os.chmod(disk, 0o644)
+    os.replace(disk, build_file(image, build))
+
+
+def _failed(image, build, rec, tag, f, what, actor, reason, say):
+    """Record and report a Build rejection or failure from the Build's own steps."""
+    rec.update(status=f.status, finished=int(time.time()), error=f.message, problems=f.problems, container=False)
+    _save(rec)
+    _rmi(tag)
+    state_files.remove(build_file(image, build), fail=False)
+    if f.status == "rejected":
+        say(f"== {image}: Build {build} rejected, a Safeguard is missing or weakened:")
+        for p in f.problems:
+            say(f"   {p}")
+    else:
+        say(f"== {image}: Build {build} failed: {f.message}")
+    say(f"The previous Build stays in use ({current(image) or 'none'})")
+    activity.record("build", f"build.{f.status}",
+                    f"{what}Build {image}-{build} " + ("rejected: " if f.status == "rejected" else "failed: ")
+                    + f.message, outcome="failed", actor=actor,
+                    # no error code: what failed, in English, for the Control Room to show
+                    params={"image": image, "build": build, "reason": reason, "message": f.message})
+    _save({**rec, "ended": int(time.time())})
+    return False
+
+
+def _error(image, build, rec, tag, e, what, actor, reason, say):
+    """Record and report a command failure, Host error or interruption of a Build."""
+    message = "interrupted" if isinstance(e, KeyboardInterrupt) else \
+        e.message.strip() if isinstance(e, Fail) else f"{e.strerror or e}"
+    rec.update(status="failed", finished=int(time.time()), error=message, container=False)
+    _save(rec)
+    _rmi(tag)
+    state_files.remove(build_file(image, build), fail=False)
+    say(f"== {image}: Build {build} failed: {message}")
+    error = "interrupted" if isinstance(e, KeyboardInterrupt) else e.error if isinstance(e, Fail) else None
+    activity.record("build", "build.failed", f"{what}Build {image}-{build} failed: {message}",
+                    outcome="failed", actor=actor,
+                    params={"image": image, "build": build, "reason": reason,
+                            "message": None if error else message},
+                    error=error, error_params=e.params if isinstance(e, Fail) else None)
+    _save({**rec, "ended": int(time.time())})
+
+
+def _done(image, build, rec, tag, release, what, actor, reason, say):
+    """Finish a successful Build, its container cleanup, pruning and Activity entry."""
     # a derived Image's container image is not needed any more; the Base image keeps
     # only its current one (derived Images build on it)
     if image == BASE:
@@ -568,6 +560,43 @@ def _build_one(image, src, release, days, orca, actor, unit_name, say, reason=No
     if os.path.exists(record_file(image, build)):
         _save({**rec, "ended": int(time.time())})        # the end of its log
     return build
+
+
+def _build_one(image, src, release, days, orca, actor, unit_name, say, reason=None):
+    """Build one Image from the Release's files in the unit unit_name, the Base image with
+    the package minimum age `days` and Orca's release `orca` (orca_version, "" for the
+    newest old enough); the Build's id when it became the current Build, else False. The
+    Activity entries of an update's Builds have the reason "update"."""
+    what = "Update: " if reason == "update" else ""
+    build, rec = _new_build(image, release, days, orca, actor, unit_name)
+    tag = CONTAINER.format(image, build)
+    out = os.path.join(paths.IMAGES, f".build-{image}-{build}")
+    os.makedirs(out)
+    try:
+        try:
+            base = _build_container(image, src, release, days, orca, rec, tag, say)
+            rec.update(step="check", container=True)
+            _save(rec)
+            say(f"== {image}: checking the Safeguards")
+            manifest, agents, tools = _check(image, tag, rec["package_min_age_days"], base)
+            rec.update(step="disk", agents=agents, tools=tools, safeguards=manifest if image == BASE else None)
+            _save(rec)
+            _make_disk(image, build, tag, out, say)
+            rec.update(status="ok", step="done", finished=int(time.time()), container=image == BASE)
+            _save(rec)
+            with state_files.locked(paths.IMAGES):
+                _switch(image, build)
+            say(f"== {image}: Build {build} is the current one (applies to VMs from their next Reset)")
+        except _Failed as f:
+            return _failed(image, build, rec, tag, f, what, actor, reason, say)
+        except (Fail, OSError, KeyboardInterrupt) as e:
+            _error(image, build, rec, tag, e, what, actor, reason, say)
+            if isinstance(e, KeyboardInterrupt):
+                raise
+            return False
+    finally:
+        shutil.rmtree(out, ignore_errors=True)
+    return _done(image, build, rec, tag, release, what, actor, reason, say)
 
 
 def _cleanup(say):
