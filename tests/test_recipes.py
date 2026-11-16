@@ -523,6 +523,22 @@ class BuildTest(RecipeTest):
         self.assertEqual(self.newest("dms")["status"], "ok")
         self.assertEqual(self.newest("dms")["base_build"], self.newest("base")["build"])
 
+    def test_a_broken_recipe_fails_only_its_own_build_in_build_all(self):
+        self.set_recipe()
+        self.set_recipe("good")
+        # a tar broken on disk after it was saved (a disk error, a hand edit)
+        with open(self.tar_path(), "wb") as f:
+            f.write(b"not a tar")
+        code, out = self.build("all")
+        self.assertEqual(code, 1, out)
+        self.assertEqual(self.newest("base")["status"], "ok")
+        self.assertEqual(self.newest("good")["status"], "ok")
+        broken = self.newest("dms")
+        self.assertEqual((broken["status"], broken["recipe_sha256"]), ("failed", None))
+        self.assertIn("invalid Recipe", broken["error"])
+        failed = next(e for e in self.activity("build.failed") if e.get("AGENTBOX_PARAM_IMAGE") == "dms")
+        self.assertEqual(failed["AGENTBOX_ERROR"], "invalid_recipe")
+
     def test_same_name_release_image_wins_and_images_reports_the_problem(self):
         self.set_recipe()
         self.image("dms", DERIVED + "COPY release /usr/bin/release\n", release="release\n")

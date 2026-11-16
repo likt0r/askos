@@ -478,6 +478,8 @@ def _build_container(image, src, release, days, orca, rec, tag, say, recipe_data
                 "-t", tag, "-f", os.path.join(src, "vm", "Containerfile"), src,
                 timeout=4 * 3600, what="podman build")
         return None
+    if isinstance(recipe_data, Fail):
+        raise recipe_data             # the Recipe could not be taken at the start of the run
     context = os.path.join(src, "vm", "images", image)
     if recipe_data is None and not os.path.isfile(os.path.join(context, "Containerfile")):
         raise _Failed(f"Image {image} does not exist in Release {release} (vm/images/{image}/Containerfile)")
@@ -800,6 +802,18 @@ def update_images(view=None):
     return wanted
 
 
+def _recipe_snapshot(name):
+    """(tar, SHA-256) of a Recipe, taken once for the whole run like the Release copy, so a save
+    during the run changes no Build of it; (Fail, None) when it cannot be read or is refused,
+    which fails only that Image's Build."""
+    from . import recipes
+    try:
+        data = recipes.read(name)
+    except Fail as f:
+        return f, None
+    return data, recipes.check(data)["sha256"]
+
+
 def _run(target, actor, say):
     """The Builds of build-run, one at a time (the run lock): [(Image, Build id or False)]. An
     update decides under the lock which Images it builds (update_images), so a Build that
@@ -824,20 +838,6 @@ def _run(target, actor, say):
                 values = settings.load()
                 days, orca = values["package_min_age_days"], values["orca_version"]
                 src, release = take_source(work, say)
-                from . import recipes
-                released = derived(src)
-                if target == "all" or BASE in (wanted or []):
-                    build_images = [BASE, *released,
-                                    *(name for name in recipes.names() if name not in released)]
-                else:
-                    build_images = wanted or [target]
-                # Like the Release copy, each Recipe is taken once for the whole run. Every
-                # Build hands its own immutable bytes to podman, even if a later save lands.
-                snapshots = {}
-                for name in build_images:
-                    if name != BASE and name not in released and name in recipes.names():
-                        data = recipes.read(name)
-                        snapshots[name] = (data, recipes.check(data)["sha256"])
             except Fail as f:
                 # nothing to build from: one failed Build of the Image (the Base image for all)
                 image = BASE if target == "all" else wanted[0] if wanted else target
@@ -855,6 +855,14 @@ def _run(target, actor, say):
                                 params={"image": image, "build": build, "all": target == "all", "reason": reason},
                                 error=f.error, error_params=f.params)
                 raise Fail("", 1, raw=True, error="action_failed")
+            from . import recipes
+            released = derived(src)
+            if target == "all" or BASE in (wanted or []):
+                build_images = [BASE, *released, *(name for name in recipes.names() if name not in released)]
+            else:
+                build_images = wanted or [target]
+            snapshots = {name: _recipe_snapshot(name) for name in build_images
+                         if name != BASE and name not in released and name in recipes.names()}
             return [(image, _build_one(image, src, release, days, orca, actor, unit(target), say, reason,
                                        recipe_data=snapshots.get(image, (None, None))[0],
                                        recipe_sha256=snapshots.get(image, (None, None))[1]))
