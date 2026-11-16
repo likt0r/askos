@@ -14,6 +14,8 @@ Builds come only from `main` of this repository, fetched as GitHub's tarball of 
 
 _Amended by #85 (2026-11-08):_ `vm/setup-vms.sh` is gone; the package is deployed by installing the Release with the check, the RPM ([ADR 0009](0009-agent-box-ships-as-a-fedora-rpm.md)).
 
+_Amended by [ADR 0018](0018-recipes-define-images-on-the-host.md) (2026-11-16):_ a Recipe the owner writes on the Host is built as well; its reviewer is the owner. Every Recipe Build passes the checks above unchanged.
+
 ## Considered Options
 
 - Running a check script inside the built Image: rejected, the Image decides what that script, its interpreter and its tools do.

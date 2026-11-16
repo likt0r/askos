@@ -37,8 +37,12 @@ Environment variables of one VM, kept in its record and passed in at its next st
 _Avoid_: env vars, environment, env
 
 **Image**:
-A clean operating-system template, defined by a Containerfile shipped in the installed Release and built on the Host, from which a VM's System disk is created; each VM uses exactly one Image. Not a Container image.
+A clean operating-system template, defined by a Containerfile shipped in the installed Release or by a Recipe, and built on the Host, from which a VM's System disk is created; each VM uses exactly one Image. Not a Container image.
 _Avoid_: base disk, snapshot, template
+
+**Recipe**:
+An Image the owner defines on the Host instead of the Release: one tar file whose top-level `Containerfile` starts `FROM ${BASE}` and whose other files (scripts, units, binaries) are its build context. The owner writes it as a directory and packs it with `agentbox recipe-pack`; its Builds pass the same Safeguard check as every other derived Image; earlier versions are kept (German UI: Rezept).
+_Avoid_: custom image, template, image definition
 
 **Base image**:
 The Image every other Image builds on; it carries the agents and all Safeguards, which derived Images cannot remove.
