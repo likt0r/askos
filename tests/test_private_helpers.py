@@ -41,9 +41,11 @@ def uses(source, own, modules):
                     elif private(a.name) and source_module != own:
                         found.append((node.lineno, f"from {'.' * node.level}{module} import {a.name}"))
     for node in ast.walk(tree):
-        if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id in alias
-                and alias[node.value.id] != own and private(node.attr)):
-            found.append((node.lineno, f"{node.value.id}.{node.attr}"))
+        # x._y, or agentbox.x._y after `import agentbox.x`
+        if isinstance(node, ast.Attribute) and isinstance(node.value, (ast.Name, ast.Attribute)) and private(node.attr):
+            base = ast.unparse(node.value)
+            if alias.get(base, own) != own:
+                found.append((node.lineno, f"{base}.{node.attr}"))
     return sorted(found)
 
 
@@ -64,10 +66,10 @@ class PrivateHelperTest(unittest.TestCase):
         source = ("from . import images\nfrom .generate import _mark, public\nimport agentbox.images as im\n"
                   "from agentbox import generate as g\nfrom .own import _fine\n"
                   "images._records()\nim._backing(1)\ng._pending('x')\nimages.public()\nos._exit(0)\n"
-                  "images.__name__\n")
+                  "images.__name__\nimport agentbox.generate\nagentbox.generate._virsh()\n")
         self.assertEqual(uses(source, "own", modules),
                          [(2, "from .generate import _mark"), (6, "images._records"), (7, "im._backing"),
-                          (8, "g._pending")])
+                          (8, "g._pending"), (13, "agentbox.generate._virsh")])
 
     def test_a_module_may_use_its_own_private_helpers(self):
         self.assertEqual(uses("from . import own\nown._helper()\n", "own", {"own"}), [])
