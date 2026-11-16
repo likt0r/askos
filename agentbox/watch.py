@@ -174,7 +174,7 @@ class Poller:
         self.poll_builds()
 
     def poll_builds(self):
-        records = images._records()
+        records = images.build_records()
         views = {(r["image"], r["build"]): _build_view(r) for r in records}
         if self.builds is not None:
             for key, view in sorted(views.items(), key=lambda kv: kv[1]["started"] or ""):

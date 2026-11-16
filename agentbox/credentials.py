@@ -153,7 +153,7 @@ DECLARATIONS = {
     "owners": declare(owners, "agentbox owners <vm> [--json]", options={"json": False}, read_only=True),
     "set-owners": declare(set_owners, "agentbox set-owners <vm> <owner>... [--json]",
                           options={"json": False}, control_room=True, kind="credentials",
-                          describe=activity._owners),
+                          describe=activity.describe_owners),
     "set-claude-token": declare(set_claude_token, "agentbox set-claude-token <vm> [--no-prompt] [--json]",
                                  options={"no-prompt": False, "json": False}, control_room=True,
                                   kind="credentials", describe=lambda a: activity.said("Set the Claude token")),

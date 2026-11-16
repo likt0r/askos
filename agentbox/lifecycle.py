@@ -30,7 +30,7 @@ def _exit_with(r):
     raise Fail(r.stderr or "", r.returncode or 1, error="action_failed", raw=True)
 
 
-def _must(*args):
+def must(*args):
     r = virsh.run(*args)
     if r.returncode != 0:
         _exit_with(r)
@@ -179,7 +179,7 @@ def wake(ctx):
         started = not states.running(ctx)
         if started:
             responding.clear(ctx)         # the failed wakes of its last start are over
-            _must("start", dom(ctx))
+            must("start", dom(ctx))
     start = responding.start(ctx)         # the start of the VM this wake waits for
     waiting = responding.clock()
     addr = responding.orca_address(ctx)
@@ -225,7 +225,7 @@ def pause(ctx, say):
     with state_files.vm_lock(ctx):
         if not states.running(ctx):
             return
-        _must("managedsave", dom(ctx))
+        must("managedsave", dom(ctx))
         responding.clear(ctx)
     say(f"{ctx} paused")
 
@@ -236,13 +236,13 @@ def stop(ctx):
     the VM's lifecycle lock."""
     virsh.run("managedsave-remove", dom(ctx))
     if states.running(ctx):
-        _must("shutdown", dom(ctx))
+        must("shutdown", dom(ctx))
         for _ in range(paths.tunable("AGENTBOX_SHUTDOWN_SECONDS", 60)):
             if not states.running(ctx):
                 break
             time.sleep(1)
         if states.running(ctx):
-            _must("destroy", dom(ctx))
+            must("destroy", dom(ctx))
     responding.clear(ctx)
 
 
@@ -404,7 +404,7 @@ def start_cmd(args):
     with state_files.vm_lock(ctx):
         if not states.running(ctx):
             responding.clear(ctx)
-            _must("start", dom(ctx))
+            must("start", dom(ctx))
     say, lines = reporter("--json" in flags)
     say(f"{ctx} is running")
     _result(ctx, "--json" in flags, lines)
@@ -450,7 +450,7 @@ def restart_cmd(args):
     ctx, flags = _flags(args)
     with state_files.vm_lock(ctx):
         stop(ctx)
-        _must("start", dom(ctx))
+        must("start", dom(ctx))
     say, lines = reporter("--json" in flags)
     say(f"{ctx} restarted")
     _result(ctx, "--json" in flags, lines)

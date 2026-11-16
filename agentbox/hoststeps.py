@@ -34,7 +34,7 @@ NO_LOGIN = ("nologin", "false")
 JOURNAL_SOCKETS = ("stdout", "socket", "dev-log")
 # the group journald runs as (stock systemd-journald@.service) and owns the runtime directory with
 JOURNALD_GROUP = "systemd-journal"
-# marker (generate._pending): sockets lost their group, so running writers lost their log streams
+# marker (generate.mark_pending): sockets lost their group, so running writers lost their log streams
 STREAMS_LOST = "journal-streams"
 # the Control Room writes sign-ins with agentbox-journal as supplementary group
 JOURNAL_WRITERS = "agentbox-web.service"
@@ -198,7 +198,7 @@ def journal_sockets():
                 continue
             changed = gid != -1 and st.st_gid != gid
             if changed:
-                generate._mark(STREAMS_LOST)       # before the chown: a run that dies still restarts
+                generate.mark_pending(STREAMS_LOST)       # before the chown: a run that dies still restarts
                 os.chown(path, -1, gid)
             if stat.S_IMODE(st.st_mode) != 0o660:
                 os.chmod(path, 0o660)
@@ -209,9 +209,7 @@ def journal_sockets():
             die(f"{path}: {e.strerror}", error="action_failed", path=path)
         if changed:
             said.append(f"{path}: {activity.JOURNAL_GROUP}, mode 660")
-    if os.path.exists(generate._pending(STREAMS_LOST)):
-        programs.systemctl("try-restart", PROXIES, JOURNAL_WRITERS, timeout=300)
-        os.remove(generate._pending(STREAMS_LOST))
+    if generate.apply_pending(STREAMS_LOST, "try-restart", PROXIES, JOURNAL_WRITERS, timeout=300):
         said.append("running proxies and the Control Room restarted to reconnect their log streams")
     return said
 

@@ -244,10 +244,10 @@ DECLARATIONS = {
                         control_room=True, option_exit=1),
     "mark-harmless": declare(mark_harmless, "agentbox mark-harmless <domain> [--regex PATTERN] [--json]",
                              options={"regex": True, "json": False}, control_room=True, option_exit=1,
-                             describe=activity._domain("Harmless mark for {}")),
+                             describe=activity.describe_domain("Harmless mark for {}")),
     "unmark-harmless": declare(unmark_harmless, "agentbox unmark-harmless <domain> [--regex PATTERN] [--json]",
                                options={"regex": True, "json": False}, control_room=True, option_exit=1,
-                               describe=activity._domain("Remove the Harmless mark for {}")),
+                               describe=activity.describe_domain("Remove the Harmless mark for {}")),
     "mark-seen": declare(mark_seen, "agentbox mark-seen <vm> [<domain>] [--json]", options={"json": False},
-                          control_room=True, option_exit=1, describe=activity._mark_seen),
+                          control_room=True, option_exit=1, describe=activity.describe_mark_seen),
 }

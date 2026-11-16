@@ -479,9 +479,9 @@ DECLARATIONS = {
          describe=lambda a: activity.said("Set the Container image cleanup")),
     "set-env": declare(set_env, "agentbox set-env <vm> NAME=VALUE [NAME=VALUE ...] [--replace] [--json]",
                        options={"replace": False, "json": False}, control_room=True, option_exit=1,
-                       describe=activity._set_env),
+                       describe=activity.describe_set_env),
     "unset-env": declare(unset_env, "agentbox unset-env <vm> NAME [NAME ...] [--json]", options={"json": False},
-                         describe=activity._unset_env, option_exit=1),
+                         describe=activity.describe_unset_env, option_exit=1),
     "env": declare(env, "agentbox env <vm> [--json]", options={"json": False}, read_only=True,
                    option_exit=1),
 }

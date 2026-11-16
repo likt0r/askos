@@ -567,7 +567,7 @@ def _check(say):
         build = images.current(image)
         tag = images.CONTAINER.format(image, build)
         # only the Base image keeps the container image of its current Build
-        if not build or not images._image_exists(tag):
+        if not build or not images.image_exists(tag):
             continue
         n, error = count_updates(image, tag)
         rec["packages"][image] = {"build": build, "updates": n, "error": error}

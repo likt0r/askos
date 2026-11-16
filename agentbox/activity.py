@@ -275,7 +275,7 @@ def listed(what, duration=None, temporary=False, force=False):
     return describe
 
 
-def _domain(what, force=False):
+def describe_domain(what, force=False):
     """Description of a command `<domain>` (Watchlist, Legitimate domains, Harmless marks):
     `what` with the domain (or the pattern of --regex), and --force where the command takes it."""
     def describe(a):
@@ -285,14 +285,14 @@ def _domain(what, force=False):
     return describe
 
 
-def _watch_add(a):
+def describe_watch_add(a):
     (shown, given), category = _entry(a, a.positional, 0), a.values.get("category")
     category = category if category in WATCH_CATEGORIES else None
     text, params = f"Watchlist: add {shown}" + (f" ({category})" if category else ""), {**given, "category": category}
     return (f"{text} with --force", {**params, "force": True}) if "force" in a.values else (text, params)
 
 
-def _mark_seen(a):
+def describe_mark_seen(a):
     domain = _arg(a.positional, 1)
     return said(f"Mark the Alerts for {domain} as seen", domain=domain) if domain else said("Mark Alerts as seen")
 
@@ -329,7 +329,7 @@ def _env_listed(items):
     return _fit(items, ENV_LISTED, lambda n: f" and {n} more")
 
 
-def _set_env(a):
+def describe_set_env(a):
     """The variables as NAME=value (their values are not secret, vmenv.py), only those whose
     name has the form of one, and the flag replace. The description lists the names before
     the values: the values only when all fit."""
@@ -343,23 +343,23 @@ def _set_env(a):
     return said("Set VM variables" + (": " + listed if pairs else ""), env=_env_param(pairs))
 
 
-def _unset_env(a):
+def describe_unset_env(a):
     names = [n for n in a.positional[1:] if vmenv.NAME.fullmatch(n)]
     return said("Remove VM variables" + (": " + _env_listed(names) if names else ""), names=_env_param(names))
 
 
-def _owners(a):
+def describe_owners(a):
     owners = list(a.positional[1:])
     return said("Set GitHub owners: " + ", ".join(owners), owners=owners)
 
 
-def _then_reset(a, text, **params):
+def describe_then_reset(a, text, **params):
     """build and update-now: with the VMs an Update resets (--reset) after its Builds."""
     resets = [v for v in dict.fromkeys(a.values.get("reset", [])) if registry.NAME.fullmatch(v)]
     return said(text + (", then a Reset of " + ", ".join(resets) if resets else ""), **params, reset=resets)
 
 
-def _import(a):
+def describe_import(a):
     """The folder as an absolute path; the target only when it is one."""
     from . import transfer               # transfer imports this module
     p = a.positional
@@ -371,7 +371,7 @@ def _import(a):
     return said("Import a folder", folder=folder)
 
 
-def _set_image(a):
+def describe_set_image(a):
     image, build = _arg(a.positional, 1), a.values.get("build")
     return said(f"Image {image}, " + (f"pinned to Build {build}" if build else "always its current Build")
                  + ", from the next Reset", image=name(image, settings.IMAGE), build=name(build, settings.BUILD_ID))
@@ -623,7 +623,7 @@ def _journal(window, identifiers, writers, matches=(), grep=None, cap=None, name
             f"--since=@{int(since)}", *([f"--until=@{int(until)}"] if until is not None else []),
             *[f"--identifier={i}" for i in identifiers or ()], *([f"--grep={grep}"] if grep else []),
             *([f"--lines={cap}"] if cap else []), *matches, *(uids or ())]
-    out = _journalctl(argv)
+    out = journalctl(argv)
     read = [e for e in map(_json, out.splitlines()) if isinstance(e, dict)]
     # read by user (identifiers None): another family's identifier is its own reader's
     entries = [e for e in read if not (prefix and isinstance(e.get("SYSLOG_IDENTIFIER"), str)
@@ -655,7 +655,7 @@ def _json(line):
         return None
 
 
-def _journalctl(argv):
+def journalctl(argv):
     try:
         r = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
     except OSError:

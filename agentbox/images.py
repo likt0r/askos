@@ -132,7 +132,7 @@ def _build_id(build):
 
 # --- what is on the Host --------------------------------------------------------------
 
-def _records():
+def build_records():
     out = []
     for n in state_files.listdir(paths.BUILDS, fail=False):
         m = RECORD.fullmatch(n)
@@ -175,7 +175,7 @@ def builds():
     """Every Build on the Host: {image: {build: info}} from the records and the disk files.
     A disk without a record was built before Builds were recorded ("migrated")."""
     out = {}
-    for rec in _records():
+    for rec in build_records():
         out.setdefault(rec["image"], {})[rec["build"]] = dict(rec, file=None, size=None)
     for n in state_files.listdir(paths.IMAGES, fail=False):
         m = DISK.fullmatch(n)
@@ -320,7 +320,7 @@ def _rmi(tag):
     programs.quietly(["podman", "rmi", "--force", "--ignore", tag], 300)
 
 
-def _image_exists(tag):
+def image_exists(tag):
     try:
         return subprocess.run(["podman", "image", "exists", tag], stdout=subprocess.DEVNULL,
                               stderr=subprocess.DEVNULL, timeout=60).returncode == 0
@@ -398,7 +398,7 @@ def _base_for_derived():
     rec = builds().get(BASE, {}).get(build) if build else None
     if not rec or rec["status"] != "ok" or not rec.get("safeguards"):
         raise _Failed("the Base image has no checked Build, run agentbox build base first")
-    if not _image_exists(CONTAINER.format(BASE, build)):
+    if not image_exists(CONTAINER.format(BASE, build)):
         raise _Failed(f"the container image of the Base Build {build} is missing, run agentbox build base first")
     return build, rec
 
@@ -554,7 +554,7 @@ def _build_one(image, src, release, days, orca, actor, unit_name, say, reason=No
     # a derived Image's container image is not needed any more; the Base image keeps
     # only its current one (derived Images build on it)
     if image == BASE:
-        for old in _records():
+        for old in build_records():
             if old["image"] == BASE and old["build"] != build and old.get("container"):
                 _rmi(CONTAINER.format(BASE, old["build"]))
                 _save({**old, "container": False})
@@ -575,7 +575,7 @@ def _cleanup(say):
     for n in state_files.listdir(paths.IMAGES, fail=False):
         if re.fullmatch(r"\.build-.+|build-\d{8}-\d{4}", n) and os.path.isdir(os.path.join(paths.IMAGES, n)):
             shutil.rmtree(os.path.join(paths.IMAGES, n), ignore_errors=True)
-    for rec in _records():
+    for rec in build_records():
         if rec.get("status") == "running":
             rec.update(status="failed", error="interrupted", finished=rec.get("finished") or int(time.time()))
             _save(rec)
@@ -871,7 +871,7 @@ def building():
 
 
 def _since(started, target):
-    return [r for r in _records() if r.get("unit") == unit(target) and isinstance(r.get("started"), int)
+    return [r for r in build_records() if r.get("unit") == unit(target) and isinstance(r.get("started"), int)
             and r["started"] >= started]
 
 
@@ -1226,7 +1226,7 @@ def _log_entries(info, opts):
     if isinstance(end, int):
         argv.append(f"--until=@{end + 1}")
     argv.append(f"--after-cursor={opts['after-cursor']}" if "after-cursor" in opts else f"--lines={limit}")
-    out = activity._journalctl(argv)
+    out = activity.journalctl(argv)
     entries = []
     for e in guest.records(out):
         e = entry(e)
@@ -1310,20 +1310,20 @@ DECLARATIONS = {
     "build": declare(build_cmd, "agentbox build <image>|--all [--reset <vm>]... [--json]",
                       options={"all": False, "reset": options.MANY, "json": False}, control_room=True,
                       kind="build",
-                      describe=lambda a: activity._then_reset(
+                      describe=lambda a: activity.describe_then_reset(
                           a, "Start a Build of all Images", all=True) if "all" in a.values else
-                          activity._then_reset(a, f"Start a Build of {a.positional[0] if a.positional else ''}",
-                                                image=activity.name(a.positional[0] if a.positional else "",
-                                                                    settings.IMAGE))),
+                          activity.describe_then_reset(
+                              a, f"Start a Build of {a.positional[0] if a.positional else ''}",
+                              image=activity.name(a.positional[0] if a.positional else "", settings.IMAGE))),
     "build-run": declare(build_run, "agentbox build-run <image>|all", options={}, own_entries=True),
     "build-log": declare(build_log, "agentbox build-log <image> [<build>] [--after-cursor C] [--lines N] [--json]",
                          options={**LOG_CHECKS, "json": False}, read_only=True, control_room=True),
     "set-image": declare(set_image, "agentbox set-image <vm> <image> [--build B] [--json]",
                          options={"build": True, "json": False}, control_room=True, kind="build",
-                         describe=activity._set_image),
+                         describe=activity.describe_set_image),
     "update-now": declare(update_now_cmd, "agentbox update-now [--reset <vm>]... [--json]",
                            options={"reset": options.MANY, "json": False}, control_room=True, kind="build",
-                           describe=lambda a: activity._then_reset(
+                           describe=lambda a: activity.describe_then_reset(
                                a, "Update now: check the versions, build every Image with an update")),
     "containerfile": declare(containerfile_cmd, "agentbox containerfile <image> [--json]",
                               options={"json": False}, read_only=True, control_room=True),
