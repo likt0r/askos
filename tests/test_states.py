@@ -149,11 +149,18 @@ class UnitStateTest(unittest.TestCase):
                                        ("loaded", "reloading", "running"), ("loaded", "deactivating", "stopping"),
                                        ("loaded", "inactive", "stopped"), ("loaded", "failed", "failed"),
                                        ("not-found", "inactive", "failed"), ("error", "inactive", "failed"),
+                                       ("bad-setting", "inactive", "failed"),
                                        ("masked", "inactive", "stopped")):
             with self.subTest(load=load, active=active):
                 self.assertEqual(states.unit_state(load, active), expected)
                 [row] = describe.services([("agentbox-feeds.service", load, active, "dead", "")], lambda names: {})
                 self.assertEqual(row["state"], expected)
+        for active, sub, text in (("active", "running", "active (running)"), ("failed", "failed", "failed"),
+                                  ("inactive", "", "inactive"), ("deactivating", "stop-sigterm", "deactivating (stop-sigterm)")):
+            with self.subTest(active=active, sub=sub):
+                self.assertEqual(states.unit_text(active, sub), text)
+                [row] = describe.services([("agentbox-feeds.service", "loaded", active, sub, "")], lambda names: {})
+                self.assertEqual(row["text"], text)
 
     def test_a_connection_being_closed_is_no_connection(self):
         for word in ("active", "activating", "reloading"):

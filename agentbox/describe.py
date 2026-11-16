@@ -109,7 +109,7 @@ def services(units, triggers=triggered_by):
         if GUI_INSTANCE.fullmatch(unit) or re.fullmatch(r"agentbox-ghvm-.+@.+\.service", unit):
             continue
         rows.append({"unit": unit, "load": load, "active": active, "sub": sub, "description": description,
-                     "state": states.unit_state(load, active)})
+                     "state": states.unit_state(load, active), "text": states.unit_text(active, sub)})
     rows.sort(key=lambda r: r["unit"])
     found = triggers([r["unit"] for r in rows])
     for r in rows:

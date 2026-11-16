@@ -342,7 +342,7 @@ class SnapshotTest(WatchTest):
         self.assertEqual([s["unit"] for s in services],
                          ["agentbox-feeds.timer", "agentbox-proxy-work.service", "ollama.service"])
         self.assertEqual(services[2], {"unit": "ollama.service", "load": "loaded", "active": "failed",
-                                       "sub": "failed", "description": "Ollama Service", "state": "failed",
+                                       "sub": "failed", "description": "Ollama Service", "state": "failed", "text": "failed",
                                        "triggered_by": []})
         self.assertIs(event["updating"], False)
 

@@ -597,8 +597,10 @@ describe('System page: services', () => {
 
   // a unit by the backend's state (#115), with systemd's words the row shows beside it
   const SYSTEMD: Record<string, string> = { running: 'active', stopping: 'deactivating', stopped: 'inactive', failed: 'failed' }
-  const unit = (name: string, state: string, over: Record<string, unknown> = {}) =>
-    ({ unit: name, load: 'loaded', active: SYSTEMD[state], sub: state === 'running' ? 'running' : SYSTEMD[state], description: `${name} description`, state, ...over })
+  const unit = (name: string, state: string, over: Record<string, unknown> = {}) => {
+    const u = { unit: name, load: 'loaded', active: SYSTEMD[state], sub: state === 'running' ? 'running' : SYSTEMD[state], description: `${name} description`, state, ...over }
+    return { text: `${u.active} (${u.sub})`, ...u }
+  }
 
   it('says so until the first services event', async () => {
     const { wrapper } = await openSystem()
@@ -728,6 +730,11 @@ describe('System page: services', () => {
     const row = wrapper.find('[data-testid="service-row"][data-unit="agentbox-build@base.service"]')
     expect(row.attributes('data-color')).toBe('neutral')
     expect(row.text()).toContain('deactivating (stop-sigterm)')
+    // systemd's words as the backend wrote them
+    es.emit('services', { units: [unit('a.service', 'stopped', { text: 'inactive' })] })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="service-row"][data-unit="a.service"]').text()).toContain('inactive')
+    expect(wrapper.find('[data-testid="service-row"][data-unit="a.service"]').text()).not.toContain('(')
     expect(row.text()).not.toContain('waits')
     expect(wrapper.find('[data-testid="services-failed"]').exists()).toBe(false)
   })
@@ -840,7 +847,7 @@ describe('System page: structure and language', () => {
   it('shows its texts in German', async () => {
     const { wrapper, es } = await openSystem({ 'POST /builds': { status: 409, body: { error: { code: 'build_running', message: 'A build is already running' } } } })
     es.emit('host-reboot', { needed: true, packages: ['kernel-core'], checked: '2026-11-03T06:00:00Z' })
-    es.emit('services', { units: [{ unit: 'a.service', load: 'loaded', active: 'failed', sub: 'failed', description: 'a', state: 'failed' }] })
+    es.emit('services', { units: [{ unit: 'a.service', load: 'loaded', active: 'failed', sub: 'failed', description: 'a', state: 'failed', text: 'failed' }] })
     await useNuxtApp().$i18n.setLocale('de')
     await flushPromises()
     const text = wrapper.find('[data-testid="system-page"]').text()

@@ -100,6 +100,8 @@ def network(name):
 # systemd's ActiveStates of a unit that runs or is about to
 UNIT_RUNNING = ("active", "activating", "reloading")
 STOPPING = "deactivating"
+# systemd's LoadStates of a unit it does not find or cannot load
+UNIT_NOT_LOADED = ("not-found", "bad-setting", "error")
 
 
 def build_active(active):
@@ -127,11 +129,17 @@ def unit_state(load, active):
     """The state the Control Room shows for a unit, from its LoadState and ActiveState:
     "failed" (it failed, or systemd has no such unit or cannot load it), "running" (also
     while it starts or reloads), "stopping", else "stopped"."""
-    if active == "failed" or load in ("not-found", "error"):
+    if active == "failed" or load in UNIT_NOT_LOADED:
         return "failed"
     if active in UNIT_RUNNING:
         return "running"
     return "stopping" if active == STOPPING else "stopped"
+
+
+def unit_text(active, sub):
+    """systemd's words for a unit as the Control Room shows them: "active (running)", or
+    the ActiveState alone when the SubState says nothing more."""
+    return f"{active} ({sub})" if sub and sub != active else active
 
 
 def started(unit, timeout):

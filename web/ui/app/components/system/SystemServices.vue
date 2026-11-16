@@ -5,8 +5,9 @@
 const { t, te } = useI18n()
 const live = useLive()
 
-// state: the backend's word for the unit (#115); the UI compares no systemd state itself
-interface Unit { unit: string, load: string, active: string, sub: string, description: string, state?: string, triggered_by?: string[] | null }
+// state: the backend's word for the unit, text: systemd's words to show (#115); the UI compares
+// no systemd state itself
+interface Unit { unit: string, load: string, active: string, sub: string, description: string, state?: string, text?: string, triggered_by?: string[] | null }
 interface Group { unit: Unit, started: Unit[] }
 interface Warning { code: string, message: string }
 const units = computed<Unit[] | null>(() => {
@@ -73,7 +74,7 @@ function stateText(u: Unit) {
     if (by.some(n => n.endsWith('.timer'))) return t('system.services.waitsForTimer')
     return t('system.services.waitsForTrigger')
   }
-  return u.sub && u.sub !== u.active ? `${u.active} (${u.sub})` : u.active
+  return u.text ?? u.active
 }
 </script>
 
