@@ -554,7 +554,8 @@ reason and an error by its `message`.
 | `GET /images/<image>/containerfile` | | `containerfile`: `{"image", "path", "release", "url", "text", "size", "truncated"}`: the Containerfile that defines the Image in the installed Release, which its next Build takes (#67); the current Build may have come from an earlier Release. Read on the Host from the installed files (a regular file that is not itself a link; the directories above it are the package's, owned by root), never fetched; `text` is at most 64 KiB, cut after its last whole line (`truncated`; `size`: bytes of the whole file), without control characters, and anything that looks like a token or key is replaced by `[hidden]`. `release`: the installed Release; `url`: the file on GitHub at its tag (`null` for `0.0.0`). `404 containerfile_not_found` when the Release has no Containerfile for the Image, `400 invalid_image` for `all` and `update` |
 
 For a Recipe, `GET /images/<image>/containerfile` instead reads the `Containerfile` from its
-current checked `recipe.tar` on the Host. `path` names that Recipe and `url` is `null`; the
+current checked `recipe.tar` on the Host. `path` names that Recipe, `url` is `null` and `recipe_sha256` is
+the SHA-256 of that tar (`null` for an Image of the Release), to compare with a Build's; the
 same 64 KiB display cap, sanitizing and `release` field apply. `recipe-show --file` can show
 any one UTF-8 Recipe member up to 256 KiB on the Host.
 

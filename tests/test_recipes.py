@@ -557,6 +557,7 @@ class BuildTest(RecipeTest):
                          (None, "ARG BASE\nFROM ${BASE}\nCOPY tool /usr/bin/tool\n",
                           len("ARG BASE\nFROM ${BASE}\nCOPY tool /usr/bin/tool\n")))
         self.assertIn("current recipe.tar", shown["path"])
+        self.assertEqual(shown["recipe_sha256"], hashlib.sha256(data).hexdigest())
         listed = self.raw_json("recipes")["recipes"][0]
         self.assertEqual(listed["current"], new["build"])
         done = next(e for e in self.activity("build.ok") if e.get("AGENTBOX_PARAM_IMAGE") == "dms")

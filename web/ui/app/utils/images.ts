@@ -36,6 +36,8 @@ export interface Build {
   /** the commit of main a Build from before ADR 0010 came from; null for every newer one */
   commit: string | null
   base_build: string | null
+  /** the SHA-256 of the Recipe tar the Build came from; null for an Image of the Release */
+  recipe_sha256?: string | null
   package_min_age_days?: number | null
   /** the Orca version pinned when the Build was made; null: the newest old enough */
   orca_version?: string | null
@@ -61,6 +63,8 @@ export interface Image {
   base: boolean
   /** the installed Release defines this Image; null: its files are not there */
   in_release: boolean | null
+  /** a Recipe on the Host defines this Image (ADR 0018); in_release is false then */
+  recipe?: boolean
   current: string | null
   vms: string[]
   running: { build: string, step: string | null, started: string | null } | null
@@ -102,6 +106,8 @@ export interface ContainerfileText {
   release: string | null
   /** the file on GitHub at the installed Release's tag; null for a checkout (0.0.0) */
   url: string | null
+  /** the SHA-256 of the Recipe's tar, for an Image a Recipe defines; null otherwise */
+  recipe_sha256?: string | null
   text: string
   /** bytes of the whole file */
   size: number

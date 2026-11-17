@@ -67,7 +67,8 @@ const log = (b: string) => props.logs[logKey(props.image.name, b)]
         {{ image.name }}
       </h3>
       <UBadge v-if="image.base" color="primary" variant="subtle" size="sm" :label="t('system.image.base')" />
-      <UBadge v-if="image.in_release === false" color="warning" variant="subtle" size="sm" :label="t('system.image.notInRelease')" />
+      <UBadge v-if="image.recipe" color="neutral" variant="subtle" size="sm" :label="t('system.image.recipe')" data-testid="image-recipe" />
+      <UBadge v-else-if="image.in_release === false" color="warning" variant="subtle" size="sm" :label="t('system.image.notInRelease')" />
       <UBadge v-if="image.update" color="warning" variant="soft" size="sm" icon="i-lucide-circle-arrow-up" :label="t('system.versions.updateAvailable')" data-testid="image-update" />
       <span class="text-sm text-muted">
         {{ t('system.image.current') }}:

@@ -1293,7 +1293,9 @@ def containerfile_cmd(args):
     source = f"Recipe {image}: Containerfile (current recipe.tar)" if is_recipe else definition(image)
     url = None if is_recipe else version.file_url(version.REPOSITORY, version.tag(release), definition(image))
     if "json" in opts:
+        from . import recipes
         print(json.dumps({"image": image, "path": source, "release": release, "url": url,
+                          "recipe_sha256": recipes.sha256(image) if is_recipe else None,
                           "text": text, "size": size, "truncated": truncated}, ensure_ascii=False))
         return
     sys.stdout.write(text if not text or text.endswith("\n") else text + "\n")
