@@ -148,7 +148,7 @@ def pack(directory):
     if os.path.islink(directory) or not os.path.isdir(directory):
         _invalid(directory, "not a directory (or itself a symbolic link)")
     root = os.path.abspath(directory)
-    entries = []
+    entries, sizes = [], [0]
 
     def walk(folder, prefix=""):
         try:
@@ -168,6 +168,9 @@ def pack(directory):
                 walk(entry.path, rel + "/")
             elif stat.S_ISREG(info.st_mode):
                 entries.append((rel, info, entry.path))
+                sizes[0] += info.st_size
+                if sizes[0] > CONTENT_MAX:          # before a byte is read
+                    _invalid(rel, "total member sizes exceed 64 MiB")
             else:
                 _invalid(rel, "not a regular file or directory")
             if len(entries) > MEMBERS_MAX:
@@ -540,7 +543,7 @@ def recipe_restore_cmd(args):
         die("recipe-restore <name> <version> [--json]", error="invalid_argument")
     name, version, digest = positional[0], positional[1], None
     try:
-        _name(name)
+        _new_name(name)                 # a restore is a save: a Release Image's name is refused
         _version(version)
         data, summary = _load(name, version)
         digest = summary["sha256"]
@@ -565,9 +568,11 @@ def recipe_remove_cmd(args):
     name, digest = positional[0], None
     try:
         _name(name)
-        # set-image checks and saves a VM's Image holding the lock of the Images directory:
-        # holding it too, no VM can take the Image between this check and the removal
-        with state_files.locked(_folder(name)), state_files.locked(paths.IMAGES):
+        # create saves a new VM's record holding the registry lock, set-image a VM's Image holding
+        # the lock of the Images directory: holding both (in that order, as create takes them), no
+        # VM can take the Image between this check and the removal
+        with state_files.locked(_folder(name)), state_files.locked(paths.REGISTRY), \
+                state_files.locked(paths.IMAGES):
             _, summary = _load(name)
             digest = summary["sha256"]
             _, users = images.pinned()

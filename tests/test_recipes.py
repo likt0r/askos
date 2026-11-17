@@ -230,6 +230,16 @@ class PackTest(RecipeTest):
         with tarfile.open(fileobj=io.BytesIO(first[1]), mode="r:") as tar:
             return first[1], tar.getmembers()
 
+    def test_a_directory_over_the_size_limit_is_refused_before_a_file_is_read(self):
+        folder = self.source_dir()
+        with open(os.path.join(folder, "big"), "wb") as f:
+            f.truncate(recipes.CONTENT_MAX + 1)          # sparse: no disk space needed
+        with mock.patch("agentbox.recipes.open", create=True, side_effect=AssertionError("a file was read")), \
+                self.assertRaises(Fail) as raised:
+            recipes.pack(folder)
+        self.assertEqual(raised.exception.error, "invalid_recipe")
+        self.assertIn("64 MiB", raised.exception.message)
+
     def test_reproducible_normalized_tar(self):
         data, members = self.two_packs(self.source_dir())
         self.assertEqual(hashlib.sha256(data).hexdigest(), recipes.check(data)["sha256"])
@@ -417,6 +427,37 @@ class StorageTest(RecipeTest):
         held.close()
         self.raw_json("recipe-remove", "dms")
         self.assertFalse(os.path.exists(self.tar_path()))
+
+    def test_remove_waits_for_a_create_between_its_check_and_its_save(self):
+        self.set_recipe()
+        # create checks and saves a new VM's record holding the registry lock
+        lock = self.path("var/lib/agentbox/locks/vms.lock")
+        os.makedirs(os.path.dirname(lock), exist_ok=True)
+        held = open(lock, "a")
+        self.addCleanup(held.close)
+        fcntl.flock(held, fcntl.LOCK_EX)
+        env = {"PATH": os.path.join(self.dir, "bin") + ":" + os.environ["PATH"], "FAKE_VIRSH_DIR": self.dir,
+               "FAKE_DIR": self.dir, "AGENTBOX_ROOT": self.root, "LANG": "C.UTF-8", "TZ": "UTC"}
+        p = subprocess.Popen([AGENTBOX, "recipe-remove", "dms", "--json"], env=env, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE)
+        self.addCleanup(lambda: p.poll() is None and p.kill())
+        time.sleep(1)
+        self.assertIsNone(p.poll(), "recipe-remove did not wait for the registry lock")
+        vm_records.write(self.root, record("work", 1, image="dms"), record("priv", 2))     # create's save
+        held.close()
+        _, err = p.communicate(timeout=30)
+        self.assertEqual(p.returncode, 1)
+        self.assertEqual(json.loads(err)["error"], "image_in_use")
+        self.assertTrue(os.path.exists(self.tar_path()))
+
+    def test_restore_refused_once_the_release_ships_an_image_of_that_name(self):
+        self.set_recipe()
+        self.set_recipe(data=archive([file("other")]))
+        [version] = self.versions()
+        self.image("dms", DERIVED)
+        said = self.raw_json("recipe-restore", "dms", version[:-4], code=1)
+        self.assertEqual(said["error"], "image_exists")
+        self.assertEqual(self.versions(), [version])
 
     def test_remove_refused_while_a_build_runs(self):
         self.set_recipe()
