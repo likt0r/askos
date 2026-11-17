@@ -42,12 +42,15 @@ scenario.json:
 """
 import base64
 import hashlib
+import io
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
 import time
 
 DIR = os.environ["FAKE_DIR"]
@@ -127,7 +130,36 @@ def effects(run, rootfs):
             os.chmod(dest, what.get("mode", 0o644) if isinstance(what, dict) else 0o644)
 
 
-def build(argv):
+def stdin_context(call):
+    """The tar a Recipe Build pipes to podman; record it and unpack it only in the fake."""
+    data = sys.stdin.buffer.read()
+    temporary = tempfile.TemporaryDirectory(prefix="build-context-", dir=DIR)
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as archive:
+        members = archive.getmembers()
+        containerfile = None
+        for member in members:
+            name = os.path.normpath(member.name)
+            path = os.path.join(temporary.name, name)
+            if member.isdir():
+                os.makedirs(path, exist_ok=True)
+            elif member.isfile():
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with archive.extractfile(member) as source, open(path, "wb") as target:
+                    shutil.copyfileobj(source, target)
+                if name == "Containerfile":
+                    containerfile = read_text(path)
+        call["context"] = {"sha256": hashlib.sha256(data).hexdigest(),
+                           "members": [{"name": m.name, "size": m.size} for m in members],
+                           "containerfile": containerfile}
+    return temporary.name, temporary
+
+
+def read_text(path):
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
+def build(argv, call):
     args, tag, file, context, i = {}, None, None, None, 0
     while i < len(argv):
         a = argv[i]
@@ -141,10 +173,16 @@ def build(argv):
             tag, i = argv[i + 1], i + 2
         elif a == "-f":
             file, i = argv[i + 1], i + 2
+        elif a == "-":
+            context, i = a, i + 1
         elif a.startswith("-"):
             i += 1
         else:
             context, i = a, i + 1
+    if context == "-":
+        context, temporary = stdin_context(call)       # cleaned up when this call returns
+    if file is None:
+        file = os.path.join(context, "Containerfile")
     if fails("build", tag):
         print(f"Error: building at STEP \"RUN dnf -y install\": exit status 1", file=sys.stderr)
         return 1
@@ -233,11 +271,18 @@ def builder(argv):
     return 0
 
 
-def main(argv):
+def record(call):
     with open(os.path.join(DIR, "calls.jsonl"), "a") as f:
-        f.write(json.dumps({"cmd": "podman", "argv": argv, "env": dict(os.environ)}) + "\n")
+        f.write(json.dumps(call) + "\n")
+
+
+def main(argv):
+    call = {"cmd": "podman", "argv": argv, "env": dict(os.environ)}
     if argv[:1] == ["build"]:
-        return build(argv[1:])
+        code = build(argv[1:], call)
+        record(call)
+        return code
+    record(call)
     if argv[:1] == ["run"]:
         return check_update(argv) if "dnf" in argv else builder(argv[1:])
     if argv[:2] == ["image", "mount"]:

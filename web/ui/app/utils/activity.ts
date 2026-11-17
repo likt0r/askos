@@ -218,6 +218,15 @@ export const SENTENCES: Record<string, Sentence> = {
   'update-now': (p, tr) => thenReset(p, tr, say(tr, 'updateNow')),
   'set-image': (p, tr) => (!has(p, 'image') ? null
     : has(p, 'build') ? say(tr, 'setImagePinned', { image: p.image, build: p.build }) : say(tr, 'setImageCurrent', { image: p.image })),
+  'recipe.set': (p, tr, e) => (!has(p, 'name') ? null
+    : e.outcome === 'failed' ? say(tr, 'recipeSet', { name: p.name })
+      : flag(p, 'created') && has(p, 'sha256') ? say(tr, 'recipeSetCreated', { name: p.name, sha256: p.sha256 })
+        : has(p, 'sha256') ? say(tr, 'recipeSetChanged', { name: p.name, sha256: p.sha256 }) : null),
+  'recipe.restore': (p, tr) => (has(p, 'name', 'version', 'sha256')
+    ? say(tr, 'recipeRestored', { name: p.name, version: p.version, sha256: p.sha256 }) : null),
+  'recipe.remove': (p, tr, e) => (!has(p, 'name') ? null
+    : e.outcome === 'failed' ? say(tr, 'recipeRemove', { name: p.name })
+      : has(p, 'sha256') ? say(tr, 'recipeRemoved', { name: p.name, sha256: p.sha256 }) : null),
   'import': (p, tr) => (!has(p, 'folder', 'target') ? say(tr, 'importAny')
     : has(p, 'files', 'bytes') ? say(tr, 'importDone', { folder: p.folder, target: p.target, files: p.files, bytes: p.bytes })
       : say(tr, 'importFolder', { folder: p.folder, target: p.target })),

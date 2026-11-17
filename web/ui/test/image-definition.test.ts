@@ -233,6 +233,20 @@ describe('System page: Image definition (#67)', () => {
     expect(api.calls.some(c => c.path.includes('/containerfile'))).toBe(false)
   })
 
+  it('shows a Recipe as one, with its Containerfile from the Recipe and whether the Build is older', async () => {
+    const dms = image('dms', { in_release: false, recipe: true, containerfile_url: null,
+      builds: [build('20261101-0300', { current: true, release: '0.2.0', recipe_sha256: 'aaa' })] })
+    const { wrapper } = await openSystem(overview([dms]), {
+      'GET /images/dms/containerfile': ok({ ...containerfile('dms'), path: 'Recipe dms: Containerfile (current recipe.tar)',
+        url: null, recipe_sha256: 'bbb' }),
+    })
+    expect(part(wrapper, 'dms', 'image-recipe').text()).toBe('Recipe')
+    expect(card(wrapper, 'dms').text()).not.toContain('not in the installed Release')
+    await toggle(wrapper, 'dms')
+    expect(part(wrapper, 'dms', 'containerfile-source').text()).toContain('From the Recipe on this Host')
+    expect(part(wrapper, 'dms', 'containerfile-differs').text()).toContain('an earlier version of the Recipe')
+  })
+
   it('in German', async () => {
     const rust = image('rust', { builds: [build('20261101-0300', { current: true, release: '0.1.0' })] })
     const { wrapper } = await openSystem(overview([rust]), { 'GET /images/rust/containerfile': ok(containerfile('rust')) })

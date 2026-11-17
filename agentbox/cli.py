@@ -10,7 +10,7 @@ import os
 import sys
 
 from . import activity, allowlist, container_images, credentials, describe, detection, generate, github, guest
-from . import images, lifecycle, lists, maintenance, network, options, pairings, paths, settings, setup, transfer
+from . import images, lifecycle, lists, maintenance, network, options, pairings, paths, recipes, settings, setup, transfer
 from . import version, versions, vms, watch
 from .errors import Fail
 
@@ -147,6 +147,14 @@ Controls the agent VMs on this Host.
                                                      build every Image with an update, then Reset these VMs
   agentbox build-log <image> [<build>] [--after-cursor C] [--lines N] [--json]
                                                      log of a Build (the running or newest one)
+  agentbox recipe-pack <directory>                     pack a Recipe as a reproducible tar on stdout (binary)
+  agentbox recipe-set <name> [--json]                  create or replace the Recipe from the tar on stdin
+  agentbox recipes [--json]                            every Recipe, its versions, use and current Build
+  agentbox recipe-show <name> [--version V] [--file PATH] [--json]
+                                                     list a Recipe's members, or show one UTF-8 text file
+  agentbox recipe-versions <name> [--json]             kept Recipe versions, newest first, with their file diffs
+  agentbox recipe-restore <name> <version> [--json]    save a kept version as the current Recipe
+  agentbox recipe-remove <name> [--json]               remove a Recipe and its versions; its Builds stay
   agentbox set-image <vm> <image> [--build B] [--json]
                 a VM's Image, pinned to an earlier Build or not; applies from the next Reset
   agentbox build-run <image>|all                     (unit agentbox-build@) run a Build
@@ -167,7 +175,7 @@ With --json, a failure also goes to stderr as one JSON object:
   {"error": "<code>", "message": "<text>", "params": {...}}"""
 
 MODULES = (lifecycle, version, describe, setup, watch, vms, pairings, transfer, guest, credentials, network,
-           allowlist, detection, lists, generate, settings, github, images, versions, activity, maintenance,
+           allowlist, detection, lists, generate, settings, github, images, recipes, versions, activity, maintenance,
            container_images)
 DECLARATIONS = {name: declaration for module in MODULES for name, declaration in module.DECLARATIONS.items()}
 

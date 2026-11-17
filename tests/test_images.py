@@ -1458,7 +1458,7 @@ class DefinitionTest(ImagesTest):
         self.assertEqual(result, {
             "image": "base", "path": "vm/Containerfile", "release": RELEASE,
             "url": f"{REPOSITORY_URL}/blob/v{RELEASE}/vm/Containerfile" if RELEASE != "0.0.0" else None,
-            "text": content.decode(), "size": len(content), "truncated": False})
+            "recipe_sha256": None, "text": content.decode(), "size": len(content), "truncated": False})
         self.image("rust", DERIVED + "RUN dnf -y install clang\n")
         rust = self.json("containerfile", "rust")
         self.assertEqual((rust["path"], rust["text"], rust["truncated"]),

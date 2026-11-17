@@ -296,13 +296,14 @@ class _Failed(Exception):
         self.message, self.status, self.problems = message, status, list(problems)
 
 
-def _podman(*args, capture=False, timeout=600, what=None):
+def _podman(*args, capture=False, timeout=600, what=None, input=None):
     """podman with its output in the Build's journal (or captured); _Failed when it fails."""
     sys.stdout.flush()
+    binary = isinstance(input, (bytes, bytearray))
     try:
-        r = subprocess.run(["podman", *args], stdout=subprocess.PIPE if capture else None,
-                           stderr=subprocess.PIPE if capture else None, text=True, errors="replace",
-                           timeout=timeout)
+        r = subprocess.run(["podman", *args], input=input, stdout=subprocess.PIPE if capture else None,
+                           stderr=subprocess.PIPE if capture else None, text=not binary,
+                           errors=None if binary else "replace", timeout=timeout)
     except FileNotFoundError:
         raise _Failed("podman is missing")
     except subprocess.TimeoutExpired:
@@ -355,11 +356,18 @@ def derived(src):
             and os.path.isfile(os.path.join(folder, n, "Containerfile"))]
 
 
-def _defined():
+def release_defined():
     """The Images the installed Release defines, or None when its files are not there."""
     if not os.path.isfile(os.path.join(paths.VM_SOURCE, "vm", "Containerfile")):
         return None
     return [BASE, *derived(paths.VM_SOURCE)]
+
+
+def _recipe_image(image):
+    """Whether a stored Recipe defines this Image now (a same-name Release Image wins)."""
+    from . import recipes
+    release = release_defined()
+    return image in recipes.names() and (release is None or image not in release)
 
 
 def _release():
@@ -445,14 +453,14 @@ def _stamp():
     return time.strftime("%Y%m%d-%H%M%S")
 
 
-def _new_build(image, release, days, orca, actor, unit_name):
+def _new_build(image, release, days, orca, actor, unit_name, recipe_sha256=None):
     """A new Build id and its first, running record."""
     build = _stamp()
     while os.path.exists(record_file(image, build)) or os.path.exists(build_file(image, build)):
         time.sleep(1)
         build = _stamp()
     rec = {"image": image, "build": build, "status": "running", "step": "build", "started": int(time.time()),
-           "finished": None, "release": release, "base_build": None,
+           "finished": None, "release": release, "base_build": None, "recipe_sha256": recipe_sha256,
            "package_min_age_days": days, "orca_version": orca or None, "unit": unit_name,
            "actor": actor, "agents": None, "tools": None, "problems": [], "error": None, "safeguards": None,
            "container": False}
@@ -460,7 +468,7 @@ def _new_build(image, release, days, orca, actor, unit_name):
     return build, rec
 
 
-def _build_container(image, src, release, days, orca, rec, tag, say):
+def _build_container(image, src, release, days, orca, rec, tag, say, recipe_data=None):
     """Build the Image's container image and return its Base Build record, or None for the Base image."""
     if image == BASE:
         say(f"== {image}: building the container image (package minimum age: {days} days; Orca: "
@@ -470,8 +478,10 @@ def _build_container(image, src, release, days, orca, rec, tag, say):
                 "-t", tag, "-f", os.path.join(src, "vm", "Containerfile"), src,
                 timeout=4 * 3600, what="podman build")
         return None
+    if isinstance(recipe_data, Fail):
+        raise recipe_data             # the Recipe could not be taken at the start of the run
     context = os.path.join(src, "vm", "images", image)
-    if not os.path.isfile(os.path.join(context, "Containerfile")):
+    if recipe_data is None and not os.path.isfile(os.path.join(context, "Containerfile")):
         raise _Failed(f"Image {image} does not exist in Release {release} (vm/images/{image}/Containerfile)")
     base_build, base = _base_for_derived()
     # a derived Image keeps the Base Build's safeguards, its package age included, and its Orca
@@ -479,9 +489,17 @@ def _build_container(image, src, release, days, orca, rec, tag, say):
     rec.update(base_build=base_build, package_min_age_days=days, orca_version=base.get("orca_version"))
     _save(rec)
     say(f"== {image}: building the container image on the Base Build {base_build}")
-    _podman("build", "--pull=missing", "--no-cache", "--build-arg",
-            f"BASE={CONTAINER.format(BASE, base_build)}", "-t", tag,
-            "-f", os.path.join(context, "Containerfile"), context, timeout=4 * 3600, what="podman build")
+    if recipe_data is not None:
+        # One owned snapshot of the Recipe is handed over by a single call, never as a path.
+        from . import recipes
+        recipes.check(recipe_data)
+        _podman("build", "--pull=missing", "--no-cache", "--build-arg",
+                f"BASE={CONTAINER.format(BASE, base_build)}", "-t", tag, "-",
+                input=recipe_data, timeout=4 * 3600, what="podman build")
+    else:
+        _podman("build", "--pull=missing", "--no-cache", "--build-arg",
+                f"BASE={CONTAINER.format(BASE, base_build)}", "-t", tag,
+                "-f", os.path.join(context, "Containerfile"), context, timeout=4 * 3600, what="podman build")
     return base
 
 
@@ -518,7 +536,8 @@ def _failed(image, build, rec, tag, f, what, actor, reason, say):
                     f"{what}Build {image}-{build} " + ("rejected: " if f.status == "rejected" else "failed: ")
                     + f.message, outcome="failed", actor=actor,
                     # no error code: what failed, in English, for the Control Room to show
-                    params={"image": image, "build": build, "reason": reason, "message": f.message})
+                    params={"image": image, "build": build, "reason": reason, "message": f.message,
+                            "recipe_sha256": rec.get("recipe_sha256")})
     _save({**rec, "ended": int(time.time())})
     return False
 
@@ -536,7 +555,7 @@ def _error(image, build, rec, tag, e, what, actor, reason, say):
     activity.record("build", "build.failed", f"{what}Build {image}-{build} failed: {message}",
                     outcome="failed", actor=actor,
                     params={"image": image, "build": build, "reason": reason,
-                            "message": None if error else message},
+                            "message": None if error else message, "recipe_sha256": rec.get("recipe_sha256")},
                     error=error, error_params=e.params if isinstance(e, Fail) else None)
     _save({**rec, "ended": int(time.time())})
 
@@ -556,25 +575,27 @@ def _done(image, build, rec, tag, release, what, actor, reason, say):
     note = f", {len(removed)} old Build{'s' if len(removed) != 1 else ''} removed" if removed else ""
     activity.record("build", "build.ok", f"{what}Build {image}-{build} done (Release {release}){note}",
                     actor=actor, params={"image": image, "build": build, "release": release,
+                                         "recipe_sha256": rec.get("recipe_sha256"),
                                          "removed": len(removed) or None, "reason": reason})
     if os.path.exists(record_file(image, build)):
         _save({**rec, "ended": int(time.time())})        # the end of its log
     return build
 
 
-def _build_one(image, src, release, days, orca, actor, unit_name, say, reason=None):
-    """Build one Image from the Release's files in the unit unit_name, the Base image with
+def _build_one(image, src, release, days, orca, actor, unit_name, say, reason=None, recipe_data=None,
+               recipe_sha256=None):
+    """Build one Image from the Release's files or its Recipe in the unit unit_name, the Base image with
     the package minimum age `days` and Orca's release `orca` (orca_version, "" for the
     newest old enough); the Build's id when it became the current Build, else False. The
     Activity entries of an update's Builds have the reason "update"."""
     what = "Update: " if reason == "update" else ""
-    build, rec = _new_build(image, release, days, orca, actor, unit_name)
+    build, rec = _new_build(image, release, days, orca, actor, unit_name, recipe_sha256)
     tag = CONTAINER.format(image, build)
     out = os.path.join(paths.IMAGES, f".build-{image}-{build}")
     os.makedirs(out)
     try:
         try:
-            base = _build_container(image, src, release, days, orca, rec, tag, say)
+            base = _build_container(image, src, release, days, orca, rec, tag, say, recipe_data)
             rec.update(step="check", container=True)
             _save(rec)
             say(f"== {image}: checking the Safeguards")
@@ -771,13 +792,26 @@ def _update_run(actor, picks, check, say):
 
 def update_images(view=None):
     """The Images an update builds: those a new Build would update (`update` of the overview: a
-    tool it would change, or package updates) that the installed Release defines; with the
-    Base image every Image of the Release, since they build on it (as build --all)."""
+    tool it would change, or package updates) that the installed Release or a Recipe defines;
+    with the Base image every such Image, since the others build on it (as build --all)."""
     view = overview() if view is None else view
-    wanted = [i["name"] for i in view["images"] if i["update"] and i["in_release"]]
+    wanted = [i["name"] for i in view["images"] if i["update"] and (i["in_release"] or i["recipe"])]
     if BASE in wanted:
-        return [BASE, *(i["name"] for i in view["images"] if i["name"] != BASE and i["in_release"])]
+        return [BASE, *(i["name"] for i in view["images"]
+                        if i["name"] != BASE and (i["in_release"] or i["recipe"]))]
     return wanted
+
+
+def _recipe_snapshot(name):
+    """(tar, SHA-256) of a Recipe, taken once for the whole run like the Release copy, so a save
+    during the run changes no Build of it; (Fail, None) when it cannot be read or is refused,
+    which fails only that Image's Build."""
+    from . import recipes
+    try:
+        data = recipes.read(name)
+    except Fail as f:
+        return f, None
+    return data, recipes.check(data)["sha256"]
 
 
 def _run(target, actor, say):
@@ -809,7 +843,7 @@ def _run(target, actor, say):
                 image = BASE if target == "all" else wanted[0] if wanted else target
                 build = _stamp()
                 _save({"image": image, "build": build, "status": "failed", "step": "source", "started": started,
-                       "finished": int(time.time()), "release": None, "base_build": None,
+                       "finished": int(time.time()), "release": None, "base_build": None, "recipe_sha256": None,
                        "package_min_age_days": None, "orca_version": None, "unit": unit(target), "actor": actor,
                        "agents": None,
                        "tools": None, "problems": [], "error": f.message, "safeguards": None, "container": False})
@@ -821,12 +855,18 @@ def _run(target, actor, say):
                                 params={"image": image, "build": build, "all": target == "all", "reason": reason},
                                 error=f.error, error_params=f.params)
                 raise Fail("", 1, raw=True, error="action_failed")
+            from . import recipes
+            released = derived(src)
             if target == "all" or BASE in (wanted or []):
-                images = [BASE, *derived(src)]
+                build_images = [BASE, *released, *(name for name in recipes.names() if name not in released)]
             else:
-                images = wanted or [target]
-            return [(image, _build_one(image, src, release, days, orca, actor, unit(target), say, reason))
-                    for image in images]
+                build_images = wanted or [target]
+            snapshots = {name: _recipe_snapshot(name) for name in build_images
+                         if name != BASE and name not in released and name in recipes.names()}
+            return [(image, _build_one(image, src, release, days, orca, actor, unit(target), say, reason,
+                                       recipe_data=snapshots.get(image, (None, None))[0],
+                                       recipe_sha256=snapshots.get(image, (None, None))[1]))
+                    for image in build_images]
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
@@ -885,7 +925,8 @@ def building():
     takes it at its start (start() wrote it, then started the unit without waiting)."""
     if state_files.held(RUN_LOCK):
         return True
-    names = dict.fromkeys([*available(), *builds(), *(_defined() or [])])
+    from . import recipes
+    names = dict.fromkeys([*available(), *builds(), *(release_defined() or []), *recipes.names()])
     if any(states.build_running(unit(t)) for t in (UPDATE, "all", *names)):
         return True
     for n in state_files.listdir(paths.BUILDS, fail=False):
@@ -1044,6 +1085,7 @@ def _public(info, cur, used, pins, offered):
     return {"build": info["build"], "status": info["status"], "step": info.get("step"),
             "started": times.iso(info.get("started")), "finished": times.iso(info.get("finished")),
             "release": info.get("release"), "commit": info.get("commit"), "base_build": info.get("base_build"),
+            "recipe_sha256": info.get("recipe_sha256"),
             "package_min_age_days": info.get("package_min_age_days"), "orca_version": info.get("orca_version"),
             "agents": info.get("agents"),
             "tools": tools, "updates": versions.updates(tools, offered["tools"]) if info["status"] in USABLE else [],
@@ -1076,13 +1118,16 @@ def overview():
     Containerfile (`containerfile`, its path in the repository) links to the repository at the
     tag or commit its current Build came from (`containerfile_url`, None when that is not
     known); `repository` is where the Releases come from. Links only: nothing is fetched."""
-    found, defined = builds(), _defined()
+    from . import recipes
+    found, defined = builds(), release_defined()
+    stored_recipes = recipes.names()
+    active_recipes = {name for name in stored_recipes if defined is None or name not in defined}
     used = in_use()
     pins, users = pinned()
     values = settings.load()
     checked = versions.load()
     offered = versions.available(checked or {}, values["orca_version"] or None)
-    names = set(found) | set(users) | set(available()) | set(defined or [])
+    names = set(found) | set(users) | set(available()) | set(defined or []) | active_recipes
     names = sorted((n for n in names if NAME.fullmatch(n)), key=lambda n: (n != BASE, n))
     images = []
     for image in names:
@@ -1096,15 +1141,19 @@ def overview():
         known = now is not None and (packages is not None or any(
             offered["tools"][t] and now["tools"][t] for t in ("orca", *versions.NPM)))
         repository, ref = _source_ref(found.get(image, {}).get(cur) or {})
+        is_recipe = image in active_recipes
+        source = definition(image) if not is_recipe else f"Recipe {image}: Containerfile (current recipe.tar)"
+        problem = f"the installed Release also defines Image {image}; the Release wins and its Recipe is not built" \
+            if defined is not None and image in defined and image in stored_recipes else None
         images.append({
-            "name": image, "base": image == BASE,
-            "in_release": image in defined if defined is not None else None,
-            "current": cur, "vms": sorted(users.get(image, [])),
+            "name": image, "base": image == BASE, "recipe": is_recipe,
+            "in_release": False if is_recipe else (image in defined if defined is not None else None),
+            "current": cur, "vms": sorted(users.get(image, [])), "problem": problem,
             "running": {"build": running["build"], "step": running.get("step"),
                         "started": times.iso(running.get("started"))} if running else None,
             "package_updates": packages, "updates": changes, "update": bool(changes) if known else None,
-            "containerfile": definition(image),
-            "containerfile_url": version.file_url(repository, ref, definition(image)),
+            "containerfile": source,
+            "containerfile_url": None if is_recipe else version.file_url(repository, ref, definition(image)),
             "builds": public})
     return {"images": images, "builds_kept": values["builds_kept"], "release": _release(),
             "repository": version.REPOSITORY, "repository_url": version.repository_url(),
@@ -1142,10 +1191,14 @@ def images_cmd(args):
               "then the Resets")
     for image in result["images"]:
         head = f"Image {image['name']}" + (" (Base image)" if image["base"] else "")
+        if image["recipe"]:
+            head += " (Recipe)"
         head += f", current: {image['current'] or '-'}, VMs: {', '.join(image['vms']) or '-'}"
-        if image["in_release"] is False:
+        if image["in_release"] is False and not image["recipe"]:
             head += " (not in the installed Release)"
         print(head)
+        if image["problem"]:
+            print(f"  Problem: {image['problem']}")
         print(f"  Containerfile: {image['containerfile']}"
               + (f", as in the current Build: {image['containerfile_url']}" if image["containerfile_url"] else ""))
         if image["current"]:
@@ -1183,9 +1236,16 @@ def images_cmd(args):
 
 
 def _read_definition(image):
-    """(bytes, size) of the Image's Containerfile in the installed Release: a regular file that is
-    not itself a link (the directories above it are the package's, owned by root), at most
-    CONTAINERFILE_MAX bytes, cut after its last whole line; the size is the whole file's."""
+    """(bytes, size) of the Image's Containerfile in the installed Release or current Recipe,
+    cut at CONTAINERFILE_MAX bytes after its last whole line."""
+    if _recipe_image(image):
+        from . import recipes
+        data = recipes.containerfile(image)
+        size = len(data)
+        if len(data) > CONTAINERFILE_MAX:
+            cut = data.rfind(b"\n", 0, CONTAINERFILE_MAX)
+            data = data[:cut + 1] if cut >= 0 else data[:CONTAINERFILE_MAX]
+        return data, size
     rel = definition(image)
     path = os.path.join(paths.VM_SOURCE, rel)
     try:
@@ -1229,9 +1289,13 @@ def containerfile_cmd(args):
     text = SECRET.sub("[hidden]", clean(data.decode("utf-8", "replace")))
     truncated = len(data) < size
     release = _release()
+    is_recipe = _recipe_image(image)
+    source = f"Recipe {image}: Containerfile (current recipe.tar)" if is_recipe else definition(image)
+    url = None if is_recipe else version.file_url(version.REPOSITORY, version.tag(release), definition(image))
     if "json" in opts:
-        print(json.dumps({"image": image, "path": definition(image), "release": release,
-                          "url": version.file_url(version.REPOSITORY, version.tag(release), definition(image)),
+        from . import recipes
+        print(json.dumps({"image": image, "path": source, "release": release, "url": url,
+                          "recipe_sha256": recipes.sha256(image) if is_recipe else None,
                           "text": text, "size": size, "truncated": truncated}, ensure_ascii=False))
         return
     sys.stdout.write(text if not text or text.endswith("\n") else text + "\n")

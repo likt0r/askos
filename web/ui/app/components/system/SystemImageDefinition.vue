@@ -16,8 +16,8 @@ const file = ref<ContainerfileText | null>(null)
 
 const link = computed(() => githubLink(props.image.containerfile_url))
 const fileLink = computed(() => githubLink(file.value?.url))
-// the installed Release has no Containerfile for an Image it no longer defines
-const readable = computed(() => props.image.in_release !== false)
+// the installed Release has no Containerfile for an Image it no longer defines; a Recipe has its own
+const readable = computed(() => props.image.in_release !== false || !!props.image.recipe)
 const panelId = computed(() => `containerfile-${props.image.name}`)
 
 // where the link points: what the current Build came from
@@ -27,11 +27,14 @@ const builtFrom = computed(() => {
   if (b?.commit) return t('system.definition.atCommit', { commit: b.commit.slice(0, 12) })
   return null
 })
-// the text is the installed Release's; the current Build may have come from other files
-const differs = computed(() => !!file.value && !!props.build
-  && !(props.build.release && props.build.release === file.value.release))
+// the text is the installed Release's (or the current Recipe's); the current Build may have come
+// from other files
+const differs = computed(() => !!file.value && !!props.build && (props.image.recipe
+  ? !!props.build.recipe_sha256 && props.build.recipe_sha256 !== file.value.recipe_sha256
+  : !(props.build.release && props.build.release === file.value.release)))
 const differsText = computed(() => {
   const b = props.build
+  if (props.image.recipe) return t('system.definition.differsRecipe')
   if (b?.release) return t('system.definition.differsRelease', { release: b.release })
   if (b?.commit) return t('system.definition.differsCommit', { commit: b.commit.slice(0, 12) })
   return t('system.definition.differsUnknown')
@@ -95,7 +98,7 @@ function toggle() {
       </p>
       <template v-else>
         <p class="mb-1 flex flex-wrap items-center gap-x-2 text-xs text-muted" data-testid="containerfile-source">
-          <span>{{ file.release ? t('system.definition.fromRelease', { release: file.release }) : t('system.definition.fromInstalled') }}</span>
+          <span>{{ image.recipe ? t('system.definition.fromRecipe') : file.release ? t('system.definition.fromRelease', { release: file.release }) : t('system.definition.fromInstalled') }}</span>
           <a
             v-if="fileLink"
             :href="fileLink"
