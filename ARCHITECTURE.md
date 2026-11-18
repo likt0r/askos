@@ -128,9 +128,9 @@ flowchart LR
 - Everything that changes VMs, the Allowlist or credentials goes through the `agentbox`
   CLI: a root-owned Python package using only the standard library
   ([ADR 0006](docs/adr/0006-agentbox-is-a-dependency-free-python-package.md)), started with
-  `python3 -I`. It validates every argument itself; `logs` and `pair` also run without root
-  for members of the `libvirt` group. Every command has a `--json` form, and every command
-  that changes something is recorded in **Activity** (see below).
+  `python3 -I`. It validates every argument itself; `logs`, `pair` and `sign-in-link` also run
+  without root for members of the `libvirt` group. Every command has a `--json` form, and every
+  command that changes something is recorded in **Activity** (see below).
 
 ### VMs
 - One KVM VM per unit of separation ([ADR 0001](docs/adr/0001-vm-is-the-unit-of-separation.md),
@@ -1016,6 +1016,21 @@ memory, a login brake after five failures, CSRF protection via a custom header a
 Activity entries with address and device. Pairing codes, tokens
 and passwords never appear in logs.
 
+Besides the password, a **sign-in link** signs a browser in. `agentbox sign-in-link` runs only
+for root and the members of `libvirt`, who control every VM anyway; the Control Room cannot run
+it. It prints a link to the Control Room's address for the Host setup's mode, in Network mode
+the bind address, with a random token in its fragment (`/sign-in#link=<token>`), never in a
+query string, so the token reaches no server log. The token is valid once and for two minutes.
+The Host keeps only its SHA-256: one file per link, named by the hash and holding the expiry, in
+`/run/agentbox-sign-in-links`, a directory of `agentbox-web` and the group `libvirt` with mode
+0730 (the members of `libvirt` can add a file but not list them, nobody else reaches them), made
+by the package at every boot. Activity records the link's creation with the Host user, never the
+token. The sign-in page takes the token out of the address and sends it once in the body of
+`POST /api/v1/session`; the backend removes the link's file before the link counts, so of two
+uses at most one signs in, and refuses a used, expired or unknown token like a wrong password:
+after a second, counted towards the brake, recorded in Activity with address and device. A link
+that works gives an ordinary session, as long as `session_hours` of the Settings.
+
 The backend reads the Host setup (address and port) and the Settings with agentbox's own
 readers and never guesses past a file they refuse. It does not start with one (one line
 `agentbox-web: Host setup <path>: <reason>` or `agentbox-web: Settings <path>: <reason>`), and
@@ -1389,7 +1404,9 @@ need not be there or belong to another Release.
 
 The Host's records and state stay where they are: `/etc/agentbox` (`CONF`) and
 `/var/lib/agentbox` (`STATE`); `agentbox import` keeps its tar file in
-`/var/lib/agentbox/transfers` (`TRANSFERS`) while it is attached to the VM. An update of the RPM replaces only the package's files: it
+`/var/lib/agentbox/transfers` (`TRANSFERS`) while it is attached to the VM; the Control Room's
+sign-in links lie in `/run/agentbox-sign-in-links` (`SIGN_IN_LINKS`), which the package's
+tmpfiles entry makes at every boot. An update of the RPM replaces only the package's files: it
 restarts the Control Room, the expiry timer, the Container image cleanup timer and, when their code changed, the VMs' proxies,
 and never a VM; on a Host from before the Maintenance window it disables and deletes the timers
 of the version check and the weekly rebuild, and leaves the old Reset timer, which runs the
@@ -1634,8 +1651,12 @@ laptops.
   (at least 16 characters, scrypt), no second factor, a brake of five failed sign-ins per
   address in 15 minutes, and a self-signed certificate the browser can check only if the owner
   compares or installs it. Who can try: in Local-only anyone who can use the Host, in Network
-  mode the whole home network. `--force` keeps a stolen session from lifting strong Signals, as
-  long as it cannot write a Recipe.
+  mode the whole home network. A sign-in link is no way around the password for them: only root
+  and the members of `libvirt` can make one, and they control every VM anyway; its token is
+  random, works once within two minutes, and a wrong one counts towards the same brake. Whoever
+  opens a link first gets the session, so a link copied elsewhere (a chat, a shared clipboard)
+  is a session for whoever reads it in those two minutes. `--force` keeps a stolen session from
+  lifting strong Signals, as long as it cannot write a Recipe.
   Code that runs as the Control Room's service user gets no further than the Control Room: its
   sudoers rule lets it run `agentbox` as root only with the Control Room's own commands, and
   agentbox refuses it every other command and `--force` ([Control Room](#control-room));

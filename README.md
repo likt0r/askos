@@ -98,6 +98,7 @@ sudo agentbox pair priv                      # start it and print its Pairing co
 | SSH ports (2201–2454) | `127.0.0.1` only | `127.0.0.1` only, for now: the firewall has no rule for them yet |
 | Firewall | no rule for any network | in the default zone: the home network accepted on the Control Room's port and 6801–7054; everything else rejected there and on 6768–7054 and 16768 |
 | Pairing codes name | `127.0.0.1` | the bind address |
+| Sign-in links name | `127.0.0.1` | the bind address |
 | For | a laptop that is its own Host | a home server driven from laptops in the home network (or a VPN into it) |
 
 Options of `agentbox setup`:
@@ -121,6 +122,24 @@ only what differs (after an update, or when a run stopped). To switch modes, run
 `--force` and the new options: the Orca ports of the VMs and the firewall rules follow at once,
 and the password stays as it is; a new one needs `--new-password`. An existing certificate
 stays; delete `cert.pem` and `key.pem` in `/etc/agentbox/web` first if its names no longer fit.
+
+### Signing in to the Control Room
+
+The Control Room asks for its password. On the Host, `agentbox sign-in-link` prints a link that
+signs a browser in without it, once and within two minutes:
+
+```sh
+xdg-open "$(agentbox sign-in-link)"      # the link alone on stdout; --json: url, expires, mode
+```
+
+Only root and the members of `libvirt` can run it (they control every VM anyway). The link
+names the Control Room's address for the mode, in Network mode the bind address, and carries
+its token after `#`, which the browser never sends to a server; the Host keeps only a hash of
+it. Opening it gives an ordinary session as long as `session_hours`; a link that was used,
+expired or is unknown is refused like a wrong password and counts towards the brake of five
+failed sign-ins in 15 minutes. Activity records who made the link and the device and address
+that used it, never the token. The password stays the other way in. A link is a session for
+whoever opens it first, so do not paste it where others can read it.
 
 Setup enables `libvirt-guests.service`, so a shutdown or reboot of the
 Host shuts the VMs down instead of killing them: running VMs get a clean shutdown, all at
@@ -784,8 +803,8 @@ not Settings and cannot be changed from the browser.
 
 Every command also takes `--json`, and `--actor TEXT` before the command or right after it
 names who caused it in Activity (the Control Room passes the browser's device and address,
-timers pass `timer`; without it, the user who ran `sudo`). Commands other than `logs` and `pair`
-need root.
+timers pass `timer`; without it, the user who ran `sudo`). Commands other than `logs`, `pair`
+and `sign-in-link` need root; those three also run for the members of `libvirt`.
 
 The Control Room offers the same in the browser. Its UI talks to the API `/api/v1`,
 described with its errors and live events in

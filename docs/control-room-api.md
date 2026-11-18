@@ -13,8 +13,8 @@ Vocabulary as in [GLOSSARY.md](../GLOSSARY.md). How the backend works:
   at most 8 KiB. Times are ISO 8601 in UTC (`2026-11-03T12:00:00Z`) unless a field says
   otherwise.
 - **Sign-in.** A session cookie `agentbox` (`Secure; HttpOnly; SameSite=Strict`), set by
-  `POST /session`. Every endpoint except `POST /session` and `DELETE /session` needs it,
-  otherwise `401 unauthenticated`. The session lasts `session_hours` of the Settings.
+  `POST /session` with the password or the token of a sign-in link (Session). Every endpoint
+  except `POST /session` and `DELETE /session` needs it, otherwise `401 unauthenticated`. The session lasts `session_hours` of the Settings.
 - **CSRF.** Every request other than `GET` must carry the header `X-Agentbox: 1`, otherwise
   `403 csrf_header_missing` (the body is not read).
 - **Actor.** Each change is recorded in Activity with the browser's device (from its
@@ -59,10 +59,11 @@ Codes from the backend itself:
 | 400 | `confirmation_required` | deleting, revoking pairings or revealing the Pairing code without the confirmation |
 | 401 | `unauthenticated` | no valid session |
 | 401 | `wrong_password` | sign-in with a wrong password |
+| 401 | `sign_in_link_refused` | sign-in with the token of a sign-in link that was used, has expired or is unknown |
 | 403 | `csrf_header_missing` | `X-Agentbox: 1` missing |
 | 404 | `not_found` | no such endpoint |
 | 405 | `method_not_allowed` | endpoint exists, other method (`Allow` header lists them) |
-| 429 | `too_many_attempts` | login brake: five failures in 15 minutes from one address (`Retry-After` in seconds) |
+| 429 | `too_many_attempts` | login brake: five failures (wrong passwords and refused sign-in links together) in 15 minutes from one address (`Retry-After` in seconds) |
 | 503 | `too_many_streams` | eight live connections are open already (`Retry-After: 10`) |
 | 503 | `readings_unavailable` | host readings are not available |
 | 503 | `settings_unreadable` | agentbox refuses `/etc/agentbox/settings.json` (sign-in, `GET /session`; its reason in `detail`): the backend never falls back to the defaults, it answers this, logs the reason and then stops (exit status 78, which its unit does not restart) until the file is fixed on the Host |
@@ -192,7 +193,7 @@ UI (`errors.*`); `tests/test_control_room_v1.py` checks that they agree.
 
 | Method and path | Body | Response |
 |---|---|---|
-| `POST /session` | `{"password": "..."}` | `200 {"authenticated": true, "expires": "<time>", "default_language": "browser"\|"en"\|"de"}` and the cookie; `401 wrong_password`, `429 too_many_attempts`, `503 settings_unreadable` |
+| `POST /session` | `{"password": "..."}` or `{"link": "<token>"}` | `200 {"authenticated": true, "expires": "<time>", "default_language": "browser"\|"en"\|"de"}` and the cookie; `401 wrong_password`, `401 sign_in_link_refused`, `429 too_many_attempts`, `503 settings_unreadable`; both fields: `400 invalid_field` (`field`: `link`) |
 | `GET /session` | | `200 {"authenticated": true, "expires": "<time>", "default_language": "browser"\|"en"\|"de"}`, else `401 unauthenticated`; `503 settings_unreadable` |
 | `DELETE /session` | | `200 {"authenticated": false}`, cookie cleared, live streams of the session end |
 | `GET /version` | | `200 {"api": 1, "version": "<16 hex>"\|null, "ui": "nuxt"\|null, "installed": "<time>"\|null, "release": "<MAJOR.MINOR.PATCH>"\|null}` (`version` is the UI build, which open pages compare to offer a reload; `version`, `ui` and `installed` are `null` while no UI build is installed; `release` is the Release of Agent Box, the same as `agentbox version`) |
@@ -202,8 +203,20 @@ that request (`browser` without the file or the key), so the UI knows it right a
 sign-in and on every page load without `GET /settings`. A file agentbox refuses answers
 `503 settings_unreadable` and stops the backend (Errors); it does not start with one either.
 
+`link` is the token of a sign-in link, which `agentbox sign-in-link` prints on the Host (only
+root and the members of `libvirt` can run it; the Control Room cannot) as
+`https://<address>:<port>/sign-in#link=<token>`. The token stays in the fragment, which the
+browser never sends; the sign-in page takes it from there and sends it here, once. It works once
+and within two minutes, and gives the same session as the password. A token that was used, has
+expired or is unknown answers `401 sign_in_link_refused` after a second, like a wrong password,
+and counts towards the same brake; while the brake holds, a link is not taken (`429`) and stays
+valid until it expires.
+
 Sign-ins, failures, refusals by the brake and sign-outs are Activity entries (codes
-`signin`, `signin.failed`, `signin.locked`, `signout`).
+`signin`, `signin.failed`, `signin.link` (with a sign-in link), `signin.link-refused`,
+`signin.locked`, `signout`), with address and device, never the password or the token. Making a
+sign-in link is an entry of the CLI (code `sign-in-link`, kind `credentials`, the Host user as
+the Actor).
 
 ## VMs
 
@@ -452,7 +465,7 @@ first:
 
 | `code` | `params` |
 |---|---|
-| `start`, `wake`, `pause`, `restart`, `close-web`, `migrate-allowlist`, `set-claude-token`, `pair`, `observe`, `unpair`, `revoke-pairings`, `migrate`, `regenerate`, `setup` | none |
+| `start`, `wake`, `pause`, `restart`, `close-web`, `migrate-allowlist`, `set-claude-token`, `pair`, `observe`, `unpair`, `revoke-pairings`, `migrate`, `regenerate`, `setup`, `sign-in-link` | none |
 | `reset` | `no_start` |
 | `focus` | `target` (a VM), or `off` |
 | `create` | `image` (when given) |
@@ -480,7 +493,7 @@ first:
 | `update-now` | `reset` |
 | `set-image` | `image`, `build` (a Build pin) |
 | `import` | `folder` (absolute, on the Host), `target` (under `~/code` in the VM, when valid); once it succeeded `files` and `bytes` (what the VM reports) |
-| `signin`, `signin.failed`, `signin.locked`, `signout` | none (address and device are no parameters) |
+| `signin`, `signin.failed`, `signin.link`, `signin.link-refused`, `signin.locked`, `signout` | none (address and device are no parameters) |
 | `alert` | `domain`, `signals` |
 | `github.token` | `repository`, `expires` (GitHub's expiry, ISO 8601), `app_id` (the App that issued it; not in lines from before there were several Apps) |
 | `github.refused` | `request` (as the VM sent it), `repository` (when the request names one), `reason` (a stable code, below) and its parameters (`status`, `app_id`) |
