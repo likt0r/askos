@@ -13,7 +13,8 @@ access its work needs, so that what goes wrong in one VM stays in it. It is buil
    same: every VM starts with the Allowlist entries a new Host has, most of which take uploads
    ([Egress](#egress)), and the owner can give two VMs an entry for every VM, the same GitHub
    owner, folder, Image (every Image sits on the Base Build), paired laptop or Claude account;
-   and every VM reaches the same services on the Host ([The boundary of a VM](#the-boundary-of-a-vm))
+   and every VM reaches the same services on the Host
+   ([The boundary of a VM](#the-boundary-of-a-vm))
    ([ADR 0001](docs/adr/0001-vm-is-the-unit-of-separation.md)).
 2. **Least privilege for agents.** An agent gets what its work needs and no more: the
    destinations on its Allowlist, GitHub tokens for one repository and one hour, nothing of
