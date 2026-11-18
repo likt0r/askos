@@ -29,12 +29,20 @@ An isolated virtual machine in which agents work; the unit of separation, with i
 _Avoid_: context, environment, sandbox, container
 
 **VM registry**:
-The root-owned records on the Host that define which VMs exist, one per VM: name, network number, Orca port, Image, optional Build pin, memory limit, Data disk size, Container image cleanup, GitHub owners, VM variables and creation date. Everything else about a VM is generated from its record.
+The root-owned records on the Host that define which VMs exist, one per VM: name, network number, Orca port, Image, optional Build pin, memory limit, Data disk size, Container image cleanup, GitHub owners, VM variables, SSH access and creation date. Everything else about a VM is generated from its record.
 _Avoid_: inventory, VM config
 
 **VM variables**:
 Environment variables of one VM, kept in its record and passed in at its next start, for `orca serve`, the agents and terminals it starts, and login shells (German UI: VM-Variablen). They are not secret; the Host refuses every name a Safeguard or Agent Box itself reads, so none switches a Safeguard off.
 _Avoid_: env vars, environment, env
+
+**SSH access**:
+Whether a VM can be reached over SSH through its own SSH port on the Host, and with which SSH keys; off for a new VM. Only the user `agent` logs in, only with an SSH key, never with a password (German UI: SSH-Zugang).
+_Avoid_: SSH login, remote shell, SSH server
+
+**SSH key**:
+A public key entered for one VM that may log in to it over SSH; each VM has its own, and removing one ends every open SSH session of the VM (German UI: SSH-Schlüssel).
+_Avoid_: authorized key, public key (on its own)
 
 **Image**:
 A clean operating-system template, defined by a Containerfile shipped in the installed Release or by a Recipe, and built on the Host, from which a VM's System disk is created; each VM uses exactly one Image. Not a Container image.
