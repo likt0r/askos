@@ -12,13 +12,14 @@ The only way into a VM was Orca: its Orca port and a Paired device. An owner who
 
 ## The boundary
 
-- **The Host decides** whether a VM is reachable over SSH and with which keys: the SSH port exists only while SSH access is on, and only the keys in the record reach the VM. Nothing in the VM can add a key; the key file is root's, outside the home.
+- **The Host decides** whether a VM is reachable over SSH and with which keys: the SSH port exists only while SSH access is on, and only the keys in the record reach the VM. Nothing running as `agent` can add a key; the key file is root's, outside the home.
 - **The sshd in the VM enforces** key-only login, `agent` only and the forwarding limits. That is a Safeguard, not a security boundary: code that gets root in the VM can change sshd as it likes. For the same reason key options (`command=`, `from=`) are refused, and the checks the VM makes again on the keys are plausibility checks (ADR 0019).
 - **Only the client finally refuses `-R` and `-A`.** Remote and agent forwarding open a path from the VM to the owner's laptop or home network past the proxy; the VM's sshd refuses them, but cannot be trusted to. The config block sets `ForwardAgent no` and `ForwardX11 no`, so the client offers neither, and `-R` takes the owner asking for it; `StrictHostKeyChecking yes` with the host key from the Host keeps the client from talking to anything but the VM.
 
 ## Consequences
 
 - A VM is no longer reachable only through its Orca port. Every local process on the Host reaches port 22 of a VM directly (the nftables rules of the VM networks limit only traffic from a VM); it still needs a key.
+- Any connection to the SSH port wakes the VM before sshd checks a key, so in Network mode every device in the home network can wake a VM with SSH access on, as it can through the Orca port.
 - In Network mode a firewall rule accepts the home network on 2201–2454 and rejects the rest. `regenerate` writes it, so an update of Agent Box needs no `setup`.
 - A Build without the wrapper keeps the keys the owner adds and reports `ssh_missing` until a Reset onto a newer Build.
 - An open SSH session postpones the automatic Reset like an Orca connection, with its own reason `ssh-connected`. Activity records turning SSH access on or off and adding or removing keys, not each connection.
@@ -32,4 +33,4 @@ The only way into a VM was Orca: its Orca port and a Paired device. An owner who
 - SSH keys for the whole Host, shared by VMs: rejected, a VM is the unit of separation ([ADR 0001](0001-vm-is-the-unit-of-separation.md)); a key that may enter `work` must not also enter `priv`. Keys can be copied from another VM once instead.
 - Keys applied only at the next start, as VM variables are: rejected, a removed key would stay valid until then.
 - A host key made in the VM: rejected, every Reset would make a new one.
-- Running `sshd -T` from the Build for the Safeguard check, as #126 first had it: rejected, ADR 0008 runs nothing from the Image. Reading the files the way sshd does is more code, and by ADR 0019 it only has to be right for files written in good faith.
+- Running `sshd -T` from the Build for the Safeguard check: rejected, ADR 0008 runs nothing from the Image. Reading the files the way sshd does is more code, and by ADR 0019 it only has to be right for files written in good faith.
