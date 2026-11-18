@@ -102,6 +102,10 @@ flowchart LR
   them; everything else on those ports is rejected. The rule covers the
   whole Orca port range 6801–7054, so a new VM needs no firewall change; only the ports of
   VMs in the registry have anything listening.
+- **SSH access** to a VM, through its own SSH port on the Host with SSH keys and a host key
+  from the Host, is decided ([ADR
+  0020](docs/adr/0020-ssh-into-a-vm-through-its-own-host-port.md)) but not built yet; each
+  ticket of #126 describes here what it builds.
 - The Host applies security updates daily (dnf5-automatic, set up by the owner, not by Agent
   Box) and never reboots on its own.
   Agent Box itself is updated only by the owner, with `dnf upgrade` of a Release
