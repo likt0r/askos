@@ -52,6 +52,7 @@ from .errors import Fail, die
 MIN_PASSWORD = 16
 WEB_GROUP = "agentbox-web"
 WEB_UNIT = "agentbox-web.service"
+CONTROL_ROOM_PENDING = "control-room"      # a new Host setup the Control Room has not restarted onto
 
 NETWORK_OPTIONS = {"--bind": "bind", "--home-network": "home_network"}
 
@@ -171,18 +172,45 @@ def _fingerprint():
     return r.stdout.strip().partition("=")[2] or None
 
 
+# rules of a replaced Host setup that wait until no port listens on every address any more
+TAKE_BACK = os.path.join(paths.STATE, "pending", "home-network-rules.json")
+
+
+def _waiting():
+    rules = state_files.read_json(TAKE_BACK)
+    return [r for r in rules if isinstance(r, str)] if isinstance(rules, list) else []
+
+
 def _firewall(new, old):
-    """Make the firewall match `new` (a Host setup): add its rules, remove those of `old`
-    that `new` no longer has. Nothing is called when there is nothing to do."""
+    """Add the rules of `new` (a Host setup), before any port listens on every address. Those
+    of `old` that `new` no longer has are only noted (TAKE_BACK): _take_back removes them once
+    the sockets and the Control Room have moved. Nothing is called when there is nothing to add."""
     add = [r for rules in firewall.home_network_rules(new) for r in rules]
-    drop = [r for r in (x for rules in firewall.home_network_rules(old) for x in rules) if r not in add] if old else []
-    if not add and not drop:
+    drop = [r for rules in firewall.home_network_rules(old) for r in rules] if old else []
+    waiting = _waiting()
+    later = [r for r in dict.fromkeys(waiting + drop) if r not in add]
+    if later != waiting:
+        if later:
+            state_files.directory(os.path.dirname(TAKE_BACK), 0o700, only_new=True)
+            state_files.write_json(TAKE_BACK, later, 0o600)
+        else:
+            state_files.remove(TAKE_BACK)
+    if not add:
         return []
-    changed = firewall.ensure(firewall.default_zone(), add=[("rich-rule", r) for r in add],
-                              remove=[("rich-rule", r) for r in drop])
-    counts = {verb: sum(1 for v, _, _ in changed if v == verb) for verb in ("add", "remove")}
-    return [f"{n} rules {word}" for verb, word in (("add", "added"), ("remove", "removed"))
-            for n in [counts[verb]] if n]
+    changed = firewall.ensure(firewall.default_zone(), add=[("rich-rule", r) for r in add])
+    return [f"{len(changed)} rules added"] if changed else []
+
+
+def _take_back():
+    """The rules of a replaced Host setup (TAKE_BACK) removed, once regenerate moved the Orca
+    and SSH port sockets and the Control Room was restarted onto the new Host setup."""
+    rules = _waiting()
+    if not rules:
+        state_files.remove(TAKE_BACK)
+        return []
+    changed = firewall.ensure(firewall.default_zone(), remove=[("rich-rule", r) for r in rules])
+    state_files.remove(TAKE_BACK)
+    return [f"{len(changed)} rules removed"] if changed else []
 
 
 def _sudo_user():
@@ -323,6 +351,8 @@ def setup(args):
     def host_setup_and_regenerate():
         with state_files.locked(paths.REGISTRY):
             if record is not None:
+                if not again:       # the Control Room restarts onto it, also in a run that goes on
+                    generate.mark_pending(CONTROL_ROOM_PENDING)
                 state_files.write_json(hostsetup.PATH, record)
                 steps.written = True
             # the Orca ports of existing VMs follow the mode
@@ -332,10 +362,10 @@ def setup(args):
         return said + generate.report(result)
 
     def control_room():
-        if again:
+        if not generate.is_pending(CONTROL_ROOM_PENDING):
             return hoststeps.enable(WEB_UNIT)
         programs.systemctl("enable", WEB_UNIT)
-        programs.systemctl("restart", WEB_UNIT)
+        generate.apply_pending(CONTROL_ROOM_PENDING, "restart", WEB_UNIT)
         return [f"{WEB_UNIT} enabled and restarted"]
 
     steps.run("Certificate and password", certificate_and_password)
@@ -347,6 +377,8 @@ def setup(args):
     steps.run("Activity journal", hoststeps.journal_sockets)
     steps.run("Feeds", hoststeps.first_feeds)
     steps.run("Control Room", control_room)
+    # only now no port listens on every address any more: the rules a switch replaced go
+    steps.run("Firewall rules taken back", _take_back)
 
     url = f"https://{new['bind']}:{new['web_port']}"
     fingerprint = _fingerprint()

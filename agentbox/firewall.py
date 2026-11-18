@@ -7,9 +7,9 @@ firewall-cmd only to ask.
 
 In Network mode rich rules of the default zone accept the home network on the Control Room's
 port, the Orca ports and the SSH ports, and reject everything else there, over IPv4 and IPv6.
-setup sets them all and takes back those of the Host setup it replaces; regenerate (and every
-command that writes a VM's units) adds the SSH ports' rules, so an update that brings them
-needs no setup. In Local-only there is no rule and nothing is called.
+setup sets them all and takes back those of the Host setup it replaces once no port listens on
+every address any more (setup.py); regenerate (and every command that writes a VM's units)
+adds the SSH ports' rules, so an update that brings them needs no setup. In Local-only there is no rule and nothing is called.
 """
 from . import hostsetup, programs
 

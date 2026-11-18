@@ -333,6 +333,10 @@ def _pending(what):
     return os.path.join(paths.STATE, "pending", what)
 
 
+def is_pending(what):
+    return os.path.exists(_pending(what))
+
+
 def mark_pending(pending):
     state_files.directory(os.path.dirname(_pending(pending)), 0o700, only_new=True)
     open(_pending(pending), "w").close()

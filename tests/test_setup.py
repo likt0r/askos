@@ -473,6 +473,89 @@ class ExistingHostTest(SetupTest):
         for side in ("permanent", "runtime"):
             self.assertEqual(self.zone("public", side)["rich_rules"], [])
 
+    def ordered_calls(self):
+        """firewall-cmd's calls that change a rich rule or reload, and systemctl's that move a
+        port to its address: restarting the Orca and SSH port sockets, enabling them, restarting
+        the Control Room; as (cmd, argv) in the order they ran."""
+        out = []
+        for c in self.calls():
+            argv = c.get("argv", [])
+            if c["cmd"] == "firewall-cmd" and any(a.startswith(("--add-rich-rule", "--remove-rich-rule"))
+                                                  or a == "--reload" for a in argv):
+                out.append((c["cmd"], argv))
+            elif c["cmd"] == "systemctl" and argv[:1] in (["restart"], ["enable"]) \
+                    and any(a.startswith(("agentbox-gui-", "agentbox-ssh-", "agentbox-web.")) for a in argv):
+                out.append((c["cmd"], argv))
+        return out
+
+    def two_vms(self):
+        vm_records.write(self.root, vm_records.record("work", 1, ssh_access=True), vm_records.record("priv", 2))
+        self.scenario(vms={"priv": {"uuid": PRIV_UUID}})
+
+    def test_a_switch_to_network_mode_adds_the_rules_before_any_port_listens_on_every_address(self):
+        """#150: the rules come first, then the sockets move."""
+        self.two_vms()
+        self.ok("--password-file", self.password_file)
+        self.forget_calls()
+        self.ok(*NETWORK_ARGS, "--force")
+        calls = self.ordered_calls()
+        added = [i for i, (cmd, argv) in enumerate(calls) if cmd == "firewall-cmd"]
+        moved = [i for i, (cmd, argv) in enumerate(calls) if cmd == "systemctl"]
+        self.assertEqual(len(added), 12)        # 11 rules and the reload
+        self.assertEqual(calls[added[-1]], ("firewall-cmd", ["--reload"]))
+        for socket in ("agentbox-gui-work.socket", "agentbox-ssh-work.socket", "agentbox-gui-priv.socket"):
+            self.assertIn(("systemctl", ["restart", socket]), calls)
+        self.assertLess(added[-1], moved[0])
+
+    def test_a_switch_to_local_only_takes_the_rules_back_only_once_every_port_left_every_address(self):
+        """#150: the sockets on 127.0.0.1 again and the Control Room on it, then the rules go."""
+        self.two_vms()
+        self.ok(*NETWORK_ARGS, "--password-file", self.password_file)
+        self.forget_calls()
+        self.ok("--force")
+        calls = self.ordered_calls()
+        removed = [i for i, (cmd, argv) in enumerate(calls) if cmd == "firewall-cmd"]
+        self.assertEqual(len(removed), 12)
+        self.assertEqual(calls[removed[-1]], ("firewall-cmd", ["--reload"]))
+        for unit in ("agentbox-gui-work.socket", "agentbox-ssh-work.socket", "agentbox-gui-priv.socket",
+                     "agentbox-web.service"):
+            self.assertLess(calls.index(("systemctl", ["restart", unit])), removed[0], unit)
+        self.assertEqual(self.zone("public", "runtime")["rich_rules"], [])
+
+    def test_a_switch_to_local_only_that_stops_keeps_the_rules_until_a_run_again_moved_the_ports(self):
+        """#150: regenerate fails before the sockets left every address: the rules stay, and
+        running setup again takes them back once the sockets and the Control Room moved."""
+        self.two_vms()
+        self.ok(*NETWORK_ARGS, "--password-file", self.password_file)
+        accept, reject = rich_rules()
+        self.scenario(vms={"priv": {"uuid": PRIV_UUID}}, virt_install_fails=["agentbox-work"])
+        code, _, err = self.setup_run("--force")
+        self.assertEqual(code, 1, err)
+        self.assertIn("setup stopped at regenerate: ", err)
+        self.assertEqual(self.host_setup()["mode"], "local")
+        for side in ("permanent", "runtime"):
+            self.assertEqual(sorted(self.zone("public", side)["rich_rules"]), sorted(accept + reject))
+        self.assertEqual(self.rich("remove"), [])
+        # once the cause is gone, a run again without options moves the ports, then the rules go
+        self.scenario(vms={"priv": {"uuid": PRIV_UUID}})
+        self.forget_calls()
+        self.ok()
+        self.assertIn("\nListenStream=127.0.0.1:2201\n", self.read("etc/systemd/system/agentbox-ssh-work.socket"))
+        calls = self.ordered_calls()
+        removed = [i for i, (cmd, argv) in enumerate(calls) if cmd == "firewall-cmd"]
+        self.assertEqual(sorted(self.rich("remove")), sorted(accept + reject))
+        for unit in ("agentbox-gui-work.socket", "agentbox-ssh-work.socket", "agentbox-gui-priv.socket",
+                     "agentbox-web.service"):
+            self.assertLess(calls.index(("systemctl", ["restart", unit])), removed[0], unit)
+        for side in ("permanent", "runtime"):
+            self.assertEqual(self.zone("public", side)["rich_rules"], [])
+        # and nothing is left to take back
+        self.scenario(vms={"priv": {"uuid": PRIV_UUID}}, systemctl_active=ENABLED)
+        self.forget_calls()
+        self.ok()
+        self.assertEqual(self.rich("remove"), [])
+        self.assertNotIn(["restart", "agentbox-web.service"], [c["argv"] for c in self.calls("systemctl")])
+
     def test_never_touches_settings_the_registry_the_certificate_or_the_github_app(self):
         vm_records.write(self.root)
         self.scenario(vms={"priv": {"uuid": PRIV_UUID}})
@@ -637,13 +720,15 @@ class HostStepsTest(SetupTest):
     def test_the_steps_run_in_their_order(self):
         """ARCHITECTURE.md, "Setting a Host up": the self-test before anything changes, the
         migrations around regenerate, the sockets of the Activity journal only after regenerate
-        gave the units their group, the Control Room last."""
+        gave the units their group, the Control Room and then the firewall rules a switch took back
+        last."""
         out = self.ok("--password-file", self.password_file, "--json")
         self.assertEqual([s["step"] for s in json.loads(out)["steps"]],
                          ["Self-test of the detection", "Directories", "Groups", "Lists", "Firewall zone libvirt",
                           "Network rules of the VMs", "libvirt-guests", "Expiry of Temporary allowlist entries",
                           "Container image cleanup", "migrate", "migrate-allowlist", "Certificate and password", "Firewall for the home network", "regenerate",
-                          "Proxies", "migrate-lists", "Activity journal", "Feeds", "Control Room"])
+                          "Proxies", "migrate-lists", "Activity journal", "Feeds", "Control Room",
+                          "Firewall rules taken back"])
 
     def test_libvirt_guests_shuts_the_vms_down_and_is_never_restarted(self):
         """The configuration test_lifecycle.py checks; stopping or restarting the service would
@@ -675,7 +760,7 @@ class HostStepsTest(SetupTest):
         self.assertIn("Host setup unchanged: Local-only", out)
         for step in ("Directories", "Groups", "Lists", "Firewall zone libvirt", "Network rules of the VMs",
                      "libvirt-guests", "migrate", "migrate-allowlist", "regenerate", "Proxies", "migrate-lists",
-                     "Activity journal", "Feeds", "Control Room"):
+                     "Activity journal", "Feeds", "Control Room", "Firewall rules taken back"):
             self.assertIn(f"\n{step}: up to date\n", "\n" + out)
         # also in Network mode, with its rules in place
         self.forget_calls()
@@ -941,7 +1026,8 @@ class HostStepsTest(SetupTest):
         self.scenario()
         out = self.ok()
         self.assertIn("network rules reloaded", out)
-        self.assertIn(["start", "agentbox-web.service"], [c["argv"] for c in self.calls("systemctl")])
+        # the Control Room starts on the Host setup the stopped run wrote
+        self.assertIn(["restart", "agentbox-web.service"], [c["argv"] for c in self.calls("systemctl")])
 
     def test_a_broken_list_of_the_host_fails_the_self_test_before_anything_changes(self):
         self.write("etc/agentbox/watchlist.json", "{kaputt")

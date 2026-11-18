@@ -104,7 +104,10 @@ flowchart LR
   Orca port range 6801–7054 and the whole SSH port range 2201–2454, so a new VM or turning SSH
   access on needs no firewall change; only the ports of VMs in the registry have anything
   listening. `agentbox setup` sets the rules and, when `--force` switches the mode or the home
-  network, takes back those that no longer apply. The rules of the SSH ports are also added by
+  network, takes back those that no longer apply. It adds them before any port listens on every
+  address, and takes them back only once the Orca and SSH port sockets and the Control Room
+  listen where the new Host setup says; a run that stops before keeps them until a run again
+  gets there. The rules of the SSH ports are also added by
   `regenerate`, and by `set-ssh` before it opens an SSH port, so an update that brings them
   needs no `setup`, and no SSH port listens on every address before its rules are loaded.
 - **SSH access** to a VM ([ADR 0020](docs/adr/0020-ssh-into-a-vm-through-its-own-host-port.md)) is
@@ -1328,8 +1331,9 @@ certificate name, owner user) and does the Host steps, in this order
 11. **Certificate and password** of the Control Room: the certificate unless there is one; the
     password, a new one only with `--new-password` (see below).
 12. **Firewall for the home network**: in Network mode the rules of the Control Room's, the
-    Orca and the SSH ports; none in Local-only. Those of a Host setup `--force` replaces are
-    taken back where the new one has no such rule.
+    Orca and the SSH ports, before any of them listens on every address; none in Local-only.
+    Those of a Host setup `--force` replaces that the new one does not have are noted under
+    `/var/lib/agentbox/pending` for step 19.
 13. **`regenerate`**: the Host setup written, then the VMs' networks, units, disks and
     definitions from the VM registry. It loads the VM network rules before it brings up a VM
     network, so steps 5 and 6 and the rules are in place before any VM can start.
@@ -1345,7 +1349,11 @@ certificate name, owner user) and does the Host steps, in this order
     (see Activity).
 17. **Feeds**: the first fetch started at once, while none has run yet.
 18. **Control Room**: `agentbox-web.service` enabled and started; restarted after a new Host
-    setup.
+    setup, also by the run that goes on after one that stopped before this step.
+19. **Firewall rules taken back**: the rules step 12 noted, removed only now that `regenerate`
+    has moved the Orca and SSH port sockets and the Control Room has restarted, so on a switch
+    to Local-only no port listens on every address without its rules. A run that stops before
+    leaves them in place, and running setup again takes them back once it gets here.
 
 The migrations run as commands of their own, each with its own Activity entry. Every step
 changes only what differs from how it should be and says what it changed
