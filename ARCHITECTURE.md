@@ -12,7 +12,7 @@ access its work needs, so that what goes wrong in one VM stays in it. It is buil
    apart, run in different VMs; nothing of one reaches the other unless both are given the
    same: the Allowlist entries every VM starts with (GitHub, the AI providers, the registries,
    where data can be put and fetched), an entry the owner allows for every VM, the same GitHub
-   owner
+   owner, the same folder imported
    ([ADR 0001](docs/adr/0001-vm-is-the-unit-of-separation.md)).
 2. **Least privilege for agents.** An agent gets what its work needs and no more: the
    destinations on its Allowlist, GitHub tokens for one repository and one hour, nothing of
@@ -28,7 +28,7 @@ access its work needs, so that what goes wrong in one VM stays in it. It is buil
    page. What a VM holds is narrow and, where it can be, short-lived.
 
 Trusted, and so not defended against
-([ADR 0019](docs/adr/0019-the-host-and-what-its-owner-builds-are-trusted.md)):
+([ADR 0019](docs/adr/0019-the-host-and-what-its-owner-writes-are-trusted.md)):
 
 - **The Host and whoever administers it**: root, the members of `libvirt` and the owner
   signed in to the Control Room. They control every VM anyway. Someone who only gets hold of
@@ -1337,7 +1337,7 @@ mechanism, where it stops, and what limits the damage where anything does. A lim
 is known and no vulnerability; a way past a mechanism that this list does not name is one, and
 [SECURITY.md](SECURITY.md) says how to report it privately. Outside the [threat
 model](#threat-model) altogether: what it trusts (the Host, its admins and what the owner
-builds), theft of the Host, targeted attacks against its owner, attacks on the laptops.
+writes into its Images), theft of the Host, targeted attacks against its owner, attacks on the laptops.
 
 ### Egress
 
@@ -1473,7 +1473,7 @@ builds), theft of the Host, targeted attacks against its owner, attacks on the l
   model](#threat-model). Code that runs during a Build is not: a package or a download there
   could undermine a Safeguard in a way the check does not look for (a wrapper earlier on
   `PATH`, a service that rewrites a file at boot), and a Build reaches the internet without an
-  Allowlist. Mitigation: the minimum age where a Build installs through npm, pnpm, Bun or uv
+  Allowlist. Mitigation: the minimum age where a Build installs through npm or uv
   ([Packages](#packages)); what a VM can reach ([Egress](#egress)) and hold ([Credentials in a
   VM](#credentials-in-a-vm)) is decided outside it, on the Host.
 - **Repositories in one VM are not isolated from each other.** Every agent in a VM runs as the
@@ -1535,12 +1535,13 @@ builds), theft of the Host, targeted attacks against its owner, attacks on the l
   Room offers: reveal Pairing codes, open the web, allow destinations without strong Signals,
   replace credentials, start a Build and reset a VM onto it ([Control Room](#control-room)).
   Once the Control Room uploads Recipes
-  ([ADR 0018](docs/adr/0018-recipes-define-images-on-the-host.md)), it can write one as well:
-  the Safeguard check is written against mistakes, not against a Recipe made to get past it
-  ([threat model](#threat-model)). The ten kept Recipe versions and Activity show afterwards what
-  changed, unless the session wore them out with further saves or a shorter Activity retention
-  in the Settings. It has one password (at least 16
-  characters, scrypt), no second factor, a brake of five failed sign-ins per address in 15
+  ([ADR 0018](docs/adr/0018-recipes-define-images-on-the-host.md)), it can write one as well,
+  and the Recipe's `RUN` lines then run as root in a container on the Host ([Agent Box's own
+  code](#agent-boxs-own-code)); the Safeguard check is written against mistakes, not against a
+  Recipe made to get past it ([threat model](#threat-model)). The ten kept Recipe versions and
+  Activity show afterwards what changed, unless the session wore them out with further saves or
+  a shorter Activity retention in the Settings. It has one password (at least 16 characters,
+  scrypt), no second factor, a brake of five failed sign-ins per address in 15
   minutes, and a self-signed certificate the browser can check only if the owner compares or
   installs it. Who can try: in Local-only anyone who can use the Host, in Network mode the whole
   home network. `--force` keeps a stolen session from lifting strong Signals. Code that runs as
@@ -1576,14 +1577,15 @@ builds), theft of the Host, targeted attacks against its owner, attacks on the l
   follow.
 - **Builds run as root on the Host** (podman, bootc-image-builder) from the installed Release's
   Containerfiles and from Recipes the owner writes ([Images and Builds](#images-and-builds)).
-  Mitigation: branch protection on `main` and installing only reviewed code keep agents' branches
-  out of Release Images. A Recipe is the owner's reviewed input, not an agent's: the [threat
-  model](#threat-model) trusts it, and the Safeguard check catches mistakes in it, not a Recipe
-  made to get past it. What a stolen Control Room session builds is under [The Host](#the-host).
-  The code a Build runs (package scriptlets, downloads, install scripts) runs in a rootful
-  container on the Host, with the internet open and no Allowlist: a container escape there is
-  root on the Host, which ADR 0002 keeps agents away from by giving them VMs. Mitigation: the
-  minimum age where a Build installs through npm, pnpm, Bun or uv; Fedora's packages come
+  The [threat model](#threat-model) trusts what these say: branch protection on `main` and
+  installing only reviewed code keep agents' branches out of Release Images, and a Recipe is the
+  owner's reviewed input, not an agent's. What a stolen Control Room session builds is under
+  [The Host](#the-host). The code a Build runs is not trusted (package scriptlets, downloads,
+  install scripts): it runs in a rootful container on the Host, with the internet open and no
+  Allowlist, and a container escape there is root on the Host, which ADR 0002 keeps agents away
+  from by giving them VMs. pnpm and Bun have no minimum age in a Build (theirs is set for the
+  VM's services and the agent's home), Fedora's packages and direct downloads none at all.
+  Mitigation: the minimum age where a Build installs through npm or uv; Fedora's packages come
   signed from Fedora.
 
 ### What no test covers
