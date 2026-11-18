@@ -1337,7 +1337,8 @@ mechanism, where it stops, and what limits the damage where anything does. A lim
 is known and no vulnerability; a way past a mechanism that this list does not name is one, and
 [SECURITY.md](SECURITY.md) says how to report it privately. Outside the [threat
 model](#threat-model) altogether: what it trusts (the Host, its admins and what the owner
-writes into its Images), theft of the Host, targeted attacks against its owner, attacks on the laptops.
+writes into its Images), theft of the Host, targeted attacks against its owner, attacks on the
+laptops.
 
 ### Egress
 
