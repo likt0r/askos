@@ -9,8 +9,10 @@ Agent Box shrinks the blast radius of coding agents: each agent works in a VM wi
 access its work needs, so that what goes wrong in one VM stays in it. It is built for:
 
 1. **Keeping work and private apart.** Work and private projects, or any two the owner keeps
-   apart, run in different VMs; nothing of one reaches the other unless the owner gives both the
-   same (an Allowlist entry for every VM, the same GitHub owner)
+   apart, run in different VMs; nothing of one reaches the other unless both are given the
+   same: the Allowlist entries every VM starts with (GitHub, the AI providers, the registries,
+   where data can be put and fetched), an entry the owner allows for every VM, the same GitHub
+   owner
    ([ADR 0001](docs/adr/0001-vm-is-the-unit-of-separation.md)).
 2. **Least privilege for agents.** An agent gets what its work needs and no more: the
    destinations on its Allowlist, GitHub tokens for one repository and one hour, nothing of
@@ -1471,13 +1473,15 @@ builds), theft of the Host, targeted attacks against its owner, attacks on the l
   model](#threat-model). Code that runs during a Build is not: a package or a download there
   could undermine a Safeguard in a way the check does not look for (a wrapper earlier on
   `PATH`, a service that rewrites a file at boot), and a Build reaches the internet without an
-  Allowlist. Mitigation: the minimum age of the agents' and npm's packages
+  Allowlist. Mitigation: the minimum age where a Build installs through npm, pnpm, Bun or uv
   ([Packages](#packages)); what a VM can reach ([Egress](#egress)) and hold ([Credentials in a
   VM](#credentials-in-a-vm)) is decided outside it, on the Host.
 - **Repositories in one VM are not isolated from each other.** Every agent in a VM runs as the
   same user on the same Data disk
-  ([ADR 0001](docs/adr/0001-vm-is-the-unit-of-separation.md)). Mitigation: sensitive projects in
-  their own VM.
+  ([ADR 0001](docs/adr/0001-vm-is-the-unit-of-separation.md)), so an agent that goes wrong can
+  change or delete the work of every repository there, unpushed commits included; Agent Box
+  keeps no snapshot or backup of the Data disk. Mitigation: sensitive projects in their own VM;
+  push often, and protect branches on GitHub.
 - **A Reset does not clean the Data disk.** It replaces the System disk only ([VMs](#vms)). What
   an agent leaves on the Data disk is there for the next session: changes in the repositories
   (their code, a `CLAUDE.md`, a project's `.claude/settings.json`, `.npmrc` or `.git/config`),
@@ -1533,8 +1537,9 @@ builds), theft of the Host, targeted attacks against its owner, attacks on the l
   Once the Control Room uploads Recipes
   ([ADR 0018](docs/adr/0018-recipes-define-images-on-the-host.md)), it can write one as well:
   the Safeguard check is written against mistakes, not against a Recipe made to get past it
-  ([threat model](#threat-model)), and kept Recipe versions and Activity show afterwards what
-  changed. It has one password (at least 16
+  ([threat model](#threat-model)). The ten kept Recipe versions and Activity show afterwards what
+  changed, unless the session wore them out with further saves or a shorter Activity retention
+  in the Settings. It has one password (at least 16
   characters, scrypt), no second factor, a brake of five failed sign-ins per address in 15
   minutes, and a self-signed certificate the browser can check only if the owner compares or
   installs it. Who can try: in Local-only anyone who can use the Host, in Network mode the whole
@@ -1575,6 +1580,11 @@ builds), theft of the Host, targeted attacks against its owner, attacks on the l
   out of Release Images. A Recipe is the owner's reviewed input, not an agent's: the [threat
   model](#threat-model) trusts it, and the Safeguard check catches mistakes in it, not a Recipe
   made to get past it. What a stolen Control Room session builds is under [The Host](#the-host).
+  The code a Build runs (package scriptlets, downloads, install scripts) runs in a rootful
+  container on the Host, with the internet open and no Allowlist: a container escape there is
+  root on the Host, which ADR 0002 keeps agents away from by giving them VMs. Mitigation: the
+  minimum age where a Build installs through npm, pnpm, Bun or uv; Fedora's packages come
+  signed from Fedora.
 
 ### What no test covers
 

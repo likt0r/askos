@@ -19,17 +19,17 @@ The terms used here (Host, VM, Reset, Allowlist entry, Alert, …) are defined i
 Agent Box shrinks the blast radius of coding agents: each works in its own VM with only the
 access its work needs.
 
-- **Work and private kept apart**: different VMs, nothing shared between them unless you share
-  it (an Allowlist entry for every VM, for example)
+- **Work and private kept apart**: different VMs, nothing shared between them but what every VM
+  is given (the Allowlist entries a new Host starts with, an entry you allow for every VM)
 - **Least privilege**: allowlisted destinations, GitHub tokens for one repository and one hour
 - **Rogue or manipulated agents** (prompt injection from a repo, issue or web page, or an agent
   that goes wrong)
 - **Supply-chain attacks through packages** (install scripts stealing tokens)
 - **Credentials leaked by accident**: what a VM holds is narrow and, where it can be, short-lived
 
-It trusts the machine it runs on, whoever administers it and the Images they build; it does
-not try to protect against a hostile admin, theft of the machine or targeted attacks on the
-person running it. Where its protection stops short, limit by limit, is in [What it does not
+It trusts the machine it runs on, whoever administers it and what they write into its Images
+(not the packages a Build installs); it does not try to protect against a hostile admin, theft
+of the machine or targeted attacks on the person running it. Where its protection stops short, limit by limit, is in [What it does not
 protect against](ARCHITECTURE.md#what-it-does-not-protect-against); to report a security hole
 privately, see [SECURITY.md](SECURITY.md).
 
