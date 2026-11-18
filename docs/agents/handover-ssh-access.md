@@ -86,7 +86,7 @@ The design session drafted these; #128 puts them into `GLOSSARY.md`, word for wo
 - **A locked account still logs in by key** with `UsePAM yes`, whether its password is `!`, `!!` or `*`; only an expired account is refused. Tested in a container without systemd or SELinux. So "`agent` has no password" is no protection against key login, and the sshd configuration must say it.
 - **The Host reaches a VM without any limit.** The nftables rules of the VM networks limit only traffic from a VM to the Host. Every local process on the Host reaches `10.77.N.2:22`. This goes into ARCHITECTURE's "What it does not protect against" (#129).
 - **The Orca port pattern to copy:** the socket and service units come from `units()` in the code that writes them (the `gui.socket` and `gui@.service` kinds). `ExecStartPre` runs `wake` with `--actor`, then `socat` forwards to the VM. The listen address comes from `hostsetup.orca_listen`. The fw_cfg entries are in `virt_install_args`.
-- **Firewall rules for Network mode are written only by `agentbox setup`** today (`firewall_rules`/`_firewall` in the setup code). An upgrade does not run setup, so #130 makes `regenerate` write the SSH range rule.
+- **Firewall rules for Network mode** come from `agentbox/firewall.py`: `setup` writes the Control Room, Orca and SSH port rules (`home_network_rules`), and `regenerate`, `set-ssh on` and every command that rewrites the units add the SSH port rules (`ssh_ports`), so an upgrade needs no `setup` (#130).
 - **What a mode switch does** (`setup --force`):
   - The Orca ports and the firewall rules follow at once.
   - The password is kept (#138); a new one only with `--new-password`.
