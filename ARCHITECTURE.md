@@ -8,12 +8,14 @@ Terms follow [GLOSSARY.md](GLOSSARY.md). Decisions with lasting consequences are
 Agent Box shrinks the blast radius of coding agents: each agent works in a VM with only the
 access its work needs, so that what goes wrong in one VM stays in it. It is built for:
 
-1. **Keeping contexts apart.** Work and private projects, or any two the owner keeps apart,
-   run in different VMs; nothing of one reaches the other
+1. **Keeping work and private apart.** Work and private projects, or any two the owner keeps
+   apart, run in different VMs; nothing of one reaches the other unless the owner gives both the
+   same (an Allowlist entry for every VM, the same GitHub owner)
    ([ADR 0001](docs/adr/0001-vm-is-the-unit-of-separation.md)).
 2. **Least privilege for agents.** An agent gets what its work needs and no more: the
    destinations on its Allowlist, GitHub tokens for one repository and one hour, nothing of
-   the Host, and no credential of the owner but its VM's Claude token.
+   the Host but what the owner brings in (`agentbox import`), and no credential of the owner
+   but its VM's Claude token.
 3. **Rogue or manipulated agents.** An agent follows instructions planted in a repository,
    issue or web page, or simply goes wrong, and tries to read credentials, reach other
    machines, send data out or destroy work.
@@ -30,10 +32,12 @@ Trusted, and so not defended against
   signed in to the Control Room. They control every VM anyway. Someone who only gets hold of
   such access, such as a stolen Control Room session, is not trusted; what stands against
   them is listed under [The Host](#the-host).
-- **What the owner builds**: the Release's Images and the owner's Recipes are written, or
-  reviewed, in good faith. The Safeguard check after every Build catches mistakes and
-  convenient edits, not an Image made to get past it. What packages do during a Build is
-  threat 4; a Recipe an agent wrote and nobody reviewed is threat 3.
+- **What the owner writes into an Image**: the Release's Containerfiles and the owner's
+  Recipes are written, or reviewed, in good faith. The Safeguard check after every Build is
+  written against mistakes and convenient edits in them, not against an Image its author made
+  to get past it. Code that runs during a Build is not trusted: a package or a download there
+  is threat 4 and can undermine a Safeguard in a way the check does not see ([Inside a
+  VM](#inside-a-vm)); a Recipe an agent wrote and nobody reviewed is threat 3.
 
 Out of scope as well: theft of the Host, targeted attacks against its owner, attacks on the
 laptops that drive the agents.
@@ -1461,11 +1465,15 @@ builds), theft of the Host, targeted attacks against its owner, attacks on the l
   Claude Code's settings ([Packages](#packages), [Credentials](#credentials)). So can a VM
   variable that points a tool at another configuration file (`npm_config_userconfig`,
   `npm_config_globalconfig`, `XDG_CONFIG_HOME`, which moves where Git and uv look for the user's
-  configuration): those names are not refused ([VMs](#vms)). The check of every Build catches
-  mistakes and convenient edits in an Image ([Images and Builds](#images-and-builds)); an Image
-  made to get past it is outside the [threat model](#threat-model). Mitigation: what a VM can
-  reach ([Egress](#egress)) and hold ([Credentials in a VM](#credentials-in-a-vm)) is decided
-  outside it, on the Host.
+  configuration): those names are not refused ([VMs](#vms)). The check of every Build is
+  written against mistakes and convenient edits in what the owner writes ([Images and
+  Builds](#images-and-builds)); an Image its author made to get past it is outside the [threat
+  model](#threat-model). Code that runs during a Build is not: a package or a download there
+  could undermine a Safeguard in a way the check does not look for (a wrapper earlier on
+  `PATH`, a service that rewrites a file at boot), and a Build reaches the internet without an
+  Allowlist. Mitigation: the minimum age of the agents' and npm's packages
+  ([Packages](#packages)); what a VM can reach ([Egress](#egress)) and hold ([Credentials in a
+  VM](#credentials-in-a-vm)) is decided outside it, on the Host.
 - **Repositories in one VM are not isolated from each other.** Every agent in a VM runs as the
   same user on the same Data disk
   ([ADR 0001](docs/adr/0001-vm-is-the-unit-of-separation.md)). Mitigation: sensitive projects in
@@ -1521,9 +1529,11 @@ builds), theft of the Host, targeted attacks against its owner, attacks on the l
   owner's Host: SSH by key only, daily updates, an encrypted disk.
 - **The Control Room is one password away from every VM.** A session can do what the Control
   Room offers: reveal Pairing codes, open the web, allow destinations without strong Signals,
-  replace credentials, write a Recipe, build it and reset a VM onto it ([Control
-  Room](#control-room)). The Safeguard check does not stand in its way: it trusts what is
-  built ([threat model](#threat-model)); kept Recipe versions and Activity show afterwards what
+  replace credentials, start a Build and reset a VM onto it ([Control Room](#control-room)).
+  Once the Control Room uploads Recipes
+  ([ADR 0018](docs/adr/0018-recipes-define-images-on-the-host.md)), it can write one as well:
+  the Safeguard check is written against mistakes, not against a Recipe made to get past it
+  ([threat model](#threat-model)), and kept Recipe versions and Activity show afterwards what
   changed. It has one password (at least 16
   characters, scrypt), no second factor, a brake of five failed sign-ins per address in 15
   minutes, and a self-signed certificate the browser can check only if the owner compares or

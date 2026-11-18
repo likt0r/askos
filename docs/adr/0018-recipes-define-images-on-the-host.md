@@ -24,7 +24,7 @@ Every Image was defined in the installed Release ([ADR 0010](0010-images-are-bui
 - The Control Room backend reads a request body of at most 8 KB today; uploading a Recipe needs a larger limit for that one route, streamed to `agentbox` (#119).
 - Changing one line of a Recipe means packing and uploading it again; there is no quick edit in the browser.
 
-_Amended by [ADR 0019](0019-the-host-and-what-its-owner-builds-are-trusted.md) (2026-11-18):_ a Recipe is trusted as the owner's reviewed input; the Safeguard check catches mistakes in it. What stands against a stolen Control Room session writing, building and resetting onto a Recipe is the Control Room's sign-in; the kept versions and the Activity entry with actor and SHA-256 show afterwards what changed. The Safeguard check is no barrier against it.
+_Amended by [ADR 0019](0019-the-host-and-what-its-owner-builds-are-trusted.md) (2026-11-18):_ a Recipe is trusted as the owner's reviewed input; the Safeguard check catches mistakes in it. What stands against a stolen Control Room session writing a Recipe (once the Control Room uploads them, #119), building it and resetting a VM onto it is the Control Room's sign-in; the kept versions and the Activity entry with actor and SHA-256 show afterwards what changed. The Safeguard check is no barrier against it.
 
 ## Considered Options
 
