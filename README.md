@@ -19,14 +19,17 @@ The terms used here (Host, VM, Reset, Allowlist entry, Alert, …) are defined i
 Agent Box shrinks the blast radius of coding agents: each works in its own VM with only the
 access its work needs.
 
-- **Work and private kept apart**: different VMs, nothing shared between them but what you give
-  both (the Allowlist entries a new Host starts with, an entry for every VM, the same GitHub
-  owner, imported folder, Image, paired laptop or Claude account)
+- **Work and private kept apart**: different VMs, nothing shared between them but what both are
+  given (the Allowlist entries a new Host starts with, an entry for every VM, the same GitHub
+  owner, imported folder, Image, paired laptop or Claude account) and the Host's services every
+  VM reaches
 - **Least privilege**: allowlisted destinations, GitHub tokens for one repository and one hour
 - **Rogue or manipulated agents** (prompt injection from a repo, issue or web page, or an agent
   that goes wrong)
 - **Supply-chain attacks through packages** in the daily work in a VM (install scripts stealing
-  tokens); building an Image is only guarded by a minimum package age and pins
+  tokens): a minimum package age, the VM bounding what malicious code reaches, and detection of
+  known malware and exfiltration destinations at the proxy; building an Image is only guarded by
+  the minimum package age and pins
 - **Credentials leaked by accident**: what a VM holds is narrow and, where it can be, short-lived
 
 It trusts the machine it runs on, whoever administers it and what they write into its Images

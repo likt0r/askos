@@ -25,9 +25,13 @@ access its work needs, so that what goes wrong in one VM stays in it. It is buil
    machines, send data out or destroy work.
 4. **Supply-chain attacks through packages** in the daily work in a VM. A dependency runs code
    at install, build or run time that steals tokens and spreads (Shai-Hulud, s1ngularity,
-   chalk/debug, axios, TanStack, keyv). In the Build of an Image only the package minimum age
-   and the pins stand against such code, and it runs as root on the Host there ([Agent Box's
-   own code](#agent-boxs-own-code)).
+   chalk/debug, axios, TanStack, keyv). Against it stand the package minimum age and no install
+   scripts ([Packages](#packages)), the VM that bounds what such code reaches, and detection:
+   the proxy knows malware, phishing and exfiltration destinations (the Watchlist and its
+   Feeds), keeps those with strong Signals blocked and raises an Alert
+   ([Detection](#detection)). In the Build of an Image only the package minimum age and the pins
+   stand against such code, and it runs as root on the Host there ([Agent Box's own
+   code](#agent-boxs-own-code)).
 5. **Credentials leaked by accident.** A token ends up in a commit, a log, an issue or a web
    page. What a VM holds is narrow and, where it can be, short-lived.
 
@@ -38,17 +42,19 @@ Trusted, and so not defended against
   signed in to the Control Room. They control every VM anyway. Someone who only gets hold of
   such access, such as a stolen Control Room session, is not trusted; what stands against
   them is listed under [The Host](#the-host).
-- **What the owner writes into an Image**: the Release's Containerfiles and the owner's
-  Recipes are written, or reviewed, in good faith. The Safeguard check after every Build is
+- **What goes into an Image by the owner's hand**: the Release's Containerfiles, which the
+  owner installs with the Release, and the owner's Recipes are written, or reviewed, in good
+  faith. The Safeguard check after every Build is
   written against mistakes and convenient edits in them, not against an Image its author made
   to get past it. Code that runs during a Build is not trusted: a package or a download there
-  is threat 4 and can undermine a Safeguard in a way the check does not see ([Inside a
-  VM](#inside-a-vm)); a Recipe an agent wrote and nobody reviewed is threat 3.
+  is a supply-chain attack (4) and can undermine a Safeguard in a way the check does not see
+  ([Inside a VM](#inside-a-vm)); a Recipe an agent wrote and nobody reviewed is a rogue agent's
+  work (3).
 
 Out of scope as well: theft of the Host, targeted attacks against its owner, attacks on the
 laptops that drive the agents.
 
-Where the layers below stop short against these threats is listed in [What it does not
+Where the layers below stop short of these goals is listed in [What it does not
 protect against](#what-it-does-not-protect-against); how to report a hole privately is in
 [SECURITY.md](SECURITY.md).
 
@@ -760,7 +766,7 @@ Host after every Build
   runtime from the owner's home, `ORCA_RUNTIMES`); nothing reads it any more.
 - The safeguard check (`agentbox/safeguards.py`) mounts the built image (`podman image mount`)
   and reads files; nothing from the Image runs, and links are resolved inside the Image. It
-  parses regular files only; a file it parses that is larger than 1 MiB fails the check. It
+  parses regular files only; a file it verifies that is larger than 1 MiB fails the check. It
   verifies npm's global configuration (`ignore-scripts=true`, `min-release-age`, npm 12 or
   later), the minimum age for uv (`uv.toml` and `UV_EXCLUDE_NEWER`), pnpm and Bun, the Git
   hooks path and `pre-push` hook, the resolver (`guest-setup`'s nameserver line, `dns=none`,
