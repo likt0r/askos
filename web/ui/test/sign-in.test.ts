@@ -1,5 +1,7 @@
 // Sign-in against POST /api/v1/session: CSRF header, errors from codes, the login brake, and a
-// sign-in link from the Host whose token comes in the fragment.
+// sign-in link from the Host whose token comes in the fragment. Every test waits until its
+// sign-in has finished (sent, and the page left or the error shown): the router, the session
+// and fetch are shared, so work still under way would land in the next test.
 import { flushPromises } from '@vue/test-utils'
 import { mountSuspended } from '@nuxt/test-utils/runtime'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -9,9 +11,18 @@ import { resetLiveForTests } from '~/composables/useLive'
 import { linkFromHash } from '~/utils/signInLink'
 import { fakeApi, SIGNED_IN, SIGNED_OUT } from './fakes'
 
+const mounted: { unmount: () => void }[] = []
+
 async function mount(route = '/sign-in?redirect=/vms/work') {
   const wrapper = await mountSuspended(SignIn, { route })
+  mounted.push(wrapper)
   return wrapper
+}
+
+/** A page still mounted would take the fragments of the next test's routes as links. */
+async function unmountAll() {
+  while (mounted.length) mounted.pop()!.unmount()
+  await flushPromises()
 }
 
 async function submit(wrapper: Awaited<ReturnType<typeof mount>>, password: string) {
@@ -25,7 +36,8 @@ beforeEach(async () => {
   resetLiveForTests()
   await useNuxtApp().$i18n.setLocale('en')
 })
-afterEach(() => {
+afterEach(async () => {
+  await unmountAll()
   resetSessionForTests()
 })
 
@@ -138,7 +150,7 @@ describe('sign-in link', () => {
     const gate = new Promise<void>((resolve) => {
       release = resolve
     })
-    fakeApi({
+    const api = fakeApi({
       'GET /session': SIGNED_OUT,
       'POST /session': async () => {
         await gate
@@ -146,9 +158,12 @@ describe('sign-in link', () => {
       },
     })
     const wrapper = await mount(`/sign-in?redirect=/vms&expired=1#link=${TOKEN}`)
-    await vi.waitFor(() => expect(wrapper.find('[data-testid="sign-in-link"]').exists()).toBe(true))
+    await vi.waitFor(() => expect(api.calls.some(c => c.method === 'POST')).toBe(true))
+    await flushPromises()
+    expect(wrapper.find('[data-testid="sign-in-link"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('Your session has ended')
     release()
+    await vi.waitFor(() => expect(useRouter().currentRoute.value.fullPath).toBe('/vms'))
   })
 
   it('takes the token out of the address before it sends it', async () => {
@@ -161,7 +176,7 @@ describe('sign-in link', () => {
       },
     })
     await mount(`/sign-in?redirect=/vms#link=${TOKEN}`)
-    await vi.waitFor(() => expect(address).not.toBe(''))
+    await vi.waitFor(() => expect(useRouter().currentRoute.value.fullPath).toBe('/vms'))
     expect(address).toBe('/sign-in?redirect=/vms')
   })
 
@@ -190,6 +205,51 @@ describe('sign-in link', () => {
     expect(api.calls.filter(c => c.method === 'POST').map(c => c.body)).toEqual([{ link: TOKEN }, { password: 'correct horse' }])
   })
 
+  it('signs in with a link opened on the sign-in page already shown, where only the fragment changes', async () => {
+    let signedIn = false
+    let address = ''
+    const api = fakeApi({
+      'GET /session': () => (signedIn ? SIGNED_IN : SIGNED_OUT),
+      'POST /session': () => {
+        address = useRouter().currentRoute.value.fullPath
+        signedIn = true
+        return SIGNED_IN
+      },
+    })
+    const wrapper = await mount('/sign-in?redirect=/vms/work')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="sign-in-link"]').exists()).toBe(false)
+    // the link pasted into the same tab: the router keeps the page, only the fragment is new
+    await useRouter().push(`/sign-in?redirect=/vms/work#link=${TOKEN}`)
+    await vi.waitFor(() => expect(useRouter().currentRoute.value.fullPath).toBe('/vms/work/web'))
+    expect(address).toBe('/sign-in?redirect=/vms/work')
+    expect(api.calls.filter(c => c.method === 'POST').map(c => c.body)).toEqual([{ link: TOKEN }])
+    expect(useSession().state.authenticated).toBe(true)
+  })
+
+  it('signs in with a second link opened after a refused one', async () => {
+    const OTHER = 'Zz9-_yX87wvutsrqponmlkjihgfedcbaZYXWVUTSRQP'
+    let signedIn = false
+    const api = fakeApi({
+      'GET /session': () => (signedIn ? SIGNED_IN : SIGNED_OUT),
+      'POST /session': (call) => {
+        if ((call.body as { link?: string }).link === TOKEN) {
+          return { status: 401, body: { error: { code: 'sign_in_link_refused', message: 'This sign-in link is used, expired or unknown' } } }
+        }
+        signedIn = true
+        return SIGNED_IN
+      },
+    })
+    const wrapper = await mount(`/sign-in?redirect=/vms/work#link=${TOKEN}`)
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="sign-in-error"]').exists()).toBe(true))
+    await flushPromises()
+    expect(useRouter().currentRoute.value.fullPath).toBe('/sign-in?redirect=/vms/work')
+    await useRouter().push(`/sign-in?redirect=/vms/work#link=${OTHER}`)
+    await vi.waitFor(() => expect(useRouter().currentRoute.value.fullPath).toBe('/vms/work/web'))
+    expect(api.calls.filter(c => c.method === 'POST').map(c => c.body)).toEqual([{ link: TOKEN }, { link: OTHER }])
+    expect(useSession().state.authenticated).toBe(true)
+  })
+
   it('waits as long as the login brake says', async () => {
     const api = fakeApi({
       'GET /session': SIGNED_OUT,
@@ -214,7 +274,7 @@ describe('sign-in link', () => {
       expect(api.calls.filter(c => c.method === 'POST')).toHaveLength(0)
       expect(wrapper.find('[data-testid="sign-in-link"]').exists()).toBe(false)
       expect(wrapper.find('input[type="password"]').exists()).toBe(true)
-      wrapper.unmount()
+      await unmountAll()
     }
   })
 })

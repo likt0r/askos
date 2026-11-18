@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // Sign-in with the Control Room password (POST /api/v1/session), or with a sign-in link from
 // the Host (`agentbox sign-in-link`, /sign-in#link=<token>): the page takes the token out of
-// the address first, then sends it once; a refused link leaves the password form. After five
+// the address first, then sends it once; a refused link leaves the password form. A link opened
+// on the sign-in page already shown (only the fragment changes) is taken the same way. After five
 // failures in 15 minutes (passwords and links) the backend refuses for a while (429 +
 // Retry-After): the form waits that long.
 definePageMeta({ layout: 'bare', titleKey: 'signIn.title' })
@@ -14,8 +15,7 @@ const errorText = useErrorText()
 const now = useNow(250)
 
 const password = ref('')
-const link = linkFromHash(route.hash)
-const withLink = ref(link !== null)
+const withLink = ref(linkFromHash(route.hash) !== null)
 const busy = ref(false)
 const error = ref<unknown>(null)
 const lockedUntil = ref(0)
@@ -55,11 +55,14 @@ async function submit() {
   await attempt(() => session.signIn(password.value))
 }
 
-onMounted(async () => {
+async function signInWithLink(hash: string) {
+  const link = linkFromHash(hash)
   if (link === null) return
+  withLink.value = true
   busy.value = true
   try {
-    // out of the address bar and this history entry before it is sent
+    // out of the address bar and this history entry before it is sent; the fragment it leaves
+    // behind is empty, so this change of the fragment sends nothing
     await router.replace({ path: route.path, query: route.query, hash: '' })
     await attempt(() => session.signInWithLink(link))
   }
@@ -67,7 +70,11 @@ onMounted(async () => {
     withLink.value = false
     busy.value = false
   }
-})
+}
+
+onMounted(() => signInWithLink(route.hash))
+// the page stays when only the fragment changes: a link opened in this tab
+watch(() => route.hash, hash => signInWithLink(hash))
 </script>
 
 <template>
