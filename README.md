@@ -95,6 +95,7 @@ sudo agentbox pair priv                      # start it and print its Pairing co
 | --- | --- | --- |
 | Control Room | `https://127.0.0.1:8800` | `https://<bind>:8800` |
 | Orca ports (6801–7054) | `127.0.0.1` only | every address, but the firewall lets only the home network through |
+| SSH ports (2201–2454) | `127.0.0.1` only | `127.0.0.1` only, for now: the firewall has no rule for them yet |
 | Firewall | no rule for any network | in the default zone: the home network accepted on the Control Room's port and 6801–7054; everything else rejected there and on 6768–7054 and 16768 |
 | Pairing codes name | `127.0.0.1` | the bind address |
 | For | a laptop that is its own Host | a home server driven from laptops in the home network (or a VPN into it) |

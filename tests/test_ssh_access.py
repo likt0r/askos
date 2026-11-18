@@ -408,6 +408,15 @@ class KeyRulesTest(SshTest):
 
 
 class SetSshTest(SshTest):
+    def test_on_refuses_a_port_another_service_holds(self):
+        self.listening(tcp=[("0100007F:0899", "0A")])   # 127.0.0.1:2201
+        code, out, err = self.run_input("set-ssh", "work", "on")
+        self.assertNotEqual(code, 0)
+        self.assertIn("port 2201 on 127.0.0.1 is taken: another service listens there", err)
+        self.assertEqual(self.systemctl(), [])
+        self.assertFalse(self.exists(SOCKET.format("work")))
+        self.assertEqual(self.json("ssh", "work")["enabled"], False)
+
     def test_on_makes_the_host_key_and_the_ssh_port(self):
         self.add()
         result = self.json("set-ssh", "work", "on")

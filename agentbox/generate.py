@@ -963,6 +963,25 @@ def _wildcard_listeners():
     return found
 
 
+def listens_on(port):
+    """Whether a TCP socket listens on the port at any address of the Host, from /proc/net."""
+    for table in ("tcp", "tcp6"):
+        try:
+            with open(paths.host(f"/proc/net/{table}")) as f:
+                rows = f.read().splitlines()[1:]
+        except FileNotFoundError:
+            continue
+        for row in rows:
+            fields = row.split()
+            if len(fields) >= 4 and fields[3] == "0A":      # 0A: LISTEN
+                try:
+                    if int(fields[1].rpartition(":")[2], 16) == port:
+                        return True
+                except ValueError:
+                    continue
+    return False
+
+
 def ports_free():
     """Dies, before anything changes, when another service holds a port of the VMs' resolver
     or proxy on all of the Host's addresses: libvirt could not start a VM network's dnsmasq,
