@@ -159,7 +159,10 @@ flowchart LR
   caches and the agent's Podman storage ([ADR 0017](docs/adr/0017-containers-live-on-the-data-disk.md)):
   the VM's containers with their Container images and volumes survive a Reset and come back
   stopped, and nothing else of Podman's user configuration is kept. Agent settings and hooks
-  are not kept, so nothing planted there survives a Reset.
+  are not kept, so nothing planted there survives a Reset. The agent's home is on the System
+  disk and lasts until the next Reset; at every start `guest-setup`, as root, binds the lasting
+  parts from the Data disk into it, and before it touches a path there it removes any link the
+  agent left on that path (`/usr/lib/agentbox/home-paths`), so root follows none of them.
 - A VM learns its name, Orca port, Pairing address, Claude token and VM variables from the
   Host at boot (QEMU fw_cfg); the token never touches the Data disk. The token and the VM
   variables are files QEMU reads (`root:qemu`, mode 0640, in directories of mode 0750),

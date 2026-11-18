@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# home-paths HOME PATH...: guest-setup runs as root and works on paths in the agent's home,
+# which survives a restart, so the agent can leave links there that root would follow (#142).
+# For each PATH (relative to HOME) this removes, part by part, every link on the way, the last
+# part included, and anything that stands where a directory belongs. What it removed goes to
+# stderr. It creates nothing: guest-setup does that once nothing on the way is a link.
+# Nothing of the agent runs meanwhile: guest-setup starts before user@1000.service.
+set -euo pipefail
+home=${1:?usage: home-paths HOME PATH...}
+shift
+[ -d "$home" ] && [ ! -L "$home" ] || { echo "home-paths: $home is no directory" >&2; exit 1; }
+for rel; do
+  case "/$rel/" in
+    */../*|*/./*|//*) echo "home-paths: $rel is no plain relative path" >&2; exit 1 ;;
+  esac
+  IFS=/ read -r -a parts <<< "$rel"
+  path=$home
+  for i in "${!parts[@]}"; do
+    path=$path/${parts[$i]}
+    last=$(( i == ${#parts[@]} - 1 ))
+    if [ -L "$path" ]; then
+      echo "guest-setup: removed the link ${path#"$home"/} (to $(readlink "$path")) from the agent's home" >&2
+      rm -f -- "$path"
+      break
+    elif [ "$last" = 0 ] && [ -e "$path" ] && [ ! -d "$path" ]; then
+      echo "guest-setup: removed ${path#"$home"/}, which is no directory, from the agent's home" >&2
+      rm -f -- "$path"
+      break
+    elif [ ! -e "$path" ]; then
+      break
+    fi
+  done
+done

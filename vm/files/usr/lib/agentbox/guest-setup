@@ -75,11 +75,15 @@ mountpoint -q "$DATA" || { echo "guest-setup: the Data disk is not mounted" >&2;
 PERSIST=(code orca .config/orca .claude/projects .codex/sessions .cargo/registry .cargo/git
          .gradle .android .local/share/android-sdk .local/share/containers)
 install -d -o agent -g agent -m 700 "$HOME_DIR"
+# The home survives a restart, so the agent can leave links in it: root here follows none of
+# them (#142). home-paths removes every link on the paths below before they are used.
+/usr/lib/agentbox/home-paths "$HOME_DIR" "${PERSIST[@]}" .config .claude .codex .cargo .local/share \
+  .claude.json .bunfig.toml
 for p in "${PERSIST[@]}"; do
   install -d -o agent -g agent -m 700 "$DATA/home/$p" "$HOME_DIR/$p"
   mountpoint -q "$HOME_DIR/$p" || mount --bind "$DATA/home/$p" "$HOME_DIR/$p"
 done
-chown agent:agent "$HOME_DIR"/.config "$HOME_DIR"/.claude "$HOME_DIR"/.codex "$HOME_DIR"/.cargo \
+chown -h agent:agent "$HOME_DIR"/.config "$HOME_DIR"/.claude "$HOME_DIR"/.codex "$HOME_DIR"/.cargo \
   "$HOME_DIR"/.local "$HOME_DIR"/.local/share
 
 # Der Android-Emulator (SwiftShader) braucht ausfuehrbaren Heap. Die Grenze
@@ -97,7 +101,7 @@ done
 
 # Claude Code zeigt sonst bei jedem frischen Home den Login-Dialog, obwohl
 # ein Token gesetzt ist
-[ -e "$HOME_DIR/.claude.json" ] || { echo '{"hasCompletedOnboarding": true}' > "$HOME_DIR/.claude.json"; chown agent:agent "$HOME_DIR/.claude.json"; }
+[ -e "$HOME_DIR/.claude.json" ] || { echo '{"hasCompletedOnboarding": true}' > "$HOME_DIR/.claude.json"; chown -h agent:agent "$HOME_DIR/.claude.json"; }
 
 # Bun liest seine globale Config nur aus dem Home (Mindestalter von Paketen,
 # geschrieben von package-safeguards beim Bauen des Images)
