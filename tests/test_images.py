@@ -663,10 +663,21 @@ class SafeReadTest(unittest.TestCase):
         self.assertIsNone(safeguards.read(self.root, "/etc/npmrc"))
         self.assertIsNone(safeguards.read(self.root, "/etc/gitconfig"))
 
-    def test_a_large_file_is_read_only_up_to_the_limit(self):
-        with open(os.path.join(self.root, "etc/npmrc"), "wb") as f:
-            f.write(b"#" * (safeguards.MAX_READ * 2))
-        self.assertEqual(len(safeguards.read(self.root, "/etc/npmrc")), safeguards.MAX_READ)
+    def test_a_file_over_the_limit_is_not_read_and_fails_the_check(self):
+        """Padding must not hide a setting beyond the limit: such a file fails the check."""
+        self.assertEqual(safeguards.MAX_READ, 1 << 20)        # the 1 MiB ARCHITECTURE names
+        path = os.path.join(self.root, "etc/gitconfig")
+        with open(path, "wb") as f:
+            f.write(b"[core]\n\thooksPath = /usr/lib/agentbox/hooks\n" + b"#" * safeguards.MAX_READ +
+                    b"\n[core]\n\thooksPath = .githooks\n")
+        self.assertIsNone(safeguards.read(self.root, "/etc/gitconfig"))
+        problems, _, _ = safeguards.check(self.root, 2)
+        self.assertIn("/etc/gitconfig is larger than 1 MiB and cannot be checked", problems)
+        with open(path, "wb") as f:
+            f.write(b"#" * safeguards.MAX_READ)               # exactly the limit is read
+        self.assertEqual(len(safeguards.read(self.root, "/etc/gitconfig")), safeguards.MAX_READ)
+        problems, _, _ = safeguards.check(self.root, 2)
+        self.assertFalse([p for p in problems if "cannot be checked" in p])
 
 
 class AllTest(ImagesTest):

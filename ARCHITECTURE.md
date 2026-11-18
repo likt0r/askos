@@ -10,7 +10,7 @@ access its work needs, so that what goes wrong in one VM stays in it. It is buil
 
 1. **Keeping work and private apart.** Work and private projects, or any two the owner keeps
    apart, run in different VMs; nothing of one reaches the other unless both are given the
-   same: every VM starts with the Allowlist entries a new Host has, all of which take uploads
+   same: every VM starts with the Allowlist entries a new Host has, most of which take uploads
    ([Egress](#egress)), and the owner can give two VMs an entry for every VM, the same GitHub
    owner, folder, Image (every Image sits on the Base Build), paired laptop or Claude account
    ([ADR 0001](docs/adr/0001-vm-is-the-unit-of-separation.md)).
@@ -756,7 +756,7 @@ Host after every Build
   runtime from the owner's home, `ORCA_RUNTIMES`); nothing reads it any more.
 - The safeguard check (`agentbox/safeguards.py`) mounts the built image (`podman image mount`)
   and reads files; nothing from the Image runs, and links are resolved inside the Image. It
-  parses regular files only, at most 1 MiB of each. It
+  parses regular files only; a file larger than 1 MiB fails the check. It
   verifies npm's global configuration (`ignore-scripts=true`, `min-release-age`, npm 12 or
   later), the minimum age for uv (`uv.toml` and `UV_EXCLUDE_NEWER`), pnpm and Bun, the Git
   hooks path and `pre-push` hook, the resolver (`guest-setup`'s nameserver line, `dns=none`,
@@ -939,7 +939,10 @@ argument such as `start setup` still passes it; agentbox knows no such command. 
 command and `--force` before anything runs (`control_room_refused`), which no sudoers rule could
 tell from a note that contains it. So even a taken-over backend cannot run `setup`, `import` or
 `regenerate`, or lift strong Signals, and agentbox's own check holds should sudo's matching ever
-be got around. HTTPS with a self-signed certificate, a password with scrypt, sessions in
+be got around. This holds until the Control Room uploads Recipes: a Recipe can then reach root on
+the Host through its Build ([The Host](#the-host),
+[ADR 0019](docs/adr/0019-the-host-and-what-its-owner-writes-are-trusted.md)). HTTPS with a
+self-signed certificate, a password with scrypt, sessions in
 memory, a login brake after five failures, CSRF protection via a custom header and
 `SameSite=Strict`. Sign-ins (successful, failed, refused by the brake) and sign-outs are
 Activity entries with address and device. Pairing codes, tokens
@@ -1537,25 +1540,23 @@ laptops.
 - **The Control Room is one password away from every VM.** A session can do what the Control
   Room offers: reveal Pairing codes, open the web, allow destinations without strong Signals,
   replace credentials, start a Build and reset a VM onto it, delete a VM with its Data disk
-  ([Control Room](#control-room)).
-  Once the Control Room uploads Recipes
+  ([Control Room](#control-room)). Once the Control Room uploads Recipes
   ([ADR 0018](docs/adr/0018-recipes-define-images-on-the-host.md)), it can write one as well:
   the Safeguard check is written against mistakes, not against a Recipe made to get past it
   ([threat model](#threat-model)), and a tool the Recipe plants runs as root on the Host in the
-  disk step ([Agent Box's own code](#agent-boxs-own-code)). From then on a stolen session is root
-  on the Host, and nothing below holds against it, `--force` included. The ten kept Recipe versions and
-  Activity show afterwards what changed, unless the session wore them out with further saves or
-  a shorter Activity retention in the Settings. It has one password (at least 16 characters,
-  scrypt), no second factor, a brake of five failed sign-ins per address in 15
-  minutes, and a self-signed certificate the browser can check only if the owner compares or
-  installs it. Who can try: in Local-only anyone who can use the Host, in Network mode the whole
-  home network. `--force` keeps a stolen session from lifting strong Signals. Code that runs as
-  the Control Room's service user gets no further than the Control Room: its sudoers rule lets
-  it run `agentbox` as root only with the Control Room's own commands, and agentbox refuses it
-  every other command and `--force` ([Control Room](#control-room)); within those commands it
-  can do whatever they can.
-  Mitigation: Local-only, the default; a long password; in Network mode, a home network you
-  trust (or a VPN into it).
+  disk step ([Agent Box's own code](#agent-boxs-own-code)). From then on a stolen session is
+  root on the Host: nothing below holds against it, `--force` included, and neither the kept
+  Recipe versions nor Activity are a record, since root can change both. It has one password
+  (at least 16 characters, scrypt), no second factor, a brake of five failed sign-ins per
+  address in 15 minutes, and a self-signed certificate the browser can check only if the owner
+  compares or installs it. Who can try: in Local-only anyone who can use the Host, in Network
+  mode the whole home network. `--force` keeps a stolen session from lifting strong Signals, as
+  long as it cannot write a Recipe.
+  Code that runs as the Control Room's service user gets no further than the Control Room: its
+  sudoers rule lets it run `agentbox` as root only with the Control Room's own commands, and
+  agentbox refuses it every other command and `--force` ([Control Room](#control-room));
+  within those commands it can do whatever they can. Mitigation: Local-only, the default; a
+  long password; in Network mode, a home network you trust (or a VPN into it).
 - **A paired device has the VM.** Orca gives a Paired device full access to its VM, past every
   layer here, and so does a Pairing code to whoever gets it ([VMs](#vms),
   [Pairing Orca](README.md#pairing-orca)); attacks on the laptops are outside the threat model.

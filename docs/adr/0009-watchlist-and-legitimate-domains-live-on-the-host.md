@@ -24,6 +24,8 @@ _Amended by #85 (2026-11-08):_ `vm/setup-vms.sh` is gone. The RPM ([ADR 0009](00
 - A hand edit that breaks `watchlist.json`, or deleting it, closes Open web for every VM until the file is fixed; repairing it opens Open web again without a restart. `setup-vms.sh` does not refill a deleted record from the repository, whose list would be stale; it says how to restore it.
 - `legitimate-add` reads the whole threat-intelligence list (about 40 MB through the page cache) to find entries at or below the domain; this is acceptable for a rare command.
 
+_Amended by [ADR 0019](0019-the-host-and-what-its-owner-writes-are-trusted.md) (2026-11-18):_ once the Control Room uploads Recipes (#119), a stolen Control Room session can reach root on the Host through a Recipe's Build, and with root `--force`. Keeping strong Signals off the Control Room then holds only against a session that writes no Recipe; against the rest the Control Room's sign-in stands.
+
 ## Considered Options
 
 - Keep the lists in the repository: rejected. A pull request and a Host-wide setup run for one domain is too slow when an Alert is a false positive or an incident is unfolding.

@@ -21,7 +21,7 @@ access its work needs.
 
 - **Work and private kept apart**: different VMs, nothing shared between them but what you give
   both (the Allowlist entries a new Host starts with, an entry for every VM, the same GitHub
-  owner, the same imported folder, the same Image)
+  owner, imported folder, Image, paired laptop or Claude account)
 - **Least privilege**: allowlisted destinations, GitHub tokens for one repository and one hour
 - **Rogue or manipulated agents** (prompt injection from a repo, issue or web page, or an agent
   that goes wrong)

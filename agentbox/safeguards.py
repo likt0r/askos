@@ -112,6 +112,9 @@ AGENTS = {"claude-code": "@anthropic-ai/claude-code", "codex": "@openai/codex", 
           "npm": "npm", "pnpm": "pnpm", "bun": "bun"}
 VERSION = re.compile(r"[0-9A-Za-z.+-]{1,40}")
 MAX_READ = 1 << 20
+# files read() refused as larger than MAX_READ during the current check: each fails it, since
+# what lies beyond the limit could change what the check sees
+_too_large = []
 
 
 # --- reading the Image ------------------------------------------------------------
@@ -150,7 +153,8 @@ def resolve(root, path, hops=40):
 
 
 def read(root, path):
-    """The content of a regular file in the Image (at most MAX_READ bytes), or None."""
+    """The content of a regular file in the Image, or None; a file larger than MAX_READ is
+    not read but noted, and fails the check."""
     real = resolve(root, path)
     if real is None:
         return None
@@ -162,7 +166,11 @@ def read(root, path):
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             return None
         with os.fdopen(fd, "rb", closefd=False) as f:
-            return f.read(MAX_READ)
+            data = f.read(MAX_READ + 1)
+        if len(data) > MAX_READ:
+            _too_large.append(path)
+            return None
+        return data
     finally:
         os.close(fd)
 
@@ -488,9 +496,11 @@ def check(root, days, base=None):
     """Check the Image whose files are at `root` (a mounted Build) against the package
     minimum age `days`; `base` is the manifest of the Base Build a derived Image was
     built on (None for the Base image). Returns (problems, manifest, agent versions)."""
+    _too_large.clear()
     env = systemd_environment(root)
     problems = (_packages(root, env, days) + _git(root) + _network(root, env) + _claude(root, env) + _overrides(env)
                 + _guest_agent(root))
     if base is not None:
         problems += _compare(root, base)
+    problems += [f"{path} is larger than {MAX_READ >> 20} MiB and cannot be checked" for path in _too_large]
     return list(dict.fromkeys(problems)), manifest(root), agents(root)
