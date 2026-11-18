@@ -5,13 +5,16 @@ the Host keeps the VM's SSH host key, made once (generate.ssh_host_key). A chang
 in the record, then the file QEMU passes into the VM is written (generate.vm_ssh), the VM is
 defined again when its definition changed (a domain from before SSH access lacks the fw_cfg
 entry), and the units of its SSH port follow its SSH access (generate.ssh_port): the port
-listens while it is on and is gone while it is off. The VM gets its keys and starts sshd at
+listens while it is on and is gone while it is off. Turning it off closes the port first, so
+a later step that fails leaves it closed. The VM gets its keys and starts sshd at
 its next start, so a running or paused VM at its next Restart or Reset; the keys stay when SSH
 access goes off.
 
 Each command that changes something holds the registry lock, the record's lock and the VM's
 lifecycle lock, as set-env does, and records its own Activity entry (ssh.enabled,
-ssh.disabled, ssh.key-added with the key's fingerprint and name), failures included.
+ssh.disabled, ssh.key-added with the key's fingerprint and name), failures included: also a
+wrong argument, an unknown VM or a broken record (set-ssh with a word other than "off" counts
+as turning it on).
 """
 import json
 import sys
@@ -26,9 +29,10 @@ from .sanitize import clean
 def _change(name, change):
     """Apply change(record) -> record: saved when it differs, then the host key made (with SSH
     access or a key), the file the VM reads written, the VM defined again if its definition
-    changed, and the SSH port set up or taken away. Returns (before, after, state, applies,
-    defined), applies as for VM variables: next_start (off), next_restart (running or
-    paused), None when nothing changed."""
+    changed, and the SSH port set up or taken away: without SSH access first, so that it is
+    closed even when a later step fails. Returns (before, after, state, applies, defined),
+    applies as for VM variables: next_start (off), next_restart (running or paused), None
+    when nothing changed."""
     with state_files.locked(paths.REGISTRY):
         with state_files.locked(footprint.record_file(name)):
             with state_files.vm_lock(name):
@@ -36,16 +40,18 @@ def _change(name, change):
                 after = change(before)
                 if after != before:
                     registry.save(after)
+                on = registry.ssh_access(after)
                 try:
-                    made = (registry.ssh_access(after) or bool(registry.ssh_keys(after))) \
-                        and generate.ssh_host_key(after)
+                    port = not on and generate.ssh_port(after)
+                    made = (on or bool(registry.ssh_keys(after))) and generate.ssh_host_key(after)
                     written = generate.vm_ssh(after)
                     defined = generate.domain(after)
-                    port = generate.ssh_port(after)
+                    port = generate.ssh_port(after) if on else port
                 except (Fail, OSError) as e:
                     why = e.message.strip() if isinstance(e, Fail) else f"{e.filename}: {e.strerror}"
-                    die(f"{name}: the change is saved, but not applied: {why}; agentbox regenerate finishes it",
-                        error="action_failed", vm=name)
+                    said = "the change is saved, but not applied" if after != before else \
+                        "nothing changed, but applying the VM's SSH access failed"
+                    die(f"{name}: {said}: {why}; agentbox regenerate finishes it", error="action_failed", vm=name)
                 changed = after != before or made or written or defined == "domain" or port
                 state = states.status(name)
                 applies = None if not changed else "next_start" if states.starts_anew(state) else "next_restart"
@@ -87,16 +93,16 @@ def set_ssh(args):
     """agentbox set-ssh <vm> on|off [--json]: turn the VM's SSH access on or off; its SSH keys
     stay either way."""
     positional, opts = options.parse(args)
-    if len(positional) != 2 or positional[1] not in ("on", "off"):
-        die("set-ssh <vm> on|off [--json]", error="invalid_argument")
-    name = registry.check(positional[0])
-    on = positional[1] == "on"
+    on = positional[1:2] != ["off"]
     action, what = ("ssh.enabled", "Turn SSH access on") if on else ("ssh.disabled", "Turn SSH access off")
     try:
+        if len(positional) != 2 or positional[1] not in ("on", "off"):
+            die("set-ssh <vm> on|off [--json]", error="invalid_argument")
+        name = registry.check(positional[0])
         before, after, state, applies, defined = _change(
             name, lambda rec: rec if registry.ssh_access(rec) == on else {**rec, "ssh_access": on})
     except Fail as f:
-        _record(action, name, what, f)
+        _record(action, activity.known_vm(positional), what, f)
         raise
     port, keys = registry.ssh_port(after), len(registry.ssh_keys(after))
     if applies is None:
@@ -142,18 +148,18 @@ def add_ssh_key(args):
     """agentbox add-ssh-key <vm> [--name N] [FILE] [--json]: add an SSH key (a line of a .pub
     file) from FILE or stdin; its comment is its name unless --name gives one."""
     positional, opts = options.parse(args)
-    if len(positional) not in (1, 2):
-        die("add-ssh-key <vm> [--name N] [FILE] [--json]", error="invalid_argument")
-    name = registry.check(positional[0])
     key = None
     try:
+        if len(positional) not in (1, 2):
+            die("add-ssh-key <vm> [--name N] [FILE] [--json]", error="invalid_argument")
+        name = registry.check(positional[0])
         key = sshkeys.parse(_read_key(positional[1] if len(positional) == 2 else None), opts.get("name"))
         entry = {"key": key["key"], "name": key["name"], "fingerprint": key["fingerprint"],
                  "added": times.iso(time.time()), "added_by": activity.actor()}
         _, after, state, applies, defined = _change(
             name, lambda rec: {**rec, "ssh_keys": sshkeys.add(registry.ssh_keys(rec), entry)})
     except Fail as f:
-        _record("ssh.key-added", name, "Add an SSH key", f,
+        _record("ssh.key-added", activity.known_vm(positional), "Add an SSH key", f,
                 {"fingerprint": key["fingerprint"], "name": key["name"]} if key else None)
         raise
     shown = key["fingerprint"] + (f" ({key['name']})" if key["name"] else "")

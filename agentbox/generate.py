@@ -199,7 +199,8 @@ def units(rec):
     address in the VM network, logging into the Activity namespace, the Orca port
     and, while the VM has SSH access, its SSH port (ADR 0020), where every
     connection wakes the VM if needed, with the client's address as actor (socat:
-    SELinux keeps systemd-socket-proxyd off the port)."""
+    SELinux keeps systemd-socket-proxyd off the port). wake returns once Orca answers
+    and sshd may start a moment later, so the SSH port tries port 22 for up to 10 seconds."""
     vm, host, port = rec["name"], host_ip(rec), rec["orca_port"]
     names = {kind: footprint.unit_name(vm, kind) for kind in footprint.UNIT_KINDS}
     orca_listen = hostsetup.orca_listen(hostsetup.load(), port)
@@ -287,7 +288,7 @@ Description=SSH connection to VM {vm}
 
 [Service]
 ExecStartPre={paths.CLI} "--actor=SSH (${{REMOTE_ADDR}})" wake {vm}
-ExecStart=/usr/bin/socat STDIO TCP:{guest_ip(rec)}:22
+ExecStart=/usr/bin/socat STDIO TCP:{guest_ip(rec)}:22,retry=20,interval=0.5
 StandardInput=socket
 StandardOutput=socket
 StandardError=journal

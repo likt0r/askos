@@ -961,6 +961,7 @@ AGENTBOX_ERRORS = {
     "ssh_key_options_refused": (400, "SSH keys with options (command=, from=, ...) are refused"),
     "ssh_key_duplicate": (409, "This SSH key is entered for this VM already"),
     "ssh_keys_too_many": (409, "At most 16 SSH keys per VM"),
+    "ssh_keys_too_large": (409, "The SSH keys of a VM take at most 64512 bytes together"),
     "guest_agent_unavailable": (503, "The VM's guest agent does not answer"),
     "vm_query_timeout": (504, "The query in the VM took too long"),
     "vm_journal_failed": (502, "Reading the VM's journal failed"),

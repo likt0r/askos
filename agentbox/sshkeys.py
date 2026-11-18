@@ -2,11 +2,12 @@
 
 A VM's record holds whether it has SSH access (`"ssh_access"`, off when missing) and its SSH
 keys (`"ssh_keys"`: key, name, fingerprint, added, added_by), registry.py. Every key is checked
-here on the Host before it is stored: one of TYPES (RSA of at least MIN_RSA_BITS), its base64
-decodes and names the same type, no options before it, at most MAX_KEYS per VM and no
-duplicate by its SHA256 fingerprint, which is computed here as OpenSSH computes it (no new
-dependency, ADR 0006). The checks the VM makes again (fwcfg-ssh) are plausibility checks only
-(ADR 0019).
+here on the Host before it is stored, so that OpenSSH in the VM takes it: one of TYPES (RSA of
+MIN_RSA_BITS to MAX_RSA_BITS, its numbers in their shortest form; an ECDSA point on its curve),
+its base64 decodes and names the same type, no options before it, at most MAX_KEYS per VM
+that fit into the fw_cfg entry together (MAX_ENTRY) and no duplicate by its SHA256
+fingerprint, which is computed here as OpenSSH computes it (no new dependency, ADR 0006). The
+checks the VM makes again (fwcfg-ssh) are plausibility checks only (ADR 0019).
 
 The host key is an Ed25519 key the Host makes once per VM (generate.py makes its secret with
 openssl; host_key_file() writes it in OpenSSH's own format, which sshd reads). It reaches the
@@ -29,7 +30,14 @@ from .sanitize import clean
 TYPES = ("ssh-ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521",
          "sk-ssh-ed25519@openssh.com", "sk-ecdsa-sha2-nistp256@openssh.com", "ssh-rsa")
 MIN_RSA_BITS = 3072
+MAX_RSA_BITS = 16384                 # OpenSSH's own limit
 MAX_KEYS = 16
+# bytes of the fw_cfg entry; fwcfg-ssh in the VM refuses a longer one (its MAX_ENTRY, the same
+# number). Of it, HOST_KEY_LINE is kept for the host key's line (under 700 bytes: an Ed25519
+# key named after a VM of at most 16 characters), the rest is for the lines of the keys.
+MAX_ENTRY = 64 * 1024
+HOST_KEY_LINE = 1024
+MAX_KEY_BYTES = MAX_ENTRY - HOST_KEY_LINE
 MAX_NAME = 100
 MAX_INPUT = 16384                    # bytes of one key line; an RSA key of 16384 bits needs ~2.8 KiB
 # what a key type looks like (ssh-dss, a certificate, ...): a word of this form that is not the
@@ -37,6 +45,18 @@ MAX_INPUT = 16384                    # bytes of one key line; an RSA key of 1638
 TYPE_LIKE = re.compile(r"(ssh|ecdsa|sk)-[A-Za-z0-9@._-]+")
 # the length of an ECDSA public point (uncompressed: 0x04, then both coordinates) per curve
 EC_POINT = {"nistp256": 65, "nistp384": 97, "nistp521": 133}
+# the curves themselves, y^2 = x^3 - 3x + b modulo p (FIPS 186-4, D.1.2): (p, b, bits of the
+# order of their group)
+CURVES = {
+    "nistp256": (2**256 - 2**224 + 2**192 + 2**96 - 1,
+                 0x5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b, 256),
+    "nistp384": (2**384 - 2**128 - 2**96 + 2**32 - 1,
+                 0xb3312fa7e23ee7e4988e056be3f82d19181d9c6efe8141120314088f5013875ac656398d8a2ed19d2a85c8edd3ec2aef,
+                 384),
+    "nistp521": (2**521 - 1,
+                 0x51953eb9618e1c9a1f929a21a0b68540eea2da725b99b315f3b8b489918ef109e156193951ec7e937b1652c0bd3bb1bf073573df883d2c34f1ef451fd46b503f00,
+                 521),
+}
 FIELDS = ("key", "name", "fingerprint", "added", "added_by")
 HOST_KEY_TYPE = "ssh-ed25519"
 HOST_KEY_BEGIN = "-----BEGIN OPENSSH PRIVATE KEY-----"
@@ -79,6 +99,27 @@ def _invalid(why):
     die(f"not a valid SSH public key: {why}", error="ssh_key_invalid")
 
 
+def _mpint(data):
+    """The positive number of an SSH mpint in its shortest form (RFC 4251: a leading zero byte
+    only before a byte with its high bit set), else None: one number has one encoding, so one
+    key has one fingerprint."""
+    if not data or data[0] & 0x80 or data[0] == 0 and (len(data) == 1 or not data[1] & 0x80):
+        return None
+    return int.from_bytes(data, "big")
+
+
+def _on_curve(curve, point):
+    """Whether the uncompressed point is one OpenSSH takes as a public key of the curve
+    (sshkey_ec_validate_public): on the curve, both coordinates below p and longer than half
+    the bits of the group's order. The curves have cofactor 1, so every point on one is in
+    its group."""
+    p, b, bits = CURVES[curve]
+    size = (len(point) - 1) // 2
+    x, y = int.from_bytes(point[1:1 + size], "big"), int.from_bytes(point[1 + size:], "big")
+    return (x < p and y < p and (y * y - x * x * x + 3 * x - b) % p == 0
+            and x.bit_length() > bits // 2 and y.bit_length() > bits // 2)
+
+
 def _blob_problem(kind, blob):
     """Why the blob is not a public key of this type, or None; ("weak", bits) for an RSA key
     that is too short."""
@@ -88,10 +129,12 @@ def _blob_problem(kind, blob):
     if parts[0] != kind.encode():
         return f"its base64 holds a key of another type ({clean(parts[0].decode('ascii', 'replace'), False)[:40]})"
     if kind == "ssh-rsa":
-        if len(parts) != 3 or not parts[1] or not parts[2]:
-            return "its base64 is not an RSA key"
-        bits = int.from_bytes(parts[2], "big").bit_length()
-        return ("weak", bits) if bits < MIN_RSA_BITS else None
+        e, n = (_mpint(parts[1]), _mpint(parts[2])) if len(parts) == 3 else (None, None)
+        if not e or not n or e.bit_length() > MAX_RSA_BITS:
+            return "its base64 is not an RSA key with its numbers in their shortest form"
+        if n.bit_length() > MAX_RSA_BITS:
+            return f"RSA keys have at most {MAX_RSA_BITS} bits, this one has {n.bit_length()}"
+        return ("weak", n.bit_length()) if n.bit_length() < MIN_RSA_BITS else None
     if kind in ("ssh-ed25519", "sk-ssh-ed25519@openssh.com"):
         wanted = 2 if kind == "ssh-ed25519" else 3
         return None if len(parts) == wanted and len(parts[1]) == 32 else "its base64 is not an Ed25519 key"
@@ -100,6 +143,8 @@ def _blob_problem(kind, blob):
     if (len(parts) != wanted or parts[1] != curve.encode() or len(parts[2]) != EC_POINT[curve]
             or parts[2][:1] != b"\x04"):
         return "its base64 is not an ECDSA key of its curve"
+    if not _on_curve(curve, parts[2]):
+        return "its ECDSA point is not on its curve"
     return None
 
 
@@ -163,14 +208,24 @@ def key_type(key):
     return key.split(" ", 1)[0]
 
 
+def _key_bytes(keys):
+    """What the keys' lines take in the fw_cfg entry (fw_cfg())."""
+    return sum(len(f"key {k['key']}\n".encode()) for k in keys)
+
+
 def add(keys, new):
-    """keys with new appended; dies when there are MAX_KEYS already (ssh_keys_too_many) or one
+    """keys with new appended; dies when there are MAX_KEYS already (ssh_keys_too_many), the
+    lines of all of them would no longer fit into the fw_cfg entry (ssh_keys_too_large) or one
     of them has its fingerprint (ssh_key_duplicate)."""
     if any(k["fingerprint"] == new["fingerprint"] for k in keys):
         die(f"this SSH key ({new['fingerprint']}) is entered for this VM already", error="ssh_key_duplicate",
             fingerprint=new["fingerprint"])
     if len(keys) >= MAX_KEYS:
         die(f"at most {MAX_KEYS} SSH keys per VM", error="ssh_keys_too_many", max_keys=MAX_KEYS)
+    size = _key_bytes([*keys, new])
+    if size > MAX_KEY_BYTES:
+        die(f"the SSH keys of a VM take at most {MAX_KEY_BYTES} bytes together in the file the VM reads; with "
+            f"this one they would take {size}", error="ssh_keys_too_large", max_bytes=MAX_KEY_BYTES)
     return [*keys, new]
 
 
@@ -195,6 +250,8 @@ def problem(keys):
         if k["fingerprint"] in seen:
             return f"key {i + 1} is there twice"
         seen.add(k["fingerprint"])
+    if _key_bytes(keys) > MAX_KEY_BYTES:
+        return f"the keys take more than {MAX_KEY_BYTES} bytes together"
     return None
 
 

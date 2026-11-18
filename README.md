@@ -479,7 +479,7 @@ Each VM has its own SSH port, 2200 + its network number (`agentbox ssh` names it
 `127.0.0.1`, in Network mode too for now. A connection wakes the VM like an Orca connection
 and is recorded as its Actor `SSH (<address>)`. You log in as `agent`, the user Orca and the
 agents run as, only with a key; `ssh -L` works, remote and agent forwarding do not. Allowed
-keys: Ed25519, ECDSA, their security-key forms (`sk-…`) and RSA of at least 3072 bits, one line
+keys: Ed25519, ECDSA, their security-key forms (`sk-…`) and RSA of 3072 to 16384 bits, one line
 of a `.pub` file without options (`command=`, `from=`), at most 16 per VM; the comment becomes
 the key's name unless `--name` gives one. The host key is made by the Host once per VM and
 stays the same across every Reset; put the `known_hosts` line `agentbox ssh` prints into your

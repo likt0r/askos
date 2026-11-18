@@ -113,10 +113,11 @@ flowchart LR
   and then forwards to port 22 of the VM, as the Orca port does, so `ssh -p 2201
   agent@127.0.0.1` wakes a VM that is off. Turning SSH access off removes the port at once and
   keeps the keys. The Host checks every key before it stores it: Ed25519, ECDSA (P-256, P-384,
-  P-521), their security-key forms (`sk-…`) or RSA of at least 3072 bits; its base64 must
-  decode and name the same type; no options before the key (`command=`, `from=`: only the VM
-  would enforce them); at most 16 per VM and none twice, by the SHA256 fingerprint the Host
-  computes itself. The VM gets its SSH access and keys at its next start, so a running or
+  P-521), their security-key forms (`sk-…`) or RSA of 3072 to 16384 bits; its base64 must
+  decode to a key of the same type that OpenSSH takes (an ECDSA point on its curve, the
+  numbers of an RSA key in their shortest form); no options before the key (`command=`,
+  `from=`: only the VM would enforce them); at most 16 per VM, together within the 64 KiB the
+  VM reads, and none twice, by the SHA256 fingerprint the Host computes itself. The VM gets its SSH access and keys at its next start, so a running or
   paused VM at its next Restart or Reset ([VMs](#vms)). Each change is recorded in Activity
   (`ssh.enabled`, `ssh.disabled`, `ssh.key-added` with the key's fingerprint and name), each
   connection is not.

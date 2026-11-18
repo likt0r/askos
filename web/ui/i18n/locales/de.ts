@@ -123,6 +123,7 @@ export default {
     ssh_key_options_refused: 'SSH-Schlüssel mit Optionen (command=, from=, …) werden abgelehnt: nur die VM würde sie durchsetzen.',
     ssh_key_duplicate: 'Dieser SSH-Schlüssel ist für diese VM schon eingetragen.',
     ssh_keys_too_many: 'Eine VM hat höchstens 16 SSH-Schlüssel.',
+    ssh_keys_too_large: 'Die SSH-Schlüssel einer VM belegen zusammen höchstens 64512 Bytes; mit diesem wären es mehr.',
     guest_agent_unavailable: 'Der Gast-Agent der VM antwortet nicht.',
     vm_query_timeout: 'Eine Abfrage in der VM hat zu lange gedauert.',
     vm_journal_failed: 'Das Journal der VM konnte nicht gelesen werden.',

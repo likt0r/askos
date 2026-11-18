@@ -20,7 +20,7 @@ import sys
 TYPES = ("ssh-ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521",
          "sk-ssh-ed25519@openssh.com", "sk-ecdsa-sha2-nistp256@openssh.com", "ssh-rsa")
 MAX_KEYS = 16
-MAX_ENTRY = 64 * 1024
+MAX_ENTRY = 64 * 1024  # the Host keeps the entry within it (agentbox/sshkeys.py MAX_ENTRY)
 HOST_KEY_BEGIN = b"-----BEGIN OPENSSH PRIVATE KEY-----"
 # SELinux types sshd reads: its host keys, and a user's authorized_keys
 LABELS = {"host_key": "sshd_key_t", "authorized_keys": "ssh_home_t"}

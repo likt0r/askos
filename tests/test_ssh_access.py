@@ -13,6 +13,8 @@ Run from the repo root: python3 -m unittest discover -s tests
 import base64
 import fcntl
 import hashlib
+import importlib.machinery
+import importlib.util
 import json
 import os
 import re
@@ -39,6 +41,7 @@ SOCKET = "etc/systemd/system/agentbox-ssh-{}.socket"
 SERVICE = "etc/systemd/system/agentbox-ssh-{}@.service"
 FWCFG_SSH = os.path.join(REPO, "vm", "files", "usr", "lib", "agentbox", "fwcfg-ssh")
 GUEST_SETUP = os.path.join(REPO, "vm", "files", "usr", "lib", "agentbox", "guest-setup")
+DONE = "guest-setup: context work, Orca port 6801, the Host at 10.77.1.1\n"     # its last line
 # a key and its fingerprint as `ssh-keygen -lf` gives it
 LAPTOP = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f laptop"
 LAPTOP_FP = "SHA256:ZkAslGjFiUHdGf/WUL8rQvkib4PTvQatUV0OUQSncCA"
@@ -48,22 +51,89 @@ def ssh_string(data):
     return struct.pack(">I", len(data)) + data
 
 
-def key(kind="ssh-ed25519", seed=1, bits=3072, comment=""):
-    """A public key line of this type (made up, of the right form)."""
+# the base point of each curve (FIPS 186-4, D.1.2), for ECDSA keys that are points on it
+GENERATOR = {
+    "nistp256": (0x6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296,
+                 0x4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5),
+    "nistp384": (0xaa87ca22be8b05378eb1c71ef320ad746e1d3b628ba79b9859f741e082542a385502f25dbf55296c3a545e3872760ab7,
+                 0x3617de4a96262c6f5d9e98bf9292dc29f8f41dbd289a147ce9da3113b5f0b8c00a60b1ce1d7e819d7a431d7c90ea0e5f),
+    "nistp521": (0xc6858e06b70404e9cd9e3ecb662395b4429c648139053fb521f828af606b4d3dbaa14b5e77efe75928fe1dc127a2ffa8de3348b3c1856a429bf97e7e31c2e5bd66,
+                 0x11839296a789a3bc0045c8a5fb42c7d1bd998f54449579b446817afbd17273e662c97ee72995ef42640c550b9013fad0761353c7086a272c24088be94769fd16650),
+}
+
+
+def ec_point(curve, k):
+    """k times the curve's base point, uncompressed (0x04, x, y): a public key OpenSSH takes."""
+    p = sshkeys.CURVES[curve][0]
+
+    def plus(a, b):
+        if a is None or b is None:
+            return a or b
+        if a[0] == b[0] and (a[1] + b[1]) % p == 0:
+            return None
+        slope = ((3 * a[0] * a[0] - 3) * pow(2 * a[1], -1, p) if a == b
+                 else (b[1] - a[1]) * pow(b[0] - a[0], -1, p)) % p
+        x = (slope * slope - a[0] - b[0]) % p
+        return x, (slope * (a[0] - x) - a[1]) % p
+
+    point, step = None, GENERATOR[curve]
+    while k:
+        if k & 1:
+            point = plus(point, step)
+        step, k = plus(step, step), k >> 1
+    size = (p.bit_length() + 7) // 8
+    return b"\x04" + point[0].to_bytes(size, "big") + point[1].to_bytes(size, "big")
+
+
+def line_of(kind, *parts):
+    blob = ssh_string(kind.encode()) + b"".join(ssh_string(p) for p in parts)
+    return f"{kind} {base64.b64encode(blob).decode()}"
+
+
+def key(kind="ssh-ed25519", seed=1, bits=3072, comment="", application=b"ssh:"):
+    """A public key line of this type (made up, of the right form; an ECDSA key a point on its
+    curve)."""
     body = hashlib.sha512(str(seed).encode()).digest() * 8
     if kind == "ssh-rsa":
         n = int.from_bytes(body[:bits // 8], "big") | (1 << (bits - 1)) | 1
-        parts = [b"\x01\x00\x01", b"\x00" + n.to_bytes(bits // 8, "big")]
+        parts = [b"\x01\x00\x01", n.to_bytes(bits // 8 + 1, "big")]
     elif kind in ("ssh-ed25519", "sk-ssh-ed25519@openssh.com"):
-        parts = [body[:32]] + ([b"ssh:"] if kind.startswith("sk-") else [])
+        parts = [body[:32]] + ([application] if kind.startswith("sk-") else [])
     elif kind == "ssh-dss":
         parts = [body[:128], body[:20], body[:128], body[:128]]
     else:
         curve = kind.split("@")[0].rsplit("-", 1)[1]
-        size = {"nistp256": 32, "nistp384": 48, "nistp521": 66}[curve]
-        parts = [curve.encode(), b"\x04" + body[:2 * size]] + ([b"ssh:"] if kind.startswith("sk-") else [])
-    blob = ssh_string(kind.encode()) + b"".join(ssh_string(p) for p in parts)
-    return f"{kind} {base64.b64encode(blob).decode()}" + (f" {comment}" if comment else "")
+        parts = [curve.encode(), ec_point(curve, int.from_bytes(body[:32], "big"))] + (
+            [application] if kind.startswith("sk-") else [])
+    return line_of(kind, *parts) + (f" {comment}" if comment else "")
+
+
+def ssh_parts(line):
+    """The SSH wire strings of a key line's blob."""
+    blob, parts = base64.b64decode(line.split()[1]), []
+    while blob:
+        n = struct.unpack(">I", blob[:4])[0]
+        parts.append(blob[4:4 + n])
+        blob = blob[4 + n:]
+    return parts
+
+
+def long_key(seed):
+    """A security key whose application string makes its line ~14.8 KB long: four fit into the
+    file the VM reads, a fifth does not."""
+    return key("sk-ssh-ed25519@openssh.com", seed=seed, application=b"ssh:" + b"a" * 11000)
+
+
+def fwcfg_ssh():
+    """fwcfg-ssh as a module, for its limits."""
+    loader = importlib.machinery.SourceFileLoader("fwcfg_ssh", FWCFG_SSH)
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+    dont_write, sys.dont_write_bytecode = sys.dont_write_bytecode, True    # no __pycache__ in vm/files
+    try:
+        loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = dont_write
+    return module
 
 
 def fingerprint(line):
@@ -115,7 +185,7 @@ class SshTest(VmsTest):
         return files
 
     def activity(self):
-        return [(e["AGENTBOX_ACTION"], e["AGENTBOX_VM"], e["AGENTBOX_OUTCOME"],
+        return [(e["AGENTBOX_ACTION"], e.get("AGENTBOX_VM"), e["AGENTBOX_OUTCOME"],
                  {k[len("AGENTBOX_PARAM_"):].lower(): v for k, v in e.items() if k.startswith("AGENTBOX_PARAM_")})
                 for e in self.journald.entries()]
 
@@ -152,6 +222,7 @@ class RecordTest(SshTest):
         good = {"key": LAPTOP.rsplit(" ", 1)[0], "name": "laptop", "fingerprint": LAPTOP_FP,
                 "added": "2026-11-18T10:00:00Z", "added_by": "bewr"}
         other = key(seed=2)
+        rsa_padded = line_of("ssh-rsa", b"\x00\x01\x00\x01", ssh_parts(key("ssh-rsa"))[2])
         cases = {"access no bool": {"ssh_access": "yes"}, "access a number": {"ssh_access": 1},
                  "keys no list": {"ssh_keys": {}},
                  "wrong fingerprint": {"ssh_keys": [{**good, "fingerprint": fingerprint(other)}]},
@@ -162,7 +233,10 @@ class RecordTest(SshTest):
                  "twice": {"ssh_keys": [good, good]},
                  "too many": {"ssh_keys": [{**good, "key": key(seed=i), "fingerprint": fingerprint(key(seed=i))}
                                            for i in range(17)]},
-                 "bad name": {"ssh_keys": [{**good, "name": "a\nb"}]}}
+                 "bad name": {"ssh_keys": [{**good, "name": "a\nb"}]},
+                 "not in its shortest form": {"ssh_keys": [{**good, "key": rsa_padded, "fingerprint": fingerprint(rsa_padded)}]},
+                 "too long together": {"ssh_keys": [{**good, "key": long_key(i), "fingerprint": fingerprint(long_key(i))}
+                                                    for i in range(5)]}}
         for what, fields in cases.items():
             with self.subTest(what):
                 vm_records.write(self.root, vm_records.record("work", 1, **fields))
@@ -185,13 +259,75 @@ class KeyRulesTest(SshTest):
     def test_the_fingerprint_is_the_one_of_ssh_keygen(self):
         self.assertEqual(self.add()["fingerprint"], LAPTOP_FP)
         if shutil.which("ssh-keygen"):
-            # made-up ECDSA points are no points of their curve, which ssh-keygen checks
-            for kind in ("ssh-ed25519", "sk-ssh-ed25519@openssh.com", "ssh-rsa"):
+            for kind in sshkeys.TYPES:
                 with self.subTest(kind), tempfile.NamedTemporaryFile("w", suffix=".pub") as f:
                     f.write(key(kind) + "\n")
                     f.flush()
                     r = subprocess.run(["ssh-keygen", "-lf", f.name], capture_output=True, text=True, timeout=30)
                     self.assertEqual(r.stdout.split()[1], sshkeys.parse(key(kind))["fingerprint"])
+
+    def test_keys_made_by_ssh_keygen_are_taken_with_its_fingerprint(self):
+        if not shutil.which("ssh-keygen"):
+            self.skipTest("no ssh-keygen")
+        with tempfile.TemporaryDirectory() as tmp:
+            for kind, bits in (("ed25519", None), ("ecdsa", 256), ("ecdsa", 384), ("ecdsa", 521), ("rsa", 3072)):
+                with self.subTest(kind=kind, bits=bits):
+                    path = os.path.join(tmp, f"{kind}{bits}")
+                    subprocess.run(["ssh-keygen", "-q", "-t", kind, *(["-b", str(bits)] if bits else []), "-N", "",
+                                    "-C", f"{kind}{bits}", "-f", path], check=True, capture_output=True, timeout=60)
+                    shown = subprocess.run(["ssh-keygen", "-lf", path + ".pub"], capture_output=True, text=True,
+                                           check=True, timeout=30).stdout.split()[1]
+                    with open(path + ".pub") as f:
+                        said = self.add(line=f.read().strip())
+                    self.assertEqual((said["fingerprint"], said["name"]), (shown, f"{kind}{bits}"))
+
+    def test_keys_openssh_would_refuse_are_refused(self):
+        g = ec_point("nistp256", 1)
+        off_curve = g[:-1] + bytes([g[-1] ^ 1])
+        rsa = ssh_parts(key("ssh-rsa"))
+        cases = {"ECDSA point of zeros": line_of("ecdsa-sha2-nistp256", b"nistp256", b"\x04" + bytes(64)),
+                 "ECDSA point off its curve": line_of("ecdsa-sha2-nistp256", b"nistp256", off_curve),
+                 "security-key ECDSA point off its curve": line_of("sk-ecdsa-sha2-nistp256@openssh.com", b"nistp256",
+                                                                   off_curve, b"ssh:"),
+                 "ECDSA coordinate beyond p": line_of("ecdsa-sha2-nistp521", b"nistp521", b"\x04" + b"\xff" * 132),
+                 "RSA exponent with a leading zero": line_of("ssh-rsa", b"\x00" + rsa[1], rsa[2]),
+                 "RSA modulus with another leading zero": line_of("ssh-rsa", rsa[1], b"\x00" + rsa[2]),
+                 "RSA modulus negative": line_of("ssh-rsa", rsa[1], rsa[2][1:]),
+                 "RSA exponent zero": line_of("ssh-rsa", b"\x00", rsa[2])}
+        for what, line in cases.items():
+            with self.subTest(what):
+                said = self.add_refused(line)
+                self.assertEqual(said["error"], "ssh_key_invalid", said)
+        said = self.add_refused(key("ssh-rsa", bits=16392))
+        self.assertEqual((said["error"], said["message"]),
+                         ("ssh_key_invalid", "not a valid SSH public key: RSA keys have at most 16384 bits, this one "
+                                             "has 16392"))
+        self.add(line=key("ssh-rsa", bits=16384))
+
+    def test_one_key_has_one_encoding_so_it_is_no_duplicate(self):
+        """A leading zero byte more would change the fingerprint, though not the key (ssh-keygen
+        -lf shows the same for both)."""
+        self.add(line=key("ssh-rsa"))
+        rsa = ssh_parts(key("ssh-rsa"))
+        self.assertEqual(self.add_refused(line_of("ssh-rsa", b"\x00" + rsa[1], rsa[2]))["error"], "ssh_key_invalid")
+        self.assertEqual(len(self.record()["ssh_keys"]), 1)
+
+    def test_the_keys_fit_into_the_file_the_vm_reads(self):
+        self.ok("set-ssh", "work", "on")
+        for i in range(4):
+            self.add(line=long_key(i))
+        said = self.add_refused(long_key(4))
+        self.assertEqual((said["error"], said["params"]), ("ssh_keys_too_large", {"max_bytes": 64512}))
+        self.assertTrue(said["message"].startswith("the SSH keys of a VM take at most 64512 bytes together in the "
+                                                   "file the VM reads; with this one they would take "),
+                        said["message"])
+        self.assertEqual(len(self.record()["ssh_keys"]), 4)
+        # what the VM reads stays within what it takes, with the longest host key
+        with open(self.path(SSH_FILE.format("work")), "rb") as f:
+            self.assertLessEqual(len(f.read()), fwcfg_ssh().MAX_ENTRY)
+        longest = sshkeys.fw_cfg(True, [], sshkeys.host_key_file(bytes(32), bytes(32), "x" * 16 + ".agentbox"))
+        self.assertLessEqual(len(longest), sshkeys.HOST_KEY_LINE)
+        self.assertEqual(sshkeys.MAX_ENTRY, fwcfg_ssh().MAX_ENTRY)
 
     def test_weak_and_unknown_types_are_refused(self):
         said = self.add_refused(key("ssh-rsa", bits=2048))
@@ -294,8 +430,10 @@ class SetSshTest(SshTest):
                          "Accept=yes\nMaxConnections=32\n\n[Install]\nWantedBy=sockets.target\n")
         service = self.read(SERVICE.format("work"))
         self.assertIn('\nExecStartPre=/usr/bin/agentbox "--actor=SSH (${REMOTE_ADDR})" wake work\n'
-                      "ExecStart=/usr/bin/socat STDIO TCP:10.77.1.2:22\n", service)
+                      "ExecStart=/usr/bin/socat STDIO TCP:10.77.1.2:22,retry=20,interval=0.5\n", service)
         self.assertIn("StandardInput=socket\nStandardOutput=socket\n", service)
+        # sshd may start a moment after Orca answers: the forward tries port 22 for 10 seconds
+        self.assertEqual(re.findall(r"retry=(\d+),interval=([\d.]+)", service), [("20", "0.5")])
         self.assertEqual(self.systemctl(), [["daemon-reload"], ["enable", "--now", "agentbox-ssh-work.socket"]])
         # nothing of the VM stops or starts now; priv has no SSH port
         self.assertEqual(self.virsh("shutdown", "destroy", "start", "managedsave"), [])
@@ -425,6 +563,68 @@ class SetSshTest(SshTest):
         self.assertEqual(self.json("regenerate")["vms"]["work"], ["units"])
         self.assertTrue(self.exists(SOCKET.format("work")))
 
+    def test_off_closes_the_port_first_also_when_a_later_step_fails(self):
+        self.add()
+        self.ok("set-ssh", "work", "on")
+        self.forget_calls()
+        self.journald.entries()
+        self.journald.datagrams.clear()
+        self.scenario(virt_install_fails=["agentbox-work"])
+        code, out, err = self.run_agentbox("set-ssh", "work", "off", "--json")
+        self.assertEqual((code, out), (1, ""))
+        said = json.loads(err)
+        self.assertTrue(said["message"].startswith("work: the change is saved, but not applied: "), said["message"])
+        self.assertIs(self.record()["ssh_access"], False)
+        # no old key connects through the Host meanwhile
+        self.assertEqual(self.systemctl()[0], ["disable", "--now", "agentbox-ssh-work.socket"])
+        self.assertFalse(self.exists(SOCKET.format("work")))
+        self.assertFalse(self.exists(SERVICE.format("work")))
+        self.assertEqual(self.read(SSH_FILE.format("work")), "none\n")
+        self.assertEqual([(a, o) for a, _, o, _ in self.activity()], [("ssh.disabled", "failed")])
+        self.scenario()
+        self.assertEqual(self.json("regenerate")["vms"]["work"], [])
+
+    def test_the_same_again_failing_claims_no_saved_change(self):
+        self.ok("set-ssh", "work", "on")
+        self.scenario(virt_install_fails=["agentbox-work"])
+        before = self.record()
+        code, out, err = self.run_agentbox("set-ssh", "work", "on", "--json")
+        self.assertEqual((code, out), (1, ""))
+        said = json.loads(err)
+        self.assertEqual((said["error"], said["params"]), ("action_failed", {"vm": "work"}))
+        self.assertTrue(said["message"].startswith("work: nothing changed, but applying the VM's SSH access failed: "),
+                        said["message"])
+        self.assertNotIn("saved", said["message"])
+        self.assertEqual(self.record(), before)
+
+    def test_a_paused_vm_is_defined_once_it_has_no_pause(self):
+        self.add()
+        self.ok("pause", "work")
+        saved = self.path("var/lib/agentbox/domains/work.xml")
+        with open(saved) as f:
+            xml = f.read()
+        with open(saved, "w") as f:
+            f.write(re.sub(r",entry5\.name=opt/agentbox/ssh,entry5\.file=[^\"]*?(?=\")", "", xml))
+        self.forget_calls()
+        result = self.json("set-ssh", "work", "on")
+        self.assertEqual((result["changed"], result["state"], result["applies"]), (True, "paused", "next_restart"))
+        self.assertEqual(result["message"],
+                         "work: SSH access on, port 2201 (ssh -p 2201 agent@127.0.0.1); the VM is paused, so it is "
+                         "defined again only once it no longer has a Pause (agentbox start work, then agentbox "
+                         "regenerate), and SSH access applies from the next Restart or Reset after that")
+        said = self.add(line=key(seed=2, comment="phone"))
+        self.assertTrue(said["message"].endswith("; the VM is paused, so it is defined again only once it no longer "
+                                                 "has a Pause (agentbox start work, then agentbox regenerate), and "
+                                                 "SSH access applies from the next Restart or Reset after that"),
+                        said["message"])
+        self.assertEqual(self.virsh("define", "start", "managedsave-remove"), [])
+        self.assertIs(self.record()["ssh_access"], True)
+        self.assertTrue(self.exists(SOCKET.format("work")))
+        self.ok("start", "work")
+        self.assertEqual(self.json("regenerate")["vms"]["work"], ["domain"])
+        [defined] = [c["xml"] for c in self.virsh("define") if c["dom"] == "agentbox-work"]
+        self.assertIn("entry5.name=opt/agentbox/ssh", defined)
+
     def test_usage(self):
         for args in ((), ("work",), ("work", "yes"), ("work", "on", "off")):
             with self.subTest(args=args):
@@ -515,6 +715,24 @@ class ActivityTest(SshTest):
         self.add_refused(LAPTOP)
         self.assertEqual([(a, o) for a, _, o, _ in self.activity()],
                          [("ssh.key-added", "failed"), ("ssh.key-added", "ok"), ("ssh.key-added", "failed")])
+
+    def test_failures_before_the_change_are_recorded_too(self):
+        """A wrong argument, an unknown VM, a broken record: each command records its own entries."""
+        self.refused("set-ssh", "work", "yes")
+        self.refused("set-ssh", "work", "off", "again")
+        self.refused("set-ssh", "nope", "off")
+        self.refused("add-ssh-key", "work", "a", "b")
+        code, _, _ = self.run_input("add-ssh-key", "nope", stdin=LAPTOP)
+        self.assertEqual(code, 1)
+        vm_records.write(self.root, {**self.record(), "ssh_access": "yes"}, self.record("priv"))
+        self.refused("set-ssh", "work", "on")
+        code, _, _ = self.run_input("add-ssh-key", "work", stdin=LAPTOP)
+        self.assertEqual(code, 1)
+        self.assertEqual([(a, vm, o) for a, vm, o, _ in self.activity()],
+                         [("ssh.enabled", "work", "failed"), ("ssh.disabled", "work", "failed"),
+                          ("ssh.disabled", None, "failed"), ("ssh.key-added", "work", "failed"),
+                          ("ssh.key-added", None, "failed"), ("ssh.enabled", "work", "failed"),
+                          ("ssh.key-added", "work", "failed")])
 
     def test_the_actor_is_who_caused_it(self):
         self.ok("--actor", "Firefox (192.0.2.4)", "set-ssh", "work", "on")
@@ -658,6 +876,77 @@ class GuestTest(unittest.TestCase):
         self.assertEqual(self.calls(), [f"chcon -t sshd_key_t {self.out}/host_key",
                                         f"chcon -t ssh_home_t {self.out}/authorized_keys",
                                         "systemctl start --no-block sshd.service"])
+
+    def run_guest_setup(self, lines):
+        """guest-setup itself, as at a boot, its paths moved into a temporary root: the fw_cfg
+        entries (SSH access from lines, None for none), the home, the Data disk, /run and /etc;
+        fwcfg-env, home-paths and fwcfg-ssh are the real ones. What needs root or a VM (ip,
+        mount, install's owners, ...) is a fake. Returns (exit code, stdout, stderr)."""
+        root = os.path.join(self.dir, "root")
+        lib = os.path.join(root, "usr", "lib", "agentbox")
+        os.makedirs(lib)
+        for name in ("fwcfg-env", "home-paths", "fwcfg-ssh"):
+            os.symlink(os.path.join(os.path.dirname(FWCFG_SSH), name), os.path.join(lib, name))
+        open(os.path.join(lib, "bunfig.toml"), "w").close()
+        entries = {"context": "work", "orca_port": "6801", "pairing_address": "192.0.2.1", "env": "none",
+                   "claude_token": "", "ssh": "".join(line + "\n" for line in lines) if lines else "none\n"}
+        for name, text in entries.items():
+            folder = os.path.join(root, "sys", "firmware", "qemu_fw_cfg", "by_name", "opt", "agentbox", name)
+            os.makedirs(folder)
+            with open(os.path.join(folder, "raw"), "w") as f:
+                f.write(text)
+        for folder in ("var/lib/agentbox-data", "var/home", "etc"):
+            os.makedirs(os.path.join(root, folder))
+        open(os.path.join(root, "etc", "hosts"), "w").close()
+        with open(GUEST_SETUP) as f:
+            script = f.read()
+        for path in ("/sys/firmware/", "/usr/lib/agentbox/", "/run/agentbox", "/var/lib/agentbox-data",
+                     "/var/home/agent", "/etc/hosts", "/etc/resolv.conf"):
+            self.assertIn(path, script)
+            script = script.replace(path, root + path)
+        moved = os.path.join(self.dir, "guest-setup")
+        with open(moved, "w") as f:
+            f.write(script)
+        os.chmod(moved, 0o755)
+        for name in ("setsebool", "modprobe", "hostnamectl", "mountpoint", "mount", "chown", "runuser"):
+            self.fake(name, "exit 0\n")
+        self.fake("ip", '[ "$1" = -4 ] && echo "2: eth0    inet 10.77.1.2/24 brd 10.77.1.255 scope global eth0"\n'
+                        "exit 0\n")
+        # the owners need root: install without them
+        self.fake("install", 'for a; do shift; case "$skip$a" in -o|-g) skip=1;; 1*) skip=;; *) set -- "$@" "$a";; '
+                             'esac; done\nexec /usr/bin/install "$@"\n')
+        r = subprocess.run([moved], capture_output=True, text=True, timeout=60,
+                           env={"PATH": self.bin + ":" + os.environ["PATH"], "LANG": "C.UTF-8",
+                                "CALLS": os.path.join(self.dir, "calls")})
+        self.out = os.path.join(root, "run", "agentbox", "ssh")
+        return r.returncode, r.stdout, r.stderr
+
+    def test_guest_setup_with_ssh_access_starts_sshd_last(self):
+        code, out, err = self.run_guest_setup(self.entry_lines(key()))
+        self.assertEqual((code, out), (0, DONE), err)
+        self.assertEqual(self.files(), ["authorized_keys", "host_key"])
+        with open(os.path.join(self.out, "authorized_keys")) as f:
+            self.assertEqual(f.read(), f"{key()}\n")
+        self.assertEqual(self.calls(), ["systemctl start --no-block sshd.service"])
+        self.assertIn("fwcfg-ssh: SSH access on with 1 SSH key(s), sshd started", err)
+        # the home was set up before
+        self.assertTrue(os.path.isfile(os.path.join(self.dir, "root", "var", "home", "agent", ".bunfig.toml")))
+
+    def test_guest_setup_without_ssh_access_starts_no_sshd(self):
+        code, out, err = self.run_guest_setup(None)
+        self.assertEqual((code, out), (0, DONE), err)
+        self.assertEqual(self.files(), [])
+        self.assertEqual(self.calls(), [])
+        self.assertIn("fwcfg-ssh: no SSH access, sshd stays off", err)
+
+    def test_guest_setup_goes_on_when_ssh_access_fails(self):
+        run = os.path.join(self.dir, "root", "run", "agentbox")
+        os.makedirs(run)
+        os.symlink(self.dir, os.path.join(run, "ssh"))          # no directory fwcfg-ssh writes into
+        code, out, err = self.run_guest_setup(self.entry_lines(key()))
+        self.assertEqual((code, out), (0, DONE), err)
+        self.assertIn("guest-setup: SSH access not set up", err)
+        self.assertEqual(self.calls(), [])
 
     def test_guest_setup_runs_it_last_and_goes_on_without_it(self):
         with open(GUEST_SETUP) as f:
