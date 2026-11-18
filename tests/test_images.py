@@ -434,6 +434,12 @@ class SafeguardTest(ImagesTest):
                       "managed.json": '{"permissions": {"deny": ["Read(./.env)"]}}\n'})
         self.built("cuda")
 
+    def test_a_padded_file_where_the_environment_is_read_is_rejected(self):
+        """What lies beyond 1 MiB is not read, so such a file fails instead of passing unseen."""
+        padded = "#" * safeguards.MAX_READ + "\nexport NPM_CONFIG_IGNORE_SCRIPTS=false\n"
+        self.image("weak", DERIVED + "COPY zz.sh /etc/profile.d/zz.sh\n", **{"zz.sh": padded})
+        self.rejected("weak", "/etc/profile.d/zz.sh is larger than 1 MiB and cannot be checked")
+
     def test_a_weakened_npm_configuration_is_rejected(self):
         self.image("weak", DERIVED + "COPY npmrc /etc/npmrc\n", npmrc="ignore-scripts=false\nmin-release-age=0\n")
         self.rejected("weak", "npm: ignore-scripts is not true", "npm: min-release-age is 0 instead of 2",

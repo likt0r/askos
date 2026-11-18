@@ -12,7 +12,8 @@ access its work needs, so that what goes wrong in one VM stays in it. It is buil
    apart, run in different VMs; nothing of one reaches the other unless both are given the
    same: every VM starts with the Allowlist entries a new Host has, most of which take uploads
    ([Egress](#egress)), and the owner can give two VMs an entry for every VM, the same GitHub
-   owner, folder, Image (every Image sits on the Base Build), paired laptop or Claude account
+   owner, folder, Image (every Image sits on the Base Build), paired laptop or Claude account;
+   and every VM reaches the same services on the Host ([The boundary of a VM](#the-boundary-of-a-vm))
    ([ADR 0001](docs/adr/0001-vm-is-the-unit-of-separation.md)).
 2. **Least privilege for agents.** An agent gets what its work needs and no more: the
    destinations on its Allowlist, GitHub tokens for one repository and one hour, nothing of
@@ -756,7 +757,7 @@ Host after every Build
   runtime from the owner's home, `ORCA_RUNTIMES`); nothing reads it any more.
 - The safeguard check (`agentbox/safeguards.py`) mounts the built image (`podman image mount`)
   and reads files; nothing from the Image runs, and links are resolved inside the Image. It
-  parses regular files only; a file larger than 1 MiB fails the check. It
+  parses regular files only; a file it parses that is larger than 1 MiB fails the check. It
   verifies npm's global configuration (`ignore-scripts=true`, `min-release-age`, npm 12 or
   later), the minimum age for uv (`uv.toml` and `UV_EXCLUDE_NEWER`), pnpm and Bun, the Git
   hooks path and `pre-push` hook, the resolver (`guest-setup`'s nameserver line, `dns=none`,
@@ -1462,7 +1463,8 @@ laptops.
 
 - **The package minimum age is a delay, not a check.** npm, pnpm, Bun and uv in the VM, and the
   Build for the agents and Orca, take only versions at least `package_min_age_days` old (2 by
-  default), and npm runs no install scripts ([Packages](#packages)). A malicious version nobody
+  default), and npm in the VM runs no install scripts ([Packages](#packages)); the Build installs
+  the agents with their install scripts, as root in its container. A malicious version nobody
   notices for longer gets in, and so does malicious code that runs when a package is used, not
   installed. Fedora's packages in a Build, and other package managers in the VM (cargo, Gradle,
   container images, for example), have no minimum age.
@@ -1539,7 +1541,8 @@ laptops.
   owner's Host: SSH by key only, daily updates, an encrypted disk.
 - **The Control Room is one password away from every VM.** A session can do what the Control
   Room offers: reveal Pairing codes, open the web, allow destinations without strong Signals,
-  replace credentials, start a Build and reset a VM onto it, delete a VM with its Data disk
+  replace credentials, start a Build and reset a VM onto it, delete a VM with its Data disk,
+  change the Settings a Build is checked against (a shorter package minimum age, an older Orca)
   ([Control Room](#control-room)). Once the Control Room uploads Recipes
   ([ADR 0018](docs/adr/0018-recipes-define-images-on-the-host.md)), it can write one as well:
   the Safeguard check is written against mistakes, not against a Recipe made to get past it
