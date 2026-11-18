@@ -11,7 +11,7 @@ import sys
 
 from . import activity, allowlist, container_images, credentials, describe, detection, generate, github, guest
 from . import images, lifecycle, lists, maintenance, network, options, pairings, paths, recipes, settings, setup, transfer
-from . import ssh_access, version, versions, vms, watch
+from . import sign_in_links, ssh_access, version, versions, vms, watch
 from .errors import Fail
 
 USAGE = """\
@@ -29,6 +29,9 @@ Controls the agent VMs on this Host.
                                                      network: also home network N; without options on a
                                                      Host that is set up, only the Host steps
   agentbox watch                                     (Control Room) events as JSON lines until stdin ends
+  agentbox sign-in-link [--json]                     a link that signs a browser in to the Control Room once,
+                                                     within 2 minutes, without the password (root and the
+                                                     members of libvirt)
   agentbox create <vm> [--image I] [--memory-mib N] [--data-disk-gib N] [--owner O]... [--container-image-cleanup on|off] [--container-image-cleanup-days N] [--copy-allowlist-from VM] [--json]
                 new VM; network and Orca port are picked automatically
   agentbox delete <vm> --confirm <vm> [--delete-data-disk] [--json]
@@ -184,7 +187,7 @@ With --json, a failure also goes to stderr as one JSON object:
 
 MODULES = (lifecycle, version, describe, setup, watch, vms, pairings, transfer, guest, credentials, network,
            allowlist, detection, lists, generate, settings, github, images, recipes, versions, activity, maintenance,
-           container_images, ssh_access)
+           container_images, ssh_access, sign_in_links)
 DECLARATIONS = {name: declaration for module in MODULES for name, declaration in module.DECLARATIONS.items()}
 
 

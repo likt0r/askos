@@ -176,7 +176,8 @@ if [ $1 -eq 1 ]; then
         if [ -z "$(ls -A "$d")" ]; then chattr +C "$d" 2>/dev/null || :; fi
     done
 fi
-# the Activity journal's runtime directory, owned as journald owns it (agentbox.tmpfiles)
+# the Activity journal's runtime directory, owned as journald owns it, and the directory of
+# the Control Room's sign-in links (agentbox.tmpfiles)
 %tmpfiles_create agentbox.conf
 # update only: the timers of the weekly rebuild and the version check that agentbox regenerate
 # wrote before the Maintenance window (#49), and the service only the rebuild timer started, are

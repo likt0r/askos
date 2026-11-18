@@ -54,7 +54,7 @@ def _package_dir():
 
 
 sys.path.insert(0, _package_dir())
-from agentbox import hostsetup, ids, journal, paths, registry, settings, version, vmenv  # noqa: E402
+from agentbox import hostsetup, ids, journal, paths, registry, settings, sign_in_links, version, vmenv  # noqa: E402
 from agentbox.errors import Fail  # noqa: E402
 
 CONF = os.environ.get("AGENTBOX_WEB_CONF", "/etc/agentbox/web")
@@ -147,13 +147,15 @@ def device(user_agent):
 # the action is the entry's code (AGENTBOX_CODE), from which the UI words it; the English
 # description is the fallback. No parameters: address and device are fields of their own.
 SIGN_INS = {"signin": ("ok", "Signed in"), "signin.failed": ("failed", "Sign-in with a wrong password"),
+            "signin.link": ("ok", "Signed in with a sign-in link"),
+            "signin.link-refused": ("failed", "Sign-in with a used, expired or unknown sign-in link"),
             "signin.locked": ("failed", "Sign-in refused: too many failed attempts"),
             "signout": ("ok", "Signed out")}
 
 
 def signin_activity(handler, action):
     """A sign-in or sign-out in Activity (SIGN_INS): outcome, address and device, never the
-    password."""
+    password or the token of a sign-in link."""
     outcome, description = SIGN_INS[action]
     actor, ip = handler.actor(), handler.ip()
     entry = journal.encode({
@@ -357,9 +359,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return v1(self, method, url)
         return self.send_error(501)
 
-    def attempt_login(self, password):
-        """Anmeldung mit Bremse: ("ok", Cookie), ("locked", Sekunden bis zum naechsten
-        Versuch) oder ("wrong", None)."""
+    def attempt_login(self, password=None, link=None):
+        """Anmeldung mit Bremse, mit dem Passwort oder dem Token eines Anmeldelinks (agentbox
+        sign-in-link, einmal gueltig): ("ok", Cookie), ("locked", Sekunden bis zum naechsten
+        Versuch) oder ("wrong", None). Ein benutzter, abgelaufener oder unbekannter Link
+        zaehlt wie ein falsches Passwort."""
         ip = self.ip()
         now = time.time()
         with lock:
@@ -369,14 +373,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
             log(f"{ip}: sign-in locked")
             signin_activity(self, "signin.locked")
             return "locked", max(1, int(first + LOCK_SECONDS - now))
-        if not check_password(str(password)):
+        if link is not None:
+            with lock:                  # one request at a time takes a link
+                good = sign_in_links.take(link, now)
+            failed, done = "signin.link-refused", "signin.link"
+        else:
+            good = check_password(str(password))
+            failed, done = "signin.failed", "signin"
+        if not good:
             with lock:
                 count, first = fails.get(ip, (0, now))
                 if now - first >= LOCK_SECONDS:
                     count, first = 0, now
                 fails[ip] = (count + 1, first)
-            log(f"{ip}: sign-in FAILED")
-            signin_activity(self, "signin.failed")
+            log(f"{ip}: sign-in FAILED" + (" (sign-in link)" if link is not None else ""))
+            signin_activity(self, failed)
             time.sleep(1)
             return "wrong", None
         token = secrets.token_urlsafe(32)
@@ -384,8 +395,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         with lock:
             fails.pop(ip, None)
             sessions[token] = now + seconds
-        log(f"{ip}: signed in")
-        signin_activity(self, "signin")
+        log(f"{ip}: signed in" + (" with a sign-in link" if link is not None else ""))
+        signin_activity(self, done)
         return "ok", f"agentbox={token}; Max-Age={seconds}; Path=/; Secure; HttpOnly; SameSite=Strict"
 
 
@@ -1304,15 +1315,26 @@ def get_session(h, m, url, body):
                  "default_language": setting("default_language")}
 
 
-@route("POST", "/session", secret=("password",), public=True)
+@route("POST", "/session", secret=("password", "link"), public=True)
 def post_session(h, m, url, body):
-    password = body.get("password")
-    if not isinstance(password, str):
-        raise invalid("password", "password is missing")
-    result, v = h.attempt_login(password)
+    """Sign-in with the password or with the token of a sign-in link (agentbox sign-in-link),
+    one of the two."""
+    password, link = body.get("password"), body.get("link")
+    if password is not None and link is not None:
+        raise invalid("link", "password or link, not both")
+    if link is not None:
+        if not isinstance(link, str):
+            raise invalid("link", "link must be text")
+        result, v = h.attempt_login(link=link)
+    else:
+        if not isinstance(password, str):
+            raise invalid("password", "password is missing")
+        result, v = h.attempt_login(password=password)
     if result == "locked":
         raise ApiError(429, "too_many_attempts", "Too many failed sign-ins, try again later",
                        headers=[("Retry-After", str(v))])
+    if result == "wrong" and link is not None:
+        raise ApiError(401, "sign_in_link_refused", "This sign-in link is used, expired or unknown")
     if result == "wrong":
         raise ApiError(401, "wrong_password", "Wrong password")
     token = v.split(";")[0].partition("=")[2]

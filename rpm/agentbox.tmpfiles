@@ -4,3 +4,8 @@
 # directory owned otherwise, systemd chowns everything below it, the sockets of the
 # drop-in included, to root:systemd-journal and they lose the group agentbox-journal.
 d /run/systemd/journal.agentbox 0755 root systemd-journal -
+# The sign-in links of the Control Room (agentbox/sign_in_links.py), one file per link named by
+# its token's hash: the Control Room's to read and remove, the members of libvirt may add one
+# (agentbox sign-in-link) but not list them, nobody else reaches them. Under /run, so none
+# outlives a boot.
+d /run/agentbox-sign-in-links 1730 agentbox-web libvirt -

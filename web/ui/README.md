@@ -89,6 +89,7 @@ app/
   utils/language.ts        the choice in this browser (localStorage; none: Automatic), else
                            `default_language` of the Settings if en or de (once signed in), else
                            the browser's language, else English; the sign-in page skips the Settings
+  utils/signInLink.ts      the token of a sign-in link in the sign-in page's fragment (#link=)
   utils/activity, clock, host, images, notifications, settings, vmRules, access
                            plain functions for the views above (formatting, filters, merging
                            events, validation); Vitest tests them without a component

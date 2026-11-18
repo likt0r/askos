@@ -10,6 +10,10 @@ _Avoid_: dashboard, admin panel, web UI
 The one root-owned record (`/etc/agentbox/settings.json`) of what the owner can tune: Reset age, the time of the Maintenance window, rebuild day, Builds kept, defaults for new VMs, longest Open web, default temporary-entry duration, young-domain threshold, feed interval, package minimum age, Orca version, automatic updates, Activity retention, session length and language (German UI: Einstellungen). Every value has a built-in default. The Control Room password and everything in the Host setup are not Settings; they change only on the Host.
 _Avoid_: config, preferences, options
 
+**Sign-in link**:
+A link from `agentbox sign-in-link` on the Host that signs a browser in to the Control Room once, within two minutes, without the password; only root and the members of `libvirt` can make one (German UI: Anmeldelink).
+_Avoid_: magic link, login token, one-time password
+
 **Activity**:
 The timeline of what happened on the Host and who caused it: sign-ins, actions, Allowlist changes, Alerts, GitHub tokens, credential changes, pairings, Builds and automatic Resets, kept for a configurable number of days (German UI: Aktivität).
 _Avoid_: audit log, history, event log
