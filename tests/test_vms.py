@@ -565,7 +565,7 @@ class DeleteTest(VmsTest):
         self.assertEqual(self.virsh("undefine")[0]["flags"], ["--managed-save"])
         self.assertEqual(self.systemctl()[:3], [
             ["disable", "--now", "agentbox-proxy-lab.socket", "agentbox-ghvm-lab.socket", "agentbox-gui-lab.socket"],
-            ["stop", "agentbox-gui-lab@*.service", "agentbox-ghvm-lab@*.service"],
+            ["stop", "agentbox-gui-lab@*.service", "agentbox-ssh-lab@*.service", "agentbox-ghvm-lab@*.service"],
             ["daemon-reload"]])
         self.assertIn(["restart", "agentbox-vmnet.service"], self.systemctl())
         self.assertNotIn("lab", json.loads(self.ok("status", "--json")))
@@ -631,9 +631,10 @@ class DeleteTest(VmsTest):
             self.assertNotIn("agentbox-lab", json.load(f))
         with open(os.path.join(self.dir, "systemctl.json")) as f:
             enabled = set(json.load(f)["enabled"])
-        for socket in footprint.sockets(rec):
+        for socket in footprint.sockets(rec, every=True):
             self.assertNotIn(socket, enabled)
-        self.assertIn(["stop", "agentbox-gui-lab@*.service", "agentbox-ghvm-lab@*.service"], self.systemctl())
+        self.assertIn(["stop", "agentbox-gui-lab@*.service", "agentbox-ssh-lab@*.service",
+                       "agentbox-ghvm-lab@*.service"], self.systemctl())
         self.assertNotIn("abox-lab", self.read("etc/agentbox/vm-input.nft"))
         self.assertEqual(self.entries("lab"), [])
         self.assertEqual(len(self.archive()), 1)
@@ -667,7 +668,7 @@ class DeleteTest(VmsTest):
                                    "lab: VM stopped and removed", "lab: network agentbox-lab removed",
                                    "lab: System disk deleted"])
         self.assertRegex(out[5], r"^lab: Data disk archived: .*/var/lib/agentbox/archive/lab-data-")
-        self.assertEqual(out[6:], ["lab: Claude token, VM variables, Allowlist entries and Observer removed", "network rules reloaded",
+        self.assertEqual(out[6:], ["lab: Claude token, VM variables, SSH host key, Allowlist entries and Observer removed", "network rules reloaded",
                                    "lab deleted"])
 
     def test_json(self):

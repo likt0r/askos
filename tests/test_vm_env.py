@@ -178,8 +178,7 @@ class SetEnvTest(EnvTest):
         self.ok("regenerate")
         argv = [c["argv"] for c in self.calls("virt-install") if "agentbox-work" in c["argv"]][-1]
         sysinfo = argv[argv.index("--sysinfo") + 1]
-        self.assertTrue(sysinfo.endswith(f",entry4.name=opt/agentbox/env,entry4.file={self.path(ENV_FILE.format('work'))}"),
-                        sysinfo)
+        self.assertIn(f",entry4.name=opt/agentbox/env,entry4.file={self.path(ENV_FILE.format('work'))},", sysinfo)
         self.assertNotIn("entry9", " ".join(argv))
         self.assertNotIn(base64.b64encode(b"a,b,entry9.name=x").decode(), " ".join(argv))
 

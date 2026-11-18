@@ -95,6 +95,12 @@ else `500 action_failed`, with the message in `detail`:
 | 400 | `env_name_reserved` | a Safeguard or Agent Box itself sets or reads this variable, so it cannot be a VM variable (parameter `name`, `field`: `env`): the patterns of the safeguard check apart from proxy names, the names Agent Box sets for the VM, every variable of the Image's `DefaultEnvironment` and the variables bash sets itself. Proxy variables (`HTTPS_PROXY`, ...) are accepted |
 | 400 | `invalid_env_value` | the value of a VM variable has a control character other than tab (a line break, NUL, ...) or is not UTF-8, such as a lone UTF-16 surrogate (`"\ud800"`), which the backend refuses itself, before agentbox (parameter `name`, `field`: `env`) |
 | 400 | `env_too_large` | more than 64 VM variables, or a value over 4 KiB in UTF-8 (parameter `name` for a value, `field`: `env`) |
+| 400 | `ssh_key_invalid` | not one valid SSH public key: no key type first, its base64 does not decode, or decodes to a key of another type or form |
+| 400 | `ssh_key_type_refused` | an SSH key of a type other than Ed25519, ECDSA (P-256, P-384, P-521), their security-key forms or RSA |
+| 400 | `ssh_key_too_weak` | an RSA key of fewer than 3072 bits |
+| 400 | `ssh_key_options_refused` | an SSH key line with options before the key (`command=`, `from=`, `restrict`, ...) |
+| 409 | `ssh_key_duplicate` | an SSH key with this SHA256 fingerprint is entered for the VM already |
+| 409 | `ssh_keys_too_many` | the VM has 16 SSH keys already |
 | 503 | `guest_agent_unavailable` | the VM's guest agent does not answer |
 | 504 | `vm_query_timeout` | a query inside the VM took too long |
 | 502 | `vm_journal_failed` | journalctl failed inside the VM |

@@ -92,14 +92,16 @@ RUN /usr/lib/agentbox/package-safeguards "$PACKAGE_MIN_AGE_DAYS"
 # 10-agentbox.preset (vm/files) keeps it off at first boot too, and 10-agentbox.conf fixes its
 # configuration. Fedora's sshd@.service adds ~/.ssh/authorized_keys on its command line, and
 # systemd-ssh-generator would start it on a local socket: both masked here (the Release ships
-# no links in vm/files). All of it is a Safeguard (agentbox/safeguards.py).
+# no links in vm/files). All of it is a Safeguard (agentbox/safeguards.py). guest-setup starts
+# sshd with the host key from the Host (ADR 0020), so sshd-keygen@.service, which sshd.service
+# wants and which would make host keys in /etc/ssh, is masked as well.
 RUN useradd -u 1000 -U -M -d /var/home/agent -s /bin/bash agent \
     && chmod 755 /usr/bin/agentbox-gh-token /usr/bin/git-credential-agentbox /usr/lib/agentbox/bin/gh \
     && systemctl enable agentbox-guest-setup.service agentbox-orca.service qemu-guest-agent.service \
        'var-lib-agentbox\x2ddata.mount' \
     && systemctl --global enable podman.socket agentbox-container-image-usage.service \
     && systemctl disable sshd.service sshd.socket \
-    && systemctl mask sshd@.service \
+    && systemctl mask sshd@.service sshd-keygen@.service \
     && mkdir -p /etc/systemd/system-generators \
     && ln -s /dev/null /etc/systemd/system-generators/systemd-ssh-generator \
     && bootc container lint

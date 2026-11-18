@@ -4,6 +4,7 @@
 #  - names the Host host.agentbox and makes it the resolver
 #  - sets up the agent's home (it lasts until the next Reset) and binds only the lasting
 #    parts from the Data disk
+#  - last, SSH access: the host key and SSH keys from fw_cfg, sshd only with a key
 set -euo pipefail
 
 DATA=/var/lib/agentbox-data
@@ -110,5 +111,11 @@ install -m 644 -o agent -g agent /usr/lib/agentbox/bunfig.toml "$HOME_DIR/.bunfi
 # Git-Hooks in den Repos zaehlen nicht (core.hooksPath), aber Reste entfernen,
 # damit sie auch bei geaenderter Config nicht greifen.
 find "$DATA/home/code" -path '*/.git/hooks/*' -type f ! -name '*.sample' -delete 2>/dev/null || true
+
+# SSH access (ADR 0020): the host key and the SSH keys from the Host into the root-owned
+# directory sshd's configuration names; sshd starts only with SSH access on and a key. Last,
+# so no SSH login finds the home half set up; a failure leaves the VM without SSH, not without Orca.
+/usr/lib/agentbox/fwcfg-ssh /sys/firmware/qemu_fw_cfg/by_name/opt/agentbox/ssh/raw /run/agentbox/ssh \
+  || echo "guest-setup: SSH access not set up" >&2
 
 echo "guest-setup: context $CONTEXT, Orca port $ORCA_PORT, the Host at $gw"

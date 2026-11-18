@@ -2,9 +2,11 @@
 and the Host configuration of every VM generated from it.
 
 `agentbox regenerate` writes per VM the libvirt network, the proxy and
-token-service sockets and services, the Orca port forwarder, the Data disk,
-the Claude-token placeholder, the file of its VM variables (vmenv.py), the
-Observer directory and the libvirt domain (through virt-install, ADR 0004);
+token-service sockets and services, the Orca port forwarder, the SSH port
+forwarder while the VM has SSH access, the Data disk, the Claude-token
+placeholder, the file of its VM variables (vmenv.py), the file of its SSH access
+with the SSH host key it makes once (sshkeys.py), the Observer directory and the
+libvirt domain (through virt-install, ADR 0004);
 for all VMs together the nftables rules of the VM networks and the storage
 pool of their disks, and the journald
 namespace of Activity with its retention, the timer of the Maintenance window (maintenance
@@ -14,13 +16,15 @@ the Settings; what is left of the timers the Maintenance window replaced goes. R
 again changes nothing unless a record or the retention changed. What was written but not applied
 when a run failed (firewall rules, units) is applied by the next run.
 """
+import base64
 import json
 import os
 import re
 import tempfile
 import time
 
-from . import activity, footprint, hostsetup, paths, programs, registry, settings, state_files, states, times, virsh, vmenv
+from . import activity, footprint, hostsetup, paths, programs, registry, settings, sshkeys, state_files, states
+from . import times, virsh, vmenv
 from .commands import declare
 from .errors import Fail, die
 from .registry import bridge, dom, guest_ip, host_ip, mac
@@ -42,6 +46,8 @@ SAID = {"network": "network created or started", "units": "units written",
                                      "a running VM to a restarted network)",
         "data-disk": "Data disk created", "claude-token": "placeholder for the Claude token created",
         "vm-env": "VM variables written (apply from the next start)",
+        "ssh-host-key": "SSH host key made, SSH access written (applies from the next start)",
+        "vm-ssh": "SSH access written (applies from the next start)",
         "observer": "directory for the Observer created",
         "domain": "VM defined again (applies from the next start)",
         "domain-postponed": "VM definition postponed, the VM is paused"}
@@ -182,11 +188,18 @@ def journal_access(user):
     return f"Group={activity.JOURNAL_GROUP}\nSupplementaryGroups={user}\n"
 
 
+def ssh_listen(rec):
+    """ListenStream of a VM's SSH port: the loopback address, in either mode of the Host
+    setup, until Network mode has a firewall rule for the SSH ports (#130)."""
+    return f"{hostsetup.LOOPBACK}:{registry.ssh_port(rec)}"
+
+
 def units(rec):
     """systemd units of a VM by file name: proxy and token service on the Host's
-    address in the VM network, logging into the Activity namespace, and the Orca
-    port, where every connection wakes the VM if needed, with the client's
-    address as actor (socat: SELinux keeps systemd-socket-proxyd off the port)."""
+    address in the VM network, logging into the Activity namespace, the Orca port
+    and, while the VM has SSH access, its SSH port (ADR 0020), where every
+    connection wakes the VM if needed, with the client's address as actor (socat:
+    SELinux keeps systemd-socket-proxyd off the port)."""
     vm, host, port = rec["name"], host_ip(rec), rec["orca_port"]
     names = {kind: footprint.unit_name(vm, kind) for kind in footprint.UNIT_KINDS}
     orca_listen = hostsetup.orca_listen(hostsetup.load(), port)
@@ -258,6 +271,28 @@ StandardOutput=socket
 StandardError=journal
 TimeoutStartSec=180
 """,
+        **({names["ssh.socket"]: f"""[Unit]
+Description=SSH access to VM {vm}
+
+[Socket]
+ListenStream={ssh_listen(rec)}
+Accept=yes
+MaxConnections=32
+
+[Install]
+WantedBy=sockets.target
+""",
+            names["ssh@.service"]: f"""[Unit]
+Description=SSH connection to VM {vm}
+
+[Service]
+ExecStartPre={paths.CLI} "--actor=SSH (${{REMOTE_ADDR}})" wake {vm}
+ExecStart=/usr/bin/socat STDIO TCP:{guest_ip(rec)}:22
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+TimeoutStartSec=180
+"""} if registry.ssh_access(rec) else {}),
     }
 
 
@@ -275,15 +310,16 @@ def virt_install_args(rec, uuid):
         "--controller", "usb,model=none",
         "--events", "on_poweroff=destroy,on_reboot=restart,on_crash=destroy",
         "--features", "acpi=on,apic=on",
-        # the VM learns its name, Orca port, Claude token, the address devices pair with and its
-        # VM variables at boot; values that could hold a comma only as files (virt-install
-        # splits --sysinfo at commas)
+        # the VM learns its name, Orca port, Claude token, the address devices pair with, its
+        # VM variables and its SSH access at boot; values that could hold a comma only as files
+        # (virt-install splits --sysinfo at commas)
         "--sysinfo", f"type=fwcfg,entry0.name=opt/agentbox/context,entry0={vm},"
                      f"entry1.name=opt/agentbox/orca_port,entry1={rec['orca_port']},"
                      f"entry2.name=opt/agentbox/claude_token,entry2.file={footprint.claude_token_file(vm)},"
                      f"entry3.name=opt/agentbox/pairing_address,"
                      f"entry3={hostsetup.pairing_address(hostsetup.load())},"
-                     f"entry4.name=opt/agentbox/env,entry4.file={footprint.vm_env_file(vm)}",
+                     f"entry4.name=opt/agentbox/env,entry4.file={footprint.vm_env_file(vm)},"
+                     f"entry5.name=opt/agentbox/ssh,entry5.file={footprint.vm_ssh_file(vm)}",
         "--disk", disk.format(footprint.system_disk(vm), "vda"),
         "--disk", disk.format(footprint.data_disk(vm), "vdb") + ",serial=agentbox-data",
         "--network", f"network={dom(vm)},mac={mac(rec)},model=virtio",
@@ -404,9 +440,21 @@ def _network(rec):
 
 def _units(rec):
     """The VM's units written. A socket unit that existed with other text is marked, before
-    it is written, to be listened on again (_rebind)."""
+    it is written, to be listened on again (_rebind). Without SSH access the units of the SSH
+    port go, its socket stopped first, so the port closes."""
     changed = False
-    for name, text in units(rec).items():
+    texts = units(rec)
+    for kind in footprint.SSH_UNIT_KINDS:
+        name = footprint.unit_name(rec["name"], kind)
+        if name in texts or not os.path.exists(footprint.unit_file(name)):
+            continue
+        if name.endswith(".socket"):
+            programs.systemctl("disable", "--now", name)
+            state_files.remove(footprint.socket_pending_file(name))
+        mark_pending("units")
+        state_files.remove(footprint.unit_file(name))
+        changed = True
+    for name, text in texts.items():
         path = footprint.unit_file(name)
         if name.endswith(".socket"):
             try:
@@ -488,6 +536,75 @@ def vm_env(rec):
     """The file of the VM's VM variables (vmenv.py), from its record; a VM picks a change up at
     its next start. Written before the domain is defined, which names it."""
     return fw_cfg_file(footprint.vm_env_file(rec["name"]), vmenv.fw_cfg(rec.get("env", {})))
+
+
+# the DER of an Ed25519 key as openssl writes it: PKCS#8 ending in the key's 32-byte secret,
+# and the SubjectPublicKeyInfo ending in its 32-byte public key
+ED25519_PRIVATE = bytes.fromhex("302e020100300506032b657004220420")
+ED25519_PUBLIC = bytes.fromhex("302a300506032b6570032100")
+
+
+def _der(pem):
+    """The DER of the one PEM block openssl wrote; b"" when there is none."""
+    lines = pem.strip().splitlines()
+    try:
+        return base64.b64decode("".join(lines[1:-1]), validate=True)
+    except ValueError:
+        return b""
+
+
+def ssh_host_key(rec):
+    """The VM's SSH host key, made once and kept (ADR 0020): an Ed25519 key whose secret
+    openssl makes, in OpenSSH's own format; owner root, group qemu, mode 0640, beside the
+    Claude token. Made when SSH access is first turned on or a first SSH key is added;
+    regenerate makes one that is missing while the VM has SSH access. Whether it was made."""
+    path = footprint.ssh_host_key_file(rec["name"])
+    if os.path.exists(path):
+        return False
+    what = f"{rec['name']}: making the SSH host key"
+    pem = programs.run(["openssl", "genpkey", "-algorithm", "ed25519"], 30, what=what, c_locale=True).stdout
+    public = programs.run(["openssl", "pkey", "-pubout"], 30, what=what, c_locale=True, input=pem).stdout
+    secret, public = _der(pem), _der(public)
+    if not (len(secret) == 48 and secret.startswith(ED25519_PRIVATE)
+            and len(public) == 44 and public.startswith(ED25519_PUBLIC)):
+        die(f"{what}: openssl gave no Ed25519 key", error="action_failed", vm=rec["name"])
+    gid = _qemu()[1]
+    state_files.directory(os.path.dirname(path), 0o750, gid)
+    state_files.write_atomic(path, sshkeys.host_key_file(secret[16:], public[12:], f"{rec['name']}.agentbox"),
+                             0o640, gid)
+    return True
+
+
+def host_key(name):
+    """The VM's SSH host key file as bytes; None when it has none (yet)."""
+    try:
+        with open(footprint.ssh_host_key_file(name), "rb") as f:
+            return f.read()
+    except FileNotFoundError:
+        return None
+
+
+def vm_ssh(rec):
+    """The file of the VM's SSH access (sshkeys.fw_cfg) from its record and its host key, which
+    is made here when the VM has SSH access and none yet; a VM picks a change up at its next
+    start. Written before the domain is defined, which names it. False, or what was done:
+    "ssh-host-key" (made, and the file written) or "vm-ssh" (the file written)."""
+    made = registry.ssh_access(rec) and ssh_host_key(rec)
+    data = sshkeys.fw_cfg(registry.ssh_access(rec), registry.ssh_keys(rec), host_key(rec["name"]) or b"")
+    written = fw_cfg_file(footprint.vm_ssh_file(rec["name"]), data)
+    return "ssh-host-key" if made else "vm-ssh" if written else False
+
+
+def ssh_port(rec):
+    """The units of the VM's SSH port as its SSH access says (regenerate's step for this VM's
+    units): written, loaded and listening while it has SSH access, else stopped and gone.
+    Callers hold state_files.locked(paths.REGISTRY). Whether something changed."""
+    changed = _units(rec)
+    apply_pending("units", "daemon-reload")
+    changed = _rebind(rec) or changed
+    if registry.ssh_access(rec):
+        programs.systemctl("enable", "--now", footprint.unit_name(rec["name"], "ssh.socket"))
+    return changed
 
 
 def _observer(rec):
@@ -876,7 +993,8 @@ def apply():
     for rec in records:
         done = []
         for key, step in (("network", _network), ("units", _units), ("data-disk", _data_disk),
-                          ("claude-token", _claude_token), ("vm-env", vm_env), ("observer", _observer)):
+                          ("claude-token", _claude_token), ("vm-env", vm_env), ("vm-ssh", vm_ssh),
+                          ("observer", _observer)):
             got = step(rec)
             if got:
                 done.append(got if isinstance(got, str) else key)

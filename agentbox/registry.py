@@ -6,7 +6,7 @@ definition) is derived from its record by `agentbox regenerate`.
 import json
 import sys
 
-from . import footprint, list_records, paths, settings, state_files, vmenv
+from . import footprint, list_records, paths, settings, sshkeys, state_files, vmenv
 from .errors import Fail, die
 from .sanitize import clean
 
@@ -21,6 +21,7 @@ RESERVED = list_records.RESERVED_NAMES
 API_VERSION = list_records.API_VERSION
 IMAGE = settings.IMAGE
 ORCA_BASE = 6800                     # Orca port = ORCA_BASE + network number
+SSH_BASE = 2200                      # SSH port = SSH_BASE + network number (ADR 0020)
 # The Container image cleanup of a record: on or off, and its days. Both fields are
 # optional: a record without them means the cleanup on and 7 days, and no code rewrites
 # an existing record to add them (every reader uses these defaults).
@@ -28,9 +29,11 @@ CLEANUP_DAYS = (1, 365)
 CLEANUP_DEFAULT = (True, 7)
 FIELDS = {"name": str, "network": int, "orca_port": int, "image": str, "build": (str, type(None)),
           "memory_mib": int, "data_disk_gib": int, "github_owners": list, "created": str}
-# Fields a record may lack: the VM variables (vmenv.py), none when missing, and the
-# Container image cleanup (CLEANUP_DEFAULT when missing)
-OPTIONAL = {"env": dict, "container_image_cleanup": bool, "container_image_cleanup_days": int}
+# Fields a record may lack: the VM variables (vmenv.py), none when missing, the Container
+# image cleanup (CLEANUP_DEFAULT when missing), and SSH access and its SSH keys (sshkeys.py),
+# off and none when missing
+OPTIONAL = {"env": dict, "container_image_cleanup": bool, "container_image_cleanup_days": int,
+            "ssh_access": bool, "ssh_keys": list}
 
 
 reserved = list_records.reserved_name
@@ -64,7 +67,10 @@ def problem(rec, name):
     if not CLEANUP_DAYS[0] <= days <= CLEANUP_DAYS[1]:
         return f"container_image_cleanup_days must be {CLEANUP_DAYS[0]} to {CLEANUP_DAYS[1]}"
     why = vmenv.problem(rec["env"]) if "env" in rec else None
-    return f"env: {why}" if why else None
+    if why:
+        return f"env: {why}"
+    why = sshkeys.problem(rec["ssh_keys"]) if "ssh_keys" in rec else None
+    return f"ssh_keys: {why}" if why else None
 
 
 def load(name):
@@ -145,6 +151,19 @@ def cleanup(rec):
     defaults of a record without them (on, 7 days)."""
     return (rec.get("container_image_cleanup", CLEANUP_DEFAULT[0]),
             rec.get("container_image_cleanup_days", CLEANUP_DEFAULT[1]))
+
+
+def ssh_access(rec):
+    """Whether the VM has SSH access (ADR 0020); a record without the field has none."""
+    return rec.get("ssh_access", False)
+
+
+def ssh_keys(rec):
+    return rec.get("ssh_keys", [])
+
+
+def ssh_port(rec):
+    return SSH_BASE + rec["network"]
 
 
 def dom(name):
