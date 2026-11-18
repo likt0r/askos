@@ -10,7 +10,7 @@ Status as of 2026-11-17. The design is settled and tracked in GitHub issues. **N
   | # | Ticket | Blocked by |
   |---|---|---|
   | #127 | fix: sshd off in the Base image and fixed by a Safeguard | – |
-  | #128 | docs: ADR 0019 SSH access, glossary terms | – |
+  | #128 | docs: ADR 0020 SSH access, glossary terms | – |
   | #129 | SSH access through the SSH port in Local-only (CLI tracer bullet) | #127, #128 |
   | #130 | SSH port in Network mode, firewall rule from regenerate | #129 |
   | #131 | SSH keys take effect at once, removal ends SSH sessions | #129 |
@@ -49,7 +49,7 @@ The design session drafted these; #128 puts them into `GLOSSARY.md`, word for wo
   - (A) A SSH port per VM, kept.
   - (B) A command `agentbox ssh-proxy` as `ProxyCommand`, dropped. A `~/.ssh/config` alias with `HostName`/`Port` gives the same `ssh work.agentbox`. The proxy would have been a second way into the VM with its own permission check and its own session tracking.
   - (C) `add-ssh-key --mine`, kept.
-  - If someone suggests `ssh-proxy` or ProxyJump again: both are already rejected and belong in ADR 0019 as rejected alternatives.
+  - If someone suggests `ssh-proxy` or ProxyJump again: both are already rejected and belong in ADR 0020 (0019 is the trust boundary) as rejected alternatives.
 - **Why `HostKeyAlias` (#134):** the host is reached as `127.0.0.1` in Local-only and as the Pairing address in Network mode. Keying `known_hosts` on the alias `<vm>.agentbox` means a mode switch needs no new `known_hosts` line and gives no fingerprint warning.
 - **The Control Room password is not dropped in Local-only.** Every process on the Host reaches `127.0.0.1:8800`. The CSRF header and `SameSite=Strict` stop browsers, not `curl` from an npm postinstall script. Hence #137 (a one-time link for root and members of `libvirt`, who control every VM anyway) instead of no password.
 - **Grilling answers by number,** in case someone asks "why":

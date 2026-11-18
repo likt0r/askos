@@ -5,15 +5,40 @@ Terms follow [GLOSSARY.md](GLOSSARY.md). Decisions with lasting consequences are
 
 ## Threat model
 
-1. **Rogue or manipulated agents.** An agent follows instructions planted in a repository,
-   issue or web page and tries to read credentials, reach other machines or send data out.
-2. **Supply-chain attacks through packages.** A dependency runs code at install or build time
-   that steals tokens and spreads (Shai-Hulud, s1ngularity, chalk/debug, axios, TanStack, keyv).
+Agent Box shrinks the blast radius of coding agents: each agent works in a VM with only the
+access its work needs, so that what goes wrong in one VM stays in it. It is built for:
 
-Out of scope: theft of the Host, targeted attacks against its owner, attacks on the
+1. **Keeping contexts apart.** Work and private projects, or any two the owner keeps apart,
+   run in different VMs; nothing of one reaches the other
+   ([ADR 0001](docs/adr/0001-vm-is-the-unit-of-separation.md)).
+2. **Least privilege for agents.** An agent gets what its work needs and no more: the
+   destinations on its Allowlist, GitHub tokens for one repository and one hour, nothing of
+   the Host, and no credential of the owner but its VM's Claude token.
+3. **Rogue or manipulated agents.** An agent follows instructions planted in a repository,
+   issue or web page, or simply goes wrong, and tries to read credentials, reach other
+   machines, send data out or destroy work.
+4. **Supply-chain attacks through packages.** A dependency runs code at install, build or run
+   time that steals tokens and spreads (Shai-Hulud, s1ngularity, chalk/debug, axios, TanStack,
+   keyv), in a VM or in the Build of an Image.
+5. **Credentials leaked by accident.** A token ends up in a commit, a log, an issue or a web
+   page. What a VM holds is narrow and, where it can be, short-lived.
+
+Trusted, and so not defended against
+([ADR 0019](docs/adr/0019-the-host-and-what-its-owner-builds-are-trusted.md)):
+
+- **The Host and whoever administers it**: root, the members of `libvirt` and the owner
+  signed in to the Control Room. They control every VM anyway. Someone who only gets hold of
+  such access, such as a stolen Control Room session, is not trusted; what stands against
+  them is listed under [The Host](#the-host).
+- **What the owner builds**: the Release's Images and the owner's Recipes are written, or
+  reviewed, in good faith. The Safeguard check after every Build catches mistakes and
+  convenient edits, not an Image made to get past it. What packages do during a Build is
+  threat 4; a Recipe an agent wrote and nobody reviewed is threat 3.
+
+Out of scope as well: theft of the Host, targeted attacks against its owner, attacks on the
 laptops that drive the agents.
 
-Where the layers below stop short against these two threats is listed in [What it does not
+Where the layers below stop short against these threats is listed in [What it does not
 protect against](#what-it-does-not-protect-against); how to report a hole privately is in
 [SECURITY.md](SECURITY.md).
 
@@ -1305,8 +1330,8 @@ VM; they do not make a VM harmless. These are the limits known so far, one per b
 mechanism, where it stops, and what limits the damage where anything does. A limit listed here
 is known and no vulnerability; a way past a mechanism that this list does not name is one, and
 [SECURITY.md](SECURITY.md) says how to report it privately. Outside the [threat
-model](#threat-model) altogether: theft of the Host, targeted attacks against its owner,
-attacks on the laptops.
+model](#threat-model) altogether: what it trusts (the Host, its admins and what the owner
+builds), theft of the Host, targeted attacks against its owner, attacks on the laptops.
 
 ### Egress
 
@@ -1436,11 +1461,11 @@ attacks on the laptops.
   Claude Code's settings ([Packages](#packages), [Credentials](#credentials)). So can a VM
   variable that points a tool at another configuration file (`npm_config_userconfig`,
   `npm_config_globalconfig`, `XDG_CONFIG_HOME`, which moves where Git and uv look for the user's
-  configuration): those names are not refused ([VMs](#vms)). The check of every Build knows the
-  Safeguards it was written for: a derived Image could undermine one in a way it does not look
-  for (a wrapper earlier on `PATH`, a service that rewrites a file at boot) ([Images and
-  Builds](#images-and-builds)). Mitigation: a Release is reviewed, and the check catches
-  convenient edits.
+  configuration): those names are not refused ([VMs](#vms)). The check of every Build catches
+  mistakes and convenient edits in an Image ([Images and Builds](#images-and-builds)); an Image
+  made to get past it is outside the [threat model](#threat-model). Mitigation: what a VM can
+  reach ([Egress](#egress)) and hold ([Credentials in a VM](#credentials-in-a-vm)) is decided
+  outside it, on the Host.
 - **Repositories in one VM are not isolated from each other.** Every agent in a VM runs as the
   same user on the same Data disk
   ([ADR 0001](docs/adr/0001-vm-is-the-unit-of-separation.md)). Mitigation: sensitive projects in
@@ -1496,7 +1521,10 @@ attacks on the laptops.
   owner's Host: SSH by key only, daily updates, an encrypted disk.
 - **The Control Room is one password away from every VM.** A session can do what the Control
   Room offers: reveal Pairing codes, open the web, allow destinations without strong Signals,
-  replace credentials ([Control Room](#control-room)). It has one password (at least 16
+  replace credentials, write a Recipe, build it and reset a VM onto it ([Control
+  Room](#control-room)). The Safeguard check does not stand in its way: it trusts what is
+  built ([threat model](#threat-model)); kept Recipe versions and Activity show afterwards what
+  changed. It has one password (at least 16
   characters, scrypt), no second factor, a brake of five failed sign-ins per address in 15
   minutes, and a self-signed certificate the browser can check only if the owner compares or
   installs it. Who can try: in Local-only anyone who can use the Host, in Network mode the whole
@@ -1534,9 +1562,9 @@ attacks on the laptops.
 - **Builds run as root on the Host** (podman, bootc-image-builder) from the installed Release's
   Containerfiles and from Recipes the owner writes ([Images and Builds](#images-and-builds)).
   Mitigation: branch protection on `main` and installing only reviewed code keep agents' branches
-  out of Release Images. A Recipe is the owner's reviewed input, not an agent's; its kept versions,
-  Activity actor and SHA-256, and the unchanged Safeguard check bound what a stolen Control Room
-  session can change without being seen. The check cannot prove arbitrary new files safe.
+  out of Release Images. A Recipe is the owner's reviewed input, not an agent's: the [threat
+  model](#threat-model) trusts it, and the Safeguard check catches mistakes in it, not a Recipe
+  made to get past it. What a stolen Control Room session builds is under [The Host](#the-host).
 
 ### What no test covers
 

@@ -16,6 +16,8 @@ _Amended by #85 (2026-11-08):_ `vm/setup-vms.sh` is gone; the package is deploye
 
 _Amended by [ADR 0018](0018-recipes-define-images-on-the-host.md) (2026-11-16):_ a Recipe the owner writes on the Host is built as well; its reviewer is the owner. Every Recipe Build passes the checks above unchanged.
 
+_Amended by [ADR 0019](0019-the-host-and-what-its-owner-builds-are-trusted.md) (2026-11-18):_ what the owner builds is trusted. The check catches mistakes and convenient edits that weaken a Safeguard; an Image made to get past it is outside the threat model, and a check is written against mistakes and against what code in a VM can change at runtime, not against crafted files.
+
 ## Considered Options
 
 - Running a check script inside the built Image: rejected, the Image decides what that script, its interpreter and its tools do.

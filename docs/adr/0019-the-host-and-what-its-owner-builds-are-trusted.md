@@ -1,0 +1,25 @@
+# The Host, its admins and what its owner builds are trusted
+
+The threat model named two threats, rogue agents and supply-chain attacks, and three things out of scope: theft of the Host, targeted attacks against its owner, the laptops. It did not say whom Agent Box trusts. So each review had to guess how hostile an Image may be: the review of #127 went five rounds finding ways a file crafted for the purpose reads otherwise for sshd or systemd than for the Safeguard check, and each fix asked for the next. The owner sharpened what Agent Box is for and whom it trusts (2026-11-18).
+
+## Decision
+
+- **What Agent Box is for.** It shrinks the blast radius of coding agents: work and private kept apart in different VMs, least privilege for agents, protection against rogue or manipulated agents and supply-chain attacks, and little worth in a credential leaked by accident. ARCHITECTURE's threat model lists these five.
+- **The Host and whoever administers it are trusted**: root, the members of `libvirt` and the owner signed in to the Control Room. They control every VM anyway; nothing in Agent Box defends a VM or a credential against them.
+- **Someone who only gets hold of such access is not trusted.** A stolen Control Room session, a process on the Host guessing the password: what stands against them is the Control Room's sign-in and the limits of what it offers (strong Signals lifted only on the CLI with `--force`, [ADR 0009](0009-watchlist-and-legitimate-domains-live-on-the-host.md)), not the Safeguard check.
+- **What the owner builds is trusted.** The Release's Images (reviewed code on `main`, [ADR 0010](0010-images-are-built-from-the-installed-release.md)) and the owner's Recipes ([ADR 0018](0018-recipes-define-images-on-the-host.md)) are written, or reviewed, in good faith. The Safeguard check after every Build ([ADR 0008](0008-safeguards-checked-from-the-host-after-every-build.md)) catches mistakes and convenient edits that weaken a Safeguard; an Image made to get past it is outside the threat model. Code that runs in a Build is not trusted: what packages do there is a supply-chain attack, limited by the packages' minimum age, and a Recipe an agent wrote and nobody reviewed is a rogue agent's work.
+- **Code in a VM is never trusted**, at any time: what it can write at runtime (its home, `/tmp`, `/run/user`) must never decide what root in the VM or on the Host does.
+
+## Consequences
+
+- The Safeguard check stays as it is and reads the Image's files from the Host ([ADR 0008](0008-safeguards-checked-from-the-host-after-every-build.md)). A new check is written against mistakes and against what code in a VM can change at runtime; reviews take a crafted Image as out of scope. The sshd check of #127 is cut back to that.
+- ADR 0008 and ADR 0018 are amended: the check does not bound what a stolen Control Room session builds, the sign-in does.
+- Checks against the Host's own input into a VM (the keys of SSH access, #126) are plausibility checks, not a boundary.
+- "What it does not protect against" lists limits against the five threats only. That a derived Image could undermine a Safeguard on purpose is no longer a limit there; it is outside the threat model.
+- The Claude token per VM is long-lived. Against a credential leaked by accident it is the weak point; ARCHITECTURE lists it under Credentials in a VM.
+
+## Considered Options
+
+- Treating every Image as possibly hostile: rejected. The check would have to read every file format a Build may hold as its program does (sshd, systemd, shells, every agent's settings), and a hostile Image can ship a changed binary no configuration check sees. Who can make Images can make them do anything.
+- Trusting a Control Room session like the Host's admins: rejected. A password can be guessed or a session stolen from a browser; the Control Room keeps what it does not offer (lifting strong Signals, `--force`) out of a stolen session's reach.
+- Extra confirmation (the password again) for writing a Recipe in the Control Room: not now. A session can already allow destinations and replace credentials; one more step for Recipes alone would not change what a stolen session can do. It can come with the one-time sign-in link (#137).
