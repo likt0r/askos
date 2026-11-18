@@ -10,9 +10,9 @@ access its work needs, so that what goes wrong in one VM stays in it. It is buil
 
 1. **Keeping work and private apart.** Work and private projects, or any two the owner keeps
    apart, run in different VMs; nothing of one reaches the other unless both are given the
-   same: the Allowlist entries a new Host starts with (GitHub, the AI providers, the package
-   registries, several of which take uploads), an entry the owner allows for every VM, the same
-   GitHub owner, the same folder imported, the same Image (and every Image's Base Build)
+   same: every VM starts with the Allowlist entries a new Host has, all of which take uploads
+   ([Egress](#egress)), and the owner can give two VMs an entry for every VM, the same GitHub
+   owner, folder, Image (every Image sits on the Base Build), paired laptop or Claude account
    ([ADR 0001](docs/adr/0001-vm-is-the-unit-of-separation.md)).
 2. **Least privilege for agents.** An agent gets what its work needs and no more: the
    destinations on its Allowlist, GitHub tokens for one repository and one hour, nothing of
@@ -756,6 +756,7 @@ Host after every Build
   runtime from the owner's home, `ORCA_RUNTIMES`); nothing reads it any more.
 - The safeguard check (`agentbox/safeguards.py`) mounts the built image (`podman image mount`)
   and reads files; nothing from the Image runs, and links are resolved inside the Image. It
+  parses regular files only, at most 1 MiB of each. It
   verifies npm's global configuration (`ignore-scripts=true`, `min-release-age`, npm 12 or
   later), the minimum age for uv (`uv.toml` and `UV_EXCLUDE_NEWER`), pnpm and Bun, the Git
   hooks path and `pre-push` hook, the resolver (`guest-setup`'s nameserver line, `dns=none`,
@@ -1474,9 +1475,10 @@ laptops.
   model](#threat-model). Code that runs during a Build is not: a package or a download there
   could undermine a Safeguard in a way the check does not look for (a wrapper earlier on
   `PATH`, a service that rewrites a file at boot), and a Build reaches the internet without an
-  Allowlist. Mitigation: the minimum age where a Build installs through npm or uv
-  ([Packages](#packages)); what a VM can reach ([Egress](#egress)) and hold ([Credentials in a
-  VM](#credentials-in-a-vm)) is decided outside it, on the Host.
+  Allowlist; how far it reaches on the Host is under [Agent Box's own
+  code](#agent-boxs-own-code). Mitigation, for what it plants in the VM: what a VM can reach
+  ([Egress](#egress)) and hold ([Credentials in a VM](#credentials-in-a-vm)) is decided outside
+  it, on the Host.
 - **Repositories in one VM are not isolated from each other.** Every agent in a VM runs as the
   same user on the same Data disk
   ([ADR 0001](docs/adr/0001-vm-is-the-unit-of-separation.md)), so an agent that goes wrong can
@@ -1537,10 +1539,11 @@ laptops.
   replace credentials, start a Build and reset a VM onto it, delete a VM with its Data disk
   ([Control Room](#control-room)).
   Once the Control Room uploads Recipes
-  ([ADR 0018](docs/adr/0018-recipes-define-images-on-the-host.md)), it can write one as well,
-  and the Recipe's `RUN` lines then run as root in a container on the Host ([Agent Box's own
-  code](#agent-boxs-own-code)); the Safeguard check is written against mistakes, not against a
-  Recipe made to get past it ([threat model](#threat-model)). The ten kept Recipe versions and
+  ([ADR 0018](docs/adr/0018-recipes-define-images-on-the-host.md)), it can write one as well:
+  the Safeguard check is written against mistakes, not against a Recipe made to get past it
+  ([threat model](#threat-model)), and a tool the Recipe plants runs as root on the Host in the
+  disk step ([Agent Box's own code](#agent-boxs-own-code)). From then on a stolen session is root
+  on the Host, and nothing below holds against it, `--force` included. The ten kept Recipe versions and
   Activity show afterwards what changed, unless the session wore them out with further saves or
   a shorter Activity retention in the Settings. It has one password (at least 16 characters,
   scrypt), no second factor, a brake of five failed sign-ins per address in 15
@@ -1587,12 +1590,15 @@ laptops.
   Allowlist, and a container escape there is root on the Host, which ADR 0002 keeps agents away
   from by giving them VMs. The disk step goes further: bootc-image-builder runs privileged and
   unconfined, pulled unpinned from quay.io, and installs the Image with the Image's own `bootc`,
-  so a tool a Build planted in the Image can run as root on the Host without any escape. pnpm and
-  Bun have no minimum age in a Build (theirs is set for the VM's services and the agent's home),
-  Fedora's packages none at all. Mitigation: the minimum age where a Build installs through npm
-  or uv, and for Orca; the Release's Containerfile pins the rest it downloads (the JDK and
-  Orca's Node runtime by SHA-256, cargo-ndk by version), a Recipe what its author pins; Fedora's
-  packages come signed from Fedora.
+  so a tool a Build planted in the Image can run as root on the Host without any escape. The
+  Base image's own base, `quay.io/fedora/fedora-bootc:44`, is pulled by its tag as well, and it
+  brings dnf with its repositories and keys and the `bootc` the disk step runs. pnpm and Bun have
+  no minimum age in a Build (theirs is set for the VM's services and the agent's home), Fedora's
+  packages none at all. A Recipe an agent drafted and the owner saved unread reaches as far.
+  Mitigation: the owner reads a Recipe before saving it; the minimum age where a Build installs
+  through npm or uv, and for Orca; the Release's Containerfile pins the JDK and Orca's Node
+  runtime by SHA-256 and cargo-ndk by version, a Recipe what its author pins; Fedora's packages
+  are signed, with the keys that come in the base image.
 
 ### What no test covers
 

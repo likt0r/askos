@@ -648,6 +648,27 @@ class SafeguardTest(ImagesTest):
         self.assertIn(f"Image nope does not exist in Release {RELEASE}", out)
 
 
+class SafeReadTest(unittest.TestCase):
+    """ADR 0008, amended by ADR 0019: code in a Build can craft any file, so the check, as root on
+    the Host, parses regular files only and at most MAX_READ bytes of each."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="image-")
+        self.addCleanup(shutil.rmtree, self.root)
+        os.makedirs(os.path.join(self.root, "etc"))
+
+    def test_a_fifo_or_a_directory_is_not_read(self):
+        os.mkfifo(os.path.join(self.root, "etc/npmrc"))         # opening it to read would block
+        os.mkdir(os.path.join(self.root, "etc/gitconfig"))
+        self.assertIsNone(safeguards.read(self.root, "/etc/npmrc"))
+        self.assertIsNone(safeguards.read(self.root, "/etc/gitconfig"))
+
+    def test_a_large_file_is_read_only_up_to_the_limit(self):
+        with open(os.path.join(self.root, "etc/npmrc"), "wb") as f:
+            f.write(b"#" * (safeguards.MAX_READ * 2))
+        self.assertEqual(len(safeguards.read(self.root, "/etc/npmrc")), safeguards.MAX_READ)
+
+
 class AllTest(ImagesTest):
     def test_all_builds_the_base_image_then_every_other_image_on_it(self):
         self.image("rust", DERIVED)
