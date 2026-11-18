@@ -109,15 +109,17 @@ Options of `agentbox setup`:
   go into the group `libvirt` (control of every VM), and the Builds take Orca's Node runtime
   from their home; a service or system account is refused
 - `--password-file FILE` or `--password-stdin` instead of the prompt, for scripted installs
-- `--force`: replace an existing Host setup and the password
+- `--new-password`: set a new Control Room password (with `--password-file`/`--password-stdin`
+  or the prompt); without it a password there stays, also with `--force`
+- `--force`: replace an existing Host setup; the password stays
 - `--json`
 
 The Host setup and the password change only on the Host, never in the Control Room. Running
 `sudo agentbox setup` again without options keeps both and does the Host steps again, changing
 only what differs (after an update, or when a run stopped). To switch modes, run it with
 `--force` and the new options: the Orca ports of the VMs and the firewall rules follow at once,
-and it asks for the password again. An existing certificate stays; delete `cert.pem` and
-`key.pem` in `/etc/agentbox/web` first if its names no longer fit.
+and the password stays as it is; a new one needs `--new-password`. An existing certificate
+stays; delete `cert.pem` and `key.pem` in `/etc/agentbox/web` first if its names no longer fit.
 
 Setup enables `libvirt-guests.service`, so a shutdown or reboot of the
 Host shuts the VMs down instead of killing them: running VMs get a clean shutdown, all at

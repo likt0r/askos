@@ -4,7 +4,7 @@ Writes the Host setup, sets the Control Room password, creates the certificate i
 is none, does the Host steps (hoststeps.py) and starts the Control Room.
 
   agentbox setup [--mode local] [--web-port N] [--cert-name NAME] [--owner-user USER]
-                 [--password-file FILE | --password-stdin] [--force] [--json]
+                 [--password-file FILE | --password-stdin] [--new-password] [--force] [--json]
   agentbox setup --mode network --bind ADDRESS --home-network CIDR [...]
   agentbox setup [--json]            on a Host set up already: the Host steps only
 
@@ -20,13 +20,16 @@ arguments). Builds need nothing of theirs: Orca comes from its GitHub release (#
 /etc/agentbox/build.conf an earlier setup wrote is no longer read.
 
 The password never goes onto a command line: it comes from a file, from stdin, or is asked
-for at a terminal (twice); one that is there already stays unless --force. Without --force
-an existing Host setup is left alone, so running
+for at a terminal (twice); one that is there already stays, also with --force, which replaces
+the Host setup only: a new one is set with --new-password, with the source or the prompt as
+on a first run, and a password source without it is refused on a Host that has one. Without
+--force an existing Host setup is left alone, so running
 setup twice cannot change how the Host is exposed: without options setup then does the Host
-steps for the Host setup there is (after an update, or to finish a run that stopped), and
-with any other option it refuses. Settings, the VM registry, an existing certificate and the
-GitHub App are never touched; with --force the Orca ports of existing VMs and the firewall
-rules follow the new mode.
+steps for the Host setup there is (after an update, or to finish a run that stopped; with
+--new-password it sets a new password besides), and with any other option it refuses.
+Activity records a new password, never its value. Settings, the VM registry, an existing
+certificate and the GitHub App are never touched; with --force the Orca ports of existing VMs
+and the firewall rules follow the new mode.
 
 The steps run in a fixed order (ARCHITECTURE.md, "Setting a Host up"); each changes
 only what differs, so a second run changes nothing. One that fails stops setup with a message
@@ -68,6 +71,7 @@ def _parse(args):
             "cert_name": values.get("cert-name"), "owner_user": values.get("owner-user"),
             "password": ("file", values["password-file"]) if "password-file" in values else
                         ("stdin", None) if "password-stdin" in values else None,
+            "new_password": values.get("new-password", False),
             "force": values.get("force", False), "json": values.get("json", False),
             "bind": values.get("bind"), "home_network": values.get("home-network"),
             "given": ["--" + name for name in values if name != "json"]}
@@ -240,11 +244,23 @@ def setup(args):
     existing = os.path.exists(hostsetup.PATH)
     # set up already and no --force: only the Host steps, for the Host setup there is
     again = existing and not opts["force"]
+    # a password there stays, also with --force: a password source sets a new one only
+    # together with --new-password
+    password_there = os.path.exists(os.path.join(paths.WEB_CONF, "password"))
+    if opts["password"] is not None and not opts["new_password"] and password_there:
+        die("the Control Room has a password already: a new one is set with --new-password "
+            "(with --password-file, --password-stdin or the prompt)", error="invalid_argument",
+            option="--new-password")
     if again:
         new, old, record = hostsetup.load(), None, None     # a record that makes no sense stops here
         # a Host setup without owner_user (written by setup before it kept one) gets it once,
-        # from --owner-user or the sudo user; a recorded one changes only with --force
-        if [o for o in opts["given"] if o != "--owner-user" or new["owner_user"]]:
+        # from --owner-user or the sudo user; a recorded one changes only with --force.
+        # --new-password (with --password-file/--password-stdin or the prompt) sets a new
+        # Control Room password besides the Host steps; every other option needs --force
+        allowed = {"--owner-user"} if not new["owner_user"] else set()
+        if opts["new_password"]:
+            allowed |= {"--new-password", "--password-file", "--password-stdin"}
+        if [o for o in opts["given"] if o not in allowed]:
             die(f"{hostsetup.PATH} exists already: the Host is set up. Without options agentbox setup brings it "
                 "up to date and leaves the Host setup as it is; replace it with --force (Settings, VMs and the "
                 "certificate stay)", error="invalid_argument")
@@ -279,8 +295,9 @@ def setup(args):
     # before anything changes: the detection of this Release with the lists that will apply
     steps.run("Self-test of the detection", hoststeps.self_test)
     generate.ports_free()           # a service on the VMs' resolver or proxy ports stops setup here
-    # a password there stays, unless --force replaces the Host setup
-    keep_password = again or (not opts["force"] and os.path.exists(os.path.join(paths.WEB_CONF, "password")))
+    # a password there stays, also with --force; a new one only with --new-password. On a
+    # Host set up already without one (a run that stopped) none is asked for either.
+    keep_password = not opts["new_password"] and (again or password_there)
     password_hash = None if keep_password else _hash(_password(opts["password"]))
 
     steps.run("Directories", hoststeps.directories)
@@ -310,7 +327,7 @@ def setup(args):
                                      0o640, gid)
             said.append("password set")
         elif not again:
-            said.append("the existing password stays (a new one with --force)")
+            said.append("the existing password stays (a new one with --new-password)")
         return said
 
     def host_setup_and_regenerate():
@@ -365,10 +382,11 @@ def setup(args):
 
 
 DECLARATIONS = {
-    "setup": declare(setup, "agentbox setup [--mode local|network] [--bind A --home-network N] [--web-port P] [--cert-name N] [--owner-user U] [--password-file F|--password-stdin] [--force] [--json]",
+    "setup": declare(setup, "agentbox setup [--mode local|network] [--bind A --home-network N] [--web-port P] [--cert-name N] [--owner-user U] [--password-file F|--password-stdin] [--new-password] [--force] [--json]",
                      options={"mode": True, "bind": True, "home-network": True, "web-port": True,
                               "cert-name": True, "owner-user": True, "password-file": True,
-                              "password-stdin": False, "force": False, "json": False},
+                              "password-stdin": False, "new-password": False, "force": False, "json": False},
                      positional=False,
-                     describe=lambda a: ("Set up the Host", {})),
+                     describe=lambda a: ("Set up the Host with a new Control Room password"
+                                         if "new-password" in a.values else "Set up the Host", {})),
 }

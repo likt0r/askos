@@ -21,6 +21,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vm_records  # noqa: E402
+from fake_journald import Journald  # noqa: E402
 from test_registry import AGENTBOX, PRIV_UUID, REPO, RegistryTest, fake  # noqa: E402
 
 PASSWORD = "correct horse battery staple"
@@ -377,7 +378,11 @@ class NetworkModeTest(SetupTest):
         self.scenario(vms={"priv": {"uuid": PRIV_UUID}})
         self.ok("--password-file", self.password_file)
         self.assertIn("ListenStream=127.0.0.1:6802\n", self.read("etc/systemd/system/agentbox-gui-priv.socket"))
-        self.ok(*NETWORK_ARGS, "--password-file", self.password_file, "--force")
+        # the mode switch needs no password: the one there stays (#138)
+        password = self.read("etc/agentbox/web/password")
+        out = self.ok(*NETWORK_ARGS, "--force")
+        self.assertIn("the existing password stays", out)
+        self.assertEqual(self.read("etc/agentbox/web/password"), password)
         self.assertIn("ListenStream=6802\n", self.read("etc/systemd/system/agentbox-gui-priv.socket"))
 
     def test_another_home_network_takes_back_only_what_no_longer_applies(self):
@@ -386,7 +391,7 @@ class NetworkModeTest(SetupTest):
         new_accept, _ = rich_rules(net="10.0.0.0/24")
         self.scenario(firewall_rules=old_accept + old_reject)
         self.forget_calls()
-        self.ok(*NETWORK_ARGS[:5], "10.0.0.0/24", "--password-file", self.password_file, "--force")
+        self.ok(*NETWORK_ARGS[:5], "10.0.0.0/24", "--force")
         self.assertEqual(sorted(self.rich("remove")), sorted(old_accept))
         self.assertEqual(sorted(self.rich("add")), sorted(new_accept))
 
@@ -453,6 +458,61 @@ class ExistingHostTest(SetupTest):
         result = json.loads(self.ok("--password-file", self.password_file, "--json"))
         self.assertFalse(result["certificate_created"])
         self.assertEqual({k: v for k, v in self.snapshot().items() if k in keep}, before)
+
+
+class NewPasswordTest(SetupTest):
+    """#138: --force replaces the Host setup and keeps the Control Room password; a new one
+    is set with --new-password, with --password-file/--password-stdin or the prompt, and a
+    password source without it is refused on a Host that has one."""
+
+    def test_a_mode_switch_with_force_keeps_the_password_and_says_so(self):
+        self.ok("--password-file", self.password_file)
+        password = self.read("etc/agentbox/web/password")
+        out = self.ok(*NETWORK_ARGS, "--force")
+        self.assertIn("the existing password stays", out)
+        self.assertEqual(self.read("etc/agentbox/web/password"), password)
+        self.assertEqual(self.host_setup()["mode"], "network")
+        # and back again, without any password asked for
+        out = self.ok("--force")
+        self.assertIn("the existing password stays", out)
+        self.assertEqual(self.read("etc/agentbox/web/password"), password)
+        self.assertEqual(self.host_setup()["mode"], "local")
+
+    def test_force_without_a_password_there_asks_for_one_as_today(self):
+        vm_records.write_host_setup(self.root)
+        code, _, err = self.setup_run("--force")
+        self.assertEqual(code, 1)
+        self.assertIn("no terminal: give the password with --password-file or --password-stdin", err)
+        out = self.ok("--force", "--password-file", self.password_file)
+        self.assertIn("password set", out)
+        self.assertEqual(self.host_setup(), LOCAL_RECORD)
+        self.assertRegex(self.read("etc/agentbox/web/password"), r"^scrypt\$32768\$8\$1\$[0-9a-f]+\$[0-9a-f]+\n$")
+
+    def test_new_password_sets_one_with_and_without_force(self):
+        self.ok("--password-file", self.password_file)
+        old = self.read("etc/agentbox/web/password")
+        # without --force the Host setup stays; only the password changes
+        out = self.ok("--new-password", "--password-stdin", "--json", stdin=PASSWORD + "\n")
+        self.assertIn("password set", out)
+        self.assertEqual(json.loads(out)["host_setup"], "kept")
+        self.assertNotEqual(self.read("etc/agentbox/web/password"), old)
+        # with --force the Host setup is replaced as well
+        old = self.read("etc/agentbox/web/password")
+        self.ok(*NETWORK_ARGS, "--new-password", "--password-file", self.password_file, "--force")
+        self.assertNotEqual(self.read("etc/agentbox/web/password"), old)
+        self.assertEqual(self.host_setup()["mode"], "network")
+
+    def test_activity_records_a_new_password_never_its_value(self):
+        journald = Journald(self.path("run/systemd/journal.agentbox/socket"))
+        self.addCleanup(journald.close)
+        self.ok("--password-file", self.password_file)
+        self.ok("--new-password", "--password-stdin", stdin=PASSWORD + "\n")
+        entries = [e for e in journald.entries() if e.get("AGENTBOX_ACTION") == "setup"]
+        self.assertEqual([e["AGENTBOX_OUTCOME"] for e in entries], ["ok", "ok"])
+        self.assertEqual(entries[0]["AGENTBOX_DESCRIPTION"], "Set up the Host")
+        self.assertIn("new Control Room password", entries[-1]["AGENTBOX_DESCRIPTION"])
+        for datagram in journald.raw():
+            self.assertNotIn(PASSWORD.encode(), datagram)
 
 
 def watch(domain):
@@ -564,7 +624,7 @@ class HostStepsTest(SetupTest):
                          ["URIS=qemu:///system", "ON_BOOT=ignore", "ON_SHUTDOWN=shutdown", "PARALLEL_SHUTDOWN=254",
                           "SHUTDOWN_TIMEOUT=60"])
         self.scenario(systemctl_active=ENABLED)
-        self.ok("--password-file", self.password_file, "--force")
+        self.ok("--force")
         verbs = {c["argv"][0] for c in self.calls("systemctl") if "libvirt-guests.service" in c["argv"]}
         self.assertIn("enable", verbs)
         self.assertEqual(verbs & {"stop", "restart", "try-restart", "reload-or-restart", "kill"}, set())
@@ -590,7 +650,7 @@ class HostStepsTest(SetupTest):
             self.assertIn(f"\n{step}: up to date\n", "\n" + out)
         # also in Network mode, with its rules in place
         self.forget_calls()
-        self.ok(*NETWORK_ARGS, "--password-file", self.password_file, "--force")
+        self.ok(*NETWORK_ARGS, "--force")
         before = self.snapshot()
         self.forget_calls()
         self.ok("--json")
@@ -744,7 +804,7 @@ class HostStepsTest(SetupTest):
         self.assertEqual(self.members("agentbox-journal"), ["alice", "bob", "carol"])
         # an owner whose primary group is libvirt is in it already
         self.forget_calls()
-        self.ok("--password-file", self.password_file, "--owner-user", "carol", "--force")
+        self.ok("--owner-user", "carol", "--force")
         self.assertEqual(self.calls("usermod"), [])
 
     def test_the_owner_user_must_be_known_and_exist(self):
@@ -920,15 +980,28 @@ class HostStepsTest(SetupTest):
         self.ok("--password-file", self.password_file, sudo_user="bob")
         self.assertEqual(self.host_setup()["owner_user"], "bob")
 
-    def test_a_password_there_stays_unless_forced(self):
+    def test_a_password_there_stays_and_a_new_one_needs_new_password(self):
         os.makedirs(self.path("etc/agentbox/web"))
         self.write("etc/agentbox/web/password", "scrypt$32768$8$1$00$00\n", 0o640)
-        # no password asked for (stdin is no terminal)
-        out = self.ok()
-        self.assertIn("the existing password stays", out)
+        # no password asked for (stdin is no terminal), also not with --force
+        self.assertIn("the existing password stays", self.ok())
+        self.assertIn("the existing password stays", self.ok("--force"))
         self.assertEqual(self.read("etc/agentbox/web/password"), "scrypt$32768$8$1$00$00\n")
-        self.ok("--password-file", self.password_file, "--force")
+        # a password source without --new-password is refused, with and without --force
+        for args in (["--password-file", self.password_file],
+                     ["--password-file", self.password_file, "--force"],
+                     ["--password-stdin", "--force"]):
+            with self.subTest(" ".join(args)):
+                code, _, err = self.setup_run(*args)
+                self.assertEqual(code, 1, err)
+                self.assertIn("--new-password", err)
+                self.assertEqual(self.read("etc/agentbox/web/password"), "scrypt$32768$8$1$00$00\n")
+        # with --new-password the source sets a new one, with and without --force
+        self.ok("--new-password", "--password-file", self.password_file)
         self.assertNotEqual(self.read("etc/agentbox/web/password"), "scrypt$32768$8$1$00$00\n")
+        old = self.read("etc/agentbox/web/password")
+        self.ok("--new-password", "--password-stdin", "--force", stdin="another password, new one\n")
+        self.assertNotEqual(self.read("etc/agentbox/web/password"), old)
 
     def test_running_sockets_of_the_activity_journal_admit_only_its_group(self):
         """Sockets with a wrong mode get it in place (the group and the directory's owner need

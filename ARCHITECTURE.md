@@ -1265,7 +1265,8 @@ certificate name, owner user) and does the Host steps, in this order
    started.
 9. **Container image cleanup**: `agentbox-container-image-cleanup.timer` enabled and started.
 10. **`agentbox migrate`** and **`agentbox migrate-allowlist`**.
-11. **Certificate and password** of the Control Room: the certificate unless there is one.
+11. **Certificate and password** of the Control Room: the certificate unless there is one; the
+    password, a new one only with `--new-password` (see below).
 12. **Firewall for the home network**: in Network mode the rules of the Control Room and Orca
     ports; none in Local-only.
 13. **`regenerate`**: the Host setup written, then the VMs' networks, units, disks and
@@ -1291,11 +1292,15 @@ changes only what differs from how it should be and says what it changed
 registry, the lists, the certificate, the GitHub App) are never overwritten. On a Host that has
 a Host setup, `agentbox setup` without options keeps it and the password and does the steps
 again (after an update, or to finish a run that stopped); any other option needs `--force`,
-which replaces the Host setup and the password; a password there already stays without it,
-also on a first run. Setup is the owner's command at the Host: run through `sudo` by a service
-or system user it refuses before anything runs. A step that fails stops setup with a message
-naming it (`setup stopped at <step>`). Every file is replaced whole, and the Host setup is
-written only after the steps before it succeeded, so running setup again goes on from there.
+which replaces the Host setup and keeps a password that is there, asking for one only without
+it, as on a first run. A new password is set with `--new-password`, with
+`--password-file`/`--password-stdin` or the prompt, with or without `--force`; a password
+source without `--new-password` is refused on a Host that has a password. Activity records a
+new password, never its value. Setup is the owner's command at the Host: run through `sudo` by
+a service or system user it refuses before anything runs. A step that fails stops setup with
+a message naming it (`setup stopped at <step>`). Every file is replaced whole, and the Host
+setup is written only after the steps before it succeeded, so running setup again goes on from
+there.
 
 Setup restarts no proxy: the proxies keep running the code they started with until they
 restart, and an update of the RPM that changes their code restarts those that run
