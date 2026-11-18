@@ -248,8 +248,12 @@ def setup(args):
     # together with --new-password
     password_there = os.path.exists(os.path.join(paths.WEB_CONF, "password"))
     if opts["password"] is not None and not opts["new_password"] and password_there:
-        die("the Control Room has a password already: a new one is set with --new-password "
-            "(with --password-file, --password-stdin or the prompt)", error="invalid_argument",
+        # with options that a Host set up already takes only with --force, that one is named too
+        needs_force = existing and not opts["force"] and any(
+            o not in ("--password-file", "--password-stdin") for o in opts["given"])
+        die("the Control Room has a password already: a new one is set with "
+            + ("--force --new-password" if needs_force else "--new-password")
+            + " (with --password-file, --password-stdin or the prompt)", error="invalid_argument",
             option="--new-password")
     if again:
         new, old, record = hostsetup.load(), None, None     # a record that makes no sense stops here
@@ -296,7 +300,8 @@ def setup(args):
     steps.run("Self-test of the detection", hoststeps.self_test)
     generate.ports_free()           # a service on the VMs' resolver or proxy ports stops setup here
     # a password there stays, also with --force; a new one only with --new-password. On a
-    # Host set up already without one (a run that stopped) none is asked for either.
+    # Host set up already without one (a run that stopped) a plain run asks for none and
+    # leaves the Host without a password: only --new-password sets one.
     keep_password = not opts["new_password"] and (again or password_there)
     password_hash = None if keep_password else _hash(_password(opts["password"]))
 
@@ -326,8 +331,10 @@ def setup(args):
             state_files.write_atomic(os.path.join(paths.WEB_CONF, "password"), (password_hash + "\n").encode(),
                                      0o640, gid)
             said.append("password set")
-        elif not again:
+        elif password_there and not again:
             said.append("the existing password stays (a new one with --new-password)")
+        elif not password_there:
+            said.append("no password is set (set one with --new-password)")
         return said
 
     def host_setup_and_regenerate():

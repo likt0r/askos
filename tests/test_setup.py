@@ -996,12 +996,46 @@ class HostStepsTest(SetupTest):
                 self.assertEqual(code, 1, err)
                 self.assertIn("--new-password", err)
                 self.assertEqual(self.read("etc/agentbox/web/password"), "scrypt$32768$8$1$00$00\n")
+                code, _, err = self.setup_run(*args, "--json")
+                self.assertEqual(code, 1, err)
+                said = json.loads(err)
+                self.assertEqual((said["error"], said["params"]), ("invalid_argument", {"option": "--new-password"}))
         # with --new-password the source sets a new one, with and without --force
         self.ok("--new-password", "--password-file", self.password_file)
         self.assertNotEqual(self.read("etc/agentbox/web/password"), "scrypt$32768$8$1$00$00\n")
         old = self.read("etc/agentbox/web/password")
         self.ok("--new-password", "--password-stdin", "--force", stdin="another password, new one\n")
         self.assertNotEqual(self.read("etc/agentbox/web/password"), old)
+
+    def test_a_set_up_host_refuses_a_password_source_without_new_password(self):
+        self.ok("--password-file", self.password_file)
+        password = self.read("etc/agentbox/web/password")
+        record = self.host_setup()
+        code, _, err = self.setup_run("--force", "--password-file", self.password_file)
+        self.assertEqual(code, 1, err)
+        self.assertIn("--new-password", err)
+        self.assertEqual(self.read("etc/agentbox/web/password"), password)
+        self.assertEqual(self.host_setup(), record)
+
+    def test_the_refusal_names_force_too_when_the_options_need_it(self):
+        self.ok("--password-file", self.password_file)
+        password = self.read("etc/agentbox/web/password")
+        code, _, err = self.setup_run(*NETWORK_ARGS, "--password-file", self.password_file)
+        self.assertEqual(code, 1, err)
+        self.assertIn("--force --new-password", err)
+        # the command it names works in one step
+        self.ok(*NETWORK_ARGS, "--password-file", self.password_file, "--force", "--new-password")
+        self.assertNotEqual(self.read("etc/agentbox/web/password"), password)
+        self.assertEqual(self.host_setup()["mode"], "network")
+        # a password source alone needs no --force
+        code, _, err = self.setup_run("--password-file", self.password_file)
+        self.assertNotIn("--force", err)
+
+    def test_a_host_set_up_without_a_password_says_so_and_new_password_sets_one(self):
+        vm_records.write_host_setup(self.root, LOCAL_RECORD)
+        self.assertIn("no password is set (set one with --new-password)", self.ok())
+        self.assertFalse(os.path.exists(self.path("etc/agentbox/web/password")))
+        self.assertIn("password set", self.ok("--new-password", "--password-file", self.password_file))
 
     def test_running_sockets_of_the_activity_journal_admit_only_its_group(self):
         """Sockets with a wrong mode get it in place (the group and the directory's owner need
