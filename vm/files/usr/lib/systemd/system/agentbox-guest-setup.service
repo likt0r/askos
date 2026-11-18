@@ -3,7 +3,9 @@ Description=Agent Box: set up the context, the Data disk and the home
 After=local-fs.target network-online.target
 Wants=network-online.target
 RequiresMountsFor=/var/lib/agentbox-data
-Before=agentbox-orca.service user@1000.service
+# nothing of the agent's runs while guest-setup works on its home (#142): its user manager, and
+# its cron or at jobs should the Image have them
+Before=agentbox-orca.service user@1000.service crond.service atd.service
 
 [Service]
 Type=oneshot

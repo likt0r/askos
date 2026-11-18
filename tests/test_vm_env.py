@@ -11,6 +11,9 @@ Run from the repo root: python3 -m unittest discover -s tests
 """
 import base64
 import fcntl
+import importlib.machinery
+import io
+import importlib.util
 import json
 import os
 import re
@@ -20,6 +23,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vm_records  # noqa: E402
@@ -32,6 +36,7 @@ from agentbox import safeguards, vmenv  # noqa: E402
 ENV_FILE = "var/lib/agentbox/vm-env/{}.env"
 FWCFG_ENV = os.path.join(REPO, "vm", "files", "usr", "lib", "agentbox", "fwcfg-env")
 GUEST_SETUP = os.path.join(REPO, "vm", "files", "usr", "lib", "agentbox", "guest-setup")
+HOME_PATHS = os.path.join(REPO, "vm", "files", "usr", "lib", "agentbox", "home-paths")
 # names that would switch a Safeguard off or change what Agent Box sets, one or more per rule
 REFUSED = [
     # safeguards.OVERRIDES
@@ -642,6 +647,214 @@ class GuestTest(unittest.TestCase):
             self.assertRegex(line, r">> /run/agentbox/(env|agent-env)$")
         self.assertFalse(any(re.search(r"\beval\b", line) for line in code))
 
+
+class HomePathsTest(unittest.TestCase):
+    """#142: guest-setup runs as root at every start and works on the agent's home, which survives
+    a restart. home-paths removes every link the agent left on the paths it uses, so root follows
+    none of them."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.home = os.path.join(tmp.name, "home")
+        self.outside = os.path.join(tmp.name, "etc")      # stands in for /etc
+        os.makedirs(self.home)
+        os.makedirs(self.outside)
+        with open(os.path.join(self.outside, "passwd"), "w") as f:
+            f.write("root\n")
+
+    def run_paths(self, *paths, code=0):
+        r = subprocess.run([HOME_PATHS, self.home, *paths], capture_output=True, text=True, timeout=30,
+                           env={"PATH": os.environ["PATH"], "LANG": "C.UTF-8"})
+        self.assertEqual(r.returncode, code, r.stderr)
+        return r.stderr
+
+    def link(self, rel, target):
+        path = os.path.join(self.home, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        os.symlink(target, path)
+
+    def test_links_on_the_way_and_at_the_end_are_removed(self):
+        self.link(".config", self.outside)
+        self.link("code", self.outside)
+        os.makedirs(os.path.join(self.home, ".local"))
+        self.link(".local/share", self.outside)
+        self.link(".claude.json", os.path.join(self.outside, "ld.so.preload"))     # dangling
+        self.link(".bunfig.toml", os.path.join(self.outside, "passwd"))
+        err = self.run_paths("code/", ".config/orca/", ".local/share/containers/", ".claude.json", ".bunfig.toml")
+        for rel in (".config", "code", ".local/share", ".claude.json", ".bunfig.toml"):
+            self.assertFalse(os.path.lexists(os.path.join(self.home, rel)), rel)
+            self.assertIn(f"guest-setup: removed the link {rel} (to ", err)
+        self.assertTrue(os.path.isdir(os.path.join(self.home, ".local")))
+        self.assertEqual(sorted(os.listdir(self.outside)), ["passwd"])
+
+    def test_root_creating_the_paths_afterwards_stays_in_the_home(self):
+        """What guest-setup does next (install -d, a write) lands in the home, not behind a link."""
+        self.link(".config", self.outside)
+        self.link(".claude.json", os.path.join(self.outside, "ld.so.preload"))
+        self.run_paths(".config/orca/", ".claude.json")
+        subprocess.run(["install", "-d", "-m", "700", os.path.join(self.home, ".config/orca")], check=True)
+        if not os.path.exists(os.path.join(self.home, ".claude.json")):
+            with open(os.path.join(self.home, ".claude.json"), "w") as f:
+                f.write("{}\n")
+        self.assertTrue(os.path.isdir(os.path.join(self.home, ".config/orca")))
+        self.assertFalse(os.path.islink(os.path.join(self.home, ".config")))
+        self.assertEqual(sorted(os.listdir(self.outside)), ["passwd"])
+
+    def test_real_directories_and_files_stay_as_they_are(self):
+        os.makedirs(os.path.join(self.home, ".config/orca"))
+        with open(os.path.join(self.home, ".config/orca/state"), "w") as f:
+            f.write("kept\n")
+        with open(os.path.join(self.home, ".claude.json"), "w") as f:
+            f.write("{}\n")
+        self.assertEqual(self.run_paths(".config/orca/", ".claude.json", "code/"), "")
+        with open(os.path.join(self.home, ".config/orca/state")) as f:
+            self.assertEqual(f.read(), "kept\n")
+        self.assertTrue(os.path.isfile(os.path.join(self.home, ".claude.json")))
+
+    def test_a_file_where_a_directory_belongs_is_removed(self):
+        """Else install -d would fail and the VM would not start: one file would stop it, on the
+        way or at the end of a directory's path."""
+        with open(os.path.join(self.home, ".local"), "w") as f:
+            f.write("x\n")
+        os.makedirs(os.path.join(self.home, ".cargo"))
+        os.mkfifo(os.path.join(self.home, ".cargo/registry"))
+        err = self.run_paths(".local/share/containers/", ".cargo/registry/")
+        self.assertFalse(os.path.exists(os.path.join(self.home, ".local")))
+        self.assertFalse(os.path.lexists(os.path.join(self.home, ".cargo/registry")))
+        self.assertIn("guest-setup: removed .local, which is no directory", err)
+        self.assertIn("guest-setup: removed .cargo/registry, which is no directory", err)
+
+    def test_a_directory_where_a_file_belongs_is_removed(self):
+        """install would copy into it, and Bun would keep going without its minimum age."""
+        os.makedirs(os.path.join(self.home, ".bunfig.toml"))
+        os.symlink(self.outside, os.path.join(self.home, ".bunfig.toml", "inside"))
+        err = self.run_paths(".bunfig.toml")
+        self.assertFalse(os.path.lexists(os.path.join(self.home, ".bunfig.toml")))
+        self.assertIn("guest-setup: removed the directory .bunfig.toml", err)
+        self.assertEqual(sorted(os.listdir(self.outside)), ["passwd"])
+
+    def test_a_link_target_cannot_forge_journal_lines(self):
+        self.link(".config", "/x\nguest-setup: context work, Orca port 4000")
+        err = self.run_paths(".config/")
+        self.assertEqual(len(err.splitlines()), 1, err)
+        self.assertIn("(to /x?guest-setup: context work, Orca port 4000)", err)
+
+    def test_paths_that_leave_the_home_and_a_linked_home_are_refused(self):
+        for bad in ("../etc", "code/../../etc", "/etc", "./code", "code//x"):
+            with self.subTest(bad):
+                self.assertIn("is no plain relative path", self.run_paths(bad, code=1))
+        os.rmdir(self.home)
+        os.symlink(self.outside, self.home)
+        self.assertIn("is no directory", self.run_paths("code/", code=1))
+
+    def test_guest_setup_runs_it_on_every_path_before_using_one(self):
+        with open(GUEST_SETUP) as f:
+            code = [line for line in f.read().replace("\\\n", " ").splitlines() if not line.lstrip().startswith("#")]
+        [call] = [i for i, line in enumerate(code) if line.lstrip().startswith("/usr/lib/agentbox/home-paths ")]
+        words = code[call].split()
+        self.assertNotRegex(code[call], r"\|\||;|&|\$\(", "a failing home-paths must stop guest-setup")
+        self.assertEqual(words[1:3], ['"$HOME_DIR"', '"${PERSIST[@]/%//}"'])     # every PERSIST entry a directory
+        covered = [w.rstrip("/") for w in words[3:]]
+        # nothing in the home is used before, but creating the home itself
+        before = [line for line in code[:call] if "$HOME_DIR/" in line or '"$HOME_DIR"/' in line]
+        self.assertEqual(before, [])
+        # every path in the home used after it is one of them, on the way to one or below one, or a
+        # PERSIST entry
+        used = set()
+        for line in code[call + 1:]:
+            used |= set(re.findall(r'"?\$\{?HOME_DIR\}?"?/([A-Za-z0-9._/$-]+)', line))
+            self.assertNotIn("/var/home/agent", line, "the home only as $HOME_DIR, so this test sees it")
+        self.assertTrue(used)
+        for rel in used:
+            ok = rel == "$p" or any(rel == c or rel.startswith(c + "/") or c.startswith(rel + "/") for c in covered)
+            self.assertTrue(ok, f"{rel} is used in the home without home-paths")
+        # root never follows a link when it hands something to the agent
+        chowns = [line for line in code if re.search(r"\bchown\b", line) and "HOME_DIR" in line]
+        self.assertTrue(chowns)
+        for line in chowns:
+            self.assertRegex(line, r"\bchown -h\b", line)
+
+
+
+class WrappersWaitForTheHomeTest(unittest.TestCase):
+    """#142: the guest-agent wrappers that drop to the agent run nothing as the agent before
+    guest-setup has prepared the home at this start; meanwhile the agent could put back a link."""
+    WRAPPERS = [os.path.join(REPO, "vm", "files", "usr", "libexec", "qemu-ga", "fsfreeze-hook.d", n)
+                for n in ("agentbox-inbox", "agentbox-container-images")]
+
+    def load(self, path):
+        loader = importlib.machinery.SourceFileLoader(os.path.basename(path).replace("-", "_"), path)
+        module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+        dont_write, sys.dont_write_bytecode = sys.dont_write_bytecode, True    # no __pycache__ in vm/files
+        try:
+            loader.exec_module(module)
+        finally:
+            sys.dont_write_bytecode = dont_write
+        return module
+
+    def systemctl(self, code):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "systemctl")
+        with open(path, "w") as f:
+            f.write(f'#!/bin/sh\n[ "$*" = "is-active --quiet agentbox-guest-setup.service" ] || exit 9\nexit {code}\n')
+        os.chmod(path, 0o755)
+        return path
+
+    def test_the_home_is_ready_only_once_guest_setup_is_active(self):
+        for path in self.WRAPPERS:
+            with self.subTest(os.path.basename(path)):
+                module = self.load(path)
+                self.assertTrue(module.home_ready(self.systemctl(0)))
+                self.assertFalse(module.home_ready(self.systemctl(3)))      # activating, failed, inactive
+                self.assertFalse(module.home_ready("/nonexistent/systemctl"))
+
+    def test_the_cleanup_as_root_does_nothing_before_the_home_is_ready(self):
+        module = self.load(self.WRAPPERS[1])
+        became = []
+        with mock.patch.object(module.os, "geteuid", return_value=0), \
+                mock.patch.object(module, "home_ready", return_value=False), \
+                mock.patch.object(module, "become", side_effect=became.append), \
+                mock.patch.object(module, "Podman", side_effect=AssertionError("Podman ran")), \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            self.assertEqual(module.main(["prune", "7"]), module.STARTING)
+        self.assertEqual(became, [])
+        self.assertIn("the VM is still starting", err.getvalue())
+
+    def test_the_inbox_as_root_waits_then_refuses_with_the_device_closed(self):
+        module = self.load(self.WRAPPERS[0])
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        device = os.path.join(tmp.name, "dev")
+        open(device, "w").close()
+        fd = os.open(device, os.O_RDONLY)
+        closed = []
+        real_close = os.close
+        with mock.patch.object(module.os, "geteuid", return_value=0), \
+                mock.patch.object(module.os, "open", return_value=fd), \
+                mock.patch.object(module.stat, "S_ISBLK", return_value=True), \
+                mock.patch.object(module, "home_ready", return_value=False), \
+                mock.patch.object(module, "HOME_WAIT", 0), \
+                mock.patch.object(module.time, "sleep"), \
+                mock.patch.object(module, "become", side_effect=AssertionError("became the agent")), \
+                mock.patch.object(module, "wait_for_data_disk"), \
+                mock.patch.object(module, "wait_for_device"), \
+                mock.patch.object(module.os, "close", side_effect=lambda f: (closed.append(f), real_close(f))):
+            with self.assertRaises(module.Refused) as caught:
+                module.receive(module.DEVICE, "x")
+        self.assertEqual(caught.exception.code, 4)
+        self.assertEqual(closed, [fd])
+
+    def test_each_wrapper_asks_before_it_becomes_the_agent(self):
+        for path in self.WRAPPERS:
+            with self.subTest(os.path.basename(path)):
+                with open(path) as f:
+                    code = f.read()
+                calls = [m.start() for m in re.finditer(r"\bbecome\(USER\)", code)]
+                self.assertEqual(len(calls), 1)
+                self.assertLess(code.rfind("home_ready()", 0, calls[0]), calls[0])
+                self.assertGreater(code.rfind("home_ready()", 0, calls[0]), code.rfind("\ndef ", 0, calls[0]))
 
 if __name__ == "__main__":
     unittest.main()

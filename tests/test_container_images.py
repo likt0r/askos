@@ -256,6 +256,15 @@ class WhichVmsTest(CleanupTest):
                 self.assertEqual([c for c in self.calls() if c["cmd"] != "guest-ping"], [])
         self.assertEqual(self.entries(), [])
 
+    def test_a_vm_still_starting_is_skipped_this_hour(self):
+        """#142: the wrapper runs nothing as the agent before guest-setup has prepared its home."""
+        self.scenario(responses=[{"exitcode": 75, "stderr": "agentbox-container-images: the VM is still starting"}])
+        self.records()
+        results, err = self.cleanup()
+        self.assertEqual(results["work"], {"vm": "work", "outcome": "skipped", "reason": "starting", "removed": None,
+                                           "freed_bytes": None, "error": None})
+        self.assertEqual(self.cleaned(), [])
+
     def test_an_idle_vm_is_cleaned_without_being_started(self):
         self.scenario(vms={"work": {"state": "idle", "start_fails": "active"}, "priv": {"state": "shut off"}})
         self.work.podman(images=[image(1)])
