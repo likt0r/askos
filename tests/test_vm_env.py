@@ -644,9 +644,6 @@ class GuestTest(unittest.TestCase):
         self.assertFalse(any(re.search(r"\beval\b", line) for line in code))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class HomePathsTest(unittest.TestCase):
     """#142: guest-setup runs as root at every start and works on the agent's home, which survives
@@ -681,7 +678,7 @@ class HomePathsTest(unittest.TestCase):
         self.link(".local/share", self.outside)
         self.link(".claude.json", os.path.join(self.outside, "ld.so.preload"))     # dangling
         self.link(".bunfig.toml", os.path.join(self.outside, "passwd"))
-        err = self.run_paths("code", ".config/orca", ".local/share/containers", ".claude.json", ".bunfig.toml")
+        err = self.run_paths("code/", ".config/orca/", ".local/share/containers/", ".claude.json", ".bunfig.toml")
         for rel in (".config", "code", ".local/share", ".claude.json", ".bunfig.toml"):
             self.assertFalse(os.path.lexists(os.path.join(self.home, rel)), rel)
             self.assertIn(f"guest-setup: removed the link {rel} (to ", err)
@@ -692,7 +689,7 @@ class HomePathsTest(unittest.TestCase):
         """What guest-setup does next (install -d, a write) lands in the home, not behind a link."""
         self.link(".config", self.outside)
         self.link(".claude.json", os.path.join(self.outside, "ld.so.preload"))
-        self.run_paths(".config/orca", ".claude.json")
+        self.run_paths(".config/orca/", ".claude.json")
         subprocess.run(["install", "-d", "-m", "700", os.path.join(self.home, ".config/orca")], check=True)
         if not os.path.exists(os.path.join(self.home, ".claude.json")):
             with open(os.path.join(self.home, ".claude.json"), "w") as f:
@@ -707,40 +704,73 @@ class HomePathsTest(unittest.TestCase):
             f.write("kept\n")
         with open(os.path.join(self.home, ".claude.json"), "w") as f:
             f.write("{}\n")
-        self.assertEqual(self.run_paths(".config/orca", ".claude.json", "code"), "")
+        self.assertEqual(self.run_paths(".config/orca/", ".claude.json", "code/"), "")
         with open(os.path.join(self.home, ".config/orca/state")) as f:
             self.assertEqual(f.read(), "kept\n")
         self.assertTrue(os.path.isfile(os.path.join(self.home, ".claude.json")))
 
     def test_a_file_where_a_directory_belongs_is_removed(self):
-        """Else install -d would fail and the VM would not start: one file would stop it."""
+        """Else install -d would fail and the VM would not start: one file would stop it, on the
+        way or at the end of a directory's path."""
         with open(os.path.join(self.home, ".local"), "w") as f:
             f.write("x\n")
-        err = self.run_paths(".local/share/containers")
+        os.makedirs(os.path.join(self.home, ".cargo"))
+        os.mkfifo(os.path.join(self.home, ".cargo/registry"))
+        err = self.run_paths(".local/share/containers/", ".cargo/registry/")
         self.assertFalse(os.path.exists(os.path.join(self.home, ".local")))
+        self.assertFalse(os.path.lexists(os.path.join(self.home, ".cargo/registry")))
         self.assertIn("guest-setup: removed .local, which is no directory", err)
+        self.assertIn("guest-setup: removed .cargo/registry, which is no directory", err)
+
+    def test_a_directory_where_a_file_belongs_is_removed(self):
+        """install would copy into it, and Bun would keep going without its minimum age."""
+        os.makedirs(os.path.join(self.home, ".bunfig.toml"))
+        os.symlink(self.outside, os.path.join(self.home, ".bunfig.toml", "inside"))
+        err = self.run_paths(".bunfig.toml")
+        self.assertFalse(os.path.lexists(os.path.join(self.home, ".bunfig.toml")))
+        self.assertIn("guest-setup: removed the directory .bunfig.toml", err)
+        self.assertEqual(sorted(os.listdir(self.outside)), ["passwd"])
+
+    def test_a_link_target_cannot_forge_journal_lines(self):
+        self.link(".config", "/x\nguest-setup: context work, Orca port 4000")
+        err = self.run_paths(".config/")
+        self.assertEqual(len(err.splitlines()), 1, err)
+        self.assertIn("(to /x?guest-setup: context work, Orca port 4000)", err)
 
     def test_paths_that_leave_the_home_and_a_linked_home_are_refused(self):
-        for bad in ("../etc", "code/../../etc", "/etc", "./code"):
+        for bad in ("../etc", "code/../../etc", "/etc", "./code", "code//x"):
             with self.subTest(bad):
                 self.assertIn("is no plain relative path", self.run_paths(bad, code=1))
         os.rmdir(self.home)
         os.symlink(self.outside, self.home)
-        self.assertIn("is no directory", self.run_paths("code", code=1))
+        self.assertIn("is no directory", self.run_paths("code/", code=1))
 
     def test_guest_setup_runs_it_on_every_path_before_using_one(self):
         with open(GUEST_SETUP) as f:
             code = [line for line in f.read().replace("\\\n", " ").splitlines() if not line.lstrip().startswith("#")]
         [call] = [i for i, line in enumerate(code) if line.lstrip().startswith("/usr/lib/agentbox/home-paths ")]
         words = code[call].split()
-        self.assertEqual(words[1:3], ['"$HOME_DIR"', '"${PERSIST[@]}"'])
-        for rel in (".config", ".claude", ".codex", ".cargo", ".local/share", ".claude.json", ".bunfig.toml"):
-            self.assertIn(rel, words)
+        self.assertEqual(words[1:3], ['"$HOME_DIR"', '"${PERSIST[@]/%//}"'])     # every PERSIST entry a directory
+        covered = [w.rstrip("/") for w in words[3:]]
         # nothing in the home is used before, but creating the home itself
         before = [line for line in code[:call] if "$HOME_DIR/" in line or '"$HOME_DIR"/' in line]
         self.assertEqual(before, [])
+        # every path in the home used after it is one of them, on the way to one or below one, or a
+        # PERSIST entry
+        used = set()
+        for line in code[call + 1:]:
+            used |= set(re.findall(r'"?\$HOME_DIR"?/([A-Za-z0-9._/$-]+)', line))
+        self.assertTrue(used)
+        for rel in used:
+            ok = rel == "$p" or any(rel == c or rel.startswith(c + "/") or c.startswith(rel + "/") for c in covered)
+            self.assertTrue(ok, f"{rel} is used in the home without home-paths")
         # root never follows a link when it hands something to the agent
         chowns = [line for line in code if re.search(r"\bchown\b", line) and "HOME_DIR" in line]
         self.assertTrue(chowns)
         for line in chowns:
             self.assertRegex(line, r"\bchown -h\b", line)
+
+
+if __name__ == "__main__":
+    unittest.main()
+

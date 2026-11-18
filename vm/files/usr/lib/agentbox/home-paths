@@ -1,32 +1,47 @@
 #!/usr/bin/env bash
 # home-paths HOME PATH...: guest-setup runs as root and works on paths in the agent's home,
-# which survives a restart, so the agent can leave links there that root would follow (#142).
-# For each PATH (relative to HOME) this removes, part by part, every link on the way, the last
-# part included, and anything that stands where a directory belongs. What it removed goes to
-# stderr. It creates nothing: guest-setup does that once nothing on the way is a link.
-# Nothing of the agent runs meanwhile: guest-setup starts before user@1000.service.
+# which lasts until the next Reset, so the agent can leave links there that root would follow
+# (#142). For each PATH (relative to HOME; one ending in / is a directory, any other a file)
+# this removes, part by part, every link on the way, the last part included, and whatever
+# stands where a directory or a file belongs, so that no file can stop guest-setup either.
+# What it removed goes to stderr (the journal). It creates nothing: guest-setup does that once
+# nothing on the way is a link. Nothing of the agent runs meanwhile: guest-setup starts before
+# user@1000.service.
 set -euo pipefail
+export LC_ALL=C
 home=${1:?usage: home-paths HOME PATH...}
 shift
 [ -d "$home" ] && [ ! -L "$home" ] || { echo "home-paths: $home is no directory" >&2; exit 1; }
-for rel; do
+
+# what the agent chose (a link's target) reaches the journal only as printable characters
+shown() { local s=$1; printf '%s' "${s//[^[:print:]]/?}"; }
+
+for arg; do
+  rel=${arg%/}
   case "/$rel/" in
-    */../*|*/./*|//*) echo "home-paths: $rel is no plain relative path" >&2; exit 1 ;;
+    */../*|*/./*|//*|*//*) echo "home-paths: $arg is no plain relative path" >&2; exit 1 ;;
   esac
+  dir=0; [ "$rel" != "$arg" ] && dir=1
   IFS=/ read -r -a parts <<< "$rel"
   path=$home
   for i in "${!parts[@]}"; do
     path=$path/${parts[$i]}
-    last=$(( i == ${#parts[@]} - 1 ))
+    last=0; [ "$i" -eq $(( ${#parts[@]} - 1 )) ] && last=1
+    name=${path#"$home"/}
     if [ -L "$path" ]; then
-      echo "guest-setup: removed the link ${path#"$home"/} (to $(readlink "$path")) from the agent's home" >&2
-      rm -f -- "$path"
-      break
-    elif [ "$last" = 0 ] && [ -e "$path" ] && [ ! -d "$path" ]; then
-      echo "guest-setup: removed ${path#"$home"/}, which is no directory, from the agent's home" >&2
+      echo "guest-setup: removed the link $(shown "$name") (to $(shown "$(readlink "$path")")) from the agent's home" >&2
       rm -f -- "$path"
       break
     elif [ ! -e "$path" ]; then
+      break
+    elif [ "$last" = 1 ] && [ "$dir" = 0 ]; then
+      if [ -d "$path" ]; then           # a file belongs here; rm does not follow links inside
+        echo "guest-setup: removed the directory $(shown "$name") from the agent's home" >&2
+        rm -rf -- "$path"
+      fi
+    elif [ ! -d "$path" ]; then
+      echo "guest-setup: removed $(shown "$name"), which is no directory, from the agent's home" >&2
+      rm -f -- "$path"
       break
     fi
   done
