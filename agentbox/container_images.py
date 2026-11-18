@@ -51,6 +51,8 @@ def _run(ctx, days):
     limit = paths.tunable("AGENTBOX_CONTAINER_IMAGE_CLEANUP_SECONDS", LIMIT)
     code, out, _, _ = guest.execute(ctx, WRAPPER, ["prune", str(days)], limit, missing=lambda: _missing(ctx),
                                     answer=MAX_ANSWER)
+    if code == WRAPPER_STARTING:        # guest-setup has not prepared the agent's home yet (#142)
+        return STARTING
     if code == 124:
         die(f"{ctx}: the Container image cleanup in the VM takes longer than {limit} s", 5,
             error="vm_query_timeout", vm=ctx, seconds=limit)
@@ -67,6 +69,10 @@ def _answer(ctx, out):
     if not numbers:
         _failed(ctx, "unexpected answer")
     return numbers[0], numbers[1]
+
+
+STARTING = object()          # _run: the VM is still starting
+WRAPPER_STARTING = 75        # the wrapper's exit code for it
 
 
 def _result(ctx, outcome, reason=None, removed=None, freed=None, error=None):
@@ -92,7 +98,11 @@ def _one(rec, say):
             say(f"{ctx}: skipped, the VM is not running")
             return _result(ctx, "skipped", "not_running")
         try:
-            removed, freed = _answer(ctx, _run(ctx, days))
+            out = _run(ctx, days)
+            if out is STARTING:
+                say(f"{ctx}: skipped, the VM is still starting; the next hour tries again")
+                return _result(ctx, "skipped", "starting")
+            removed, freed = _answer(ctx, out)
         except Fail as f:
             if os.path.exists(footprint.delete_marker(ctx)) or not os.path.exists(footprint.record_file(ctx)):
                 say(f"{ctx}: skipped, the VM is being deleted")     # delete does not take the lock

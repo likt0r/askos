@@ -26,7 +26,8 @@ Data disk), in agentbox-container-image-usage.json ({"images": {"<image id>": <e
 seconds>}}), written whole under a lock both commands take. A file that cannot be read
 counts as empty: every Container image is then seen for the first time, so nothing goes.
 
-Exit codes: 2 invalid arguments; 124 time limit; 1 anything else (Podman failing).
+Exit codes: 2 invalid arguments; 75 the VM is still starting (guest-setup has not prepared the
+agent's home); 124 time limit; 1 anything else (Podman failing).
 
 Without root (tests, or the agent starting it itself) AGENTBOX_CONTAINER_IMAGES_ROOT puts
 the agent's home and podman under that directory.
@@ -71,6 +72,7 @@ class Failed(Exception):
 
 
 SYSTEMCTL = "/usr/bin/systemctl"
+STARTING = 75                     # exit code: the VM is still starting, nothing was done
 GUEST_SETUP = "agentbox-guest-setup.service"
 
 
@@ -350,7 +352,7 @@ def main(argv):
         if not home_ready():
             print("agentbox-container-images: the VM is still starting (guest-setup has not finished)",
                   file=sys.stderr)
-            return 1
+            return STARTING
         become(USER)
     seam = "" if root else os.environ.get("AGENTBOX_CONTAINER_IMAGES_ROOT", "")
     podman = Podman(seam + PODMAN)

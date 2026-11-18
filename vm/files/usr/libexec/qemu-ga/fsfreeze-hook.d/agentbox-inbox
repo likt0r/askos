@@ -19,7 +19,8 @@ removed. Prints {"files": N, "bytes": N}: the regular files and hard links unpac
 size of the regular files.
 
 Exit codes: 2 invalid arguments, a target leading out of ~/code; 3 the target exists;
-4 ~/code is not on the Data disk (yet); 5 the archive is refused or unreadable; 124 time
+4 ~/code is not on the Data disk (yet), or guest-setup has not prepared the agent's home
+within 60 s; 5 the archive is refused or unreadable; 124 time
 limit; 1 anything else, among it a device that does not appear within 30 s. A failed run
 removes what it unpacked and the parent folders it made.
 
@@ -221,7 +222,7 @@ def receive(device, target):
         while not home_ready():
             if time.monotonic() > deadline:
                 os.close(fd)
-                raise Refused("the VM is still starting (guest-setup has not finished)", 1)
+                raise Refused("the VM is still starting (guest-setup has not finished); try again once it has", 4)
             time.sleep(0.5)
         become(USER)
     made, dest = [], None

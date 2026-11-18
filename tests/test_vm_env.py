@@ -12,6 +12,7 @@ Run from the repo root: python3 -m unittest discover -s tests
 import base64
 import fcntl
 import importlib.machinery
+import io
 import importlib.util
 import json
 import os
@@ -22,6 +23,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vm_records  # noqa: E402
@@ -784,7 +786,11 @@ class WrappersWaitForTheHomeTest(unittest.TestCase):
     def load(self, path):
         loader = importlib.machinery.SourceFileLoader(os.path.basename(path).replace("-", "_"), path)
         module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
-        loader.exec_module(module)
+        dont_write, sys.dont_write_bytecode = sys.dont_write_bytecode, True    # no __pycache__ in vm/files
+        try:
+            loader.exec_module(module)
+        finally:
+            sys.dont_write_bytecode = dont_write
         return module
 
     def systemctl(self, code):
@@ -803,6 +809,42 @@ class WrappersWaitForTheHomeTest(unittest.TestCase):
                 self.assertTrue(module.home_ready(self.systemctl(0)))
                 self.assertFalse(module.home_ready(self.systemctl(3)))      # activating, failed, inactive
                 self.assertFalse(module.home_ready("/nonexistent/systemctl"))
+
+    def test_the_cleanup_as_root_does_nothing_before_the_home_is_ready(self):
+        module = self.load(self.WRAPPERS[1])
+        became = []
+        with mock.patch.object(module.os, "geteuid", return_value=0), \
+                mock.patch.object(module, "home_ready", return_value=False), \
+                mock.patch.object(module, "become", side_effect=became.append), \
+                mock.patch.object(module, "Podman", side_effect=AssertionError("Podman ran")), \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            self.assertEqual(module.main(["prune", "7"]), module.STARTING)
+        self.assertEqual(became, [])
+        self.assertIn("the VM is still starting", err.getvalue())
+
+    def test_the_inbox_as_root_waits_then_refuses_with_the_device_closed(self):
+        module = self.load(self.WRAPPERS[0])
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        device = os.path.join(tmp.name, "dev")
+        open(device, "w").close()
+        fd = os.open(device, os.O_RDONLY)
+        closed = []
+        real_close = os.close
+        with mock.patch.object(module.os, "geteuid", return_value=0), \
+                mock.patch.object(module.os, "open", return_value=fd), \
+                mock.patch.object(module.stat, "S_ISBLK", return_value=True), \
+                mock.patch.object(module, "home_ready", return_value=False), \
+                mock.patch.object(module, "HOME_WAIT", 0), \
+                mock.patch.object(module.time, "sleep"), \
+                mock.patch.object(module, "become", side_effect=AssertionError("became the agent")), \
+                mock.patch.object(module, "wait_for_data_disk"), \
+                mock.patch.object(module, "wait_for_device"), \
+                mock.patch.object(module.os, "close", side_effect=lambda f: (closed.append(f), real_close(f))):
+            with self.assertRaises(module.Refused) as caught:
+                module.receive(module.DEVICE, "x")
+        self.assertEqual(caught.exception.code, 4)
+        self.assertEqual(closed, [fd])
 
     def test_each_wrapper_asks_before_it_becomes_the_agent(self):
         for path in self.WRAPPERS:
