@@ -5,15 +5,56 @@ Terms follow [GLOSSARY.md](GLOSSARY.md). Decisions with lasting consequences are
 
 ## Threat model
 
-1. **Rogue or manipulated agents.** An agent follows instructions planted in a repository,
-   issue or web page and tries to read credentials, reach other machines or send data out.
-2. **Supply-chain attacks through packages.** A dependency runs code at install or build time
-   that steals tokens and spreads (Shai-Hulud, s1ngularity, chalk/debug, axios, TanStack, keyv).
+Agent Box shrinks the blast radius of coding agents: each agent works in a VM with only the
+access its work needs, so that what goes wrong in one VM stays in it. It is built for:
 
-Out of scope: theft of the Host, targeted attacks against its owner, attacks on the
+1. **Keeping work and private apart.** Work and private projects, or any two the owner keeps
+   apart, run in different VMs; nothing of one reaches the other unless both are given the
+   same: every VM starts with the Allowlist entries a new Host has, most of which take uploads
+   ([Egress](#egress)), and the owner can give two VMs an entry for every VM, the same GitHub
+   owner, folder, Image (every Image sits on the Base Build), paired laptop or Claude account;
+   and every VM reaches the same services on the Host
+   ([The boundary of a VM](#the-boundary-of-a-vm))
+   ([ADR 0001](docs/adr/0001-vm-is-the-unit-of-separation.md)).
+2. **Least privilege for agents.** An agent gets what its work needs and no more: the
+   destinations on its Allowlist, GitHub tokens for one repository and one hour, nothing of
+   the Host but what the owner brings in (`agentbox import`), and no credential of the owner
+   but its VM's Claude token.
+3. **Rogue or manipulated agents.** An agent follows instructions planted in a repository,
+   issue or web page, or simply goes wrong, and tries to read credentials, reach other
+   machines, send data out or destroy work.
+4. **Supply-chain attacks through packages** in the daily work in a VM. A dependency runs code
+   at install, build or run time that steals tokens and spreads (Shai-Hulud, s1ngularity,
+   chalk/debug, axios, TanStack, keyv). Against it stand the package minimum age and no install
+   scripts ([Packages](#packages)), the VM that bounds what such code reaches, and detection:
+   the proxy knows malware, phishing and exfiltration destinations (the Watchlist and its
+   Feeds), keeps those with strong Signals blocked and raises an Alert
+   ([Detection](#detection)). In the Build of an Image only the package minimum age and the pins
+   stand against such code, and it runs as root on the Host there ([Agent Box's own
+   code](#agent-boxs-own-code)).
+5. **Credentials leaked by accident.** A token ends up in a commit, a log, an issue or a web
+   page. What a VM holds is narrow and, where it can be, short-lived.
+
+Trusted, and so not defended against
+([ADR 0019](docs/adr/0019-the-host-and-what-its-owner-writes-are-trusted.md)):
+
+- **The Host and whoever administers it**: root, the members of `libvirt` and the owner
+  signed in to the Control Room. They control every VM anyway. Someone who only gets hold of
+  such access, such as a stolen Control Room session, is not trusted; what stands against
+  them is listed under [The Host](#the-host).
+- **What goes into an Image by the owner's hand**: the Release's Containerfiles, which the
+  owner installs with the Release, and the owner's Recipes are written, or reviewed, in good
+  faith. The Safeguard check after every Build is
+  written against mistakes and convenient edits in them, not against an Image its author made
+  to get past it. Code that runs during a Build is not trusted: a package or a download there
+  is a supply-chain attack (4) and can undermine a Safeguard in a way the check does not see
+  ([Inside a VM](#inside-a-vm)); a Recipe an agent wrote and nobody reviewed is a rogue agent's
+  work (3).
+
+Out of scope as well: theft of the Host, targeted attacks against its owner, attacks on the
 laptops that drive the agents.
 
-Where the layers below stop short against these two threats is listed in [What it does not
+Where the layers below stop short of these goals is listed in [What it does not
 protect against](#what-it-does-not-protect-against); how to report a hole privately is in
 [SECURITY.md](SECURITY.md).
 
@@ -725,6 +766,7 @@ Host after every Build
   runtime from the owner's home, `ORCA_RUNTIMES`); nothing reads it any more.
 - The safeguard check (`agentbox/safeguards.py`) mounts the built image (`podman image mount`)
   and reads files; nothing from the Image runs, and links are resolved inside the Image. It
+  parses regular files only; a file it verifies that is larger than 1 MiB fails the check. It
   verifies npm's global configuration (`ignore-scripts=true`, `min-release-age`, npm 12 or
   later), the minimum age for uv (`uv.toml` and `UV_EXCLUDE_NEWER`), pnpm and Bun, the Git
   hooks path and `pre-push` hook, the resolver (`guest-setup`'s nameserver line, `dns=none`,
@@ -907,7 +949,10 @@ argument such as `start setup` still passes it; agentbox knows no such command. 
 command and `--force` before anything runs (`control_room_refused`), which no sudoers rule could
 tell from a note that contains it. So even a taken-over backend cannot run `setup`, `import` or
 `regenerate`, or lift strong Signals, and agentbox's own check holds should sudo's matching ever
-be got around. HTTPS with a self-signed certificate, a password with scrypt, sessions in
+be got around. This holds until the Control Room uploads Recipes: a Recipe can then reach root on
+the Host through its Build ([The Host](#the-host),
+[ADR 0019](docs/adr/0019-the-host-and-what-its-owner-writes-are-trusted.md)). HTTPS with a
+self-signed certificate, a password with scrypt, sessions in
 memory, a login brake after five failures, CSRF protection via a custom header and
 `SameSite=Strict`. Sign-ins (successful, failed, refused by the brake) and sign-outs are
 Activity entries with address and device. Pairing codes, tokens
@@ -1305,8 +1350,9 @@ VM; they do not make a VM harmless. These are the limits known so far, one per b
 mechanism, where it stops, and what limits the damage where anything does. A limit listed here
 is known and no vulnerability; a way past a mechanism that this list does not name is one, and
 [SECURITY.md](SECURITY.md) says how to report it privately. Outside the [threat
-model](#threat-model) altogether: theft of the Host, targeted attacks against its owner,
-attacks on the laptops.
+model](#threat-model) altogether: what it trusts (the Host, its admins and what the owner
+writes into its Images), theft of the Host, targeted attacks against its owner, attacks on the
+laptops.
 
 ### Egress
 
@@ -1426,7 +1472,8 @@ attacks on the laptops.
 
 - **The package minimum age is a delay, not a check.** npm, pnpm, Bun and uv in the VM, and the
   Build for the agents and Orca, take only versions at least `package_min_age_days` old (2 by
-  default), and npm runs no install scripts ([Packages](#packages)). A malicious version nobody
+  default), and npm in the VM runs no install scripts ([Packages](#packages)); the Build installs
+  the agents with their install scripts, as root in its container. A malicious version nobody
   notices for longer gets in, and so does malicious code that runs when a package is used, not
   installed. Fedora's packages in a Build, and other package managers in the VM (cargo, Gradle,
   container images, for example), have no minimum age.
@@ -1436,15 +1483,22 @@ attacks on the laptops.
   Claude Code's settings ([Packages](#packages), [Credentials](#credentials)). So can a VM
   variable that points a tool at another configuration file (`npm_config_userconfig`,
   `npm_config_globalconfig`, `XDG_CONFIG_HOME`, which moves where Git and uv look for the user's
-  configuration): those names are not refused ([VMs](#vms)). The check of every Build knows the
-  Safeguards it was written for: a derived Image could undermine one in a way it does not look
-  for (a wrapper earlier on `PATH`, a service that rewrites a file at boot) ([Images and
-  Builds](#images-and-builds)). Mitigation: a Release is reviewed, and the check catches
-  convenient edits.
+  configuration): those names are not refused ([VMs](#vms)). The check of every Build is
+  written against mistakes and convenient edits in what the owner writes ([Images and
+  Builds](#images-and-builds)); an Image its author made to get past it is outside the [threat
+  model](#threat-model). Code that runs during a Build is not: a package or a download there
+  could undermine a Safeguard in a way the check does not look for (a wrapper earlier on
+  `PATH`, a service that rewrites a file at boot), and a Build reaches the internet without an
+  Allowlist; how far it reaches on the Host is under [Agent Box's own
+  code](#agent-boxs-own-code). Mitigation, for what it plants in the VM: what a VM can reach
+  ([Egress](#egress)) and hold ([Credentials in a VM](#credentials-in-a-vm)) is decided outside
+  it, on the Host.
 - **Repositories in one VM are not isolated from each other.** Every agent in a VM runs as the
   same user on the same Data disk
-  ([ADR 0001](docs/adr/0001-vm-is-the-unit-of-separation.md)). Mitigation: sensitive projects in
-  their own VM.
+  ([ADR 0001](docs/adr/0001-vm-is-the-unit-of-separation.md)), so an agent that goes wrong can
+  change or delete the work of every repository there, unpushed commits included; Agent Box
+  keeps no snapshot or backup of the Data disk. Mitigation: sensitive projects in their own VM;
+  push often, and protect branches on GitHub.
 - **A Reset does not clean the Data disk.** It replaces the System disk only ([VMs](#vms)). What
   an agent leaves on the Data disk is there for the next session: changes in the repositories
   (their code, a `CLAUDE.md`, a project's `.claude/settings.json`, `.npmrc` or `.git/config`),
@@ -1496,17 +1550,25 @@ attacks on the laptops.
   owner's Host: SSH by key only, daily updates, an encrypted disk.
 - **The Control Room is one password away from every VM.** A session can do what the Control
   Room offers: reveal Pairing codes, open the web, allow destinations without strong Signals,
-  replace credentials ([Control Room](#control-room)). It has one password (at least 16
-  characters, scrypt), no second factor, a brake of five failed sign-ins per address in 15
-  minutes, and a self-signed certificate the browser can check only if the owner compares or
-  installs it. Who can try: in Local-only anyone who can use the Host, in Network mode the whole
-  home network. `--force` keeps a stolen session from lifting strong Signals. Code that runs as
-  the Control Room's service user gets no further than the Control Room: its sudoers rule lets
-  it run `agentbox` as root only with the Control Room's own commands, and agentbox refuses it
-  every other command and `--force` ([Control Room](#control-room)); within those commands it
-  can do whatever they can.
-  Mitigation: Local-only, the default; a long password; in Network mode, a home network you
-  trust (or a VPN into it).
+  replace credentials, start a Build and reset a VM onto it, delete a VM with its Data disk,
+  change the Settings a Build is checked against (a shorter package minimum age, an older Orca)
+  ([Control Room](#control-room)). Once the Control Room uploads Recipes
+  ([ADR 0018](docs/adr/0018-recipes-define-images-on-the-host.md)), it can write one as well:
+  the Safeguard check is written against mistakes, not against a Recipe made to get past it
+  ([threat model](#threat-model)), and a tool the Recipe plants runs as root on the Host in the
+  disk step ([Agent Box's own code](#agent-boxs-own-code)). From then on a stolen session is
+  root on the Host: nothing below holds against it, `--force` included, and neither the kept
+  Recipe versions nor Activity are a record, since root can change both. It has one password
+  (at least 16 characters, scrypt), no second factor, a brake of five failed sign-ins per
+  address in 15 minutes, and a self-signed certificate the browser can check only if the owner
+  compares or installs it. Who can try: in Local-only anyone who can use the Host, in Network
+  mode the whole home network. `--force` keeps a stolen session from lifting strong Signals, as
+  long as it cannot write a Recipe.
+  Code that runs as the Control Room's service user gets no further than the Control Room: its
+  sudoers rule lets it run `agentbox` as root only with the Control Room's own commands, and
+  agentbox refuses it every other command and `--force` ([Control Room](#control-room));
+  within those commands it can do whatever they can. Mitigation: Local-only, the default; a
+  long password; in Network mode, a home network you trust (or a VPN into it).
 - **A paired device has the VM.** Orca gives a Paired device full access to its VM, past every
   layer here, and so does a Pairing code to whoever gets it ([VMs](#vms),
   [Pairing Orca](README.md#pairing-orca)); attacks on the laptops are outside the threat model.
@@ -1533,10 +1595,23 @@ attacks on the laptops.
   follow.
 - **Builds run as root on the Host** (podman, bootc-image-builder) from the installed Release's
   Containerfiles and from Recipes the owner writes ([Images and Builds](#images-and-builds)).
-  Mitigation: branch protection on `main` and installing only reviewed code keep agents' branches
-  out of Release Images. A Recipe is the owner's reviewed input, not an agent's; its kept versions,
-  Activity actor and SHA-256, and the unchanged Safeguard check bound what a stolen Control Room
-  session can change without being seen. The check cannot prove arbitrary new files safe.
+  The [threat model](#threat-model) trusts what these say: branch protection on `main` and
+  installing only reviewed code keep agents' branches out of Release Images, and a Recipe is the
+  owner's reviewed input, not an agent's. What a stolen Control Room session builds is under
+  [The Host](#the-host). The code a Build runs is not trusted (package scriptlets, downloads,
+  install scripts): it runs in a rootful container on the Host, with the internet open and no
+  Allowlist, and a container escape there is root on the Host, which ADR 0002 keeps agents away
+  from by giving them VMs. The disk step goes further: bootc-image-builder runs privileged and
+  unconfined, pulled unpinned from quay.io, and installs the Image with the Image's own `bootc`,
+  so a tool a Build planted in the Image can run as root on the Host without any escape. The
+  Base image's own base, `quay.io/fedora/fedora-bootc:44`, is pulled by its tag as well, and it
+  brings dnf with its repositories and keys and the `bootc` the disk step runs. pnpm and Bun have
+  no minimum age in a Build (theirs is set for the VM's services and the agent's home), Fedora's
+  packages none at all. A Recipe an agent drafted and the owner saved unread reaches as far.
+  Mitigation: the owner reads a Recipe before saving it; the minimum age where a Build installs
+  through npm or uv, and for Orca; the Release's Containerfile pins the JDK and Orca's Node
+  runtime by SHA-256 and cargo-ndk by version, a Recipe what its author pins; Fedora's packages
+  are signed, with the keys that come in the base image. Containing Builds further is #144.
 
 ### What no test covers
 

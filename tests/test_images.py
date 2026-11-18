@@ -434,6 +434,22 @@ class SafeguardTest(ImagesTest):
                       "managed.json": '{"permissions": {"deny": ["Read(./.env)"]}}\n'})
         self.built("cuda")
 
+    def test_a_link_where_the_environment_is_read_into_the_agents_home_is_rejected(self):
+        """The link leads nowhere when the check runs; at runtime code in the VM would fill it."""
+        self.image("weak", DERIVED + "RUN ln -s /var/home/agent/.profile.sh /etc/profile.d/zz.sh\n")
+        with open(os.path.join(self.dir, "run.json")) as f:
+            effects = json.load(f)
+        effects["ln -s /var/home/agent/.profile.sh"] = {"/etc/profile.d/zz.sh": {"symlink": "/var/home/agent/.profile.sh"}}
+        with open(os.path.join(self.dir, "run.json"), "w") as f:
+            json.dump(effects, f)
+        self.rejected("weak", "/etc/profile.d/zz.sh is new or changed and is no file the check can read")
+
+    def test_a_padded_file_where_the_environment_is_read_is_rejected(self):
+        """What lies beyond 1 MiB is not read, so such a file fails instead of passing unseen."""
+        padded = "#" * safeguards.MAX_READ + "\nexport NPM_CONFIG_IGNORE_SCRIPTS=false\n"
+        self.image("weak", DERIVED + "COPY zz.sh /etc/profile.d/zz.sh\n", **{"zz.sh": padded})
+        self.rejected("weak", "/etc/profile.d/zz.sh is larger than 1 MiB and cannot be checked")
+
     def test_a_weakened_npm_configuration_is_rejected(self):
         self.image("weak", DERIVED + "COPY npmrc /etc/npmrc\n", npmrc="ignore-scripts=false\nmin-release-age=0\n")
         self.rejected("weak", "npm: ignore-scripts is not true", "npm: min-release-age is 0 instead of 2",
@@ -646,6 +662,38 @@ class SafeguardTest(ImagesTest):
         code, out = self.build("nope")
         self.assertEqual(code, 1)
         self.assertIn(f"Image nope does not exist in Release {RELEASE}", out)
+
+
+class SafeReadTest(unittest.TestCase):
+    """ADR 0008, amended by ADR 0019: code in a Build can craft any file, so the check, as root on
+    the Host, parses regular files only and at most MAX_READ bytes of each."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="image-")
+        self.addCleanup(shutil.rmtree, self.root)
+        os.makedirs(os.path.join(self.root, "etc"))
+
+    def test_a_fifo_or_a_directory_is_not_read(self):
+        os.mkfifo(os.path.join(self.root, "etc/npmrc"))         # opening it to read would block
+        os.mkdir(os.path.join(self.root, "etc/gitconfig"))
+        self.assertIsNone(safeguards.read(self.root, "/etc/npmrc"))
+        self.assertIsNone(safeguards.read(self.root, "/etc/gitconfig"))
+
+    def test_a_file_over_the_limit_is_not_read_and_fails_the_check(self):
+        """Padding must not hide a setting beyond the limit: such a file fails the check."""
+        self.assertEqual(safeguards.MAX_READ, 1 << 20)        # the 1 MiB ARCHITECTURE names
+        path = os.path.join(self.root, "etc/gitconfig")
+        with open(path, "wb") as f:
+            f.write(b"[core]\n\thooksPath = /usr/lib/agentbox/hooks\n" + b"#" * safeguards.MAX_READ +
+                    b"\n[core]\n\thooksPath = .githooks\n")
+        self.assertIsNone(safeguards.read(self.root, "/etc/gitconfig"))
+        problems, _, _ = safeguards.check(self.root, 2)
+        self.assertIn("/etc/gitconfig is larger than 1 MiB and cannot be checked", problems)
+        with open(path, "wb") as f:
+            f.write(b"#" * safeguards.MAX_READ)               # exactly the limit is read
+        self.assertEqual(len(safeguards.read(self.root, "/etc/gitconfig")), safeguards.MAX_READ)
+        problems, _, _ = safeguards.check(self.root, 2)
+        self.assertFalse([p for p in problems if "cannot be checked" in p])
 
 
 class AllTest(ImagesTest):
