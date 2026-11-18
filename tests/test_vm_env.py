@@ -11,6 +11,8 @@ Run from the repo root: python3 -m unittest discover -s tests
 """
 import base64
 import fcntl
+import importlib.machinery
+import importlib.util
 import json
 import os
 import re
@@ -644,7 +646,6 @@ class GuestTest(unittest.TestCase):
         self.assertFalse(any(re.search(r"\beval\b", line) for line in code))
 
 
-
 class HomePathsTest(unittest.TestCase):
     """#142: guest-setup runs as root at every start and works on the agent's home, which survives
     a restart. home-paths removes every link the agent left on the paths it uses, so root follows
@@ -750,6 +751,7 @@ class HomePathsTest(unittest.TestCase):
             code = [line for line in f.read().replace("\\\n", " ").splitlines() if not line.lstrip().startswith("#")]
         [call] = [i for i, line in enumerate(code) if line.lstrip().startswith("/usr/lib/agentbox/home-paths ")]
         words = code[call].split()
+        self.assertNotRegex(code[call], r"\|\||;|&|\$\(", "a failing home-paths must stop guest-setup")
         self.assertEqual(words[1:3], ['"$HOME_DIR"', '"${PERSIST[@]/%//}"'])     # every PERSIST entry a directory
         covered = [w.rstrip("/") for w in words[3:]]
         # nothing in the home is used before, but creating the home itself
@@ -759,7 +761,8 @@ class HomePathsTest(unittest.TestCase):
         # PERSIST entry
         used = set()
         for line in code[call + 1:]:
-            used |= set(re.findall(r'"?\$HOME_DIR"?/([A-Za-z0-9._/$-]+)', line))
+            used |= set(re.findall(r'"?\$\{?HOME_DIR\}?"?/([A-Za-z0-9._/$-]+)', line))
+            self.assertNotIn("/var/home/agent", line, "the home only as $HOME_DIR, so this test sees it")
         self.assertTrue(used)
         for rel in used:
             ok = rel == "$p" or any(rel == c or rel.startswith(c + "/") or c.startswith(rel + "/") for c in covered)
@@ -771,6 +774,45 @@ class HomePathsTest(unittest.TestCase):
             self.assertRegex(line, r"\bchown -h\b", line)
 
 
+
+class WrappersWaitForTheHomeTest(unittest.TestCase):
+    """#142: the guest-agent wrappers that drop to the agent run nothing as the agent before
+    guest-setup has prepared the home at this start; meanwhile the agent could put back a link."""
+    WRAPPERS = [os.path.join(REPO, "vm", "files", "usr", "libexec", "qemu-ga", "fsfreeze-hook.d", n)
+                for n in ("agentbox-inbox", "agentbox-container-images")]
+
+    def load(self, path):
+        loader = importlib.machinery.SourceFileLoader(os.path.basename(path).replace("-", "_"), path)
+        module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+        loader.exec_module(module)
+        return module
+
+    def systemctl(self, code):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "systemctl")
+        with open(path, "w") as f:
+            f.write(f'#!/bin/sh\n[ "$*" = "is-active --quiet agentbox-guest-setup.service" ] || exit 9\nexit {code}\n')
+        os.chmod(path, 0o755)
+        return path
+
+    def test_the_home_is_ready_only_once_guest_setup_is_active(self):
+        for path in self.WRAPPERS:
+            with self.subTest(os.path.basename(path)):
+                module = self.load(path)
+                self.assertTrue(module.home_ready(self.systemctl(0)))
+                self.assertFalse(module.home_ready(self.systemctl(3)))      # activating, failed, inactive
+                self.assertFalse(module.home_ready("/nonexistent/systemctl"))
+
+    def test_each_wrapper_asks_before_it_becomes_the_agent(self):
+        for path in self.WRAPPERS:
+            with self.subTest(os.path.basename(path)):
+                with open(path) as f:
+                    code = f.read()
+                calls = [m.start() for m in re.finditer(r"\bbecome\(USER\)", code)]
+                self.assertEqual(len(calls), 1)
+                self.assertLess(code.rfind("home_ready()", 0, calls[0]), calls[0])
+                self.assertGreater(code.rfind("home_ready()", 0, calls[0]), code.rfind("\ndef ", 0, calls[0]))
+
 if __name__ == "__main__":
     unittest.main()
-
