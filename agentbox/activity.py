@@ -479,7 +479,8 @@ def journald_conf(days):
 # user (_uids()); `agentbox watch` counts what it leaves out.
 JOURNAL_GROUP = "agentbox-journal"
 CONTROL_ROOM = ("agentbox-web", "agentbox-web.service")
-SIGN_INS = {"signin", "signin.failed", "signin.locked", "signout"}      # web/agentbox-web
+SIGN_INS = {"signin", "signin.failed", "signin.link", "signin.link-refused", "signin.locked",
+            "signout"}                                                  # web/agentbox-web
 PROXY_USER, TOKEN_USER = "agentbox-proxy", "agentbox-gh"                # rpm/agentbox.sysusers
 CLI_KINDS = set(KINDS) - {"signin", "alert", "github"}                  # what record() is given
 SERVICE = re.compile(r"agentbox-(proxy|gh)-(" + registry.NAME.pattern + ")")

@@ -60,6 +60,9 @@ SEED_LISTS = host(SHARE + "/lists")
 CONF = host("/etc/agentbox")
 REGISTRY = host("/etc/agentbox/vms")
 WEB_CONF = host("/etc/agentbox/web")        # Control Room: certificate, key, password hash
+# Sign-in links of the Control Room, each a file named by its token's hash (sign_in_links.py);
+# the package's tmpfiles entry makes it at every boot (agentbox-web:libvirt, mode 0730)
+SIGN_IN_LINKS = host("/run/agentbox-sign-in-links")
 SYSTEMD = host("/etc/systemd/system")
 STATE = host("/var/lib/agentbox")
 VMS = host("/var/lib/agentbox/vms")
