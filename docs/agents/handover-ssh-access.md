@@ -58,7 +58,7 @@ The design session drafted these; #128 puts them into `GLOSSARY.md`, word for wo
   - Q3: own Host port.
   - Q4: a connection wakes the VM.
   - Q5: an open session postpones the automatic Reset only.
-  - Q6: the Control Room alone may turn SSH access on.
+  - Q6: the owner turns SSH access on from the Host, through the CLI or the Control Room; nothing in the VM can.
   - Q7: only `-L` forwarding.
   - Q8: key changes apply at once.
   - Q9: the host key comes from the Host and is stable.

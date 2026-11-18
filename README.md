@@ -229,6 +229,8 @@ agentbox set-memory lab 32768       # memory limit in MiB, from the VM's next st
 agentbox set-container-image-cleanup lab off   # or on, and --days 14 (1 to 365)
 agentbox set-env lab DATABASE_URL=postgres://db.example/app   # a VM variable, from the next start or Restart
 agentbox env lab                    # the VM's VM variables
+agentbox add-ssh-key lab ~/.ssh/id_ed25519.pub   # an SSH key for the VM (or on stdin)
+agentbox set-ssh lab on             # SSH access: ssh -p 22NN agent@127.0.0.1 (agentbox ssh lab)
 agentbox blocked priv               # what a VM tried to reach and was refused
 agentbox allow priv docs.rs         # add an Allowlist entry for one VM
 agentbox allow all crates.io --for 8h --note "Rust crates"   # for all VMs, for 8 hours
@@ -460,6 +462,31 @@ Under `/api/v1/allowlist/<scope>/<domain>`, `POST .../extend` takes `duration`,
 `POST .../make-permanent` takes nothing, `PUT .../note` takes `note`, and `DELETE` removes the
 entry. Destinations with strong Signals are refused with the reason (HTTP 409,
 `domain_suspicious`); only the CLI can allow them, with `--force`.
+
+### SSH into a VM
+
+A VM has no SSH access until you turn it on, and only on the Host
+([ADR 0020](docs/adr/0020-ssh-into-a-vm-through-its-own-host-port.md)):
+
+```sh
+sudo agentbox add-ssh-key lab ~/.ssh/id_ed25519.pub   # or: ... add-ssh-key lab < key.pub, --name NAME
+sudo agentbox set-ssh lab on                          # the SSH port 2200 + network number opens
+sudo agentbox ssh lab                                 # port, host key fingerprint, known_hosts line, keys
+ssh -p 2203 agent@127.0.0.1                           # wakes the VM if it is off
+```
+
+Each VM has its own SSH port, 2200 + its network number (`agentbox ssh` names it), on
+`127.0.0.1`, in Network mode too for now. A connection wakes the VM like an Orca connection
+and is recorded as its Actor `SSH (<address>)`. You log in as `agent`, the user Orca and the
+agents run as, only with a key; `ssh -L` works, remote and agent forwarding do not. Allowed
+keys: Ed25519, ECDSA, their security-key forms (`sk-…`) and RSA of at least 3072 bits, one line
+of a `.pub` file without options (`command=`, `from=`), at most 16 per VM; the comment becomes
+the key's name unless `--name` gives one. The host key is made by the Host once per VM and
+stays the same across every Reset; put the `known_hosts` line `agentbox ssh` prints into your
+`~/.ssh/known_hosts` instead of answering "yes". The VM gets its SSH access and keys at its next
+start: a running VM at its next Restart (`agentbox restart <name>`) or Reset. `set-ssh <name>
+off` closes the port at once and keeps the keys. Turning SSH access on or off and adding a key
+are recorded in Activity, each connection is not. Deleting the VM deletes its keys and host key.
 
 ### Viewing a dev server
 
