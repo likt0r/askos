@@ -89,7 +89,7 @@ The design session drafted these; #128 puts them into `GLOSSARY.md`, word for wo
 - **Firewall rules for Network mode are written only by `agentbox setup`** today (`firewall_rules`/`_firewall` in the setup code). An upgrade does not run setup, so #130 makes `regenerate` write the SSH range rule.
 - **What a mode switch does** (`setup --force`):
   - The Orca ports and the firewall rules follow at once.
-  - The password is replaced; #138 changes this.
+  - The password is kept (#138); a new one only with `--new-password`.
   - The existing certificate stays, so its SAN may lack the new IP.
   - Running VMs keep the old Pairing address until their next start, because it comes through fw_cfg. This last point was derived from the code and is not tested on a Host.
 - **Test seams:** the tests drive `bin/agentbox` with fakes. For #129 and the following tickets, follow the pattern of `AGENTBOX_ORCA_ADDR` in `tests/test_watch.py` when a test needs a local stand-in for a VM port. Image scripts are run directly in their tests: `fwcfg-env` and `guest-setup` in `tests/test_vm_env.py`, the wrapper in `tests/test_container_images.py`.

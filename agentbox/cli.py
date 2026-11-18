@@ -22,7 +22,7 @@ Controls the agent VMs on this Host.
   agentbox version [--json]                          the version of this Release (also: agentbox --version)
   agentbox describe [<vm>] [--json]                  VMs for the Control Room: state, agents, System disk,
                                                      Image and Build, connected devices
-  agentbox setup [--mode local|network] [--bind A --home-network N] [--web-port P] [--cert-name N] [--owner-user U] [--password-file F|--password-stdin] [--force] [--json]
+  agentbox setup [--mode local|network] [--bind A --home-network N] [--web-port P] [--cert-name N] [--owner-user U] [--password-file F|--password-stdin] [--new-password] [--force] [--json]
                                                      set up the Host: Host setup, Control Room password,
                                                      certificate, Host steps (groups, lists, firewall, units,
                                                      migrations), service; local: this machine only,
