@@ -59,6 +59,10 @@ FEDORA = {
     "/etc/ssh/sshd_config.d/50-redhat.conf": (
         "Include /etc/crypto-policies/back-ends/opensshserver.config\nSyslogFacility AUTHPRIV\n"
         "GSSAPIAuthentication yes\nGSSAPICleanupCredentials no\nUsePAM yes\nX11Forwarding yes\nPrintMotd no\n"),
+    # a link into /usr/share/crypto-policies, as on fedora-bootc
+    "/etc/crypto-policies/back-ends/opensshserver.config": {
+        "symlink": "/usr/share/crypto-policies/DEFAULT/opensshserver.txt"},
+    "/usr/share/crypto-policies/DEFAULT/opensshserver.txt": "Ciphers aes256-gcm@openssh.com,aes128-gcm@openssh.com\n",
     "/usr/lib/systemd/system-preset/90-default.preset": "enable sshd.service\nenable chronyd.service\n",
     "/usr/lib/systemd/system/sshd.service": "[Service]\nExecStart=/usr/sbin/sshd -D $OPTIONS\n"
                                             "[Install]\nWantedBy=multi-user.target\n",
@@ -760,6 +764,8 @@ class SafeguardTest(ImagesTest):
              "sshd: Include /var/home/agent/.config/sshd/*.conf leads out of /etc and /usr"),
             ("pubkey", "PubkeyAuthentication no\n", "sshd: PubkeyAuthentication is no instead of yes"),
             ("methods", "AuthenticationMethods any\n", "sshd: AuthenticationMethods is any instead of publickey"),
+            ("methodscase", "AuthenticationMethods PUBLICKEY\n",
+             "sshd: AuthenticationMethods is PUBLICKEY instead of publickey"),
             ("hostbased", "HostbasedAuthentication yes\n", "sshd: HostbasedAuthentication is yes instead of no"),
             ("x11", "X11Forwarding yes\n", "sshd: X11Forwarding is yes instead of no"),
             ("streamlocal", "AllowStreamLocalForwarding all\n", "sshd: AllowStreamLocalForwarding is all instead of no"),
@@ -825,6 +831,12 @@ class SafeguardTest(ImagesTest):
                                 "ModuliFile /etc/ssh/moduli\n",
                       "sshd": "# OPTIONS=\nOPTIONS=\"\"\n"})
         self.built("motd")
+
+    def test_crlf_lines_read_as_sshd_reads_them(self):
+        """sshd takes a trailing carriage return as a blank: a compliant drop-in written with CRLF passes."""
+        self.image("crlf", DERIVED + "COPY x.conf /etc/ssh/sshd_config.d/00-x.conf\n",
+                   **{"x.conf": "PasswordAuthentication no\r\nAuthenticationMethods publickey\r\n"})
+        self.built("crlf")
 
     def test_an_image_not_built_on_the_base_build_is_rejected(self):
         self.image("weak", "FROM quay.io/fedora/fedora-bootc:44\nRUN dnf -y install clang\n")

@@ -88,7 +88,7 @@ SSHD_INCLUDE_DEPTH = 16                # sshd's own limit (READCONF_MAX_DEPTH)
 # where sshd's configuration may come from: directories the agent cannot write at runtime
 SSHD_INCLUDE_ROOTS = ("/etc/", "/usr/")
 # The value sshd must take for each (keywords lower-cased, as sshd reads them, which keeps the
-# first value it reads); compared lower-cased, except the paths.
+# first value it reads); compared lower-cased, except the paths and AuthenticationMethods.
 SSHD = {"passwordauthentication": "no", "kbdinteractiveauthentication": "no", "pubkeyauthentication": "yes",
         "authenticationmethods": "publickey", "hostbasedauthentication": "no", "permitrootlogin": "no",
         "authorizedkeysfile": f"{SSHD_RUN}/authorized_keys", "authorizedkeyscommand": "none",
@@ -96,6 +96,7 @@ SSHD = {"passwordauthentication": "no", "kbdinteractiveauthentication": "no", "p
         "allowstreamlocalforwarding": "no", "x11forwarding": "no", "permittunnel": "no", "gatewayports": "no",
         "permituserenvironment": "no"}
 SSHD_PATHS = ("authorizedkeysfile", "authorizedkeyscommand", "trustedusercakeys")
+SSHD_CASED = SSHD_PATHS + ("authenticationmethods",)    # sshd reads these values case-sensitively
 SSHD_ALIASES = {"challengeresponseauthentication": "kbdinteractiveauthentication",
                 "skeyauthentication": "kbdinteractiveauthentication", "dsaauthentication": "pubkeyauthentication",
                 "hostdsakey": "hostkey"}
@@ -544,7 +545,7 @@ def _sshd_words(rest):
     not closed."""
     words, i = [], 0
     while True:
-        while i < len(rest) and rest[i] in " \t":
+        while i < len(rest) and rest[i] in " \t\r":
             i += 1
         if i >= len(rest) or rest[i] == "#":
             return words
@@ -555,7 +556,7 @@ def _sshd_words(rest):
                 word += rest[i + 1]
                 i += 2
                 continue
-            if quote is None and c in " \t":
+            if quote is None and c in " \t\r":
                 break
             if quote is None and c in "'\"":
                 quote = c
@@ -674,7 +675,7 @@ def _sshd(root):
     first, lists, problems = sshd_config(root)
     for keyword, wanted in SSHD.items():
         value, where = first.get(keyword, (None, None))
-        same = value == wanted if keyword in SSHD_PATHS else (value or "").lower() == wanted
+        same = value == wanted if keyword in SSHD_CASED else (value or "").lower() == wanted
         if not same:
             problems.append(f"sshd: {SSHD_NAMES[keyword]} is {value or 'not set'} instead of {wanted}"
                             + (f" ({where})" if where else ""))
