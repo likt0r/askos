@@ -24,6 +24,13 @@ module expects, not the ones the repository happens to contain:
 - Claude Code: fetches none of the owner's claude.ai connectors (#8). ENABLE_CLAUDEAI_MCP_SERVERS
   is false in the environment of every service, and /etc/profile.d/agentbox.sh exports it
   for shells. The Claude token cannot fetch connectors; this holds after a /login in the VM.
+- sshd (#127): SSH only by key and only as agent. Its configuration is read from the files as
+  sshd reads them (the main file, each Include where it stands, the first value winning, no
+  Match block, only files in /etc and /usr) and must have the values of SSHD, AllowUsers only
+  agent and host keys only under /run/agentbox/ssh; sshd.service and sshd.socket are not
+  enabled, the presets disable both at first boot, sshd@.service and systemd's ssh generator
+  are masked, and /etc/sysconfig/sshd adds no OPTIONS. `sshd -T` would run the Image. By ADR
+  0019 this catches mistakes, not an Image crafted to get past it.
 - Nothing in that environment switches a safeguard off again (npm_config_ignore_scripts,
   GIT_CONFIG_*, ...).
 
@@ -36,6 +43,7 @@ JSON settings read as Claude Code reads them, escapes decoded; one that does not
 Paths inside the Image are resolved within its root: a symbolic link never leads out
 of it (an absolute target counts from the Image's root).
 """
+import fnmatch
 import hashlib
 import json
 import os
@@ -69,6 +77,42 @@ PROFILE = "/etc/profile.d/agentbox.sh"
 RESOLVED_MAIN = ("/etc/systemd/resolved.conf", "/usr/local/lib/systemd/resolved.conf", "/usr/lib/systemd/resolved.conf")
 RESOLVED_DROPINS = ("/usr/lib/systemd/resolved.conf.d", "/usr/local/lib/systemd/resolved.conf.d",
                     "/etc/systemd/resolved.conf.d")
+# sshd (#127): its configuration as sshd reads it, from the main file and what it includes
+SSHD_CONFIG = "/etc/ssh/sshd_config"
+SSHD_ETC = "/etc/ssh"                 # where a relative Include points
+SSHD_DROPIN = "/etc/ssh/sshd_config.d/10-agentbox.conf"
+SSHD_PRESET = "/usr/lib/systemd/system-preset/10-agentbox.preset"
+SSHD_SYSCONFIG = "/etc/sysconfig/sshd"    # OPTIONS: added to sshd's command line by its units
+SSHD_RUN = "/run/agentbox/ssh"         # root-owned, written at boot: the SSH keys and the host key
+SSHD_INCLUDE_DEPTH = 16                # sshd's own limit (READCONF_MAX_DEPTH)
+# where sshd's configuration may come from: directories the agent cannot write at runtime
+SSHD_INCLUDE_ROOTS = ("/etc/", "/usr/")
+# The value sshd must take for each (keywords lower-cased, as sshd reads them, which keeps the
+# first value it reads); compared lower-cased, except the paths.
+SSHD = {"passwordauthentication": "no", "kbdinteractiveauthentication": "no", "pubkeyauthentication": "yes",
+        "authenticationmethods": "publickey", "hostbasedauthentication": "no", "permitrootlogin": "no",
+        "authorizedkeysfile": f"{SSHD_RUN}/authorized_keys", "authorizedkeyscommand": "none",
+        "trustedusercakeys": "none", "allowtcpforwarding": "local", "allowagentforwarding": "no",
+        "allowstreamlocalforwarding": "no", "x11forwarding": "no", "permittunnel": "no", "gatewayports": "no",
+        "permituserenvironment": "no"}
+SSHD_PATHS = ("authorizedkeysfile", "authorizedkeyscommand", "trustedusercakeys")
+SSHD_ALIASES = {"challengeresponseauthentication": "kbdinteractiveauthentication",
+                "skeyauthentication": "kbdinteractiveauthentication", "dsaauthentication": "pubkeyauthentication",
+                "hostdsakey": "hostkey"}
+SSHD_NAMES = {n.lower(): n for n in ("PasswordAuthentication", "KbdInteractiveAuthentication", "PubkeyAuthentication",
+                                     "AuthenticationMethods", "HostbasedAuthentication", "PermitRootLogin",
+                                     "AuthorizedKeysFile", "AuthorizedKeysCommand", "TrustedUserCAKeys",
+                                     "AllowTcpForwarding", "AllowAgentForwarding", "AllowStreamLocalForwarding",
+                                     "X11Forwarding", "PermitTunnel", "GatewayPorts", "PermitUserEnvironment")}
+SSHD_UNITS = ("sshd.service", "sshd.socket")
+# masked in the Base image: Fedora's sshd@.service adds ~/.ssh/authorized_keys on its command
+# line, and systemd's generator would start it on a local socket
+SSHD_MASKS = (("/etc/systemd/system", "sshd@.service"), ("/etc/systemd/system-generators", "systemd-ssh-generator"))
+# systemd's unit directories in the Image, highest first (systemd-analyze unit-paths)
+UNIT_DIRS = ("/etc/systemd/system.control", "/etc/systemd/system", "/etc/systemd/system.attached",
+             "/usr/local/lib/systemd/system", "/usr/lib/systemd/system")
+# systemd's preset files, highest first: one of the same name further down is ignored
+PRESET_DIRS = ("/etc/systemd/system-preset", "/usr/local/lib/systemd/system-preset", "/usr/lib/systemd/system-preset")
 CLAUDEAI = "ENABLE_CLAUDEAI_MCP_SERVERS"
 CLAUDE_CODE = "/etc/claude-code/"     # Claude Code's managed settings (JSON) on Linux
 MIN_NPM = 12
@@ -78,7 +122,7 @@ FILES = ("/etc/npmrc", NPM_DEFAULT, f"{NPM}/npmrc", "/etc/uv/uv.toml", "/etc/git
          HOME_PATHS,
          "/usr/lib/agentbox/package-safeguards", "/usr/lib/systemd/system/agentbox-guest-setup.service",
          "/usr/lib/systemd/system.conf.d/agentbox.conf", "/usr/lib/systemd/system.conf.d/agentbox-packages.conf",
-         NM_CONF, PROFILE)
+         NM_CONF, PROFILE, SSHD_DROPIN, SSHD_PRESET)
 # Directories a derived Image must leave exactly as they are.
 SEALED = (HOOKS, QGA)
 # Where environment and configuration are read: a derived Image may add or change files
@@ -445,6 +489,216 @@ def _guest_agent(root):
     return problems
 
 
+# --- sshd (#127) ---------------------------------------------------------------------
+
+def sshd_config(root):
+    """sshd's configuration in the Image, read as sshd reads it: the main file, each Include
+    where it stands (its patterns in name order, relative ones under /etc/ssh, hidden files
+    left out), words split as sshd splits them, the first value of a keyword winning,
+    AllowUsers and HostKey adding up. Returns ({keyword: (value, file)},
+    {"allowusers": [...], "hostkey": [...]}, problems). A Match block is a problem: it changes
+    values for some connections only."""
+    first, lists, problems = {}, {"allowusers": [], "hostkey": []}, []
+
+    def load(path, depth):
+        if depth > SSHD_INCLUDE_DEPTH:
+            problems.append(f"sshd: Include nested deeper than {SSHD_INCLUDE_DEPTH} ({path})")
+            return
+        if not _where(root, path).startswith(SSHD_INCLUDE_ROOTS):
+            problems.append(f"sshd: {path} leads out of /etc and /usr")
+            return
+        content = text(root, path) or ""
+        for number, line in enumerate(content.split("\n"), 1):
+            m = re.fullmatch(r"[ \t\r]*([A-Za-z0-9]+)(?:[ \t\r]*=[ \t\r]*|[ \t\r]+|$)(.*)", line)
+            if not line.strip(" \t\r") or line.lstrip(" \t\r").startswith("#"):
+                continue
+            args = _sshd_words(m.group(2)) if m else None
+            if args is None:
+                problems.append(f"sshd: line {number} of {path} cannot be read")
+                continue
+            keyword = SSHD_ALIASES.get(m.group(1).lower(), m.group(1).lower())
+            if keyword == "match":
+                problems.append(f"sshd: {path} has a Match block (line {number}); the Image allows none")
+            elif keyword == "include":
+                for pattern in args:
+                    files, problem = _sshd_glob(root, pattern)
+                    if problem:
+                        problems.append(f"sshd: Include {pattern} {problem} ({path})")
+                    for included in files:
+                        load(included, depth + 1)
+            elif keyword in lists:
+                lists[keyword] += args
+            else:
+                first.setdefault(keyword, (" ".join(args), path))
+
+    if read(root, SSHD_CONFIG) is None:
+        problems.append(f"sshd: {SSHD_CONFIG} is missing")
+    load(SSHD_CONFIG, 0)
+    return first, lists, problems
+
+
+def _sshd_words(rest):
+    """The words of a configuration line after its keyword, split as OpenSSH's argv_split
+    does: at blanks outside quotes, a # only at the start of a word ending the line, a
+    backslash escaping a quote, a backslash or (outside quotes) a blank. None: a quote is
+    not closed."""
+    words, i = [], 0
+    while True:
+        while i < len(rest) and rest[i] in " \t":
+            i += 1
+        if i >= len(rest) or rest[i] == "#":
+            return words
+        word, quote = "", None
+        while i < len(rest):
+            c = rest[i]
+            if c == "\\" and i + 1 < len(rest) and (rest[i + 1] in "'\"\\" or (quote is None and rest[i + 1] == " ")):
+                word += rest[i + 1]
+                i += 2
+                continue
+            if quote is None and c in " \t":
+                break
+            if quote is None and c in "'\"":
+                quote = c
+            elif quote is not None and c == quote:
+                quote = None
+            else:
+                word += c
+            i += 1
+        if quote is not None:
+            return None
+        words.append(word)
+
+
+def _sshd_glob(root, pattern):
+    """The files an Include pattern names in the Image, in name order, and why the check
+    cannot follow it, or None: ~ (the home of whoever runs sshd), a wildcard outside the last
+    part, or a path that leads out of /etc and /usr, where the agent could write at runtime."""
+    if pattern.startswith("~"):
+        return [], "is a pattern the check does not read"
+    path = pattern if pattern.startswith("/") else f"{SSHD_ETC}/{pattern}"
+    folder, name = path.rsplit("/", 1)
+    if re.search(r"[*?\[]", folder):
+        return [], "has a wildcard in a directory"
+    if not re.search(r"[*?\[]", name):
+        files = [path]
+    else:
+        files = [f"{folder}/{n}" for n in sorted(_names(root, folder))
+                 if fnmatch.fnmatchcase(n, name) and (name.startswith(".") or not n.startswith("."))]
+    if any(not _where(root, f).startswith(SSHD_INCLUDE_ROOTS) for f in [folder + "/", *files]):
+        return [], "leads out of /etc and /usr"
+    return [f for f in files if read(root, f) is not None], None
+
+
+def _names(root, folder):
+    """Every name in a directory of the Image."""
+    real = resolve(root, folder)
+    try:
+        return os.listdir(real) if real and os.path.isdir(real) else []
+    except OSError:
+        return []
+
+
+def _where(root, path, hops=40):
+    """Where `path` leads in the Image, links followed within it as far as they exist; the
+    rest of a path that does not exist is kept as it stands."""
+    todo, done = [p for p in path.split("/") if p], []
+    while todo:
+        part = todo.pop(0)
+        if part == ".":
+            continue
+        if part == "..":
+            if done:
+                done.pop()
+            continue
+        real = os.path.join(root, *done, part)
+        if os.path.islink(real) and hops > 0:
+            hops -= 1
+            target = os.readlink(real)
+            if target.startswith("/"):
+                done = []
+            todo = [p for p in target.split("/") if p] + todo
+            continue
+        done.append(part)
+    return "/" + "/".join(done) + ("/" if path.endswith("/") else "")
+
+
+def _masked(root, folder, name):
+    """Whether `name` in that directory of the Image is a link to /dev/null."""
+    real = resolve(root, folder)
+    try:
+        return real is not None and os.readlink(os.path.join(real, name)) == "/dev/null"
+    except OSError:
+        return False
+
+
+def _enabled(root, unit):
+    """Where the Image enables a unit: a link in a .wants, .requires or .upholds directory,
+    named after the unit or leading to it."""
+    found = []
+    for d in UNIT_DIRS:
+        for name, info in listing(root, d).items():
+            if not (name.endswith((".wants", ".requires", ".upholds")) and info["type"] == "dir"):
+                continue
+            for link in _names(root, f"{d}/{name}"):
+                if unit in (link, os.path.basename(_where(root, f"{d}/{name}/{link}"))):
+                    found.append(f"{d}/{name}/{link}")
+    return found
+
+
+def preset(root, unit):
+    """What systemd's presets say for a unit, as at a VM's first boot: the first line that
+    matches, files in name order (one in a higher directory replaces one of the same name
+    below, a link to /dev/null there removes it); enable when none matches. (action, file)."""
+    files = {}
+    for d in reversed(PRESET_DIRS):
+        for name, info in listing(root, d).items():
+            if name.endswith(".preset"):
+                if info["type"] == "file":
+                    files[name] = f"{d}/{name}"
+                else:
+                    files.pop(name, None)
+    for name in sorted(files):
+        for line in (text(root, files[name]) or "").splitlines():
+            words = line.split()
+            if len(words) >= 2 and words[0] in ("enable", "disable", "ignore") and fnmatch.fnmatchcase(unit, words[1]):
+                return words[0], files[name]
+    return "enable", None
+
+
+def _sshd(root):
+    """SSH only by key and only as agent (#127): sshd's configuration has the values of SSHD,
+    lets only agent in and takes host keys only from the root-owned directory under /run;
+    sshd starts by itself in no VM (not enabled, the presets disable it at first boot,
+    sshd@.service and systemd's ssh generator masked), and /etc/sysconfig/sshd adds nothing
+    to its command line."""
+    first, lists, problems = sshd_config(root)
+    for keyword, wanted in SSHD.items():
+        value, where = first.get(keyword, (None, None))
+        same = value == wanted if keyword in SSHD_PATHS else (value or "").lower() == wanted
+        if not same:
+            problems.append(f"sshd: {SSHD_NAMES[keyword]} is {value or 'not set'} instead of {wanted}"
+                            + (f" ({where})" if where else ""))
+    if lists["allowusers"] != ["agent"]:
+        problems.append(f"sshd: AllowUsers is {' '.join(lists['allowusers']) or 'not set'} instead of agent")
+    keys = lists["hostkey"]
+    if not keys or any(k != os.path.normpath(k) or not k.startswith(SSHD_RUN + "/") for k in keys):
+        problems.append(f"sshd: HostKey is {' '.join(keys) or 'not set'}, not only in {SSHD_RUN}")
+    for unit in SSHD_UNITS:
+        for link in _enabled(root, unit):
+            problems.append(f"sshd: {unit} is enabled ({link})")
+        action, where = preset(root, unit)
+        if action != "disable":
+            problems.append(f"sshd: the presets {action} {unit} at first boot" + (f" ({where})" if where else ""))
+    for folder, name in SSHD_MASKS:
+        if not _masked(root, folder, name):
+            problems.append(f"sshd: {folder}/{name} is not masked")
+    for line in (text(root, SSHD_SYSCONFIG) or "").splitlines():
+        key, eq, value = line.strip().partition("=")
+        if eq and key.strip() == "OPTIONS" and value.strip().strip("\"'").strip():
+            problems.append(f"sshd: {SSHD_SYSCONFIG} adds OPTIONS to sshd's command line")
+    return problems
+
+
 def manifest(root):
     """What a derived Image is compared with: the safeguard files, the sealed directories
     and where environment and configuration are read, as the Base Build has them."""
@@ -507,7 +761,7 @@ def check(root, days, base=None):
     _too_large.clear()
     env = systemd_environment(root)
     problems = (_packages(root, env, days) + _git(root) + _network(root, env) + _claude(root, env) + _overrides(env)
-                + _guest_agent(root))
+                + _guest_agent(root) + _sshd(root))
     if base is not None:
         problems += _compare(root, base)
     problems += [f"{path} is larger than {MAX_READ >> 20} MiB and cannot be checked" for path in _too_large]
