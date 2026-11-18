@@ -113,7 +113,9 @@ AGENTS = {"claude-code": "@anthropic-ai/claude-code", "codex": "@openai/codex", 
 VERSION = re.compile(r"[0-9A-Za-z.+-]{1,40}")
 MAX_READ = 1 << 20
 # files read() refused as larger than MAX_READ during the current check: each fails it, since
-# what lies beyond the limit could change what the check sees
+# what lies beyond the limit could change what the check sees. check() clears it first and turns
+# it into problems after the checks; a read after that (agents(), whose versions never fail a
+# Build) is noted but fails nothing.
 _too_large = []
 
 
@@ -457,6 +459,12 @@ def _concern(root, path):
     does not parse fails as well."""
     content = text(root, path)
     if content is None:
+        folder, name = path.rsplit("/", 1)
+        real = resolve(root, folder or "/")          # the folder's links only within the Image
+        if real is not None and os.path.lexists(os.path.join(real, name)):
+            # a link to nothing in the Image (the agent's home, /tmp) or no regular file: what it
+            # holds at runtime is never checked
+            return f"{path} is new or changed and is no file the check can read"
         return None
     if path.startswith(CLAUDE_CODE) and path.endswith(".json"):
         try:

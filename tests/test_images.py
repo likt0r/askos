@@ -434,6 +434,16 @@ class SafeguardTest(ImagesTest):
                       "managed.json": '{"permissions": {"deny": ["Read(./.env)"]}}\n'})
         self.built("cuda")
 
+    def test_a_link_where_the_environment_is_read_into_the_agents_home_is_rejected(self):
+        """The link leads nowhere when the check runs; at runtime code in the VM would fill it."""
+        self.image("weak", DERIVED + "RUN ln -s /var/home/agent/.profile.sh /etc/profile.d/zz.sh\n")
+        with open(os.path.join(self.dir, "run.json")) as f:
+            effects = json.load(f)
+        effects["ln -s /var/home/agent/.profile.sh"] = {"/etc/profile.d/zz.sh": {"symlink": "/var/home/agent/.profile.sh"}}
+        with open(os.path.join(self.dir, "run.json"), "w") as f:
+            json.dump(effects, f)
+        self.rejected("weak", "/etc/profile.d/zz.sh is new or changed and is no file the check can read")
+
     def test_a_padded_file_where_the_environment_is_read_is_rejected(self):
         """What lies beyond 1 MiB is not read, so such a file fails instead of passing unseen."""
         padded = "#" * safeguards.MAX_READ + "\nexport NPM_CONFIG_IGNORE_SCRIPTS=false\n"

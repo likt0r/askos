@@ -32,8 +32,9 @@ access its work needs.
   the minimum package age and pins
 - **Credentials leaked by accident**: what a VM holds is narrow and, where it can be, short-lived
 
-It trusts the machine it runs on, whoever administers it and what they write into its Images
-(not the packages a Build installs); it does not try to protect against a hostile admin, theft
+It trusts the machine it runs on, whoever administers it (not someone who only gets hold of that
+access, such as a stolen Control Room session) and what they write into its Images (not the
+packages a Build installs); it does not try to protect against a hostile admin, theft
 of the machine or targeted attacks on the person running it. Where its protection stops short,
 limit by limit, is in [What it does not protect
 against](ARCHITECTURE.md#what-it-does-not-protect-against); to report a security hole privately,
