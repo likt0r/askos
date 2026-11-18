@@ -399,6 +399,33 @@ class NetworkModeTest(SetupTest):
         self.assertEqual(sorted(self.rich("remove")), sorted(old_accept))
         self.assertEqual(sorted(self.rich("add")), sorted(new_accept))
 
+    def test_a_change_that_stops_before_the_host_setup_leaves_no_rule_of_the_new_home_network(self):
+        """The rules of the new home network come first; a run that stops before the Host
+        setup is written keeps the old one. Running setup again leaves exactly the rules of the
+        recorded Host setup: those of the new home network go, those of the old one stay."""
+        self.ok(*NETWORK_ARGS, "--password-file", self.password_file)
+        old_accept, reject = rich_rules()
+        new_accept, _ = rich_rules(net="10.0.0.0/24")
+        self.forget_calls()
+        os.chmod(self.path("etc/agentbox"), 0o555)      # host.json cannot be replaced
+        try:
+            code, _, err = self.setup_run(*NETWORK_ARGS[:5], "10.0.0.0/24", "--force")
+        finally:
+            os.chmod(self.path("etc/agentbox"), 0o755)
+        self.assertEqual(code, 1, err)
+        self.assertIn("setup stopped at regenerate: ", err)
+        self.assertEqual(self.host_setup()["home_network"], "192.0.2.0/24")
+        self.assertEqual(sorted(self.rich("add")), sorted(new_accept))
+        self.forget_calls()
+        self.ok()
+        self.assertEqual(sorted(self.rich("remove")), sorted(new_accept))
+        for side in ("permanent", "runtime"):
+            self.assertEqual(sorted(self.zone("public", side)["rich_rules"]), sorted(old_accept + reject))
+        # and nothing is left to take back
+        self.forget_calls()
+        self.ok()
+        self.assertEqual(self.rich("remove"), [])
+
     def test_refuses_what_makes_no_sense_and_changes_nothing(self):
         base = ["--password-file", self.password_file]
         cases = {
@@ -555,6 +582,37 @@ class ExistingHostTest(SetupTest):
         self.ok()
         self.assertEqual(self.rich("remove"), [])
         self.assertNotIn(["restart", "agentbox-web.service"], [c["argv"] for c in self.calls("systemctl")])
+
+    def test_a_switch_to_local_only_keeps_the_rules_while_a_vm_being_deleted_may_listen_on_every_address(self):
+        """A delete that stopped before the VM's units went leaves its Orca and SSH ports on
+        every address, and regenerate rebinds only VMs in the registry: the rules stay until the
+        delete finished, and running setup again takes them back then."""
+        self.two_vms()
+        self.ok(*NETWORK_ARGS, "--password-file", self.password_file)
+        accept, reject = rich_rules()
+        self.scenario(vms={"priv": {"uuid": PRIV_UUID}}, systemctl_fails=["disable"])
+        code, _, err = self.run_agentbox("delete", "work", "--confirm", "work")
+        self.assertEqual(code, 1, err)
+        self.assertTrue(os.path.exists(self.path("var/lib/agentbox/pending/delete-work.json")))
+        self.assertIn("\nListenStream=2201\n", self.read("etc/systemd/system/agentbox-ssh-work.socket"))
+        self.scenario(vms={"priv": {"uuid": PRIV_UUID}})
+        code, _, err = self.setup_run("--force")
+        self.assertEqual(code, 1, err)
+        self.assertIn("setup stopped at Firewall rules taken back: ", err)
+        self.assertIn("agentbox delete work --confirm work", err)
+        self.assertEqual(self.host_setup()["mode"], "local")
+        self.assertIn("ListenStream=127.0.0.1:6802\n", self.read("etc/systemd/system/agentbox-gui-priv.socket"))
+        self.assertEqual(self.rich("remove"), [])
+        for side in ("permanent", "runtime"):
+            self.assertEqual(sorted(self.zone("public", side)["rich_rules"]), sorted(accept + reject))
+        # once the delete finished, running setup again takes them back
+        code, _, err = self.run_agentbox("delete", "work", "--confirm", "work")
+        self.assertEqual(code, 0, err)
+        self.forget_calls()
+        self.ok()
+        self.assertEqual(sorted(self.rich("remove")), sorted(accept + reject))
+        for side in ("permanent", "runtime"):
+            self.assertEqual(self.zone("public", side)["rich_rules"], [])
 
     def test_never_touches_settings_the_registry_the_certificate_or_the_github_app(self):
         vm_records.write(self.root)

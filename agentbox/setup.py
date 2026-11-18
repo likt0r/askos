@@ -45,7 +45,7 @@ import sys
 import tempfile
 from getpass import getpass
 
-from . import firewall, generate, hoststeps, hostsetup, paths, programs, state_files
+from . import firewall, footprint, generate, hoststeps, hostsetup, paths, programs, state_files
 from .commands import declare
 from .errors import Fail, die
 
@@ -172,44 +172,79 @@ def _fingerprint():
     return r.stdout.strip().partition("=")[2] or None
 
 
-# rules of a replaced Host setup that wait until no port listens on every address any more
-TAKE_BACK = os.path.join(paths.STATE, "pending", "home-network-rules.json")
+# the home-network rules a run of setup added, or found in the Host setup it replaces, until
+# the last step (_take_back) leaves only those the recorded Host setup needs
+NOTED = os.path.join(paths.STATE, "pending", "home-network-rules.json")
 
 
-def _waiting():
-    rules = state_files.read_json(TAKE_BACK)
+def _noted():
+    rules = state_files.read_json(NOTED)
     return [r for r in rules if isinstance(r, str)] if isinstance(rules, list) else []
 
 
+def _note(rules):
+    if rules:
+        state_files.directory(os.path.dirname(NOTED), 0o700, only_new=True)
+        state_files.write_json(NOTED, rules, 0o600)
+    else:
+        state_files.remove(NOTED)
+
+
+def _flat(setup):
+    return [r for rules in firewall.home_network_rules(setup) for r in rules] if setup else []
+
+
 def _firewall(new, old):
-    """Add the rules of `new` (a Host setup), before any port listens on every address. Those
-    of `old` that `new` no longer has are only noted (TAKE_BACK): _take_back removes them once
-    the sockets and the Control Room have moved. Nothing is called when there is nothing to add."""
-    add = [r for rules in firewall.home_network_rules(new) for r in rules]
-    drop = [r for rules in firewall.home_network_rules(old) for r in rules] if old else []
-    waiting = _waiting()
-    later = [r for r in dict.fromkeys(waiting + drop) if r not in add]
-    if later != waiting:
-        if later:
-            state_files.directory(os.path.dirname(TAKE_BACK), 0o700, only_new=True)
-            state_files.write_json(TAKE_BACK, later, 0o600)
-        else:
-            state_files.remove(TAKE_BACK)
+    """Add the rules of `new` (a Host setup), before any port listens on every address. Every
+    rule it adds and every rule of `old` that `new` does not have is noted first (NOTED), so
+    _take_back can take back what the recorded Host setup does not need, also when this run
+    stops before `new` is recorded. Nothing is called when there is nothing to add."""
+    add, drop = _flat(new), _flat(old)
+    noted = _noted()
+    wanted = list(dict.fromkeys(noted + [r for r in add if r not in drop] + [r for r in drop if r not in add]))
+    if wanted != noted:
+        _note(wanted)
     if not add:
         return []
     changed = firewall.ensure(firewall.default_zone(), add=[("rich-rule", r) for r in add])
+    # a rule that was there already is not agentbox's to take back
+    added = {value for _, _, value in changed}
+    kept = [r for r in wanted if r in noted or r in drop or r in added]
+    if kept != wanted:
+        _note(kept)
     return [f"{len(changed)} rules added"] if changed else []
 
 
+def _still_listening():
+    """The VMs being deleted whose Orca or SSH port unit is still there: their sockets may
+    listen on every address, and regenerate rebinds only the VMs in the registry."""
+    return [m["record"]["name"] for m in footprint.being_deleted()
+            if any(os.path.exists(footprint.unit_file(footprint.unit_name(m["record"]["name"], kind)))
+                   for kind in ("gui.socket", "ssh.socket"))]
+
+
 def _take_back():
-    """The rules of a replaced Host setup (TAKE_BACK) removed, once regenerate moved the Orca
-    and SSH port sockets and the Control Room was restarted onto the new Host setup."""
-    rules = _waiting()
+    """The firewall reconciled with the recorded Host setup, once regenerate moved the Orca and
+    SSH port sockets and the Control Room was restarted onto it: every noted rule (NOTED) it
+    does not need is removed. Without any rule needed (Local-only) none goes while a VM being
+    deleted may still listen on every address."""
+    needed = _flat(hostsetup.load())
+    rules = [r for r in _noted() if r not in needed]
     if not rules:
-        state_files.remove(TAKE_BACK)
+        state_files.remove(NOTED)
         return []
+    if not needed:
+        with state_files.locked(paths.REGISTRY):
+            names = _still_listening()
+        if names:
+            finish = ", ".join(f"agentbox delete {n} --confirm {n}" for n in names)
+            one = len(names) == 1
+            die(f"the rules of Network mode stay while {', '.join(names)} {'is' if one else 'are'} being deleted: "
+                f"{'its' if one else 'their'} Orca and SSH ports may still listen on every address. Finish the "
+                f"delete with {finish}",
+                error="action_failed", vms=names)
     changed = firewall.ensure(firewall.default_zone(), remove=[("rich-rule", r) for r in rules])
-    state_files.remove(TAKE_BACK)
+    state_files.remove(NOTED)
     return [f"{len(changed)} rules removed"] if changed else []
 
 
@@ -267,7 +302,8 @@ def setup(args):
             + " (with --password-file, --password-stdin or the prompt)", error="invalid_argument",
             option="--new-password")
     if again:
-        new, old, record = hostsetup.load(), None, None     # a record that makes no sense stops here
+        new, record = hostsetup.load(), None     # a record that makes no sense stops here
+        old = new           # the recorded Host setup stays (owner_user aside, which no rule names)
         # a Host setup without owner_user (written by setup before it kept one) gets it once,
         # from --owner-user or the sudo user; a recorded one changes only with --force.
         # --new-password (with --password-file/--password-stdin or the prompt) sets a new

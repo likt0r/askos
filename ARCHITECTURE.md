@@ -107,7 +107,11 @@ flowchart LR
   network, takes back those that no longer apply. It adds them before any port listens on every
   address, and takes them back only once the Orca and SSH port sockets and the Control Room
   listen where the new Host setup says; a run that stops before keeps them until a run again
-  gets there. The rules of the SSH ports are also added by
+  gets there, and that run leaves exactly the rules the recorded Host setup needs, also when
+  the stopped run had added those of a home network it never recorded. On a switch to
+  Local-only the rules stay while a VM being deleted (`agentbox delete` stopped before its
+  units went) may still listen on every address: `setup` stops and names the delete to finish.
+  The rules of the SSH ports are also added by
   `regenerate`, and by `set-ssh` before it opens an SSH port, so an update that brings them
   needs no `setup`, and no SSH port listens on every address before its rules are loaded.
 - **SSH access** to a VM ([ADR 0020](docs/adr/0020-ssh-into-a-vm-through-its-own-host-port.md)) is
@@ -1332,8 +1336,8 @@ certificate name, owner user) and does the Host steps, in this order
     password, a new one only with `--new-password` (see below).
 12. **Firewall for the home network**: in Network mode the rules of the Control Room's, the
     Orca and the SSH ports, before any of them listens on every address; none in Local-only.
-    Those of a Host setup `--force` replaces that the new one does not have are noted under
-    `/var/lib/agentbox/pending` for step 19.
+    Every rule it adds and every rule of a Host setup `--force` replaces that the new one does
+    not have is noted under `/var/lib/agentbox/pending` for step 19, before the firewall changes.
 13. **`regenerate`**: the Host setup written, then the VMs' networks, units, disks and
     definitions from the VM registry. It loads the VM network rules before it brings up a VM
     network, so steps 5 and 6 and the rules are in place before any VM can start.
@@ -1350,10 +1354,15 @@ certificate name, owner user) and does the Host steps, in this order
 17. **Feeds**: the first fetch started at once, while none has run yet.
 18. **Control Room**: `agentbox-web.service` enabled and started; restarted after a new Host
     setup, also by the run that goes on after one that stopped before this step.
-19. **Firewall rules taken back**: the rules step 12 noted, removed only now that `regenerate`
-    has moved the Orca and SSH port sockets and the Control Room has restarted, so on a switch
-    to Local-only no port listens on every address without its rules. A run that stops before
-    leaves them in place, and running setup again takes them back once it gets here.
+19. **Firewall rules taken back**: every rule step 12 noted that the recorded Host setup does
+    not need is removed, only now that `regenerate` has moved the Orca and SSH port sockets and
+    the Control Room has restarted, so on a switch to Local-only no port listens on every
+    address without its rules. A run that stops before leaves them in place, and running setup
+    again takes back what the Host setup it finds recorded does not need: the old rules after a
+    switch, or the new home network's after a run that stopped before writing it. A rule
+    `agentbox setup` did not add and no replaced Host setup had stays. In Local-only nothing is
+    removed while a VM being deleted still has its Orca or SSH port unit, which `regenerate`
+    does not rebind: setup stops there and names the `agentbox delete` to finish first.
 
 The migrations run as commands of their own, each with its own Activity entry. Every step
 changes only what differs from how it should be and says what it changed
