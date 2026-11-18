@@ -93,9 +93,9 @@ def parse(raw):
             "owner_user": _text(raw, "owner_user")}
 
 
-def orca_listen(setup, port):
-    """ListenStream of a VM's Orca port: only on this Host in Local-only, on every
-    address in Network mode (the firewall lets the home network through)."""
+def port_listen(setup, port):
+    """ListenStream of a VM's Orca or SSH port: only on this Host in Local-only, on every
+    address in Network mode (the firewall lets the home network through, firewall.py)."""
     return f"{LOOPBACK}:{port}" if setup["mode"] == LOCAL else str(port)
 
 

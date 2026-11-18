@@ -8,10 +8,11 @@ is none, does the Host steps (hoststeps.py) and starts the Control Room.
   agentbox setup --mode network --bind ADDRESS --home-network CIDR [...]
   agentbox setup [--json]            on a Host set up already: the Host steps only
 
-Local-only (the default): the Control Room and the Orca ports are reachable only from the
-Host itself and no firewall rule is added for any network. Network mode: they are also
-reachable from the named home network, and only from it: the firewall accepts that network
-on the Control Room and Orca ports and rejects everything else on them.
+Local-only (the default): the Control Room, the Orca ports and the SSH ports are reachable
+only from the Host itself and no firewall rule is added for any network. Network mode: they
+are also reachable from the named home network, and only from it: the firewall accepts that
+network on the Control Room's, the Orca and the SSH ports and rejects everything else on them
+(firewall.py).
 
 The owner user (--owner-user, else the user who ran sudo) is stored in the Host setup: they
 go into the group libvirt. It has to be a person's account, and setup refuses to run through
@@ -28,8 +29,8 @@ setup twice cannot change how the Host is exposed: without options setup then do
 steps for the Host setup there is (after an update, or to finish a run that stopped; with
 --new-password it sets a new password besides), and with any other option it refuses.
 Activity records a new password, never its value. Settings, the VM registry, an existing
-certificate and the GitHub App are never touched; with --force the Orca ports of existing VMs
-and the firewall rules follow the new mode.
+certificate and the GitHub App are never touched; with --force the Orca and SSH ports of
+existing VMs and the firewall rules follow the new mode.
 
 The steps run in a fixed order (ARCHITECTURE.md, "Setting a Host up"); each changes
 only what differs, so a second run changes nothing. One that fails stops setup with a message
@@ -52,12 +53,6 @@ MIN_PASSWORD = 16
 WEB_GROUP = "agentbox-web"
 WEB_UNIT = "agentbox-web.service"
 
-# Orca port = 6800 + network number (1-254). The whole range is let through so a new VM
-# (agentbox create) needs no firewall change; only what a VM in the registry listens on
-# answers. Everything else on Orca ports, also the desktop runtime (6768-6799, 16768), is
-# rejected, like the Control Room's port.
-ORCA_ACCEPT = "6801-7054"
-ORCA_REJECT = ("6768-7054", "16768")
 NETWORK_OPTIONS = {"--bind": "bind", "--home-network": "home_network"}
 
 
@@ -176,23 +171,11 @@ def _fingerprint():
     return r.stdout.strip().partition("=")[2] or None
 
 
-def firewall_rules(setup):
-    """(accept, reject) rich rules of a Host setup; none in Local-only."""
-    if setup["mode"] != hostsetup.NETWORK:
-        return [], []
-    net, web = setup["home_network"], str(setup["web_port"])
-    accept = [f'rule priority="-110" family="ipv4" source address="{net}" port port="{p}" protocol="tcp" accept'
-              for p in (web, ORCA_ACCEPT)]
-    reject = [f'rule priority="-100" family="{fam}" port port="{p}" protocol="tcp" reject'
-              for p in (web, *ORCA_REJECT) for fam in ("ipv4", "ipv6")]
-    return accept, reject
-
-
 def _firewall(new, old):
     """Make the firewall match `new` (a Host setup): add its rules, remove those of `old`
     that `new` no longer has. Nothing is called when there is nothing to do."""
-    add = [r for rules in firewall_rules(new) for r in rules]
-    drop = [r for r in (x for rules in firewall_rules(old) for x in rules) if r not in add] if old else []
+    add = [r for rules in firewall.home_network_rules(new) for r in rules]
+    drop = [r for r in (x for rules in firewall.home_network_rules(old) for x in rules) if r not in add] if old else []
     if not add and not drop:
         return []
     changed = firewall.ensure(firewall.default_zone(), add=[("rich-rule", r) for r in add],

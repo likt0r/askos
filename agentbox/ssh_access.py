@@ -40,9 +40,9 @@ def _change(name, change):
                 after = change(before)
                 if registry.ssh_access(after) and not registry.ssh_access(before) and \
                         generate.listens_on(registry.ssh_port(after)):
-                    die(f"{name}: port {registry.ssh_port(after)} on {hostsetup.LOOPBACK} is taken: another service "
-                        "listens there, so the VM's SSH port could not open; stop that service first",
-                        error="action_failed", vm=name)
+                    where = "" if hostsetup.load()["mode"] == hostsetup.NETWORK else f" on {hostsetup.LOOPBACK}"
+                    die(f"{name}: port {registry.ssh_port(after)}{where} is taken: another service listens there, "
+                        "so the VM's SSH port could not open; stop that service first", error="action_failed", vm=name)
                 if after != before:
                     registry.save(after)
                 on = registry.ssh_access(after)

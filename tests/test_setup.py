@@ -55,9 +55,9 @@ def meaningful(text):
 def rich_rules(net="192.0.2.0/24", web=8800):
     """(accept, reject) rules of Network mode, as setup sets them."""
     accept = [f'rule priority="-110" family="ipv4" source address="{net}" port port="{p}" protocol="tcp" accept'
-              for p in (str(web), "6801-7054")]
+              for p in (str(web), "6801-7054", "2201-2454")]
     reject = [f'rule priority="-100" family="{fam}" port port="{p}" protocol="tcp" reject'
-              for p in (str(web), "6768-7054", "16768") for fam in ("ipv4", "ipv6")]
+              for p in (str(web), "6768-7054", "16768", "2201-2454") for fam in ("ipv4", "ipv6")]
     return accept, reject
 
 
@@ -351,9 +351,13 @@ class NetworkModeTest(SetupTest):
         self.assertIn('rule priority="-110" family="ipv4" source address="192.0.2.0/24" port port="8800" '
                       'protocol="tcp" accept', accept)
         self.assertIn('rule priority="-100" family="ipv6" port port="6768-7054" protocol="tcp" reject', reject)
+        # the SSH ports like the Orca ports (ADR 0020)
+        self.assertIn('rule priority="-110" family="ipv4" source address="192.0.2.0/24" port port="2201-2454" '
+                      'protocol="tcp" accept', accept)
+        self.assertIn('rule priority="-100" family="ipv6" port port="2201-2454" protocol="tcp" reject', reject)
         calls = [c["argv"] for c in self.firewall_calls()]
-        self.assertEqual(calls[-1], ["--reload"])
-        self.assertTrue(all("--permanent" in a for a in calls if any("rich-rule" in x for x in a)))
+        self.assertEqual([c["argv"] for c in self.changing_calls() if c["cmd"] == "firewall-cmd"][-1], ["--reload"])
+        self.assertTrue(all("--permanent" in a for a in calls if any(x.startswith("--add-rich-rule") for x in a)))
 
     def test_rules_that_are_already_there_are_not_added_again(self):
         accept, reject = rich_rules()
@@ -443,6 +447,31 @@ class ExistingHostTest(SetupTest):
         # Local-only takes back what Network mode had opened, and adds nothing
         self.assertEqual(sorted(self.rich("remove")), sorted(accept + reject))
         self.assertEqual(self.rich("add"), [])
+
+    def test_a_mode_switch_takes_the_ssh_ports_and_their_rules_along(self):
+        vm_records.write(self.root, vm_records.record("work", 1, ssh_access=True), vm_records.record("priv", 2))
+        self.scenario(vms={"priv": {"uuid": PRIV_UUID}})
+        socket_unit = "etc/systemd/system/agentbox-ssh-work.socket"
+        accept, reject = rich_rules()
+        ssh_rules = sorted(r for r in accept + reject if 'port="2201-2454"' in r)
+        self.assertEqual(len(ssh_rules), 3)
+        # Local-only: on the loopback address, no rule
+        self.ok("--password-file", self.password_file)
+        self.assertIn("\nListenStream=127.0.0.1:2201\n", self.read(socket_unit))
+        self.assertEqual(self.rich("add"), [])
+        # to Network mode: on every address, the rules of the SSH ports added with the others
+        self.forget_calls()
+        self.ok(*NETWORK_ARGS, "--force")
+        self.assertIn("\nListenStream=2201\n", self.read(socket_unit))
+        self.assertEqual(sorted(r for r in self.rich("add") if 'port="2201-2454"' in r), ssh_rules)
+        # and back: the rules taken back with the others, the port on the loopback address again
+        self.forget_calls()
+        self.ok("--force")
+        self.assertIn("\nListenStream=127.0.0.1:2201\n", self.read(socket_unit))
+        self.assertEqual(sorted(self.rich("remove")), sorted(accept + reject))
+        self.assertEqual(self.rich("add"), [])
+        for side in ("permanent", "runtime"):
+            self.assertEqual(self.zone("public", side)["rich_rules"], [])
 
     def test_never_touches_settings_the_registry_the_certificate_or_the_github_app(self):
         vm_records.write(self.root)
