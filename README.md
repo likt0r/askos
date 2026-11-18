@@ -95,8 +95,8 @@ sudo agentbox pair priv                      # start it and print its Pairing co
 | --- | --- | --- |
 | Control Room | `https://127.0.0.1:8800` | `https://<bind>:8800` |
 | Orca ports (6801–7054) | `127.0.0.1` only | every address, but the firewall lets only the home network through |
-| SSH ports (2201–2454) | `127.0.0.1` only | `127.0.0.1` only, for now: the firewall has no rule for them yet |
-| Firewall | no rule for any network | in the default zone: the home network accepted on the Control Room's port and 6801–7054; everything else rejected there and on 6768–7054 and 16768 |
+| SSH ports (2201–2454) | `127.0.0.1` only | every address, but the firewall lets only the home network through |
+| Firewall | no rule for any network | in the default zone: the home network accepted on the Control Room's port, 6801–7054 and 2201–2454; everything else rejected there and on 6768–7054 and 16768 |
 | Pairing codes name | `127.0.0.1` | the bind address |
 | For | a laptop that is its own Host | a home server driven from laptops in the home network (or a VPN into it) |
 
@@ -118,7 +118,7 @@ Options of `agentbox setup`:
 The Host setup and the password change only on the Host, never in the Control Room. Running
 `sudo agentbox setup` again without options keeps both and does the Host steps again, changing
 only what differs (after an update, or when a run stopped). To switch modes, run it with
-`--force` and the new options: the Orca ports of the VMs and the firewall rules follow at once,
+`--force` and the new options: the Orca and SSH ports of the VMs and the firewall rules follow at once,
 and the password stays as it is; a new one needs `--new-password`. An existing certificate
 stays; delete `cert.pem` and `key.pem` in `/etc/agentbox/web` first if its names no longer fit.
 
@@ -476,8 +476,11 @@ sudo agentbox ssh lab                                 # port, host key fingerpri
 ssh -p 2203 agent@127.0.0.1                           # wakes the VM if it is off
 ```
 
-Each VM has its own SSH port, 2200 + its network number (`agentbox ssh` names it), on
-`127.0.0.1`, in Network mode too for now. A connection wakes the VM like an Orca connection
+Each VM has its own SSH port, 2200 + its network number (`agentbox ssh` names it), reachable
+where its Orca port is: on `127.0.0.1` in Local-only, also from the home network in Network mode
+(`ssh -p 2203 agent@<bind>`; see [the two modes](#local-only-and-network-mode)). The firewall
+rules of the SSH ports come with `agentbox regenerate`, so an update needs no `setup` for them.
+A connection wakes the VM like an Orca connection
 and is recorded as its Actor `SSH (<address>)`. You log in as `agent`, the user Orca and the
 agents run as, only with a key; `ssh -L` works, remote and agent forwarding do not. Allowed
 keys: Ed25519, ECDSA, their security-key forms (`sk-…`) and RSA of 3072 to 16384 bits, one line
