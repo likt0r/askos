@@ -81,6 +81,16 @@ def vm_env_file(name):
     return os.path.join(host_paths.STATE, "vm-env", f"{name}.env")
 
 
+def ssh_host_key_file(name):
+    """The VM's SSH host key, made once by the Host (ADR 0020)."""
+    return os.path.join(host_paths.CONF, "secrets", f"ssh-host-key-{name}")
+
+
+def vm_ssh_file(name):
+    """SSH access, the SSH keys and the host key as QEMU passes them in (fw_cfg opt/agentbox/ssh)."""
+    return os.path.join(host_paths.STATE, "vm-ssh", f"{name}.ssh")
+
+
 def seen_file(name):
     return os.path.join(host_paths.STATE, f"alerts-seen-{name}.json")
 
@@ -108,7 +118,10 @@ def lifecycle_lock(name):
     return f"lifecycle-{name}"
 
 
-UNIT_KINDS = ("proxy.socket", "proxy.service", "ghvm.socket", "ghvm@.service", "gui.socket", "gui@.service")
+UNIT_KINDS = ("proxy.socket", "proxy.service", "ghvm.socket", "ghvm@.service", "gui.socket", "gui@.service",
+              "ssh.socket", "ssh@.service")
+# the units of the SSH port exist only while the VM has SSH access (ADR 0020)
+SSH_UNIT_KINDS = ("ssh.socket", "ssh@.service")
 UNIT_TEMPLATES = {
     "proxy.socket": "agentbox-proxy-{vm}.socket",
     "proxy.service": "agentbox-proxy-{vm}.service",
@@ -116,6 +129,8 @@ UNIT_TEMPLATES = {
     "ghvm@.service": "agentbox-ghvm-{vm}@.service",
     "gui.socket": "agentbox-gui-{vm}.socket",
     "gui@.service": "agentbox-gui-{vm}@.service",
+    "ssh.socket": "agentbox-ssh-{vm}.socket",
+    "ssh@.service": "agentbox-ssh-{vm}@.service",
 }
 
 
@@ -131,8 +146,11 @@ def unit_file(unit):
     return os.path.join(host_paths.SYSTEMD, unit)
 
 
-def sockets(rec):
-    return [unit_name(rec["name"], kind) for kind in ("proxy.socket", "ghvm.socket", "gui.socket")]
+def sockets(rec, every=False):
+    """The VM's sockets: the SSH port's only while it has SSH access, or with every=True."""
+    ssh = every or rec.get("ssh_access", False)
+    return [unit_name(rec["name"], kind) for kind in ("proxy.socket", "ghvm.socket", "gui.socket", "ssh.socket")
+            if ssh or kind != "ssh.socket"]
 
 
 def socket_pending_file(socket):
@@ -161,8 +179,9 @@ def transfer_files(name):
 
 
 def unit_instances(name):
-    """Patterns of the instances the VM's Orca port and token service start per connection."""
-    return tuple(unit_name(name, kind).replace("@.", "@*.") for kind in ("gui@.service", "ghvm@.service"))
+    """Patterns of the instances the VM's Orca port, SSH port and token service start per connection."""
+    return tuple(unit_name(name, kind).replace("@.", "@*.") for kind in ("gui@.service", "ssh@.service",
+                                                                          "ghvm@.service"))
 
 
 def unit_files(rec):
@@ -170,7 +189,7 @@ def unit_files(rec):
 
 
 def socket_pending_files(rec):
-    return tuple(socket_pending_file(socket) for socket in sockets(rec))
+    return tuple(socket_pending_file(socket) for socket in sockets(rec, every=True))
 
 
 def paths(rec):
@@ -185,7 +204,7 @@ def paths(rec):
     return (record_file(name), data_disk(name), system_disk(name), delete_marker(name),
             legacy_owners_file(name), legacy_allowlist_file(name), legacy_allowlist_migrated_file(name),
             observer_dir(name), open_web_file(name), claude_token_file(name), vm_env_file(name),
-            seen_file(name), wakes_file(name), domain_file(name),
+            ssh_host_key_file(name), vm_ssh_file(name), seen_file(name), wakes_file(name), domain_file(name),
             *unit_files(rec), *socket_pending_files(rec))
 
 
@@ -249,11 +268,11 @@ def _begin(name, say):
 
 
 def _units_off(rec, say):
-    """The Orca port, proxy and token service of the VM stop and their units go."""
+    """The Orca port, SSH port, proxy and token service of the VM stop and their units go."""
     from . import programs
     name = rec["name"]
     files = list(unit_files(rec))
-    present = [s for s in sockets(rec) if os.path.exists(unit_file(s))]
+    present = [s for s in sockets(rec, every=True) if os.path.exists(unit_file(s))]
     if present:
         programs.systemctl("disable", "--now", *present)        # the proxy service stops with its socket
     # open connections run in instances of their own (patterns: nothing to stop is fine)
@@ -319,6 +338,7 @@ def _files(rec, say):
     name = rec["name"]
     responding.clear(name)           # bookkeeping only, never fails (the stop removed it already)
     gone = [state_files.remove(f) for f in (claude_token_file(name), vm_env_file(name),
+                                            ssh_host_key_file(name), vm_ssh_file(name),
                                             open_web_file(name), legacy_owners_file(name),
                                             seen_file(name), domain_file(name))]
     gone.append(allowlist.drop_vm(name))
@@ -330,7 +350,7 @@ def _files(rec, say):
             die(f"{observer}: {e.strerror}", error="action_failed", vm=name)
         gone.append(True)
     if any(gone):
-        say(f"{name}: Claude token, VM variables, Allowlist entries and Observer removed")
+        say(f"{name}: Claude token, VM variables, SSH host key, Allowlist entries and Observer removed")
     # stale markers and import archives, not named in the message above
     for path in socket_pending_files(rec):
         state_files.remove(path)

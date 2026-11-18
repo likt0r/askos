@@ -385,7 +385,7 @@ def _failure_params(params):
     return {k: v for k, v in params.items() if k not in known or isinstance(v, str) and v in known[k]}
 
 
-def _known_vm(args):
+def known_vm(args):
     """The first argument, if a VM of that name is registered."""
     name = _arg(args, 0)
     if registry.NAME.fullmatch(name) and name not in registry.RESERVED and os.path.exists(footprint.record_file(name)):
@@ -406,13 +406,13 @@ def command(cmd, raw, declaration, parse_args):
         return
     _unchanged = _own_entry = False
     _result.clear()
-    vm_before = _known_vm(raw)
+    vm_before = known_vm(raw)
     args = raw
     what, params = None, {}
     kind = declaration.kind
 
     def entry(outcome, message=None, error=None, error_params=None, **fields):
-        vm = vm_before or _known_vm(args)
+        vm = vm_before or known_vm(args)
         text = what
         if text is None:          # new commands: the command line without the VM and --json
             text = " ".join([cmd, *(a for a in (args[1:] if vm else args) if a != "--json")])

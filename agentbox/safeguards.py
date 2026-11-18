@@ -56,6 +56,7 @@ BUNFIG = "/usr/lib/agentbox/bunfig.toml"
 GUEST_SETUP = "/usr/lib/agentbox/guest-setup"
 FWCFG_ENV = "/usr/lib/agentbox/fwcfg-env"     # guest-setup writes the VM variables with it
 HOME_PATHS = "/usr/lib/agentbox/home-paths"   # guest-setup follows no link in the agent's home with it (#142)
+FWCFG_SSH = "/usr/lib/agentbox/fwcfg-ssh"     # guest-setup writes the SSH keys and host key with it (ADR 0020)
 NPM = "/usr/lib/node_modules/npm"
 NPM_DEFAULT = "/usr/etc/npmrc"        # npm with prefix /usr reads this unless its builtin config names another
 QGA = "/usr/libexec/qemu-ga/fsfreeze-hook.d"
@@ -120,7 +121,7 @@ MIN_NPM = 12
 
 # The files that make up the safeguards: a derived Image must leave each as the Base has it.
 FILES = ("/etc/npmrc", NPM_DEFAULT, f"{NPM}/npmrc", "/etc/uv/uv.toml", "/etc/gitconfig", BUNFIG, GUEST_SETUP, FWCFG_ENV,
-         HOME_PATHS,
+         HOME_PATHS, FWCFG_SSH,
          "/usr/lib/agentbox/package-safeguards", "/usr/lib/systemd/system/agentbox-guest-setup.service",
          "/usr/lib/systemd/system.conf.d/agentbox.conf", "/usr/lib/systemd/system.conf.d/agentbox-packages.conf",
          NM_CONF, PROFILE, SSHD_DROPIN, SSHD_PRESET)

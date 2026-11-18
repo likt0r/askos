@@ -715,6 +715,9 @@ class SafeguardTest(ImagesTest):
         # so is systemd's generator that would start it on a local socket
         self.assertTrue(safeguards._masked(rootfs, "/etc/systemd/system", "sshd@.service"))
         self.assertTrue(safeguards._masked(rootfs, "/etc/systemd/system-generators", "systemd-ssh-generator"))
+        # the host key comes from the Host (ADR 0020): sshd-keygen@.service, which sshd.service wants,
+        # makes none in the VM
+        self.assertTrue(safeguards._masked(rootfs, "/etc/systemd/system", "sshd-keygen@.service"))
 
     def sshd_rejected(self, cases):
         """Each (name, Containerfile lines, files, run.json effects, problem) builds a derived Image

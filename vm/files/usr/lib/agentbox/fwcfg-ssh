@@ -1,0 +1,139 @@
+#!/usr/bin/python3 -I
+"""SSH access from its fw_cfg entry (agentbox/sshkeys.py writes it on the Host, ADR 0020).
+guest-setup runs it as root at the end of every boot, once the agent's home is ready.
+  fwcfg-ssh <entry file> <directory>
+The entry is "none" without SSH access, else a line "host_key <base64 of the key file>" and one
+line "key <type> <base64>" per SSH key. The directory (/run/agentbox/ssh, where sshd's
+configuration points) gets the host key (mode 0600) and the keys (authorized_keys, 0644),
+both written whole; sshd starts only with SSH access on, a host key and at least one key. A
+missing entry means no SSH access: a domain defined before SSH access has none.
+The Host checked every key; this checks them again as untrusted input, for their form only
+(ADR 0019): a line that is not one is left out with a message in the journal.
+"""
+import base64
+import binascii
+import os
+import struct
+import subprocess
+import sys
+
+TYPES = ("ssh-ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521",
+         "sk-ssh-ed25519@openssh.com", "sk-ecdsa-sha2-nistp256@openssh.com", "ssh-rsa")
+MAX_KEYS = 16
+MAX_ENTRY = 64 * 1024  # the Host keeps the entry within it (agentbox/sshkeys.py MAX_ENTRY)
+HOST_KEY_BEGIN = b"-----BEGIN OPENSSH PRIVATE KEY-----"
+# SELinux types sshd reads: its host keys, and a user's authorized_keys
+LABELS = {"host_key": "sshd_key_t", "authorized_keys": "ssh_home_t"}
+
+
+def say(text):
+    print(f"fwcfg-ssh: {text}", file=sys.stderr)
+
+
+def b64(text):
+    try:
+        return base64.b64decode(text, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+
+
+def key_line(words):
+    """"<type> <base64>" when the words are one plausible key, else None."""
+    if len(words) != 2 or words[0] not in TYPES:
+        return None
+    blob = b64(words[1])
+    if not blob or len(blob) < 4:
+        return None
+    n = struct.unpack(">I", blob[:4])[0]
+    return f"{words[0]} {words[1]}" if blob[4:4 + n] == words[0].encode() else None
+
+
+def read(entry):
+    """(host key bytes or None, [key lines]) of the entry; nothing for a missing entry."""
+    try:
+        with open(entry, "rb") as f:
+            data = f.read(MAX_ENTRY + 1)
+    except FileNotFoundError:
+        return None, []
+    if len(data) > MAX_ENTRY:
+        say("the entry is too long, no SSH access")
+        return None, []
+    host, keys = None, []
+    for n, raw in enumerate(data.decode("ascii", "replace").splitlines(), 1):
+        words = raw.split()
+        if not words or words == ["none"]:
+            continue
+        if words[0] == "host_key" and len(words) == 2 and host is None:
+            key = b64(words[1])
+            if key and key.startswith(HOST_KEY_BEGIN):
+                host = key
+                continue
+        elif words[0] == "key":
+            line = key_line(words[1:])
+            if line and len(keys) < MAX_KEYS and line not in keys:
+                keys.append(line)
+                continue
+        say(f"line {n} is no host key or SSH key, left out")
+    return host, keys
+
+
+def write(path, data, mode):
+    """The file written whole: a new file, then renamed over the old one."""
+    tmp = path + ".new"
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    os.chmod(tmp, mode)
+    os.rename(tmp, path)
+
+
+def label(path, kind):
+    """The SELinux type sshd expects, where SELinux is on; a failure only says so."""
+    try:
+        if subprocess.run(["selinuxenabled"], capture_output=True).returncode != 0:
+            return
+        r = subprocess.run(["chcon", "-t", LABELS[kind], path], capture_output=True, text=True)
+    except OSError:
+        return
+    if r.returncode != 0:
+        say(f"{os.path.basename(path)}: chcon failed: {r.stderr.strip()[:200]}")
+
+
+def main(entry, directory):
+    host, keys = read(entry)
+    os.makedirs(directory, mode=0o755, exist_ok=True)
+    if os.path.islink(directory) or not os.path.isdir(directory):
+        say(f"{directory} is no directory")
+        return 1
+    os.chmod(directory, 0o755)
+    for name in ("host_key", "authorized_keys"):
+        try:
+            os.unlink(os.path.join(directory, name))
+        except FileNotFoundError:
+            pass
+    if host is None:
+        say("no SSH access, sshd stays off")
+        return 0
+    write(os.path.join(directory, "host_key"), host, 0o600)
+    write(os.path.join(directory, "authorized_keys"), "".join(k + "\n" for k in keys).encode(), 0o644)
+    for name in ("host_key", "authorized_keys"):
+        label(os.path.join(directory, name), name)
+    if not keys:
+        say("SSH access on, but no SSH key: sshd stays off")
+        return 0
+    r = subprocess.run(["systemctl", "start", "--no-block", "sshd.service"], capture_output=True, text=True)
+    if r.returncode != 0:
+        say(f"starting sshd failed: {r.stderr.strip()[:200]}")
+        return 1
+    say(f"SSH access on with {len(keys)} SSH key(s), sshd started")
+    return 0
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 3:
+        sys.exit("usage: fwcfg-ssh <entry file> <directory>")
+    sys.exit(main(sys.argv[1], sys.argv[2]))

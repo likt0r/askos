@@ -102,10 +102,25 @@ flowchart LR
   them; everything else on those ports is rejected. The rule covers the
   whole Orca port range 6801–7054, so a new VM needs no firewall change; only the ports of
   VMs in the registry have anything listening.
-- **SSH access** to a VM, through its own SSH port on the Host with SSH keys and a host key
-  from the Host, is decided ([ADR
-  0020](docs/adr/0020-ssh-into-a-vm-through-its-own-host-port.md)) but not built yet; each
-  ticket of #126 describes here what it builds.
+- **SSH access** to a VM ([ADR 0020](docs/adr/0020-ssh-into-a-vm-through-its-own-host-port.md)) is
+  off for a new VM and changed only on the Host: `agentbox set-ssh <vm> on|off` turns it on or
+  off, `agentbox add-ssh-key <vm> [--name N] [FILE]` adds an SSH key (one line of a `.pub` file,
+  from stdin without a file; its comment is its name unless `--name` gives one), and `agentbox
+  ssh <vm>` shows it: on or off, the SSH port, the fingerprint of the host key with a
+  `known_hosts` line, and the keys. While SSH access is on, the VM's SSH port, 2200 + its
+  network number (2201–2454), listens on `127.0.0.1`, in Network mode as well, since no firewall
+  rule covers the SSH ports yet; each connection runs `wake` with the Actor `SSH (<address>)`
+  and then forwards to port 22 of the VM, as the Orca port does, so `ssh -p 2201
+  agent@127.0.0.1` wakes a VM that is off. Turning SSH access off removes the port at once and
+  keeps the keys. The Host checks every key before it stores it: Ed25519, ECDSA (P-256, P-384,
+  P-521), their security-key forms (`sk-…`) or RSA of 3072 to 16384 bits; its base64 must
+  decode to a key of the same type that OpenSSH takes (an ECDSA point on its curve, the
+  numbers of an RSA key in their shortest form); no options before the key (`command=`,
+  `from=`: only the VM would enforce them); at most 16 per VM, together within the 64 KiB the
+  VM reads, and none twice, by the SHA256 fingerprint the Host computes itself. The VM gets its SSH access and keys at its next start, so a running or
+  paused VM at its next Restart or Reset ([VMs](#vms)). Each change is recorded in Activity
+  (`ssh.enabled`, `ssh.disabled`, `ssh.key-added` with the key's fingerprint and name), each
+  connection is not.
 - The Host applies security updates daily (dnf5-automatic, set up by the owner, not by Agent
   Box) and never reboots on its own.
   Agent Box itself is updated only by the owner, with `dnf upgrade` of a Release
@@ -122,12 +137,13 @@ flowchart LR
   [ADR 0002](docs/adr/0002-vms-instead-of-containers.md)). Each has its own kernel, so a
   kernel exploit inside a VM does not reach the Host.
 - Each VM is one record in the **VM registry** (`/etc/agentbox/vms/<name>.json`, root-owned);
-  it holds, among others, the VM's memory limit, Data disk size and Container image cleanup
-  (on or off, and its days).
+  it holds, among others, the VM's memory limit, Data disk size, Container image cleanup
+  (on or off, and its days), and its SSH access with its SSH keys.
   `agentbox regenerate` derives everything else from it: the libvirt network and the domain
-  (through virt-install), the proxy, token-service and Orca-port units, the nftables rules,
-  the storage pool of the disks, the Data disk, the Claude-token placeholder and the file of
-  its VM variables. Running it again changes nothing; a changed definition applies at the
+  (through virt-install), the proxy, token-service and Orca-port units, the SSH port's units
+  while the VM has SSH access, the nftables rules, the storage pool of the disks, the Data
+  disk, the Claude-token placeholder, the file of its VM variables and the file of its SSH
+  access (with the host key, made once while the VM has SSH access and has none). Running it again changes nothing; a changed definition applies at the
   VM's next start, and not while the VM is paused. A VM network whose resolver differs from
   the current definition is defined again and, when active, stopped and started, since
   libvirt's dnsmasq reads its options only when the network starts; a VM running on it has no network until its next
@@ -142,8 +158,8 @@ flowchart LR
   no Allowlist entries of its own (optionally a one-time copy of another VM's own entries,
   [ADR 0001](docs/adr/0001-vm-is-the-unit-of-separation.md)) and a System disk, then runs
   `regenerate`. It refuses names the CLI or the Control Room use themselves and anything an
-  earlier VM of that name left behind (Data disk, Claude token, VM variables, Observer,
-  domain, network), so nothing carries over between VMs. The VM starts on its first `agentbox pair` or Orca
+  earlier VM of that name left behind (Data disk, Claude token, VM variables, SSH host key,
+  SSH access, Observer, domain, network), so nothing carries over between VMs. The VM starts on its first `agentbox pair` or Orca
   connection.
 - `agentbox set-memory` changes a VM's memory limit (1024 MiB up to the Host's memory, as
   in `create`): it writes the record and defines the domain again (the `regenerate` step for
@@ -191,19 +207,26 @@ flowchart LR
 - `agentbox delete` needs the name typed again (`--confirm`). It moves the record into a
   marker under `/var/lib/agentbox/pending`, so nothing wakes or regenerates the VM, then
   stops the VM and removes its domain (with any Pause), network, units, Claude token, VM
-  variables, Observer directory and its own Allowlist entries. The System disk is deleted, the Data disk archived
+  variables, SSH host key, Observer directory and its own Allowlist entries; its SSH keys go
+  with its record, also when its Data disk is archived. The System disk is deleted, the Data disk archived
   under `/var/lib/agentbox/archive` unless deleting it is asked for. The VM's nftables rule
   stays until its network is gone; running `delete` again finishes an interrupted run.
   Create, delete and `regenerate` hold one lock, so two creates never get the same network.
 - Each VM uses one **Image** (see Images and Builds below): the **Base image**, a Fedora
   bootc image built from `vm/Containerfile` with agents, Orca, Node, Bun, uv, Rust, Podman
   with Docker Compose and every **Safeguard**, or an Image built on it.
-- No VM runs sshd. fedora-bootc enables `sshd.service` with OpenSSH's password login on; the
-  Base image disables it, keeps it off at first boot (`10-agentbox.preset`) and fixes its
+- sshd runs only in a VM with SSH access and at least one SSH key. fedora-bootc enables
+  `sshd.service` with OpenSSH's password login on; the Base image disables it, keeps it off at first boot (`10-agentbox.preset`) and fixes its
   configuration (`/etc/ssh/sshd_config.d/10-agentbox.conf`): SSH only by key and only as
   `agent`, a Safeguard (see Images and Builds). It masks Fedora's `sshd@.service`, whose command
   line adds keys from `~/.ssh`, and systemd's `systemd-ssh-generator`, which would offer it on a
-  local socket.
+  local socket. It masks `sshd-keygen@.service` as well, so no host key is made in the VM: the
+  host key comes from the Host. At every boot, last, once the home is set up, `guest-setup` runs
+  `/usr/lib/agentbox/fwcfg-ssh`, which writes the host key (mode 0600) and the SSH keys
+  (`authorized_keys`, 0644) into the root-owned `/run/agentbox/ssh`, both whole, and starts sshd
+  only when the entry carries SSH access and at least one key. It checks the form of each key
+  again and leaves out a line that is none (ADR 0019); a failure leaves the VM without SSH, not
+  without Orca.
 - **System disk** is a copy-on-write layer over a **Build** of the VM's Image and is replaced
   on every **Reset**.
   **Data disk** keeps repositories, Orca's identity and pairings, agent transcripts, build
@@ -219,8 +242,8 @@ flowchart LR
   Image have them), and the guest-agent wrappers that run as the agent run only once it has
   finished (`agentbox-inbox` waits up to 60 s, the Container image cleanup skips the VM for
   that hour).
-- A VM learns its name, Orca port, Pairing address, Claude token and VM variables from the
-  Host at boot (QEMU fw_cfg); the token never touches the Data disk. The token and the VM
+- A VM learns its name, Orca port, Pairing address, Claude token, VM variables and SSH access
+  from the Host at boot (QEMU fw_cfg); the token never touches the Data disk. The token and the VM
   variables are files QEMU reads (`root:qemu`, mode 0640, in directories of mode 0750),
   never values in virt-install's `--sysinfo`, which it splits at commas: the VM variables
   are `/var/lib/agentbox/vm-env/<vm>.env`, entry `opt/agentbox/env`, one line
@@ -233,6 +256,15 @@ flowchart LR
   `/run/agentbox/agent-env` (sourced by `/etc/profile.d/agentbox.sh` for shells), before
   the fixed values of Agent Box, which so win. A domain defined before the entry existed has
   none, which counts as no variables.
+  SSH access is `/var/lib/agentbox/vm-ssh/<vm>.ssh` (also `root:qemu`, 0640), entry
+  `opt/agentbox/ssh`: `none` without SSH access, else a line `host_key <base64 of the host
+  key>` and a line `key <type> <base64>` per SSH key. The host key is an Ed25519 key the Host
+  makes once, when SSH access is first turned on or a first key is added (its secret from
+  `openssl`, written in OpenSSH's own format), and keeps beside the Claude token,
+  `/etc/agentbox/secrets/ssh-host-key-<vm>` (`root:qemu`, 0640); a Reset leaves it, so `ssh`
+  sees the same host key after every Reset. `set-ssh` and `add-ssh-key` define a domain from
+  before the entry again, as `set-env` does; without the entry a VM has no SSH access, and so
+  does a VM whose Build has no `fwcfg-ssh` until a Reset onto a newer Build.
 - The Host never mounts a VM's disks. It reads a VM's journal (`agentbox logs`, and the
   Pairing code for `agentbox pair`) by having the VM's guest agent run `journalctl` inside
   the VM, without a shell and under a time limit, through a wrapper in the Image that starts
@@ -403,8 +435,9 @@ flowchart LR
   the names it does not know. So containers and builds reach the outside through the proxy
   like the rest of the VM, and need no settings: no service, shell, container or build in the
   VM carries a proxy variable.
-- From the home network a VM is reachable only through its Orca port; no other port of a VM
-  is forwarded. Dev servers inside a VM are viewed in Orca's built-in browser: the page is
+- From the home network a VM is reachable only through its Orca port; its SSH port, while it
+  has SSH access, listens only on the Host's loopback address ([Host access](#host-access)),
+  and no other port of a VM is forwarded. Dev servers inside a VM are viewed in Orca's built-in browser: the page is
   shown on the laptop, but Orca carries its connections through the pairing connection
   (`network.browserTunnel`) and `orca serve` makes them inside the VM. `localhost` is the VM,
   and whatever the page loads from the internet goes through the proxy and the Allowlist
@@ -1181,7 +1214,7 @@ One timeline of what happened on the Host and who caused it, kept in journald
   action it does not know, and older entries, with German text and no code, show theirs. The actor
   comes from the global option `--actor`, before the command or right after it: the Control
   Room passes device and address after the command, the Maintenance window passes `timer`, a connection to a VM's Orca port that wakes it passes
-  `Orca (<address>)`; without it, it is the user who ran `sudo`. `watch` records its
+  `Orca (<address>)`, one to its SSH port `SSH (<address>)`; without it, it is the user who ran `sudo`. `watch` records its
   entries with the actor `watch`. Setting a Claude token,
   GitHub owners or the GitHub App is of kind `credentials`, described without the secret.
 - Other events are recorded where they happen: sign-ins by the Control Room, each step of the
@@ -1541,6 +1574,15 @@ laptops.
 
 ### The boundary of a VM
 
+- **SSH into a VM.** The VM's sshd enforces login only as `agent`, only by key and only `ssh
+  -L` ([VMs](#vms)), but its configuration lives in the VM: code with root there can change
+  it, so only the client finally refuses `-R` and `-A`, which open a path from the VM to the
+  laptop or home network past the proxy
+  ([ADR 0020](docs/adr/0020-ssh-into-a-vm-through-its-own-host-port.md)). Every local process
+  on the Host reaches port 22 of a VM directly, past its SSH port (the nftables rules of the VM
+  networks limit only traffic from a VM); it still needs a key. Any connection to the SSH port
+  wakes the VM before sshd checks a key. Mitigation: SSH access is off until the owner turns it
+  on for one VM, and only the keys in its record reach it.
 - **Hypervisor, KVM and the CPU.** A VM's own kernel keeps a kernel exploit inside it
   ([VMs](#vms), [ADR 0002](docs/adr/0002-vms-instead-of-containers.md)); a bug in KVM, in QEMU
   and its virtual devices, or in the CPU (side channels such as Spectre) can cross that

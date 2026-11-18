@@ -11,7 +11,7 @@ import sys
 
 from . import activity, allowlist, container_images, credentials, describe, detection, generate, github, guest
 from . import images, lifecycle, lists, maintenance, network, options, pairings, paths, recipes, settings, setup, transfer
-from . import version, versions, vms, watch
+from . import ssh_access, version, versions, vms, watch
 from .errors import Fail
 
 USAGE = """\
@@ -45,6 +45,13 @@ Controls the agent VMs on this Host.
                 add or change VM variables (--replace: these are all of them); names a Safeguard or
                 Agent Box reads are refused; applies from the next start, for a running VM after a Restart
   agentbox unset-env <vm> NAME [NAME ...] [--json]   remove VM variables; applies like set-env
+  agentbox ssh <vm> [--json]                         the VM's SSH access: on or off, its SSH port, the host key's
+                                                     fingerprint with a known_hosts line, its SSH keys
+  agentbox set-ssh <vm> on|off [--json]              SSH access through the SSH port (2200 + network number, on
+                                                     127.0.0.1); the keys stay when it goes off
+  agentbox add-ssh-key <vm> [--name N] [FILE] [--json]
+                add an SSH key (a line of a .pub file) from FILE or stdin; its comment is its name; the VM
+                gets the keys from its next start, a running VM after a Restart
   agentbox start <vm> [--json]
   agentbox wake <vm> [--json]
   agentbox pause <vm> [--json]
@@ -176,7 +183,7 @@ With --json, a failure also goes to stderr as one JSON object:
 
 MODULES = (lifecycle, version, describe, setup, watch, vms, pairings, transfer, guest, credentials, network,
            allowlist, detection, lists, generate, settings, github, images, recipes, versions, activity, maintenance,
-           container_images)
+           container_images, ssh_access)
 DECLARATIONS = {name: declaration for module in MODULES for name, declaration in module.DECLARATIONS.items()}
 
 
