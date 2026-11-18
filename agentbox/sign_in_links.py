@@ -10,11 +10,15 @@ to a server, so it reaches no log. The sign-in page reads it and sends it in the
 The Host keeps only the token's SHA-256: one file per link in SIGN_IN_LINKS, named by that
 hash and holding when it expires, LIFETIME seconds after it was made. The directory is the
 Control Room's (agentbox-web), group libvirt, mode 1730, made by the package's tmpfiles entry:
-the members of libvirt can add a file but not list the directory, and remove or replace only their own (sticky bit); nobody else can reach it.
-The Control Room takes a link once (take()): it removes the file before it signs anyone in,
-so a second use, an expired link or an unknown token is refused like a wrong password.
+the members of libvirt can add a file but not list the directory, and remove or replace only
+their own (sticky bit); nobody else can reach it. A link is shown only once Activity has
+recorded its creation; when the journal does not take the entry, the file goes again and the
+command fails. The Control Room takes a link once (take()): it removes the file before it signs
+anyone in, so a second use, an expired link or an unknown token is refused like a wrong
+password.
 
-A leaf module: the Control Room imports it (tests/test_control_room_v1.py).
+A leaf module: the Control Room imports it (tests/test_control_room_v1.py), so the command
+imports activity only when it runs.
 """
 import datetime
 import hashlib
@@ -105,6 +109,14 @@ def create(now=None):
     return token, expires
 
 
+def remove(token):
+    """The link's file gone, if it is there."""
+    try:
+        os.unlink(_path(token))
+    except OSError:
+        pass
+
+
 def _read(path):
     """(expires or None, mtime) of a link's file; None when it cannot be read as one."""
     try:
@@ -179,11 +191,33 @@ def url(setup, token):
 
 # --- the command ----------------------------------------------------------------------
 
+DESCRIPTION = "Create a sign-in link for the Control Room"
+
+
+def _record():
+    """The link's Activity entry, which the command records itself: a link is shown only when
+    the journal took it. Otherwise why not, as the error of the command."""
+    from . import activity, journal
+    activity.own_entry()
+    result = activity.record("credentials", "sign-in-link", DESCRIPTION, warn=False)
+    if result == journal.SENT:
+        return None
+    if result == journal.REFUSED:
+        return (f"only root and the group {activity.JOURNAL_GROUP} write into the journal; agentbox setup "
+                "adds the members of libvirt to it, then log in again")
+    return f"no journal takes it ({result.strerror or result})" if isinstance(result, OSError) else "no journal"
+
+
 def sign_in_link(args):
     """agentbox sign-in-link [--json]"""
     check_caller()
     setup = hostsetup.load()
     token, expires = create()
+    why = _record()
+    if why is not None:
+        remove(token)
+        die(f"Activity cannot record the sign-in link, so no link was made: {why}", error="action_failed",
+            command="sign-in-link")
     link = url(setup, token)
     if args.values.get("json"):
         print(json.dumps({"url": link, "expires": times.iso(expires), "mode": setup["mode"]}))
@@ -197,5 +231,5 @@ def sign_in_link(args):
 DECLARATIONS = {
     "sign-in-link": declare(sign_in_link, "agentbox sign-in-link [--json]", options={"json": False},
                             needs_root=False, positional=False, kind="credentials",
-                            describe=lambda a: ("Create a sign-in link for the Control Room", {})),
+                            describe=lambda a: (DESCRIPTION, {})),
 }

@@ -216,7 +216,7 @@ Sign-ins, failures, refusals by the brake and sign-outs are Activity entries (co
 `signin`, `signin.failed`, `signin.link` (with a sign-in link), `signin.link-refused`,
 `signin.locked`, `signout`), with address and device, never the password or the token. Making a
 sign-in link is an entry of the CLI (code `sign-in-link`, kind `credentials`, the Host user as
-the Actor).
+the Actor); without it no link is made.
 
 ## VMs
 

@@ -1025,7 +1025,9 @@ The Host keeps only its SHA-256: one file per link, named by the hash and holdin
 `/run/agentbox-sign-in-links`, a directory of `agentbox-web` and the group `libvirt` with mode
 1730 (the members of `libvirt` can add a file but not list them, and remove or replace only their own; nobody else reaches them), made
 by the package at every boot. Activity records the link's creation with the Host user, never the
-token. The sign-in page takes the token out of the address and sends it once in the body of
+token. A link is shown only once that entry is recorded: whom the journal refuses (a member of
+`libvirt` not yet in `agentbox-journal`, until `agentbox setup` and a new login) gets an error
+and no link. The sign-in page takes the token out of the address and sends it once in the body of
 `POST /api/v1/session`; the backend removes the link's file before the link counts, so of two
 uses at most one signs in, and refuses a used, expired or unknown token like a wrong password:
 after a second, counted towards the brake, recorded in Activity with address and device. A link

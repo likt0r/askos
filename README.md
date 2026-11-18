@@ -132,7 +132,9 @@ signs a browser in without it, once and within two minutes:
 xdg-open "$(agentbox sign-in-link)"      # the link alone on stdout; --json: url, expires, mode
 ```
 
-Only root and the members of `libvirt` can run it (they control every VM anyway). The link
+Only root and the members of `libvirt` can run it (they control every VM anyway); a new member
+gets a link only after `agentbox setup` and logging in again, which lets them record it in
+Activity: without its Activity entry no link is made. The link
 names the Control Room's address for the mode, in Network mode the bind address, and carries
 its token after `#`, which the browser never sends to a server; the Host keeps only a hash of
 it. Opening it gives an ordinary session as long as `session_hours`; a link that was used,

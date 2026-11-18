@@ -135,7 +135,8 @@ def terminal_user():
 def _send(data):
     """To the namespace's journal, else (not set up) the default journal. Nothing
     when no journal is there at all (tests without one); a warning when it refuses,
-    and when the namespace does not let this user write: then nowhere else either."""
+    and when the namespace does not let this user write: then nowhere else either.
+    The result of journal.send()."""
     result = journal.send(data, SOCKETS)
     if result == journal.REFUSED:
         global _refused
@@ -146,6 +147,7 @@ def _send(data):
                   file=sys.stderr)
     elif isinstance(result, OSError):
         print(f"agentbox: Activity not recorded in the journal ({result.strerror or result})", file=sys.stderr)
+    return result
 
 
 def _value(v):
@@ -161,7 +163,7 @@ def _value(v):
 
 
 def record(kind, action, description, vm=None, outcome="ok", actor=None, params=None, error=None,
-           error_params=None, **fields):
+           error_params=None, warn=True, **fields):
     """Record one Activity entry in the journal.
 
     kind: one of KINDS. action: the entry's stable code, the command ("allow") or
@@ -172,7 +174,9 @@ def record(kind, action, description, vm=None, outcome="ok", actor=None, params=
     value}: a domain, a scope, a Build, a flag such as no_start), from which the
     Control Room words the entry. error: a failure's error code (Fail.error), with
     error_params (Fail.params). Extra fields become AGENTBOX_<NAME> (letters,
-    digits, underscore) and are no parameters.
+    digits, underscore) and are no parameters. Returns journal.send()'s result:
+    journal.SENT once the journal took the entry; warn=False leaves the warning
+    when it did not to the caller.
 
     Never pass secrets, in parameters either. Every value is reduced to one clean
     line and known token, key and Pairing-code formats are hidden, but that is a
@@ -201,8 +205,9 @@ def record(kind, action, description, vm=None, outcome="ok", actor=None, params=
         out[f"AGENTBOX_{key}"] = redact(value)[:limit]
     message = (f"{out.get('AGENTBOX_VM', '-')} {out['AGENTBOX_ACTION']} {out['AGENTBOX_OUTCOME']} "
                f"({out['AGENTBOX_ACTOR']}): {out.get('AGENTBOX_DESCRIPTION', '')}")
-    _send(journal.encode({"MESSAGE": message, "PRIORITY": "5" if outcome == "ok" else "4",
-                   "SYSLOG_IDENTIFIER": IDENTIFIER, **out}))
+    data = journal.encode({"MESSAGE": message, "PRIORITY": "5" if outcome == "ok" else "4",
+                           "SYSLOG_IDENTIFIER": IDENTIFIER, **out})
+    return _send(data) if warn else journal.send(data, SOCKETS)
 
 
 def unchanged():

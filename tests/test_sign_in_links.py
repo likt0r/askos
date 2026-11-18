@@ -189,6 +189,26 @@ class CommandTest(Root, unittest.TestCase):
         self.assertNotIn(token.encode(), raw)
         self.assertNotIn(sha256(token).encode(), raw)
 
+    @unittest.skipIf(os.geteuid() == 0, "root may always write into the journal")
+    def test_no_link_without_its_activity_entry(self):
+        # a member of libvirt not (yet) in agentbox-journal: the journal refuses the entry
+        os.chmod(self.journald.path, 0)
+        code, out, err = self.run_cli("sign-in-link", "--json")
+        self.assertEqual((code, out), (1, ""))
+        said = json.loads(err)
+        self.assertEqual(said["error"], "action_failed")
+        self.assertIn("agentbox-journal", said["message"])
+        self.assertIn("agentbox setup", said["message"])
+        self.assertEqual(self.links(), [])
+        self.assertEqual(self.journald.entries(), [])
+        # and without any journal
+        self.journald.close()
+        os.unlink(self.journald.path)
+        code, out, err = self.run_cli("sign-in-link")
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("no link was made", err)
+        self.assertEqual(self.links(), [])
+
 
 class TakeTest(unittest.TestCase):
     """sign_in_links.take(), as the Control Room calls it: once, within two minutes."""
@@ -262,6 +282,9 @@ class ControlRoomLinkTest(Root, ControlRoomTest):
     def setUp(self):
         super().setUp()
         self.make_root(self.root)
+        # the CLI's Activity (a link is made only when its entry is recorded)
+        self.cli_journald = Journald(self.path("run/systemd/journal.agentbox/socket"))
+        self.addCleanup(self.cli_journald.close)
 
     def sign_in(self, link):
         return self.request("POST", "/api/v1/session", {"link": link})
