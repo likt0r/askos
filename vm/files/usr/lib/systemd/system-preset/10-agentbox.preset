@@ -1,0 +1,5 @@
+# Agent Box (#127): sshd starts in no VM by itself. Fedora's 90-default.preset enables
+# sshd.service, and systemd applies the presets again at a VM's first boot; this file sorts
+# first, so its lines win. A Safeguard (agentbox/safeguards.py).
+disable sshd.service
+disable sshd.socket

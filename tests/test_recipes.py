@@ -584,6 +584,28 @@ class BuildTest(RecipeTest):
         self.assertFalse(os.path.exists(f"{self.path('var/lib/agentbox/images')}/dms-{new['build']}.qcow2"))
         self.assertEqual(self.podman("run")[1:], [])
 
+    def test_a_recipe_weakening_sshd_is_rejected(self):
+        """#127: the sshd Safeguard holds for Recipes as for every derived Image: password login,
+        root login, a key file in the home, remote forwarding or sshd.service enabled."""
+        drop = b"FROM ${BASE}\nCOPY x.conf /etc/ssh/sshd_config.d/00-x.conf\n"
+        wants = "/etc/systemd/system/multi-user.target.wants/sshd.service"
+        cases = [(name, [file("Containerfile", drop), file("x.conf", conf.encode())], problem) for name, conf, problem in (
+            ("password", "PasswordAuthentication yes\n", "sshd: PasswordAuthentication is yes instead of no"),
+            ("root", "PermitRootLogin yes\n", "sshd: PermitRootLogin is yes instead of no"),
+            ("homekeys", "AuthorizedKeysFile .ssh/authorized_keys\n", "sshd: AuthorizedKeysFile is .ssh/authorized_keys"),
+            ("remote", "AllowTcpForwarding remote\n", "sshd: AllowTcpForwarding is remote instead of local"))]
+        cases.append(("enabled", [file("Containerfile", b"FROM ${BASE}\nCOPY sshd.service " + wants.encode() + b"\n"),
+                                  file("sshd.service", b"[Service]\nExecStart=/usr/sbin/sshd -D $OPTIONS\n")],
+                      f"sshd: sshd.service is enabled ({wants})"))
+        for name, entries, problem in cases:
+            with self.subTest(name):
+                self.set_recipe(data=archive(entries))
+                code, out = self.build("dms")
+                self.assertEqual(code, 1, out)
+                new = self.newest("dms")
+                self.assertEqual(new["status"], "rejected")
+                self.assertTrue(any(problem in p for p in new["problems"]), (problem, new["problems"]))
+
     def test_updates_select_recipes_and_base_updates_select_every_active_image(self):
         view = {"images": [
             {"name": "base", "update": False, "in_release": True, "recipe": False},

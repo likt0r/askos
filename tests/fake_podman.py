@@ -8,13 +8,17 @@ Environment:
   podman build [--pull=..] [--no-cache] [--build-arg K=V].. [-v ..].. -t TAG -f FILE CONTEXT
       builds TAG by reading FILE as a Containerfile, as far as tests need it:
         FROM ${BASE} / $BASE   the rootfs and layers of the image named by --build-arg BASE
-        FROM <anything else>   an empty rootfs (a distribution image)
+        FROM <anything else>   an empty rootfs (a distribution image) with the files run.json
+                               names under a key in its reference ("fedora-bootc")
         COPY <src>... <dest>   from CONTEXT, as podman does (a directory's content, files into a
                                directory ending in /, a single file to a path)
         RUN ...                lines of the Containerfile joined; a RUN naming package-safeguards
                                runs that script of the rootfs against the rootfs with the value
                                of --build-arg PACKAGE_MIN_AGE_DAYS; `rm -f|-rf <path>...` is
-                               applied; every other RUN takes effect only through run.json
+                               applied, and so are `systemctl disable <unit>...` (its links in
+                               /etc/systemd/system/*.wants and *.requires go), `systemctl mask
+                               <unit>...` and `ln -s /dev/null <path>` (links to /dev/null); every
+                               other RUN takes effect only through run.json
         ARG, others            ignored
       Every instruction adds a layer.
   podman image mount TAG       prints the rootfs directory
@@ -205,6 +209,7 @@ def build(argv, call):
                     layers = json.load(f)
             else:
                 layers = ["sha256:" + hashlib.sha256(ref.encode()).hexdigest()]
+                effects(ref, rootfs)
         elif verb == "COPY":
             *sources, dest = rest.split()
             for s in sources:
@@ -228,6 +233,22 @@ def build(argv, call):
                         shutil.rmtree(p)
                     elif os.path.lexists(p):
                         os.remove(p)
+            for m in re.finditer(r"\bsystemctl disable ((?:[\w@.\\-]+ ?)+)", rest):
+                etc = inside(rootfs, "/etc/systemd/system")
+                for unit in m.group(1).split():
+                    for d in (os.listdir(etc) if os.path.isdir(etc) else []):
+                        link = os.path.join(etc, d, unit)
+                        if d.endswith((".wants", ".requires")) and os.path.lexists(link):
+                            os.remove(link)
+            masks = [f"/etc/systemd/system/{u}" for m in re.finditer(r"\bsystemctl mask ((?:[\w@.\\-]+ ?)+)", rest)
+                     for u in m.group(1).split()]
+            masks += re.findall(r"\bln -sf? /dev/null (/\S+)", rest)
+            for path in masks:
+                p = inside(rootfs, path)
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                if os.path.lexists(p):
+                    os.remove(p)
+                os.symlink("/dev/null", p)
             effects(rest, rootfs)
         if verb != "ARG":
             layers.append("sha256:" + hashlib.sha256(f"{tag} {len(layers)} {verb} {rest}".encode()).hexdigest())

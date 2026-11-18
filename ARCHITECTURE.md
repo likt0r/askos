@@ -198,6 +198,12 @@ flowchart LR
 - Each VM uses one **Image** (see Images and Builds below): the **Base image**, a Fedora
   bootc image built from `vm/Containerfile` with agents, Orca, Node, Bun, uv, Rust, Podman
   with Docker Compose and every **Safeguard**, or an Image built on it.
+- No VM runs sshd. fedora-bootc enables `sshd.service` with OpenSSH's password login on; the
+  Base image disables it, keeps it off at first boot (`10-agentbox.preset`) and fixes its
+  configuration (`/etc/ssh/sshd_config.d/10-agentbox.conf`): SSH only by key and only as
+  `agent`, a Safeguard (see Images and Builds). It masks Fedora's `sshd@.service`, whose command
+  line adds keys from `~/.ssh`, and systemd's `systemd-ssh-generator`, which would offer it on a
+  local socket.
 - **System disk** is a copy-on-write layer over a **Build** of the VM's Image and is replaced
   on every **Reset**.
   **Data disk** keeps repositories, Orca's identity and pairings, agent transcripts, build
@@ -782,9 +788,24 @@ Host after every Build
   in systemd's `DefaultEnvironment`, which reaches `orca serve`, the agents and terminals it
   starts, and exported last by `/etc/profile.d/agentbox.sh` for shells; see Credentials for
   why), and that the merged `DefaultEnvironment` sets no variable that switches a Safeguard
-  off. A derived Image must also be built on the Base Build's layers, keep every Safeguard
-  file, the Git hooks and the guest-agent wrappers identical to the Base Build's manifest, and
-  add or change files where environment or configuration is read (Claude Code's managed
+  off. It reads sshd's configuration from its files as sshd reads them, never by running
+  `sshd -T` from the Image: the main file with each `Include` where it stands, its files in
+  name order, the first value of a keyword winning and `AllowUsers` and `HostKey` adding up.
+  Only files in `/etc` and `/usr`, where the agent cannot write at runtime, count: an
+  `Include` or a link that leads elsewhere fails the check, and so does a `Match` block. The
+  values must be: no password or keyboard-interactive login, `publickey` only, no root login,
+  `AllowUsers agent`, the key file and every host key in the root-owned `/run/agentbox/ssh`
+  (never `~/.ssh`), no `AuthorizedKeysCommand` or `TrustedUserCAKeys`, `AllowTcpForwarding
+  local`, no agent, X11, stream-local or tunnel forwarding, no `GatewayPorts`, no
+  `PermitUserEnvironment`. sshd must not start by itself: `sshd.service` and `sshd.socket` must
+  not be enabled, the presets must disable both (systemd applies them again at a VM's first
+  boot), and `sshd@.service` and `systemd-ssh-generator` must stay masked. `/etc/sysconfig/sshd`
+  must add no `OPTIONS` to sshd's command line. Like the rest of the check, this catches
+  mistakes and convenient edits, not an Image made to get past it
+  ([ADR 0019](docs/adr/0019-the-host-and-what-its-owner-writes-are-trusted.md)). A derived
+  Image must also be built on the Base Build's layers, keep every Safeguard file, the Git
+  hooks and the guest-agent wrappers identical to the Base Build's manifest, and add or
+  change files where environment or configuration is read (Claude Code's managed
   settings in `/etc/claude-code` among them, read as decoded JSON like Claude Code reads
   them; one that does not parse fails) only without mentioning a Safeguard. A failed check
   discards the Build.

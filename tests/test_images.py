@@ -45,8 +45,36 @@ OLD = "20261101"                       # the Build of the Base image the harness
 IMAGES = "var/lib/agentbox/images"
 VM_SOURCE = "usr/share/agentbox/vm"    # where the Release a checkout's CLI names installs them
 GUEST_TOOLS = ("agentbox-gh-token", "git-credential-agentbox", "gh")    # what vm/Containerfile copies
+# what quay.io/fedora/fedora-bootc:44 brings that the safeguard check reads (the fake's FROM
+# starts empty): OpenSSH's configuration as Fedora ships it (no PasswordAuthentication, so
+# OpenSSH's yes; X11Forwarding yes) and sshd.service enabled by Fedora's preset
+SSHD_CONFIG = ("#\tOpenBSD: sshd_config\n# To modify the system-wide sshd configuration, create a *.conf file under\n"
+               "#  /etc/ssh/sshd_config.d/  which will be automatically included below\n"
+               "Include /etc/ssh/sshd_config.d/*.conf\n#Port 22\n#PermitRootLogin prohibit-password\n"
+               "AuthorizedKeysFile\t.ssh/authorized_keys\n#PasswordAuthentication yes\n"
+               "# Example of overriding settings on a per-user basis\n#Match User anoncvs\n"
+               "#\tX11Forwarding no\nSubsystem\tsftp\t/usr/libexec/openssh/sftp-server\n")
+FEDORA = {
+    "/etc/ssh/sshd_config": SSHD_CONFIG,
+    "/etc/ssh/sshd_config.d/50-redhat.conf": (
+        "Include /etc/crypto-policies/back-ends/opensshserver.config\nSyslogFacility AUTHPRIV\n"
+        "GSSAPIAuthentication yes\nGSSAPICleanupCredentials no\nUsePAM yes\nX11Forwarding yes\nPrintMotd no\n"),
+    # a link into /usr/share/crypto-policies, as on fedora-bootc
+    "/etc/crypto-policies/back-ends/opensshserver.config": {
+        "symlink": "/usr/share/crypto-policies/DEFAULT/opensshserver.txt"},
+    "/usr/share/crypto-policies/DEFAULT/opensshserver.txt": "Ciphers aes256-gcm@openssh.com,aes128-gcm@openssh.com\n",
+    "/usr/lib/systemd/system-preset/90-default.preset": "enable sshd.service\nenable chronyd.service\n",
+    "/usr/lib/systemd/system/sshd.service": "[Service]\nExecStart=/usr/sbin/sshd -D $OPTIONS\n"
+                                            "[Install]\nWantedBy=multi-user.target\n",
+    "/usr/lib/systemd/system/sshd@.service": (
+        '[Service]\nExecStart=-/usr/sbin/sshd -i $OPTIONS -o "AuthorizedKeysFile '
+        '${CREDENTIALS_DIRECTORY}/ssh.ephemeral-authorized_keys-all .ssh/authorized_keys"\nStandardInput=socket\n'),
+    "/usr/lib/systemd/system/sshd.socket": "[Socket]\nListenStream=22\nAccept=yes\n[Install]\nWantedBy=sockets.target\n",
+    "/etc/systemd/system/multi-user.target.wants/sshd.service": {"symlink": "/usr/lib/systemd/system/sshd.service"},
+}
 # what the RUN lines of vm/Containerfile that podman cannot run here leave in the image
 RUN_EFFECTS = {
+    "fedora-bootc": FEDORA,
     # npm 12 replaces Fedora's npm, its builtin configuration (globalconfig=/etc/npmrc) included
     "npm@12": {"/usr/lib/node_modules/npm/package.json": '{"name": "npm", "version": "12.1.0"}'},
     "@anthropic-ai/claude-code": {
@@ -373,6 +401,38 @@ class ReleaseSourceTest(ImagesTest):
         self.assertEqual(self.current(), f"base-{OLD}.qcow2")
         self.assertEqual(self.podman("run"), [])          # no disk made
 
+    def test_a_release_leaving_sshd_on_is_discarded(self):
+        """#127: without the drop-in sshd keeps Fedora's password login, without the disable line
+        it starts at every boot, and without the masks sshd@.service and systemd's ssh generator
+        stay."""
+        os.remove(os.path.join(self.source, "vm/files", safeguards.SSHD_DROPIN.lstrip("/")))
+        containerfile = os.path.join(self.source, "vm/Containerfile")
+        with open(containerfile) as f:
+            text = f.read()
+        with open(containerfile, "w") as f:
+            f.write(re.sub(r"    && (systemctl (disable|mask) sshd|mkdir -p /etc/systemd/system-gen|ln -s /dev/null).*\n",
+                           "", text))
+        code, out = self.build()
+        self.assertEqual(code, 1, out)
+        new = self.newest()
+        self.assertEqual(new["status"], "rejected")
+        for p in ("sshd: PasswordAuthentication is not set instead of no",
+                  "sshd: X11Forwarding is yes instead of no (/etc/ssh/sshd_config.d/50-redhat.conf)",
+                  "sshd: AuthorizedKeysFile is .ssh/authorized_keys instead of /run/agentbox/ssh/authorized_keys "
+                  "(/etc/ssh/sshd_config)",
+                  "sshd: sshd.service is enabled (/etc/systemd/system/multi-user.target.wants/sshd.service)",
+                  "sshd: /etc/systemd/system-generators/systemd-ssh-generator is not masked",
+                  "sshd: /etc/systemd/system/sshd@.service is not masked"):
+            self.assertIn(p, new["problems"])
+
+    def test_the_release_ships_no_links_in_the_images(self):
+        """The RPM keeps only directories and files of the Release (rpm/agentbox.spec), so a link
+        in vm/ would be missing from every Build: the Containerfile makes them."""
+        links = [os.path.join(d, n) for d, dirs, files in os.walk(os.path.join(REPO, "vm"))
+                 for n in dirs + files if os.path.islink(os.path.join(d, n))]
+        self.assertEqual(links, [])
+        self.assertEqual(self.current(), f"base-{OLD}.qcow2")
+
     def test_builds_from_before_name_the_commit_of_main(self):
         """Records written before ADR 0010 hold the repository and the commit, no Release."""
         build = "20261102-030000"
@@ -634,6 +694,150 @@ class SafeguardTest(ImagesTest):
         self.image("weak", DERIVED + f"COPY cleanup {safeguards.CONTAINER_IMAGES_WRAPPER}\n", cleanup=changed)
         self.rejected("weak", "agentbox-container-images differs (compared with the Base image)")
 
+    def test_the_base_image_turns_sshd_off_and_lets_only_agent_in_by_key(self):
+        """#127: fedora-bootc enables sshd with password login on; the Base image disables it,
+        keeps it off at first boot and fixes its configuration, read as sshd reads it."""
+        self.assertEqual(self.builds()[self.base]["problems"], [])
+        rootfs = self.rootfs("base", self.base)
+        self.assertEqual(safeguards._enabled(rootfs, "sshd.service"), [])
+        self.assertEqual(safeguards.preset(rootfs, "sshd.service"), ("disable", safeguards.SSHD_PRESET))
+        self.assertEqual(safeguards.preset(rootfs, "sshd.socket"), ("disable", safeguards.SSHD_PRESET))
+        self.assertEqual(safeguards.preset(rootfs, "chronyd.service")[0], "enable")
+        first, lists, problems = safeguards.sshd_config(rootfs)
+        self.assertEqual(problems, [])
+        # the drop-in sorts before Fedora's 50-redhat.conf and wins over the main file below the Include
+        self.assertEqual(first["passwordauthentication"], ("no", safeguards.SSHD_DROPIN))
+        self.assertEqual(first["x11forwarding"], ("no", safeguards.SSHD_DROPIN))
+        self.assertEqual(first["authorizedkeysfile"], ("/run/agentbox/ssh/authorized_keys", safeguards.SSHD_DROPIN))
+        self.assertEqual(first["usepam"], ("yes", "/etc/ssh/sshd_config.d/50-redhat.conf"))
+        self.assertEqual(lists, {"allowusers": ["agent"], "hostkey": ["/run/agentbox/ssh/host_key"]})
+        # Fedora's sshd@.service (sshd -o "AuthorizedKeysFile ... .ssh/authorized_keys") is masked, and
+        # so is systemd's generator that would start it on a local socket
+        self.assertTrue(safeguards._masked(rootfs, "/etc/systemd/system", "sshd@.service"))
+        self.assertTrue(safeguards._masked(rootfs, "/etc/systemd/system-generators", "systemd-ssh-generator"))
+
+    def sshd_rejected(self, cases):
+        """Each (name, Containerfile lines, files, run.json effects, problem) builds a derived Image
+        the check discards."""
+        with open(os.path.join(self.dir, "run.json")) as f:
+            effects = json.load(f)
+        for name, lines, files, run, problem in cases:
+            with self.subTest(name):
+                with open(os.path.join(self.dir, "run.json"), "w") as f:
+                    json.dump({**effects, **run}, f)
+                self.image(name, DERIVED + lines, **files)
+                self.journald.datagrams.clear()
+                self.forget_calls()
+                self.rejected(name, problem)
+
+    def test_a_weakened_sshd_configuration_is_rejected(self):
+        """#127: password or keyboard-interactive login, root, another key file, a keys command or
+        CA, more than local forwarding, another user or host key, in a file that sorts first, in
+        the main file or behind a Match, and an Include or a link that leads out of /etc and /usr,
+        all discard the Build."""
+        drop = "COPY x.conf /etc/ssh/sshd_config.d/00-x.conf\n"
+        cases = [(name, drop, {"x.conf": conf}, {}, problem) for name, conf, problem in (
+            ("password", "PasswordAuthentication yes\n", "sshd: PasswordAuthentication is yes instead of no "
+                                                         "(/etc/ssh/sshd_config.d/00-x.conf)"),
+            ("kbd", "ChallengeResponseAuthentication yes\n", "sshd: KbdInteractiveAuthentication is yes instead of no"),
+            ("root", "permitrootlogin=prohibit-password\n", "sshd: PermitRootLogin is prohibit-password instead of no"),
+            ("homekeys", 'AuthorizedKeysFile ".ssh/authorized_keys"\n',
+             "sshd: AuthorizedKeysFile is .ssh/authorized_keys instead of /run/agentbox/ssh/authorized_keys"),
+            ("command", "AuthorizedKeysCommand /usr/bin/cat\n", "sshd: AuthorizedKeysCommand is /usr/bin/cat"),
+            ("ca", "TrustedUserCAKeys /etc/ssh/ca.pub\n", "sshd: TrustedUserCAKeys is /etc/ssh/ca.pub"),
+            ("remote", "AllowTcpForwarding yes\n", "sshd: AllowTcpForwarding is yes instead of local"),
+            ("agentfwd", "AllowAgentForwarding yes\n", "sshd: AllowAgentForwarding is yes instead of no"),
+            ("gateway", "GatewayPorts clientspecified\n", "sshd: GatewayPorts is clientspecified instead of no"),
+            ("users", "AllowUsers root\n", "sshd: AllowUsers is root agent instead of agent"),
+            ("hostkey", "HostKey /etc/ssh/ssh_host_ed25519_key\n",
+             "sshd: HostKey is /etc/ssh/ssh_host_ed25519_key /run/agentbox/ssh/host_key, not only in /run/agentbox/ssh"),
+            ("match", "Match Address 10.77.0.0/16\n  PasswordAuthentication yes\n",
+             "sshd: /etc/ssh/sshd_config.d/00-x.conf has a Match block (line 1); the Image allows none"),
+            ("skey", "SKeyAuthentication yes\n", "sshd: KbdInteractiveAuthentication is yes instead of no"),
+            ("dirglob", "Include /etc/ssh/*/x.conf\n",
+             "sshd: Include /etc/ssh/*/x.conf has a wildcard in a directory (/etc/ssh/sshd_config.d/00-x.conf)"),
+            ("hostdsakey", "HostDSAKey /etc/ssh/ssh_host_ed25519_key\n",
+             "sshd: HostKey is /etc/ssh/ssh_host_ed25519_key /run/agentbox/ssh/host_key, not only in"),
+            # ~ is the home of whoever runs sshd
+            ("tilde", "Include ~x.conf\n", "sshd: Include ~x.conf is a pattern the check does not read"),
+            ("home", "Include /var/home/agent/.config/sshd/*.conf\n",
+             "sshd: Include /var/home/agent/.config/sshd/*.conf leads out of /etc and /usr"),
+            ("pubkey", "PubkeyAuthentication no\n", "sshd: PubkeyAuthentication is no instead of yes"),
+            ("methods", "AuthenticationMethods any\n", "sshd: AuthenticationMethods is any instead of publickey"),
+            ("methodscase", "AuthenticationMethods PUBLICKEY\n",
+             "sshd: AuthenticationMethods is PUBLICKEY instead of publickey"),
+            ("hostbased", "HostbasedAuthentication yes\n", "sshd: HostbasedAuthentication is yes instead of no"),
+            ("x11", "X11Forwarding yes\n", "sshd: X11Forwarding is yes instead of no"),
+            ("streamlocal", "AllowStreamLocalForwarding all\n", "sshd: AllowStreamLocalForwarding is all instead of no"),
+            ("tunnel", "PermitTunnel yes\n", "sshd: PermitTunnel is yes instead of no"),
+            ("userenv", "PermitUserEnvironment yes\n", "sshd: PermitUserEnvironment is yes instead of no"))]
+        # a link to where the agent writes at runtime
+        cases.append(("homelink", "RUN ln -s /var/home/agent/x.conf /etc/ssh/sshd_config.d/00-x.conf\n", {},
+                      {"ln -s /var/home/agent/x.conf": {"/etc/ssh/sshd_config.d/00-x.conf":
+                                                        {"symlink": "/var/home/agent/x.conf"}}},
+                      "sshd: Include /etc/ssh/sshd_config.d/*.conf leads out of /etc and /usr (/etc/ssh/sshd_config)"))
+        # the main file itself in a place the agent writes at runtime
+        cases.append(("mainlink", "RUN ln -sf /run/user/1000/sshd_config /etc/ssh/sshd_config\n", {},
+                      {"ln -sf /run/user/1000/sshd_config": {
+                          "/etc/ssh/sshd_config": {"symlink": "/run/user/1000/sshd_config"},
+                          "/run/user/1000/sshd_config": SSHD_CONFIG}},
+                      "sshd: /etc/ssh/sshd_config leads out of /etc and /usr"))
+        cases.append(("main", "COPY sshd_config /etc/ssh/sshd_config\n",
+                      {"sshd_config": "PasswordAuthentication yes\n" + SSHD_CONFIG}, {},
+                      "sshd: PasswordAuthentication is yes instead of no (/etc/ssh/sshd_config)"))
+        cases.append(("noinclude", "COPY sshd_config /etc/ssh/sshd_config\n",
+                      {"sshd_config": SSHD_CONFIG.replace("Include ", "#Include ")}, {},
+                      "sshd: PasswordAuthentication is not set instead of no"))
+        self.sshd_rejected(cases)
+
+    def test_sshd_starting_by_itself_is_rejected(self):
+        """#127: sshd.service or sshd.socket enabled, a preset that enables one at first boot,
+        sshd@.service or systemd's ssh generator not masked, or options for sshd's command line
+        in /etc/sysconfig/sshd discard the Build."""
+        wants = {"service": "/etc/systemd/system/multi-user.target.wants/sshd.service",
+                 "socket": "/usr/lib/systemd/system/sockets.target.wants/sshd.socket"}
+        self.sshd_rejected([
+            ("service", "RUN systemctl enable sshd.service\n", {},
+             {"systemctl enable sshd.service": {wants["service"]: {"symlink": "/usr/lib/systemd/system/sshd.service"}}},
+             f"sshd: sshd.service is enabled ({wants['service']})"),
+            ("socket", "RUN ln -s ../sshd.socket /usr/lib/systemd/system/sockets.target.wants/\n", {},
+             {"ln -s ../sshd.socket": {wants["socket"]: {"symlink": "../sshd.socket"}}},
+             f"sshd: sshd.socket is enabled ({wants['socket']})"),
+            ("preset", "COPY x.preset /etc/systemd/system-preset/05-x.preset\n", {"x.preset": "enable sshd*\n"}, {},
+             "sshd: the presets enable sshd.service at first boot (/etc/systemd/system-preset/05-x.preset)"),
+            ("nopreset", "COPY empty /usr/lib/systemd/system-preset/10-agentbox.preset\n", {"empty": ""}, {},
+             "sshd: the presets enable sshd.socket at first boot"),
+            ("options", "COPY sshd /etc/sysconfig/sshd\n", {"sshd": 'OPTIONS="-o PasswordAuthentication=yes"\n'}, {},
+             "sshd: /etc/sysconfig/sshd adds OPTIONS to sshd's command line"),
+            ("attached", "RUN ln -s /usr/lib/systemd/system/sshd.service /etc/systemd/system.attached/x.wants/\n", {},
+             {"systemd/system.attached": {"/etc/systemd/system.attached/multi-user.target.wants/sshd.service":
+                                          {"symlink": "/usr/lib/systemd/system/sshd.service"}}},
+             "sshd: sshd.service is enabled (/etc/systemd/system.attached/multi-user.target.wants/sshd.service)"),
+            ("generator", "RUN rm -f /etc/systemd/system-generators/systemd-ssh-generator\n", {}, {},
+             "sshd: /etc/systemd/system-generators/systemd-ssh-generator is not masked"),
+            ("unmasked", "RUN rm -f /etc/systemd/system/sshd@.service\n", {}, {},
+             "sshd: /etc/systemd/system/sshd@.service is not masked"),
+            ("upholds", "RUN ln -s ../sshd.service /etc/systemd/system/multi-user.target.upholds/\n", {},
+             {"multi-user.target.upholds": {"/etc/systemd/system/multi-user.target.upholds/sshd.service":
+                                            {"symlink": "../sshd.service"}}},
+             "sshd: sshd.service is enabled (/etc/systemd/system/multi-user.target.upholds/sshd.service)"),
+        ])
+
+    def test_harmless_sshd_settings_are_fine(self):
+        """A file of its own that changes nothing the Safeguard holds passes, and so do Fedora's own
+        empty OPTIONS."""
+        self.image("motd", DERIVED + "COPY x.conf /etc/ssh/sshd_config.d/60-x.conf\nCOPY sshd /etc/sysconfig/sshd\n",
+                   **{"x.conf": "Banner /etc/issue.net\nPasswordAuthentication yes\nPidFile /run/sshd.pid\n"
+                                "ModuliFile /etc/ssh/moduli\n",
+                      "sshd": "# OPTIONS=\nOPTIONS=\"\"\n"})
+        self.built("motd")
+
+    def test_crlf_lines_read_as_sshd_reads_them(self):
+        """sshd takes a trailing carriage return as a blank: a compliant drop-in written with CRLF passes."""
+        self.image("crlf", DERIVED + "COPY x.conf /etc/ssh/sshd_config.d/00-x.conf\n",
+                   **{"x.conf": "PasswordAuthentication no\r\nAuthenticationMethods publickey\r\n"})
+        self.built("crlf")
+
     def test_an_image_not_built_on_the_base_build_is_rejected(self):
         self.image("weak", "FROM quay.io/fedora/fedora-bootc:44\nRUN dnf -y install clang\n")
         self.rejected("weak", f"not built on the Base Build {self.base}", "npm: global configuration")
@@ -694,6 +898,84 @@ class SafeReadTest(unittest.TestCase):
         self.assertEqual(len(safeguards.read(self.root, "/etc/gitconfig")), safeguards.MAX_READ)
         problems, _, _ = safeguards.check(self.root, 2)
         self.assertFalse([p for p in problems if "cannot be checked" in p])
+
+
+class SshdConfigTest(unittest.TestCase):
+    """#127: the check reads sshd's configuration as sshd does: Includes where they stand, in
+    name order, hidden files left out, the first value winning, AllowUsers and HostKey adding up."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="sshd-")
+        self.addCleanup(shutil.rmtree, self.root)
+
+    def files(self, files):
+        for rel, content in files.items():
+            path = os.path.join(self.root, rel.lstrip("/"))
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(content)
+
+    TREE = {
+        "etc/ssh/sshd_config": "Include sshd_config.d/*.conf\nInclude /etc/ssh/extra/b /etc/ssh/extra/a\n"
+                               "PasswordAuthentication yes\nAllowUsers agent\nX11Forwarding = yes\n",
+        "etc/ssh/sshd_config.d/20-b.conf": "x11forwarding no\nGatewayPorts=no # a comment\n",
+        "etc/ssh/sshd_config.d/10-a.conf": "Include /etc/ssh/nested.conf\n\tPermitRootLogin no\n",
+        "etc/ssh/sshd_config.d/.00-hidden.conf": "PermitRootLogin yes\n",
+        "etc/ssh/sshd_config.d/05-a.txt": "PermitRootLogin yes\n",
+        "etc/ssh/nested.conf": "AuthorizedKeysFile \"/run/agentbox/ssh/authorized_keys\" /a#b 'c d' #e\n"
+                               "AllowUsers bob\n",
+        "etc/ssh/extra/a": "PasswordAuthentication no\nHostKey /a\n",
+        "etc/ssh/extra/b": "HostKey /b\nAllowTcpForwarding remote\n",
+    }
+
+    def test_includes_in_order_and_the_first_value_wins(self):
+        self.files(self.TREE)
+        first, lists, problems = safeguards.sshd_config(self.root)
+        self.assertEqual(problems, [])
+        self.assertEqual(first["permitrootlogin"], ("no", "/etc/ssh/sshd_config.d/10-a.conf"))
+        self.assertEqual(first["x11forwarding"], ("no", "/etc/ssh/sshd_config.d/20-b.conf"))
+        self.assertEqual(first["gatewayports"], ("no", "/etc/ssh/sshd_config.d/20-b.conf"))
+        self.assertEqual(first["passwordauthentication"], ("no", "/etc/ssh/extra/a"))
+        self.assertEqual(first["authorizedkeysfile"], ("/run/agentbox/ssh/authorized_keys /a#b c d", "/etc/ssh/nested.conf"))
+        self.assertEqual(lists, {"allowusers": ["bob", "agent"], "hostkey": ["/b", "/a"]})
+
+    @unittest.skipUnless(os.path.exists("/usr/sbin/sshd"), "needs OpenSSH's sshd")
+    def test_sshd_itself_reads_the_same(self):
+        """The same files read by `sshd -G` (which needs no host keys), the Host's own files
+        replaced by these: the check and sshd agree on every value the Safeguard holds."""
+        tree = {rel.replace("etc/ssh", "conf"): content.replace("/etc/ssh/", f"{self.root}/conf/")
+                .replace("Include sshd_config.d", f"Include {self.root}/conf/sshd_config.d")
+                for rel, content in self.TREE.items()}
+        self.files(tree)
+        main = f"{self.root}/conf/sshd_config"
+        r = subprocess.run(["/usr/sbin/sshd", "-G", "-f", main], capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        seen = {}
+        for line in r.stdout.splitlines():
+            key, _, value = line.partition(" ")
+            seen.setdefault(key, []).append(value)
+        with mock.patch.object(safeguards, "SSHD_CONFIG", main), \
+                mock.patch.object(safeguards, "SSHD_INCLUDE_ROOTS", (self.root + "/",)):
+            first, lists, problems = safeguards.sshd_config("/")
+        self.assertEqual(problems, [])
+        for keyword in ("passwordauthentication", "permitrootlogin", "x11forwarding", "gatewayports",
+                        "authorizedkeysfile", "allowtcpforwarding"):
+            self.assertEqual(seen[keyword], [first[keyword][0]], keyword)
+        self.assertEqual(seen["allowusers"], lists["allowusers"])
+        self.assertEqual(seen["hostkey"], lists["hostkey"])
+
+    def test_a_missing_main_file_an_include_loop_and_a_broken_line_are_problems(self):
+        self.assertIn("sshd: /etc/ssh/sshd_config is missing", safeguards.sshd_config(self.root)[2])
+        self.files({"etc/ssh/sshd_config": "Include sshd_config\n"})
+        self.assertIn("sshd: Include nested deeper than 16 (/etc/ssh/sshd_config)", safeguards.sshd_config(self.root)[2])
+        self.files({"etc/ssh/sshd_config": 'AuthorizedKeysFile "/run/agentbox/ssh/authorized_keys\n'})
+        self.assertEqual(safeguards.sshd_config(self.root)[2], ["sshd: line 1 of /etc/ssh/sshd_config cannot be read"])
+
+    def test_a_link_out_of_the_image_is_not_followed(self):
+        self.files({"outside.conf": "PasswordAuthentication no\n", "etc/ssh/sshd_config": "Include /etc/ssh/x.conf\n"})
+        # an absolute target counts from the Image's root, never the Host's
+        os.symlink(os.path.join(self.root, "outside.conf"), os.path.join(self.root, "etc/ssh/x.conf"))
+        self.assertNotIn("passwordauthentication", safeguards.sshd_config(self.root)[0])
 
 
 class AllTest(ImagesTest):
