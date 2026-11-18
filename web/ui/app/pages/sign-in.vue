@@ -1,15 +1,21 @@
 <script setup lang="ts">
-// Sign-in with the Control Room password (POST /api/v1/session). After five failures in
-// 15 minutes the backend refuses for a while (429 + Retry-After): the form waits that long.
+// Sign-in with the Control Room password (POST /api/v1/session), or with a sign-in link from
+// the Host (`agentbox sign-in-link`, /sign-in#link=<token>): the page takes the token out of
+// the address first, then sends it once; a refused link leaves the password form. After five
+// failures in 15 minutes (passwords and links) the backend refuses for a while (429 +
+// Retry-After): the form waits that long.
 definePageMeta({ layout: 'bare', titleKey: 'signIn.title' })
 
 const { t } = useI18n()
 const route = useRoute()
+const router = useRouter()
 const session = useSession()
 const errorText = useErrorText()
 const now = useNow(250)
 
 const password = ref('')
+const link = linkFromHash(route.hash)
+const withLink = ref(link !== null)
 const busy = ref(false)
 const error = ref<unknown>(null)
 const lockedUntil = ref(0)
@@ -24,12 +30,11 @@ const message = computed(() => {
   return errorText(error.value)
 })
 
-async function submit() {
-  if (busy.value || locked.value || !password.value) return
+async function attempt(signIn: () => Promise<void>) {
   busy.value = true
   error.value = null
   try {
-    await session.signIn(password.value)
+    await signIn()
     password.value = ''
     await navigateTo(safeRedirect(route.query.redirect), { replace: true })
   }
@@ -44,6 +49,25 @@ async function submit() {
     busy.value = false
   }
 }
+
+async function submit() {
+  if (busy.value || locked.value || !password.value) return
+  await attempt(() => session.signIn(password.value))
+}
+
+onMounted(async () => {
+  if (link === null) return
+  busy.value = true
+  try {
+    // out of the address bar and this history entry before it is sent
+    await router.replace({ path: route.path, query: route.query, hash: '' })
+    await attempt(() => session.signInWithLink(link))
+  }
+  finally {
+    withLink.value = false
+    busy.value = false
+  }
+})
 </script>
 
 <template>
@@ -65,7 +89,15 @@ async function submit() {
 
     <form class="space-y-4" novalidate data-testid="sign-in-form" @submit.prevent="submit">
       <UAlert
-        v-if="route.query.expired && !error"
+        v-if="withLink"
+        color="info"
+        variant="subtle"
+        icon="i-lucide-link"
+        :title="t('signIn.withLink')"
+        data-testid="sign-in-link"
+      />
+      <UAlert
+        v-else-if="route.query.expired && !error"
         color="info"
         variant="subtle"
         icon="i-lucide-info"

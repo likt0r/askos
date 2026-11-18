@@ -54,6 +54,11 @@ const ENTRIES: ActivityEntry[] = [
   coded(20, 'container-image-cleanup.removed', { removed: '2', freed_bytes: '1610612736', days: '7' }, 'Container image cleanup removed 2'),
   coded(21, 'container-image-cleanup.failed', { days: '7' }, 'Container image cleanup failed',
     { outcome: 'failed', error: 'guest_agent_unavailable', error_params: {} }),
+  // a sign-in link: made on the Host, used in a browser, refused
+  coded(22, 'sign-in-link', {}, 'Create a sign-in link for the Control Room', { vm: null, kind: 'credentials', actor: 'owner' }),
+  coded(23, 'signin.link', {}, 'Signed in with a sign-in link', { vm: null, kind: 'signin' }),
+  coded(24, 'signin.link-refused', {}, 'Sign-in with a used, expired or unknown sign-in link',
+    { vm: null, kind: 'signin', outcome: 'failed' }),
 ]
 
 const STORED = ['Frobnicate x', 'Freigabe example.org', 'Pause: something new', 'Allow : No such VM: x',
@@ -86,6 +91,9 @@ const EN = [
   'Container image cleanup after 3 days',
   'Container image cleanup removed 2 Container images and freed 1.5 GiB',
   'Container image cleanup failed: The VM\'s guest agent does not answer.',
+  'Create a sign-in link for the Control Room',
+  'Signed in with a sign-in link',
+  'Sign-in with a used, expired or unknown sign-in link',
 ]
 
 const DE = [
@@ -107,6 +115,9 @@ const DE = [
   'Container-Images aufräumen nach 3 Tagen',
   'Container-Images aufräumen hat 2 Container-Images entfernt und 1.5 GiB frei gemacht',
   'Container-Images aufräumen fehlgeschlagen: Der Gast-Agent der VM antwortet nicht.',
+  'Anmeldelink für den Control Room erzeugen',
+  'Mit Anmeldelink angemeldet',
+  'Anmeldung mit benutztem, abgelaufenem oder unbekanntem Anmeldelink',
 ]
 
 async function list(entries: ActivityEntry[]) {

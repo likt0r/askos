@@ -46,12 +46,22 @@ export function useSession() {
     return state.authenticated
   }
 
-  async function signIn(password: string) {
-    const r = await api<SessionAnswer>('/session', { method: 'POST', body: { password } })
+  async function start(body: { password: string } | { link: string }) {
+    const r = await api<SessionAnswer>('/session', { method: 'POST', body })
     state.authenticated = true
     state.expires = r.expires ?? null
     state.defaultLanguage = language(r.default_language)
     state.known = true
+  }
+
+  /** Sign in with the Control Room password. */
+  async function signIn(password: string) {
+    await start({ password })
+  }
+
+  /** Sign in with the token of a sign-in link (`agentbox sign-in-link`), which works once. */
+  async function signInWithLink(link: string) {
+    await start({ link })
   }
 
   async function signOut() {
@@ -82,7 +92,7 @@ export function useSession() {
     state.defaultLanguage = language(value)
   }
 
-  return { state: readonly(state), refresh, signIn, signOut, markSignedOut, ended, setDefaultLanguage }
+  return { state: readonly(state), refresh, signIn, signInWithLink, signOut, markSignedOut, ended, setDefaultLanguage }
 }
 
 /** Tests only. */
