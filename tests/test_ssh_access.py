@@ -1,8 +1,10 @@
-"""SSH access to a VM through its SSH port (#129, ADR 0020), the tracer bullet in Local-only.
+"""SSH access to a VM through its SSH port (#129, #130, ADR 0020).
 
 `agentbox set-ssh`, `add-ssh-key` and `ssh` keep SSH access and the SSH keys in the VM's record,
 the Host makes the VM's host key once, `regenerate` and the commands write the fw_cfg file the
-VM reads at boot and the units of the SSH port (2200 + network number) while SSH access is on.
+VM reads at boot and the units of the SSH port (2200 + network number) while SSH access is on:
+on the loopback address in Local-only, on every address behind the firewall rules of the home
+network in Network mode (the fake firewall-cmd).
 The real CLI runs with AGENTBOX_ROOT pointing at a temporary root and the fakes of
 test_registry.py (openssl is the real one, as in test_github_app.py); the guest side
 (vm/files/usr/lib/agentbox/fwcfg-ssh, which guest-setup runs) against an fw_cfg file in a
@@ -45,6 +47,12 @@ DONE = "guest-setup: context work, Orca port 6801, the Host at 10.77.1.1\n"     
 # a key and its fingerprint as `ssh-keygen -lf` gives it
 LAPTOP = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f laptop"
 LAPTOP_FP = "SHA256:ZkAslGjFiUHdGf/WUL8rQvkib4PTvQatUV0OUQSncCA"
+# the firewall rules of the SSH ports in Network mode (the home network of vm_records.NETWORK_HOST):
+# the same zone and priorities as those of the Orca ports
+SSH_RULES = ['rule priority="-110" family="ipv4" source address="192.0.2.0/24" port port="2201-2454" protocol="tcp" '
+             'accept',
+             'rule priority="-100" family="ipv4" port port="2201-2454" protocol="tcp" reject',
+             'rule priority="-100" family="ipv6" port port="2201-2454" protocol="tcp" reject']
 
 
 def ssh_string(data):
@@ -517,13 +525,6 @@ class SetSshTest(SshTest):
         self.assertNotIn("ssh_access", self.record("priv"))
         self.assertEqual(self.activity(), [])
 
-    def test_the_ssh_port_listens_on_loopback_in_network_mode_too(self):
-        """Until the firewall rule of the SSH ports exists (#130), nothing beyond the Host reaches it."""
-        vm_records.write_host_setup(self.root)
-        self.ok("set-ssh", "work", "on")
-        self.assertIn("\nListenStream=127.0.0.1:2201\n", self.read(SOCKET.format("work")))
-        self.assertIn("\nListenStream=6801\n", self.read("etc/systemd/system/agentbox-gui-work.socket"))
-
     def test_regenerate_makes_the_units_only_while_ssh_access_is_on(self):
         rec = self.record()
         vm_records.write(self.root, {**rec, "ssh_access": True}, self.record("priv"))
@@ -665,6 +666,115 @@ class SetSshTest(SshTest):
                 _, err = p.communicate(timeout=60)
                 self.assertEqual(p.returncode, 0, err)
         self.assertEqual((self.record()["ssh_access"], len(self.record()["ssh_keys"])), (False, 1))
+
+
+class NetworkModeTest(SshTest):
+    """The SSH port in Network mode (#130): on every address like the Orca port, behind firewall
+    rules in the default zone that accept the home network on 2201-2454 and reject everything
+    else there, added by regenerate and by set-ssh before the port listens. Local-only has no
+    rule. The fake firewall-cmd keeps the zones in firewall.json."""
+
+    def rules(self, side="permanent"):
+        """The rich rules of the default zone."""
+        try:
+            with open(os.path.join(self.dir, "firewall.json")) as f:
+                return json.load(f)[side]["public"]["rich_rules"]
+        except FileNotFoundError:
+            return []
+
+    def firewall_changes(self):
+        """The firewall-cmd calls that change something: adding, removing, reloading."""
+        return [c["argv"] for c in self.calls("firewall-cmd")
+                if any(a.startswith(("--add-", "--remove-")) or a == "--reload" for a in c["argv"])]
+
+    def index(self, cmd, argv):
+        return next(i for i, c in enumerate(self.calls()) if c["cmd"] == cmd and c.get("argv") == argv)
+
+    def test_the_ssh_port_listens_on_every_address_behind_the_rules_of_the_home_network(self):
+        vm_records.write_host_setup(self.root)
+        self.ok("set-ssh", "work", "on")
+        self.assertIn("\nListenStream=2201\n", self.read(SOCKET.format("work")))
+        for side in ("permanent", "runtime"):
+            self.assertEqual(self.rules(side), SSH_RULES)
+        # the rules are loaded before systemd reads the new socket and opens it
+        reload = self.index("firewall-cmd", ["--reload"])
+        self.assertLess(reload, self.index("systemctl", ["daemon-reload"]))
+        self.assertLess(reload, self.index("systemctl", ["enable", "--now", "agentbox-ssh-work.socket"]))
+        # the Orca port the same way, once regenerate applies the Host setup
+        self.forget_calls()
+        self.assertEqual(self.json("regenerate")["ssh_rules"], 0)
+        self.assertIn("\nListenStream=6801\n", self.read("etc/systemd/system/agentbox-gui-work.socket"))
+        self.assertEqual(self.firewall_changes(), [])
+
+    def test_regenerate_adds_the_rules_without_setup_after_an_update(self):
+        # a Host in Network mode as the Release before left it: the SSH port on the loopback
+        # address and no rule for the SSH ports
+        vm_records.write_host_setup(self.root)
+        self.ok("set-ssh", "work", "on")
+        self.write(SOCKET.format("work"), self.read(SOCKET.format("work")).replace(
+            "ListenStream=2201", "ListenStream=127.0.0.1:2201"))
+        with open(os.path.join(self.dir, "firewall.json")) as f:
+            zones = json.load(f)
+        for side in ("permanent", "runtime"):
+            zones[side]["public"]["rich_rules"] = []
+        with open(os.path.join(self.dir, "firewall.json"), "w") as f:
+            json.dump(zones, f)
+        self.forget_calls()
+        code, out, err = self.run_agentbox("regenerate")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("3 firewall rules of the SSH ports added for the home network\n", out)
+        self.assertIn("work: changed sockets restarted on their new addresses\n", out)
+        self.assertIn("\nListenStream=2201\n", self.read(SOCKET.format("work")))
+        for side in ("permanent", "runtime"):
+            self.assertEqual(self.rules(side), SSH_RULES)
+        self.assertEqual(sorted(self.firewall_changes()), sorted(
+            [["--permanent", "--zone=public", f"--add-rich-rule={r}"] for r in SSH_RULES] + [["--reload"]]))
+        # the port moves to every address only after the rules are loaded
+        self.assertLess(self.index("firewall-cmd", ["--reload"]),
+                        self.index("systemctl", ["restart", "agentbox-ssh-work.socket"]))
+        # nothing changes the firewall when nothing changed: regenerate and set-ssh only ask
+        self.forget_calls()
+        self.assertEqual(self.json("regenerate")["ssh_rules"], 0)
+        self.assertEqual(self.ok("set-ssh", "work", "on"), "work: SSH access stays on\n")
+        self.assertEqual(self.firewall_changes(), [])
+
+    def test_the_rules_come_from_the_host_setup_also_without_ssh_access(self):
+        vm_records.write_host_setup(self.root)
+        self.assertEqual(self.json("regenerate")["ssh_rules"], 3)
+        self.assertEqual(self.rules(), SSH_RULES)
+        self.assertFalse(self.exists(SOCKET.format("work")))
+
+    def test_local_only_has_no_rule_and_asks_the_firewall_nothing(self):
+        self.ok("set-ssh", "work", "on")
+        self.assertEqual(self.json("regenerate")["ssh_rules"], 0)
+        self.assertIn("\nListenStream=127.0.0.1:2201\n", self.read(SOCKET.format("work")))
+        self.assertEqual(self.rules(), [])
+        # only regenerate's questions about the zone of the VM networks
+        self.assertEqual([c["argv"] for c in self.calls("firewall-cmd") if "--zone=libvirt" not in c["argv"]], [])
+
+    def test_without_the_rules_the_ssh_port_does_not_open(self):
+        vm_records.write_host_setup(self.root)
+        self.add()
+        self.scenario(firewall_down=True)
+        self.forget_calls()
+        code, out, err = self.run_input("set-ssh", "work", "on")
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("work: the change is saved, but not applied: ", err)
+        self.assertIn("agentbox regenerate finishes it", err)
+        self.assertFalse(self.exists(SOCKET.format("work")))
+        self.assertEqual(self.systemctl(), [])
+        # regenerate stops there as well, before any unit is written
+        code, _, err = self.run_agentbox("regenerate")
+        self.assertEqual(code, 1)
+        self.assertFalse(self.exists(SOCKET.format("work")))
+
+    def test_a_port_another_service_holds_is_named_without_the_loopback_address(self):
+        vm_records.write_host_setup(self.root)
+        self.listening(tcp=[("00000000:0899", "0A")])   # 0.0.0.0:2201
+        code, out, err = self.run_input("set-ssh", "work", "on")
+        self.assertNotEqual(code, 0)
+        self.assertIn("work: port 2201 is taken: another service listens there", err)
+        self.assertEqual(self.firewall_changes(), [])
 
 
 class AddWhileOffTest(SshTest):

@@ -128,7 +128,8 @@ Controls the agent VMs on this Host.
   agentbox observe <vm> [--json]                     pair the Host with Orca in the VM (for agent status)
   agentbox migrate [--json]                          take over work and priv into the VM registry once
   agentbox regenerate [--json]                       networks, units, disks and VM definitions from the registry,
-                                                     and the VMs' ports in the firewalld zone libvirt
+                                                     the VMs' ports in the firewalld zone libvirt and, in
+                                                     network mode, the firewall rules of the SSH ports
   agentbox maintenance [--json]                      (timer, daily at maintenance_time) the Maintenance window:
                                                      fetch the Feeds, check versions (with auto_update the
                                                      Builds of each Image with an update), the weekly rebuild

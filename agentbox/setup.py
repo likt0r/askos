@@ -8,10 +8,11 @@ is none, does the Host steps (hoststeps.py) and starts the Control Room.
   agentbox setup --mode network --bind ADDRESS --home-network CIDR [...]
   agentbox setup [--json]            on a Host set up already: the Host steps only
 
-Local-only (the default): the Control Room and the Orca ports are reachable only from the
-Host itself and no firewall rule is added for any network. Network mode: they are also
-reachable from the named home network, and only from it: the firewall accepts that network
-on the Control Room and Orca ports and rejects everything else on them.
+Local-only (the default): the Control Room, the Orca ports and the SSH ports are reachable
+only from the Host itself and no firewall rule is added for any network. Network mode: they
+are also reachable from the named home network, and only from it: the firewall accepts that
+network on the Control Room's, the Orca and the SSH ports and rejects everything else on them
+(firewall.py).
 
 The owner user (--owner-user, else the user who ran sudo) is stored in the Host setup: they
 go into the group libvirt. It has to be a person's account, and setup refuses to run through
@@ -28,8 +29,8 @@ setup twice cannot change how the Host is exposed: without options setup then do
 steps for the Host setup there is (after an update, or to finish a run that stopped; with
 --new-password it sets a new password besides), and with any other option it refuses.
 Activity records a new password, never its value. Settings, the VM registry, an existing
-certificate and the GitHub App are never touched; with --force the Orca ports of existing VMs
-and the firewall rules follow the new mode.
+certificate and the GitHub App are never touched; with --force the Orca and SSH ports of
+existing VMs and the firewall rules follow the new mode.
 
 The steps run in a fixed order (ARCHITECTURE.md, "Setting a Host up"); each changes
 only what differs, so a second run changes nothing. One that fails stops setup with a message
@@ -44,20 +45,15 @@ import sys
 import tempfile
 from getpass import getpass
 
-from . import firewall, generate, hoststeps, hostsetup, paths, programs, state_files
+from . import firewall, footprint, generate, hoststeps, hostsetup, paths, programs, state_files
 from .commands import declare
 from .errors import Fail, die
 
 MIN_PASSWORD = 16
 WEB_GROUP = "agentbox-web"
 WEB_UNIT = "agentbox-web.service"
+CONTROL_ROOM_PENDING = "control-room"      # a new Host setup the Control Room has not restarted onto
 
-# Orca port = 6800 + network number (1-254). The whole range is let through so a new VM
-# (agentbox create) needs no firewall change; only what a VM in the registry listens on
-# answers. Everything else on Orca ports, also the desktop runtime (6768-6799, 16768), is
-# rejected, like the Control Room's port.
-ORCA_ACCEPT = "6801-7054"
-ORCA_REJECT = ("6768-7054", "16768")
 NETWORK_OPTIONS = {"--bind": "bind", "--home-network": "home_network"}
 
 
@@ -176,30 +172,80 @@ def _fingerprint():
     return r.stdout.strip().partition("=")[2] or None
 
 
-def firewall_rules(setup):
-    """(accept, reject) rich rules of a Host setup; none in Local-only."""
-    if setup["mode"] != hostsetup.NETWORK:
-        return [], []
-    net, web = setup["home_network"], str(setup["web_port"])
-    accept = [f'rule priority="-110" family="ipv4" source address="{net}" port port="{p}" protocol="tcp" accept'
-              for p in (web, ORCA_ACCEPT)]
-    reject = [f'rule priority="-100" family="{fam}" port port="{p}" protocol="tcp" reject'
-              for p in (web, *ORCA_REJECT) for fam in ("ipv4", "ipv6")]
-    return accept, reject
+# the home-network rules a run of setup added, or found in the Host setup it replaces, until
+# the last step (_take_back) leaves only those the recorded Host setup needs
+NOTED = os.path.join(paths.STATE, "pending", "home-network-rules.json")
+
+
+def _noted():
+    rules = state_files.read_json(NOTED)
+    return [r for r in rules if isinstance(r, str)] if isinstance(rules, list) else []
+
+
+def _note(rules):
+    if rules:
+        state_files.directory(os.path.dirname(NOTED), 0o700, only_new=True)
+        state_files.write_json(NOTED, rules, 0o600)
+    else:
+        state_files.remove(NOTED)
+
+
+def _flat(setup):
+    return [r for rules in firewall.home_network_rules(setup) for r in rules] if setup else []
 
 
 def _firewall(new, old):
-    """Make the firewall match `new` (a Host setup): add its rules, remove those of `old`
-    that `new` no longer has. Nothing is called when there is nothing to do."""
-    add = [r for rules in firewall_rules(new) for r in rules]
-    drop = [r for r in (x for rules in firewall_rules(old) for x in rules) if r not in add] if old else []
-    if not add and not drop:
+    """Add the rules of `new` (a Host setup), before any port listens on every address. Every
+    rule it adds and every rule of `old` that `new` does not have is noted first (NOTED), so
+    _take_back can take back what the recorded Host setup does not need, also when this run
+    stops before `new` is recorded. Nothing is called when there is nothing to add."""
+    add, drop = _flat(new), _flat(old)
+    noted = _noted()
+    wanted = list(dict.fromkeys(noted + [r for r in add if r not in drop] + [r for r in drop if r not in add]))
+    if wanted != noted:
+        _note(wanted)
+    if not add:
         return []
-    changed = firewall.ensure(firewall.default_zone(), add=[("rich-rule", r) for r in add],
-                              remove=[("rich-rule", r) for r in drop])
-    counts = {verb: sum(1 for v, _, _ in changed if v == verb) for verb in ("add", "remove")}
-    return [f"{n} rules {word}" for verb, word in (("add", "added"), ("remove", "removed"))
-            for n in [counts[verb]] if n]
+    changed = firewall.ensure(firewall.default_zone(), add=[("rich-rule", r) for r in add])
+    # a rule that was there already is not agentbox's to take back
+    added = {value for _, _, value in changed}
+    kept = [r for r in wanted if r in noted or r in drop or r in added]
+    if kept != wanted:
+        _note(kept)
+    return [f"{len(changed)} rules added"] if changed else []
+
+
+def _still_listening():
+    """The VMs being deleted whose Orca or SSH port unit is still there: their sockets may
+    listen on every address, and regenerate rebinds only the VMs in the registry."""
+    return [m["record"]["name"] for m in footprint.being_deleted()
+            if any(os.path.exists(footprint.unit_file(footprint.unit_name(m["record"]["name"], kind)))
+                   for kind in ("gui.socket", "ssh.socket"))]
+
+
+def _take_back():
+    """The firewall reconciled with the recorded Host setup, once regenerate moved the Orca and
+    SSH port sockets and the Control Room was restarted onto it: every noted rule (NOTED) it
+    does not need is removed. Without any rule needed (Local-only) none goes while a VM being
+    deleted may still listen on every address."""
+    needed = _flat(hostsetup.load())
+    rules = [r for r in _noted() if r not in needed]
+    if not rules:
+        state_files.remove(NOTED)
+        return []
+    if not needed:
+        with state_files.locked(paths.REGISTRY):
+            names = _still_listening()
+        if names:
+            finish = ", ".join(f"agentbox delete {n} --confirm {n}" for n in names)
+            one = len(names) == 1
+            die(f"the rules of Network mode stay while {', '.join(names)} {'is' if one else 'are'} being deleted: "
+                f"{'its' if one else 'their'} Orca and SSH ports may still listen on every address. Finish the "
+                f"delete with {finish}",
+                error="action_failed", vms=names)
+    changed = firewall.ensure(firewall.default_zone(), remove=[("rich-rule", r) for r in rules])
+    state_files.remove(NOTED)
+    return [f"{len(changed)} rules removed"] if changed else []
 
 
 def _sudo_user():
@@ -256,7 +302,8 @@ def setup(args):
             + " (with --password-file, --password-stdin or the prompt)", error="invalid_argument",
             option="--new-password")
     if again:
-        new, old, record = hostsetup.load(), None, None     # a record that makes no sense stops here
+        new, record = hostsetup.load(), None     # a record that makes no sense stops here
+        old = new           # the recorded Host setup stays (owner_user aside, which no rule names)
         # a Host setup without owner_user (written by setup before it kept one) gets it once,
         # from --owner-user or the sudo user; a recorded one changes only with --force.
         # --new-password (with --password-file/--password-stdin or the prompt) sets a new
@@ -340,6 +387,8 @@ def setup(args):
     def host_setup_and_regenerate():
         with state_files.locked(paths.REGISTRY):
             if record is not None:
+                if not again:       # the Control Room restarts onto it, also in a run that goes on
+                    generate.mark_pending(CONTROL_ROOM_PENDING)
                 state_files.write_json(hostsetup.PATH, record)
                 steps.written = True
             # the Orca ports of existing VMs follow the mode
@@ -349,10 +398,10 @@ def setup(args):
         return said + generate.report(result)
 
     def control_room():
-        if again:
+        if not generate.is_pending(CONTROL_ROOM_PENDING):
             return hoststeps.enable(WEB_UNIT)
         programs.systemctl("enable", WEB_UNIT)
-        programs.systemctl("restart", WEB_UNIT)
+        generate.apply_pending(CONTROL_ROOM_PENDING, "restart", WEB_UNIT)
         return [f"{WEB_UNIT} enabled and restarted"]
 
     steps.run("Certificate and password", certificate_and_password)
@@ -364,6 +413,8 @@ def setup(args):
     steps.run("Activity journal", hoststeps.journal_sockets)
     steps.run("Feeds", hoststeps.first_feeds)
     steps.run("Control Room", control_room)
+    # only now no port listens on every address any more: the rules a switch replaced go
+    steps.run("Firewall rules taken back", _take_back)
 
     url = f"https://{new['bind']}:{new['web_port']}"
     fingerprint = _fingerprint()

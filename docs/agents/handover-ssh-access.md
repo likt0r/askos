@@ -85,10 +85,10 @@ The design session drafted these; #128 puts them into `GLOSSARY.md`, word for wo
   - Host keys are generated at first boot (`sshd-keygen@`). A drop-in named `10-*.conf` sorts before `50-redhat.conf`, and sshd uses the first value it reads.
 - **A locked account still logs in by key** with `UsePAM yes`, whether its password is `!`, `!!` or `*`; only an expired account is refused. Tested in a container without systemd or SELinux. So "`agent` has no password" is no protection against key login, and the sshd configuration must say it.
 - **The Host reaches a VM without any limit.** The nftables rules of the VM networks limit only traffic from a VM to the Host. Every local process on the Host reaches `10.77.N.2:22`. This goes into ARCHITECTURE's "What it does not protect against" (#129).
-- **The Orca port pattern to copy:** the socket and service units come from `units()` in the code that writes them (the `gui.socket` and `gui@.service` kinds). `ExecStartPre` runs `wake` with `--actor`, then `socat` forwards to the VM. The listen address comes from `hostsetup.orca_listen`. The fw_cfg entries are in `virt_install_args`.
-- **Firewall rules for Network mode are written only by `agentbox setup`** today (`firewall_rules`/`_firewall` in the setup code). An upgrade does not run setup, so #130 makes `regenerate` write the SSH range rule.
+- **The Orca port pattern to copy:** the socket and service units come from `units()` in the code that writes them (the `gui.socket` and `gui@.service` kinds). `ExecStartPre` runs `wake` with `--actor`, then `socat` forwards to the VM. The listen address comes from `hostsetup.port_listen`. The fw_cfg entries are in `virt_install_args`.
+- **Firewall rules for Network mode** come from `agentbox/firewall.py`: `setup` writes the Control Room, Orca and SSH port rules (`home_network_rules`), and `regenerate`, `set-ssh on` and every command that rewrites the units add the SSH port rules (`ssh_ports`), so an upgrade needs no `setup` (#130).
 - **What a mode switch does** (`setup --force`):
-  - The Orca ports and the firewall rules follow at once.
+  - The Orca and SSH ports and the firewall rules follow in one run: new rules before any port listens on every address, rules that no longer apply only after the sockets and the Control Room moved (#150).
   - The password is kept (#138); a new one only with `--new-password`.
   - The existing certificate stays, so its SAN may lack the new IP.
   - Running VMs keep the old Pairing address until their next start, because it comes through fw_cfg. This last point was derived from the code and is not tested on a Host.

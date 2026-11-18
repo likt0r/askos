@@ -12,7 +12,9 @@ pool of their disks, and the journald
 namespace of Activity with its retention, the timer of the Maintenance window (maintenance
 time; maintenance.py) and of the Feeds (feed interval) with the Feeds service (young-domain
 days), the unit of the Builds and the services of the version check (versions.py), all from
-the Settings; what is left of the timers the Maintenance window replaced goes. Running it
+the Settings; what is left of the timers the Maintenance window replaced goes. In Network
+mode it adds the firewall rules of the SSH ports before any SSH port listens on every address
+(firewall.py), so an update needs no setup for them. Running it
 again changes nothing unless a record or the retention changed. What was written but not applied
 when a run failed (firewall rules, units) is applied by the next run.
 """
@@ -23,8 +25,8 @@ import re
 import tempfile
 import time
 
-from . import activity, footprint, hostsetup, paths, programs, registry, settings, sshkeys, state_files, states
-from . import times, virsh, vmenv
+from . import activity, firewall, footprint, hostsetup, paths, programs, registry, settings, sshkeys, state_files
+from . import states, times, virsh, vmenv
 from .commands import declare
 from .errors import Fail, die
 from .registry import bridge, dom, guest_ip, host_ip, mac
@@ -188,22 +190,17 @@ def journal_access(user):
     return f"Group={activity.JOURNAL_GROUP}\nSupplementaryGroups={user}\n"
 
 
-def ssh_listen(rec):
-    """ListenStream of a VM's SSH port: the loopback address, in either mode of the Host
-    setup, until Network mode has a firewall rule for the SSH ports (#130)."""
-    return f"{hostsetup.LOOPBACK}:{registry.ssh_port(rec)}"
-
-
 def units(rec):
     """systemd units of a VM by file name: proxy and token service on the Host's
     address in the VM network, logging into the Activity namespace, the Orca port
-    and, while the VM has SSH access, its SSH port (ADR 0020), where every
+    and, while the VM has SSH access, its SSH port (ADR 0020), both only on this Host in
+    Local-only and on every address in Network mode, where every
     connection wakes the VM if needed, with the client's address as actor (socat:
     SELinux keeps systemd-socket-proxyd off the port). wake returns once Orca answers
     and sshd may start a moment later, so the SSH port tries port 22 for up to 10 seconds."""
     vm, host, port = rec["name"], host_ip(rec), rec["orca_port"]
     names = {kind: footprint.unit_name(vm, kind) for kind in footprint.UNIT_KINDS}
-    orca_listen = hostsetup.orca_listen(hostsetup.load(), port)
+    setup = hostsetup.load()
     hardening = "NoNewPrivileges=yes\nProtectSystem=strict\nProtectHome=yes\nPrivateTmp=yes\n"
     return {
         names["proxy.socket"]: f"""[Unit]
@@ -254,7 +251,7 @@ LogNamespace={activity.NAMESPACE}
 Description=Orca access to VM {vm}
 
 [Socket]
-ListenStream={orca_listen}
+ListenStream={hostsetup.port_listen(setup, port)}
 Accept=yes
 MaxConnections=32
 
@@ -276,7 +273,7 @@ TimeoutStartSec=180
 Description=SSH access to VM {vm}
 
 [Socket]
-ListenStream={ssh_listen(rec)}
+ListenStream={hostsetup.port_listen(setup, registry.ssh_port(rec))}
 Accept=yes
 MaxConnections=32
 
@@ -334,6 +331,10 @@ def virt_install_args(rec, uuid):
 def _pending(what):
     """Marker: `what` was written but is not applied yet."""
     return os.path.join(paths.STATE, "pending", what)
+
+
+def is_pending(what):
+    return os.path.exists(_pending(what))
 
 
 def mark_pending(pending):
@@ -599,7 +600,11 @@ def vm_ssh(rec):
 def ssh_port(rec):
     """The units of the VM's SSH port as its SSH access says (regenerate's step for this VM's
     units): written, loaded and listening while it has SSH access, else stopped and gone.
-    Callers hold state_files.locked(paths.REGISTRY). Whether something changed."""
+    In Network mode the firewall rules of the SSH ports are added first where missing
+    (firewall.ssh_ports). Callers hold state_files.locked(paths.REGISTRY). Whether something
+    changed."""
+    if registry.ssh_access(rec):
+        firewall.ssh_ports(hostsetup.load())
     changed = _units(rec)
     apply_pending("units", "daemon-reload")
     changed = _rebind(rec) or changed
@@ -995,18 +1000,21 @@ def ports_free():
 
 def apply():
     """The Host configuration of every VM from the registry; what changed as
-    {"vms": {vm: [step, ...]}, "firewall": bool, "storage": bool, "retention": days or None,
-    "timers": bool}.
+    {"vms": {vm: [step, ...]}, "firewall": bool, "ssh_rules": int, "storage": bool,
+    "retention": days or None, "timers": bool}: "firewall" whether the VM networks' rules were
+    loaded, "ssh_rules" how many firewall rules of the SSH ports were added (Network mode).
     Callers hold state_files.locked(paths.REGISTRY), like create and delete, so runs never overlap."""
     records = registry.all_records()     # a broken registry stops everything before any change
     values = settings.load()             # so do broken settings
     ports_free()                         # so does a service that would keep resolver or proxy from starting
+    # in Network mode the SSH ports listen on every address: their firewall rules come first
+    ssh_rules = firewall.ssh_ports(hostsetup.load())
     days = values["activity_retention_days"]
     # a VM being deleted stays isolated until its network is gone
     isolated = records + [m["record"] for m in footprint.being_deleted() if not m.get("network_removed")]
     _write_if_changed(VM_RULES,
                       nft_rules(sorted(isolated, key=lambda r: r["network"])).encode(), 0o644, "firewall")
-    firewall = apply_pending("firewall", "restart", VMNET)     # before any new bridge comes up
+    nft = apply_pending("firewall", "restart", VMNET)     # before any new bridge comes up
     retention = _activity_journal(days)     # before units that log into it start
     storage = _storage_pool() if records else False
     changes = {}
@@ -1032,8 +1040,8 @@ def apply():
             changes[rec["name"]].append("sockets")
     if records:
         programs.systemctl("enable", "--now", *[s for rec in records for s in footprint.sockets(rec)])
-    return {"vms": changes, "firewall": firewall, "storage": storage, "retention": retention,
-            "timers": timers}
+    return {"vms": changes, "firewall": nft, "ssh_rules": ssh_rules, "storage": storage,
+            "retention": retention, "timers": timers}
 
 
 def report(result):
@@ -1041,6 +1049,8 @@ def report(result):
     lines = [f"{vm}: {SAID[key]}" for vm, done in result["vms"].items() for key in done]
     if result["firewall"]:
         lines.append("network rules reloaded")
+    if result["ssh_rules"]:
+        lines.append(f"{result['ssh_rules']} firewall rules of the SSH ports added for the home network")
     if result["storage"]:
         lines.append(f"storage pool {POOL} for {paths.VMS} created")
     if result["retention"]:
@@ -1052,9 +1062,10 @@ def report(result):
 
 
 def regenerate(args):
-    """agentbox regenerate [--json]: the Host configuration of every VM from the registry, and
-    the ports of the firewalld zone libvirt the VMs reach (as setup opens them), so this
-    command alone brings a Host's VMs up to date with an installed Release."""
+    """agentbox regenerate [--json]: the Host configuration of every VM from the registry, the
+    ports of the firewalld zone libvirt the VMs reach (as setup opens them) and, in Network
+    mode, the firewall rules of the SSH ports, so this command alone brings a Host's VMs up to
+    date with an installed Release."""
     from .hoststeps import libvirt_zone
     hostsetup.load()    # a Host setup that makes no sense stops us before anything is written
     with state_files.locked(paths.REGISTRY):

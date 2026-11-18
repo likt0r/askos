@@ -94,25 +94,37 @@ flowchart LR
   boots to a text console and the disk passphrase is entered over a remote keyboard. This is
   how the owner set up their Host; `agentbox setup` leaves sshd and the disk alone (see [The
   Host](#the-host) below).
-- How far the Orca ports (one per VM) and the Control Room reach is the mode of the **Host
-  setup** (`/etc/agentbox/host.json`, written only by `agentbox setup` on the Host, never by the
-  Control Room). **Local-only**, the default: they listen on the loopback address only, and no
-  firewall rule is added. **Network mode**: the Control Room listens on the bind address, the
-  Orca ports on every address, and firewalld rich rules accept only the named home network on
-  them; everything else on those ports is rejected. The rule covers the
-  whole Orca port range 6801–7054, so a new VM needs no firewall change; only the ports of
-  VMs in the registry have anything listening.
+- How far the Orca ports (one per VM), the SSH ports (one per VM with SSH access) and the
+  Control Room reach is the mode of the **Host setup** (`/etc/agentbox/host.json`, written only
+  by `agentbox setup` on the Host, never by the Control Room). **Local-only**, the default: they
+  listen on the loopback address only, and no firewall rule is added. **Network mode**: the
+  Control Room listens on the bind address, the Orca and SSH ports on every address, and
+  firewalld rich rules in the default zone accept only the named home network on them;
+  everything else on those ports is rejected, over IPv4 and IPv6. The rules cover the whole
+  Orca port range 6801–7054 and the whole SSH port range 2201–2454, so a new VM or turning SSH
+  access on needs no firewall change; only the ports of VMs in the registry have anything
+  listening. `agentbox setup` sets the rules and, when `--force` switches the mode or the home
+  network, takes back those that no longer apply. It adds them before any port listens on every
+  address, and takes them back only once the Orca and SSH port sockets and the Control Room
+  listen where the new Host setup says; a run that stops before keeps them until a run again
+  gets there, and that run leaves exactly the rules the recorded Host setup needs, also when
+  the stopped run had added those of a home network it never recorded. On a switch to
+  Local-only the rules stay while a VM being deleted (`agentbox delete` stopped before its
+  units went) may still listen on every address: `setup` stops and names the delete to finish.
+  The rules of the SSH ports are also added by
+  `regenerate`, and by `set-ssh` before it opens an SSH port, so an update that brings them
+  needs no `setup`, and no SSH port listens on every address before its rules are loaded.
 - **SSH access** to a VM ([ADR 0020](docs/adr/0020-ssh-into-a-vm-through-its-own-host-port.md)) is
   off for a new VM and changed only on the Host: `agentbox set-ssh <vm> on|off` turns it on or
   off, `agentbox add-ssh-key <vm> [--name N] [FILE]` adds an SSH key (one line of a `.pub` file,
   from stdin without a file; its comment is its name unless `--name` gives one), and `agentbox
   ssh <vm>` shows it: on or off, the SSH port, the fingerprint of the host key with a
   `known_hosts` line, and the keys. While SSH access is on, the VM's SSH port, 2200 + its
-  network number (2201–2454), listens on `127.0.0.1`, in Network mode as well, since no firewall
-  rule covers the SSH ports yet; each connection runs `wake` with the Actor `SSH (<address>)`
-  and then forwards to port 22 of the VM, as the Orca port does, so `ssh -p 2201
-  agent@127.0.0.1` wakes a VM that is off. Turning SSH access off removes the port at once and
-  keeps the keys. The Host checks every key before it stores it: Ed25519, ECDSA (P-256, P-384,
+  network number (2201–2454), listens where its Orca port does: on `127.0.0.1` in Local-only, on
+  every address behind the rules of the home network in Network mode; each connection runs
+  `wake` with the Actor `SSH (<address>)` and then forwards to port 22 of the VM, as the Orca
+  port does, so `ssh -p 2201 agent@127.0.0.1` wakes a VM that is off. Turning SSH access off
+  removes the port at once and keeps the keys. The Host checks every key before it stores it: Ed25519, ECDSA (P-256, P-384,
   P-521), their security-key forms (`sk-…`) or RSA of 3072 to 16384 bits; its base64 must
   decode to a key of the same type that OpenSSH takes (an ECDSA point on its curve, the
   numbers of an RSA key in their shortest form); no options before the key (`command=`,
@@ -149,7 +161,9 @@ flowchart LR
   libvirt's dnsmasq reads its options only when the network starts; a VM running on it has no network until its next
   Restart (libvirt does not reconnect a running VM to a restarted network), which
   `regenerate` says. It also opens the ports the VMs reach in the firewalld zone `libvirt`
-  (as setup does, step 5), before any VM network comes up, so it needs firewalld running. A socket whose unit text changed is restarted after systemd read it, so
+  (as setup does, step 5), before any VM network comes up, so it needs firewalld running, and
+  in Network mode adds the rules of the SSH ports ([Host access](#host-access)) before any
+  unit is written. A socket whose unit text changed is restarted after systemd read it, so
   it listens on its new address (systemd keeps an active socket where it was); the proxy,
   which holds its listening socket, is stopped first and starts again with the next
   connection. Network numbers and names are fixed once a VM exists. A broken record
@@ -435,9 +449,8 @@ flowchart LR
   the names it does not know. So containers and builds reach the outside through the proxy
   like the rest of the VM, and need no settings: no service, shell, container or build in the
   VM carries a proxy variable.
-- From the home network a VM is reachable only through its Orca port; its SSH port, while it
-  has SSH access, listens only on the Host's loopback address ([Host access](#host-access)),
-  and no other port of a VM is forwarded. Dev servers inside a VM are viewed in Orca's built-in browser: the page is
+- From the home network a VM is reachable only through its Orca port and, while it has SSH
+  access, its SSH port ([Host access](#host-access)); no other port of a VM is forwarded. Dev servers inside a VM are viewed in Orca's built-in browser: the page is
   shown on the laptop, but Orca carries its connections through the pairing connection
   (`network.browserTunnel`) and `orca serve` makes them inside the VM. `localhost` is the VM,
   and whatever the page loads from the internet goes through the proxy and the Allowlist
@@ -1321,8 +1334,10 @@ certificate name, owner user) and does the Host steps, in this order
 10. **`agentbox migrate`** and **`agentbox migrate-allowlist`**.
 11. **Certificate and password** of the Control Room: the certificate unless there is one; the
     password, a new one only with `--new-password` (see below).
-12. **Firewall for the home network**: in Network mode the rules of the Control Room and Orca
-    ports; none in Local-only.
+12. **Firewall for the home network**: in Network mode the rules of the Control Room's, the
+    Orca and the SSH ports, before any of them listens on every address; none in Local-only.
+    Every rule it adds and every rule of a Host setup `--force` replaces that the new one does
+    not have is noted under `/var/lib/agentbox/pending` for step 19, before the firewall changes.
 13. **`regenerate`**: the Host setup written, then the VMs' networks, units, disks and
     definitions from the VM registry. It loads the VM network rules before it brings up a VM
     network, so steps 5 and 6 and the rules are in place before any VM can start.
@@ -1338,7 +1353,16 @@ certificate name, owner user) and does the Host steps, in this order
     (see Activity).
 17. **Feeds**: the first fetch started at once, while none has run yet.
 18. **Control Room**: `agentbox-web.service` enabled and started; restarted after a new Host
-    setup.
+    setup, also by the run that goes on after one that stopped before this step.
+19. **Firewall rules taken back**: every rule step 12 noted that the recorded Host setup does
+    not need is removed, only now that `regenerate` has moved the Orca and SSH port sockets and
+    the Control Room has restarted, so on a switch to Local-only no port listens on every
+    address without its rules. A run that stops before leaves them in place, and running setup
+    again takes back what the Host setup it finds recorded does not need: the old rules after a
+    switch, or the new home network's after a run that stopped before writing it. A rule
+    `agentbox setup` did not add and no replaced Host setup had stays. In Local-only nothing is
+    removed while a VM being deleted still has its Orca or SSH port unit, which `regenerate`
+    does not rebind: setup stops there and names the `agentbox delete` to finish first.
 
 The migrations run as commands of their own, each with its own Activity entry. Every step
 changes only what differs from how it should be and says what it changed
@@ -1616,7 +1640,7 @@ laptops.
 - **Agent Box does not harden the Host.** SSH, the Host's updates, disk encryption and who can
   log in are the owner's ([Host access](#host-access)). `agentbox setup` takes `ssh` out of
   the VM networks' firewall zone and, in Network mode, lets only the home network reach the
-  Control Room and the Orca ports ([Setting a Host up](#setting-a-host-up)). Root on the Host
+  Control Room, the Orca ports and the SSH ports ([Setting a Host up](#setting-a-host-up)). Root on the Host
   has every VM and every credential; the owner's account is in `libvirt`, which controls every
   VM and makes it a Host admin in effect. Mitigation: what hardens any Fedora machine, as on the
   owner's Host: SSH by key only, daily updates, an encrypted disk.
