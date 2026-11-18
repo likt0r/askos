@@ -25,7 +25,8 @@ access its work needs.
 - **Least privilege**: allowlisted destinations, GitHub tokens for one repository and one hour
 - **Rogue or manipulated agents** (prompt injection from a repo, issue or web page, or an agent
   that goes wrong)
-- **Supply-chain attacks through packages** (install scripts stealing tokens)
+- **Supply-chain attacks through packages** in the daily work in a VM (install scripts stealing
+  tokens); building an Image is only guarded by a minimum package age and pins
 - **Credentials leaked by accident**: what a VM holds is narrow and, where it can be, short-lived
 
 It trusts the machine it runs on, whoever administers it and what they write into its Images

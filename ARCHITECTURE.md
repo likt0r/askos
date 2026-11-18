@@ -23,9 +23,11 @@ access its work needs, so that what goes wrong in one VM stays in it. It is buil
 3. **Rogue or manipulated agents.** An agent follows instructions planted in a repository,
    issue or web page, or simply goes wrong, and tries to read credentials, reach other
    machines, send data out or destroy work.
-4. **Supply-chain attacks through packages.** A dependency runs code at install, build or run
-   time that steals tokens and spreads (Shai-Hulud, s1ngularity, chalk/debug, axios, TanStack,
-   keyv), in a VM or in the Build of an Image.
+4. **Supply-chain attacks through packages** in the daily work in a VM. A dependency runs code
+   at install, build or run time that steals tokens and spreads (Shai-Hulud, s1ngularity,
+   chalk/debug, axios, TanStack, keyv). In the Build of an Image only the package minimum age
+   and the pins stand against such code, and it runs as root on the Host there ([Agent Box's
+   own code](#agent-boxs-own-code)).
 5. **Credentials leaked by accident.** A token ends up in a commit, a log, an issue or a web
    page. What a VM holds is narrow and, where it can be, short-lived.
 
@@ -1603,7 +1605,7 @@ laptops.
   Mitigation: the owner reads a Recipe before saving it; the minimum age where a Build installs
   through npm or uv, and for Orca; the Release's Containerfile pins the JDK and Orca's Node
   runtime by SHA-256 and cargo-ndk by version, a Recipe what its author pins; Fedora's packages
-  are signed, with the keys that come in the base image.
+  are signed, with the keys that come in the base image. Containing Builds further is #144.
 
 ### What no test covers
 
