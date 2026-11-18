@@ -97,7 +97,7 @@ onMounted(async () => {
         data-testid="sign-in-link"
       />
       <UAlert
-        v-else-if="route.query.expired && !error"
+        v-if="route.query.expired && !error"
         color="info"
         variant="subtle"
         icon="i-lucide-info"

@@ -1023,7 +1023,7 @@ the bind address, with a random token in its fragment (`/sign-in#link=<token>`),
 query string, so the token reaches no server log. The token is valid once and for two minutes.
 The Host keeps only its SHA-256: one file per link, named by the hash and holding the expiry, in
 `/run/agentbox-sign-in-links`, a directory of `agentbox-web` and the group `libvirt` with mode
-0730 (the members of `libvirt` can add a file but not list them, nobody else reaches them), made
+1730 (the members of `libvirt` can add a file but not list them, and remove or replace only their own; nobody else reaches them), made
 by the package at every boot. Activity records the link's creation with the Host user, never the
 token. The sign-in page takes the token out of the address and sends it once in the body of
 `POST /api/v1/session`; the backend removes the link's file before the link counts, so of two

@@ -9,8 +9,8 @@ to a server, so it reaches no log. The sign-in page reads it and sends it in the
 
 The Host keeps only the token's SHA-256: one file per link in SIGN_IN_LINKS, named by that
 hash and holding when it expires, LIFETIME seconds after it was made. The directory is the
-Control Room's (agentbox-web), group libvirt, mode 0730, made by the package's tmpfiles entry:
-the members of libvirt can add a file but not list the directory, nobody else can reach it.
+Control Room's (agentbox-web), group libvirt, mode 1730, made by the package's tmpfiles entry:
+the members of libvirt can add a file but not list the directory, and remove or replace only their own (sticky bit); nobody else can reach it.
 The Control Room takes a link once (take()): it removes the file before it signs anyone in,
 so a second use, an expired link or an unknown token is refused like a wrong password.
 

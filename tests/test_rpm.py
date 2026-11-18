@@ -159,11 +159,11 @@ class PackageTest(unittest.TestCase):
     def test_the_sign_in_links_are_the_control_rooms_and_only_libvirt_adds_one(self):
         """#137: the directory agentbox sign-in-link writes into and the Control Room reads, at
         every boot: agentbox-web reads and removes, the members of libvirt may only add (no
-        read bit, so they cannot list it), nobody else reaches it."""
+        read bit, so they cannot list it; sticky bit, so they cannot remove another's link), nobody else reaches it."""
         from agentbox import sign_in_links
         self.assertEqual(meaningful(read("rpm", "agentbox.tmpfiles")),
                          ["d /run/systemd/journal.agentbox 0755 root systemd-journal -",
-                          f"d {paths.SIGN_IN_LINKS} 0730 {activity.CONTROL_ROOM[0]} {sign_in_links.LIBVIRT} -"])
+                          f"d {paths.SIGN_IN_LINKS} 1730 {activity.CONTROL_ROOM[0]} {sign_in_links.LIBVIRT} -"])
         self.assertEqual(sign_in_links.LIBVIRT, hoststeps.LIBVIRT_GROUP)
 
     def test_the_sudoers_rule_lets_the_control_room_run_only_the_packages_cli(self):

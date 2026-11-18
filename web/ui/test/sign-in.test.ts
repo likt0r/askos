@@ -133,6 +133,24 @@ describe('sign-in link', () => {
     expect(useSession().state.authenticated).toBe(true)
   })
 
+  it('names an ended session beside the link notice while the link is sent', async () => {
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    fakeApi({
+      'GET /session': SIGNED_OUT,
+      'POST /session': async () => {
+        await gate
+        return SIGNED_IN
+      },
+    })
+    const wrapper = await mount(`/sign-in?redirect=/vms&expired=1#link=${TOKEN}`)
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="sign-in-link"]').exists()).toBe(true))
+    expect(wrapper.text()).toContain('Your session has ended')
+    release()
+  })
+
   it('takes the token out of the address before it sends it', async () => {
     let address = ''
     fakeApi({

@@ -8,4 +8,4 @@ d /run/systemd/journal.agentbox 0755 root systemd-journal -
 # its token's hash: the Control Room's to read and remove, the members of libvirt may add one
 # (agentbox sign-in-link) but not list them, nobody else reaches them. Under /run, so none
 # outlives a boot.
-d /run/agentbox-sign-in-links 0730 agentbox-web libvirt -
+d /run/agentbox-sign-in-links 1730 agentbox-web libvirt -
