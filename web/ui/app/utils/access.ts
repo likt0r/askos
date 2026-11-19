@@ -370,8 +370,12 @@ export interface SshConfig {
 
 /** Codes of a change of SSH access that agentbox saved but that has not reached the VM (yet). */
 export const SSH_SAVED_CODES = ['ssh_missing', 'ssh_pending', 'ssh_not_applied']
-/** The longest key line agentbox takes (agentbox/sshkeys.py MAX_INPUT): a longer file is no key. */
-export const SSH_KEY_MAX_BYTES = 16384
+/**
+ * The longest key file the UI reads: a longer one is no key. It sits well inside the Control
+ * Room's 8 KiB body limit (with the name and the JSON around the key) and holds any key agentbox
+ * takes (RSA of 16384 bits is ~2.8 KiB).
+ */
+export const SSH_KEY_MAX_BYTES = 4096
 /** At most so many SSH keys per VM (agentbox/sshkeys.py MAX_KEYS). */
 export const SSH_MAX_KEYS = 16
 

@@ -6,6 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resetSessionForTests } from '~/composables/useSession'
 import { resetLiveForTests } from '~/composables/useLive'
+import { SSH_KEY_MAX_BYTES } from '~/utils/access'
 import { FakeEventSource } from './fakes'
 import type { Call } from './fakes'
 import { $, $$, changes, click, fail, must, ok, openApp, settle, type, unmountAll, vm, waitFor } from './access-helpers'
@@ -148,6 +149,14 @@ describe('SSH access', () => {
       { method: 'POST', path: '/vms/work/ssh-keys', body: { key: LAPTOP, name: 'my laptop' }, csrf: '1' },
       { method: 'POST', path: '/vms/work/ssh-keys', body: { key: LAPTOP }, csrf: '1' },
     ])
+  })
+
+  it('refuses a key file over the size the Control Room takes, without sending it', async () => {
+    const { api } = await openSsh({ keys: [] })
+    await chooseFile('big.pub', LAPTOP + ' ' + 'x'.repeat(SSH_KEY_MAX_BYTES))
+    expect(textarea().value).toBe('')
+    expect(must('[data-testid="ssh-error"]').dataset.code).toBe('ssh_key_invalid')
+    expect(changes(api.calls)).toEqual([])
   })
 
   it('says a key added while SSH access is off waits for it', async () => {
