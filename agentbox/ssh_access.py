@@ -581,7 +581,9 @@ def _own_keys():
             and all(isinstance(f, dict) and isinstance(f.get("file"), str)
                     and all(isinstance(v, str) for v in f.values()) for f in files)):
         die("reading ~/.ssh fails", error="action_failed")
-    return clean(result["folder"], False), [{**f, "file": clean(f["file"], False)[:200]} for f in files]
+    cleaned = {"file": 200, "message": 500, "error": 64}
+    return clean(result["folder"], False), [
+        {**f, **{k: clean(f[k], False)[:n] for k, n in cleaned.items() if k in f}} for f in files]
 
 
 def _read_own():

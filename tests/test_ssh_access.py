@@ -2208,6 +2208,27 @@ class MineTest(SshTest):
                          [("id_ed25519.pub", "ssh_key_duplicate"), ("work.pub", "ssh_key_duplicate")])
         self.assertEqual(self.files(), before)
 
+    def test_a_fifo_named_pub_is_named_as_skipped_without_blocking(self):
+        self.pub("id_ed25519.pub", LAPTOP + "\n")
+        os.mkfifo(os.path.join(self.home, ".ssh", "x.pub"))
+        result = self.mine_json()
+        self.assertEqual([k["fingerprint"] for k in result["added"]], [LAPTOP_FP])
+        self.assertEqual(result["skipped"],
+                         [{"file": "x.pub", "error": "invalid_argument", "message": "not a regular file"}])
+
+    def test_the_16_key_limit_holds_for_mine_too(self):
+        for i in range(15):
+            self.add(line=key(seed=100 + i))
+        self.pub("a.pub", LAPTOP + "\n")
+        self.pub("b.pub", PHONE + "\n")
+        self.pub("c.pub", DESK + "\n")
+        result = self.mine_json()
+        self.assertEqual([k["fingerprint"] for k in result["added"]], [LAPTOP_FP])
+        self.assertEqual([(k["file"], k["error"]) for k in result["skipped"]],
+                         [("b.pub", "ssh_keys_too_many"), ("c.pub", "ssh_keys_too_many")])
+        self.assertEqual(result["keys"], 16)
+        self.assertEqual(len(self.record()["ssh_keys"]), 16)
+
     def test_a_file_the_user_cannot_read_is_named_and_the_others_go_in(self):
         if os.geteuid() == 0:
             self.skipTest("root reads every file")
@@ -2325,6 +2346,10 @@ class OwnRightsTest(unittest.TestCase):
         with self.mock.patch.object(self.ssh_access, "_read_own", return_value=sent):
             folder, files = self.ssh_access._own_keys()
         self.assertNotIn("\x1b", folder + files[0]["file"])
+        sent = {"folder": "/h", "files": [{"file": "a.pub", "error": "invalid\x1b[2J", "message": "bad\x1b[2J\x07"}]}
+        with self.mock.patch.object(self.ssh_access, "_read_own", return_value=sent):
+            _, files = self.ssh_access._own_keys()
+        self.assertNotRegex(files[0]["error"] + files[0]["message"], "[\x00-\x1f]")
 
     def test_without_sudo_root_reads_its_own_home(self):
         os.environ["HOME"] = self.home
