@@ -323,7 +323,7 @@ def refused_entry(e, broad=True):
     entry counts as nothing, in the proxy as in agentbox, which lists it with this text and
     removes it by its pattern: on the Allowlist it allows nothing, as a Harmless mark it
     silences nothing, as a Legitimate domain it lifts nothing, and on the Watchlist, where it
-    would raise a Signal, Open web stays closed until it is gone."""
+    would raise a Signal, the proxy lets nothing through until it is gone."""
     if not isinstance(e, dict) or not isinstance(e.get("regex"), str):
         return None
     why = pattern_problem(e["regex"], broad)

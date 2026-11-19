@@ -310,14 +310,14 @@ class ResolveTest(unittest.TestCase):
 class UnresolvableTest(unittest.TestCase):
     """A name the resolver cannot even encode is refused like one without a public address."""
 
-    def test_a_name_the_idna_codec_refuses_is_refused_and_logged(self):
+    def handle(self, resolve, refusal=None):
+        """The proxy's lines for a ClientHello naming example.org, which the Allowlist allows, and
+        its answer; the classifier left out, and with it the Signals unless refusal stands in for
+        them."""
         with tempfile.TemporaryDirectory() as conf:
             with open(os.path.join(conf, "allowlist.json"), "w") as f:
                 json.dump({"entries": [entry("example.org", "all")]}, f)
             said = []
-
-            async def unencodable(host):
-                raise UnicodeError("label too long")
 
             async def run():
                 ours, theirs = socket.socketpair()
@@ -329,10 +329,28 @@ class UnresolvableTest(unittest.TestCase):
                     theirs.settimeout(5)
                     return theirs.recv(100)
             with mock.patch.object(proxy, "CONF_DIR", conf), mock.patch.object(proxy, "suspicious", None), \
-                    mock.patch.object(proxy, "resolve_public", unencodable), \
-                    mock.patch.object(proxy, "log", said.append):
-                self.assertEqual(asyncio.run(run()), ACCESS_DENIED)
+                    mock.patch.object(proxy, "resolve_public", resolve), \
+                    mock.patch.object(proxy, "log", said.append), \
+                    mock.patch.object(proxy, "refusal", refusal or proxy.refusal):
+                answered = asyncio.run(run())
+        return said, answered
+
+    def test_a_name_the_idna_codec_refuses_is_refused_and_logged(self):
+        async def unencodable(host):
+            raise UnicodeError("label too long")
+
+        said, answered = self.handle(unencodable, refusal=lambda tags: None)
+        self.assertEqual(answered, ACCESS_DENIED)
         self.assertEqual(said, ["[work] BLOCKED example.org (does not resolve to a public address)"])
+
+    def test_without_the_classifier_nothing_passes(self):
+        # which Signals are strong is unknown then, as while the Watchlist cannot be read (ADR 0021)
+        async def resolve(host):
+            raise AssertionError("resolved a destination the proxy must block")
+
+        said, answered = self.handle(resolve)
+        self.assertEqual(answered, ACCESS_DENIED)
+        self.assertEqual(said, ["[work] BLOCKED example.org (Watchlist unreadable)"])
 
 
 class RefusalTest(allowlist_tests.ProxyTest):

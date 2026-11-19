@@ -50,8 +50,8 @@ def proxy_journal(ctx):
 
 
 def block_reason(why):
-    """The code and parameters of a BLOCKED line's reason: the Signals that kept it blocked in
-    Open web for `suspicious`; no code for a reason this does not know."""
+    """The code and parameters of a BLOCKED line's reason: the Signals that kept it blocked for
+    `suspicious`; no code for a reason this does not know."""
     code = proxy_log.block_code(why)
     signals = why[len(proxy_log.SUSPICIOUS):].split(",") if code == "suspicious" else None
     return {"code": code, "params": {"signals": ", ".join(signals)} if signals else {}}
@@ -123,7 +123,7 @@ def alerts(args):
 
 def open_web(args):
     """agentbox open-web <vm> <minutes> [--json]: any public domain, for a while; not
-    while the Watchlist is unreadable, because the proxy keeps Open web closed then"""
+    while the Watchlist is unreadable, because the proxy lets nothing through then"""
     from .lists import readable_watchlist
     ctx = check(args[0] if args else "")
     arg = args[1] if len(args) > 1 else ""

@@ -139,11 +139,11 @@ The set of domains VMs may reach through the proxy.
 _Avoid_: whitelist, base list
 
 **Allowlist entry**:
-One domain or pattern on the Allowlist (a domain including its subdomains), valid either for all VMs or for one VM (its scope), with a note and who added it when (German UI: Freigabe).
+One domain or pattern on the Allowlist (a domain including its subdomains), valid either for all VMs or for one VM (its scope), with a note and who added it when (German UI: Freigabe). It never lets a destination with strong Signals through, and nothing while the Watchlist cannot be read.
 _Avoid_: exception, rule, base list entry
 
 **Regex entry**:
-An entry of the Allowlist, the Watchlist, the Legitimate domains or the Harmless marks whose value is a regular expression instead of a domain, matched against the whole host name (no subdomains of its own accord). On the Allowlist it never allows a destination with strong Signals, checked on every connection, and adding it shows what it would allow and needs a confirmation; as a Legitimate domain it lifts only weak Signals (German UI: Regex-Eintrag).
+An entry of the Allowlist, the Watchlist, the Legitimate domains or the Harmless marks whose value is a regular expression instead of a domain, matched against the whole host name (no subdomains of its own accord). On the Allowlist adding it shows what it would allow and needs a confirmation; as a Legitimate domain it lifts only weak Signals (German UI: Regex-Eintrag).
 _Avoid_: wildcard, glob, pattern rule
 
 **List record**:
@@ -165,11 +165,11 @@ A single event in which a VM tried to reach a suspicious destination; the owner 
 _Avoid_: finding, incident, IOC
 
 **Signal**:
-A reason a destination counts as suspicious, such as exfil, threat, lookalike or young (German UI: Merkmal). Strong Signals keep a destination blocked in Open web and off the Allowlist unless forced.
+A reason a destination counts as suspicious, such as exfil, threat, lookalike or young (German UI: Merkmal). Strong Signals always block a destination, whatever would allow it: an Allowlist entry or Open web; only lifting the Signal lets it through. Weak Signals only raise Alerts.
 _Avoid_: tag, trait
 
 **Watchlist**:
-Known suspicious destinations, maintained by hand on the Host (each entry with a category that becomes its Signal) and from the HaGeZi threat-intelligence feed, each covering its subdomains; they raise Alerts, and those with strong Signals stay blocked in Open web (German UI: Verdachtsliste).
+Known suspicious destinations, maintained by hand on the Host (each entry with a category that becomes its Signal) and from the HaGeZi threat-intelligence feed, each covering its subdomains; they raise Alerts, and those with strong Signals stay blocked. While the part kept by hand cannot be read, nothing passes the proxy (German UI: Verdachtsliste).
 _Avoid_: blocklist, denylist
 
 **Feed**:

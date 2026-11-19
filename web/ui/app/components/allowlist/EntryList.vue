@@ -172,7 +172,7 @@ const targetValue = computed(() => (target.value ? entryValue(target.value) : ''
             @click="extend(d)"
           />
         </div>
-        <AllowlistRefusal v-if="refused && target?.domain" :domain="target.domain" :scope="target.scope" command="extend" />
+        <AllowlistRefusal v-if="refused && target?.domain" :domain="target.domain" />
         <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(error)" role="alert" />
       </div>
     </template>
@@ -188,7 +188,7 @@ const targetValue = computed(() => (target.value ? entryValue(target.value) : ''
     :error="error ? errorText(error) : null"
     @confirm="makePermanent"
   >
-    <AllowlistRefusal v-if="refused && target?.domain" :domain="target.domain" :scope="target.scope" command="make-permanent" />
+    <AllowlistRefusal v-if="refused && target?.domain" :domain="target.domain" />
   </AccessConfirmDialog>
 
   <UModal v-model:open="noteOpen" :title="t('allowlist.entry.noteTitle', { domain: targetValue })" :description="targetScope">

@@ -236,7 +236,7 @@ class BlockedTest(NetworkTest):
         self.journal("1793701300.000001 titan agentbox-proxy-work[812]: [work] BLOCKED a.example "
                      "(suspicious: exfil,raw-ip)\n"
                      "1793701300.000002 titan agentbox-proxy-work[812]: [work] BLOCKED b.example "
-                     "(Watchlist unreadable, Open web closed)\n"
+                     "(Watchlist unreadable)\n"
                      "1793701300.000003 titan agentbox-proxy-work[812]: [work] BLOCKED c.example (something new)\n")
         rows = json.loads(self.run_agentbox("blocked", "work", "--json")[1])
         self.assertEqual({r["domain"]: (r["code"], r["params"]) for r in rows}, {

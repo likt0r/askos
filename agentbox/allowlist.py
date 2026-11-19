@@ -13,10 +13,9 @@ seconds), null for a permanent one; added and added_by say when and by whom
 
 A Regex entry (ADR 0013, patterns.py) has a pattern, "regex": "^mirror[0-9]+\\.example\\.org$",
 in place of the domain, and the commands take it with --regex PATTERN. It allows the hosts
-the pattern matches, but the proxy checks every connection: never one with strong Signals,
-and nothing while the Watchlist cannot be read, so --force does not apply to it. Adding one
-shows which hosts of the scope's proxy log of the last 7 days it would allow, and needs
---confirm-pattern. Scope, expiry, notes, uses and closing tunnels work as for a domain.
+the pattern matches; their Signals are not checked when it is added, so --force does not apply
+to it. Adding one shows which hosts of the scope's proxy log of the last 7 days it would allow,
+and needs --confirm-pattern. Scope, expiry, notes, uses and closing tunnels work as for a domain.
 
 Expiry and tunnels (ADR 0005). The proxy ignores expired entries for new
 connections; tunnels already open keep running. `agentbox expire-allowlist`
@@ -30,12 +29,14 @@ Before allowlist.json, the Allowlist was <CONF>/allowlist (all VMs) and
 (<file>.migrated). Until then the proxy and the read-only commands use them,
 and the first change through agentbox migrates them.
 
-Strong Signals. allow, extend and make-permanent refuse destinations the
-classifier calls strongly suspicious unless given --force; the Control Room
-never passes --force. While the hand-maintained Watchlist cannot be read they
-refuse every destination without --force: which Signals are strong is unknown
-then, and the proxy, which keeps Open web closed for that reason, lets
-Allowlist entries through.
+Strong Signals (ADR 0021). The proxy blocks a destination with strong Signals whatever
+allows it, checking every connection, so allow, extend and make-permanent refuse such a
+domain, also with --force (domain_suspicious): the Allowlist holds no entry that cannot work
+when it is made. The message names how to lift the Signal instead. While which Signals are
+strong cannot be told (the hand-maintained Watchlist cannot be read, or the classifier does
+not answer) they refuse every domain without --force; with it they store the entry unchecked,
+and the proxy, which lets nothing through while the Watchlist cannot be read, checks it once
+it can. The Control Room never passes --force.
 """
 import json
 import os
@@ -88,7 +89,7 @@ def _target(positional, opts):
 
 def _no_force(ref, opts):
     if ref[0] == "regex" and "force" in opts:
-        die("--force does not apply to a regex entry: it never allows a destination with strong Signals",
+        die("--force does not apply to a regex entry: the Signals of its hosts are not checked when it is added",
             error="invalid_argument", option="--force")
 
 
@@ -110,19 +111,31 @@ def _note(value):
     return entry_store.text(value, "note", MAX_NOTE)
 
 
+def lift_hint(domain):
+    """How a destination with strong Signals can be let through: only by lifting the Signal."""
+    return (f"Lift the Signal on the Host instead: remove or lower its Watchlist entry (agentbox watch-remove "
+            f"--force, agentbox watch-add --force), or make it a Legitimate domain (agentbox legitimate-add "
+            f"--force); nothing lifts the blockchain pattern, a raw IP, a metadata address or a Feed hit below a "
+            f"user-content host. agentbox check-domain {domain} shows where each Signal comes from")
+
+
 def _signals(domain, opts):
-    """Strongly suspicious destinations only with --force, and while the Watchlist cannot
-    be read every destination."""
+    """No entry for a destination with strong Signals, also with --force: the proxy blocks it
+    whatever allows it (ADR 0021). While which Signals are strong cannot be told, every
+    destination only with --force, which stores it unchecked."""
     from .lists import UNREADABLE
-    tags, suspicious, unreadable = classifier.classify(domain)
-    if "force" in opts:
+    tags, strong, unknown = classifier.classify(domain)
+    if strong:
+        die(f"{domain} has strong Signals ({tags}), which block it whatever the Allowlist says, also with "
+            f"--force. {lift_hint(domain)}", error="domain_suspicious", domain=domain)
+    if unknown is None or "force" in opts:
         return
-    if unreadable is not None:
-        die(f"{UNREADABLE}: {unreadable or 'reason unknown'}; whether {domain} is strongly suspicious cannot be "
-            f"checked. Allowing it only with --force", error="watchlist_unreadable", domain=domain)
-    if suspicious:
-        die(f"{domain} is suspicious ({tags}). Allowing it only with --force", error="domain_suspicious",
-            domain=domain)
+    code, why = unknown
+    if code == "watchlist_unreadable":
+        die(f"{UNREADABLE}: {why or 'reason unknown'}; whether {domain} has strong Signals cannot be checked. "
+            f"Allowing it unchecked only with --force", error=code, domain=domain)
+    die(f"Whether {domain} has strong Signals cannot be checked ({why}). Allowing it unchecked only with --force",
+        error=code, domain=domain)
 
 
 def scope_text(scope):
@@ -378,10 +391,11 @@ def show(args):
 def allow(args):
     """agentbox allow <vm|all> <domain> [--for 15min|1h|8h|7d | --temporary] [--note TEXT]
     [--force] [--json]: a new entry, or an existing one widened but never
-    shortened (a permanent one stays permanent); strongly suspicious
-    destinations only with --force. With --regex PATTERN in place of the domain a Regex
-    entry: refused unless it keeps the rules (patterns.py), and without --confirm-pattern it
-    only shows which hosts of the proxy log it would allow (preview)."""
+    shortened (a permanent one stays permanent); never one for a destination with strong
+    Signals, and while they cannot be told only with --force (_signals). With --regex PATTERN
+    in place of the domain a Regex entry: refused unless it keeps the rules (patterns.py), and
+    without --confirm-pattern it only shows which hosts of the proxy log it would allow
+    (preview)."""
     positional, opts = options.parse(args)
     scope, ref = _target(positional, opts)
     seconds = _seconds(opts)

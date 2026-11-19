@@ -183,32 +183,30 @@ class AllowlistProxyTest(allowlist_tests.ProxyTest):
         self.assertTrue(self.refused("npm-cache.example"))
         self.assertIn("[work] BLOCKED npm-cache.example (suspicious: lookalike)\n", self.log())
         t = self.tunnel("a.later.example")
-        # a Watchlist entry added later counts from the next connection on; the open tunnel
-        # stays, as for a domain entry (ADR 0005)
+        # a Watchlist entry added later counts from the next connection on, and closes the open
+        # tunnel, as for a domain entry (ADR 0021)
         write(os.path.join(self.conf, "suspicious-domains"), "exfil.example exfil # Test\nlater.example c2\n")
         self.assertTrue(self.refused("b.later.example"))
         self.assertIn("[work] BLOCKED b.later.example (suspicious: c2)\n", self.log())
-        self.assertTrue(self.alive(t))
-        # Open web does not let them through either
+        self.assertTrue(self.closed(t))
+        self.assertIn("[work] CLOSED a.later.example (suspicious: c2)\n", self.log())
+        # Open web does not let them through either, nor does a domain entry
         self.open_web()
+        self.store(rx(r"^[a-z]+\.exfil\.example$"), allowlist_tests.entry("exfil.example", "all"))
         self.assertTrue(self.refused("up.exfil.example"))
         self.assertNotIn("ALLOWED up.exfil.example", self.log())
-        # a domain entry does (allow takes one only with --force on the CLI)
-        self.store(rx(r"^[a-z]+\.exfil\.example$"), allowlist_tests.entry("exfil.example", "all"))
-        self.tunnel("up.exfil.example")
-        self.assertIn("[work] ALLOWED up.exfil.example (allowlist exfil.example all)\n", self.log())
 
     def test_while_the_watchlist_cannot_be_read_patterns_allow_nothing(self):
         self.store(rx(MIRRORS), allowlist_tests.entry("docs.example", "all"))
         watchlist = os.path.join(self.conf, "watchlist.json")
         write(watchlist, "{broken")
         self.start()
-        self.assertTrue(self.refused("mirror1.vendor.example"))
-        self.assertIn("[work] BLOCKED mirror1.vendor.example (Watchlist unreadable, regex entries closed)\n",
-                      self.log())
-        self.tunnel("docs.example")                          # domain entries keep working
+        for host in ("mirror1.vendor.example", "docs.example"):     # domain entries neither (ADR 0021)
+            self.assertTrue(self.refused(host))
+            self.assertIn(f"[work] BLOCKED {host} (Watchlist unreadable)\n", self.log())
         os.remove(watchlist)                                 # the text file from before applies again
         self.tunnel("mirror1.vendor.example")
+        self.tunnel("docs.example")
 
     def test_removing_a_pattern_closes_only_the_tunnels_it_allowed(self):
         self.store(rx(MIRRORS), rx(r"^docs[0-9]\.example$", "work"))
@@ -281,11 +279,11 @@ class CompiledOnceTest(unittest.TestCase):
             with mock.patch.object(proxy.records, "compile_pattern",
                                    side_effect=lambda p, *a: compiled.append(p) or real(p, *a)):
                 for _ in range(20):
-                    keys, refused = proxy.granting("mirror1.vendor.example", [], lists, time.time())
-                    self.assertEqual((keys, refused), ({proxy.Key(MIRRORS, "all", True)}, None))
+                    keys = proxy.granting("mirror1.vendor.example", lists, time.time())
+                    self.assertEqual(keys, {proxy.Key(MIRRORS, "all", True)})
                 self.assertEqual(compiled, [MIRRORS])
                 write(os.path.join(conf, "allowlist.json"), json.dumps({"entries": [rx(MIRRORS), rx("^b\\.example$")]}))
-                proxy.granting("b.example", [], lists, time.time())
+                proxy.granting("b.example", lists, time.time())
                 self.assertEqual(compiled, [MIRRORS, MIRRORS, "^b\\.example$"])
 
 
@@ -410,7 +408,7 @@ class AllowlistCliTest(allowlist_tests.CliTest):
         self.assertEqual(self.refused("allow", "work", "--regex", ".*", "--confirm-pattern"),
                          "--regex .*: too broad: it matches google.com, one of the unrelated hosts it must not match")
         self.assertEqual(self.refused("allow", "work", "--regex", MIRRORS, "--confirm-pattern", "--force"),
-                         "--force does not apply to a regex entry: it never allows a destination with strong Signals")
+                         "--force does not apply to a regex entry: the Signals of its hosts are not checked when it is added")
         self.assertEqual(self.refused("allow", "work", "mirror1.vendor.example", "--confirm-pattern"),
                          "--confirm-pattern only with --regex")
         self.assertIn("too many arguments", self.refused("allow", "work", "mirror1.vendor.example", "--regex", MIRRORS))
@@ -422,7 +420,7 @@ class AllowlistCliTest(allowlist_tests.CliTest):
         self.assertAlmostEqual(self.json("extend", "work", "--regex", MIRRORS, "--for", "1h")["expires"],
                                self.now + 4200, delta=60)
         self.assertEqual(self.refused("extend", "work", "--regex", MIRRORS, "--for", "1h", "--force"),
-                         "--force does not apply to a regex entry: it never allows a destination with strong Signals")
+                         "--force does not apply to a regex entry: the Signals of its hosts are not checked when it is added")
         self.assertEqual(self.json("set-note", "work", "--regex", MIRRORS, "--note", "Spiegel")["note"], "Spiegel")
         self.assertIsNone(self.json("make-permanent", "work", "--regex", MIRRORS)["expires"])
         self.assertEqual(self.refused("set-note", "priv", "--regex", MIRRORS, "--note", "x"),
@@ -590,14 +588,14 @@ class ListsCliTest(lists_tests.CliTest):
                          ("legitimate_domain_not_found", {"regex": mirrors}))
         self.assertEqual([s["signal"] for s in self.check("mirror1.vendor.example")["signals"]], ["young"])
 
-    def test_a_stored_watchlist_pattern_the_rules_refuse_closes_open_web_until_it_goes(self):
+    def test_a_stored_watchlist_pattern_the_rules_refuse_lets_nothing_through_until_it_goes(self):
         path = os.path.join(self.conf, "watchlist.json")
         lists_tests.write(path, lists_tests.record(lists_tests.watch("exfil.example"), watch_rx(r"(a+)+\.example", "c2")))
         listing = self.json("watchlist")
         why = listing["unreadable"]
         self.assertTrue(why.startswith(f"{path}: regex entry (a+)+\\.example refused: a quantifier or an alternative "
                                        "inside a repeated group"), why)
-        self.assertTrue(why.endswith("; Open web stays closed until it is removed (agentbox watch-remove --regex)"), why)
+        self.assertTrue(why.endswith("; the proxy lets nothing through until it is removed (agentbox watch-remove --regex)"), why)
         self.assertEqual([(e["domain"], e["regex"], bool(e["refused"])) for e in listing["entries"]],
                          [("exfil.example", None, False), (None, r"(a+)+\.example", True)])
         # the classifier says the same; the other entries still count
@@ -606,8 +604,8 @@ class ListsCliTest(lists_tests.CliTest):
         r = subprocess.run([sys.executable, "-I", SUSPICIOUS, "x.exfil.example"], capture_output=True, text=True,
                            env=env, timeout=30)
         self.assertEqual((r.returncode, r.stdout, r.stderr), (3, "exfil\n", why + "\n"))
-        # Open web stays closed, as in the proxy; the other commands work
-        self.assertEqual(self.refused("open-web", "work", "30"), f"Watchlist unreadable, Open web closed: {why}")
+        # Open web cannot open, as the proxy lets nothing through; the other commands work
+        self.assertEqual(self.refused("open-web", "work", "30"), f"Watchlist unreadable, the proxy lets nothing through: {why}")
         self.ok("watch-add", "drop.example", "--category", "paste")
         # removed by its pattern (its category is strong: with --force), Open web can open again
         self.assertEqual(self.failure("watch-remove", "--regex", r"(a+)+\.example")[0], "force_required")
@@ -646,11 +644,11 @@ class ListsCliTest(lists_tests.CliTest):
             with self.subTest(why=why):
                 write(path, data)
                 said = self.refused("watch-set-note", "exfil.example", "--note", "x")
-                self.assertTrue(said.startswith(f"Watchlist unreadable, Open web closed: {path}: {why}"), said)
+                self.assertTrue(said.startswith(f"Watchlist unreadable, the proxy lets nothing through: {path}: {why}"), said)
                 r = subprocess.run([sys.executable, "-I", SUSPICIOUS, "a.example"], capture_output=True, text=True,
                                    env=env, timeout=30)
                 self.assertEqual(r.returncode, 3)
-                self.assertEqual(r.stderr, said[len("Watchlist unreadable, Open web closed: "):] + "\n")
+                self.assertEqual(r.stderr, said[len("Watchlist unreadable, the proxy lets nothing through: "):] + "\n")
         # a domain and a pattern of the same text are two entries
         write(path, lists_tests.record(lists_tests.watch("x.example"), watch_rx("x.example")))
         self.assertEqual(len(self.json("watchlist")["entries"]), 2)
@@ -689,7 +687,7 @@ class ListsProxyTest(detection_tests.ProxyTest):
         self.assertEqual(self.connect("npm-x-mirror.example"), ACCESS_DENIED)
         self.assertEqual(self.blocked_reason("npm-x-mirror.example"), "suspicious: lookalike")
 
-    def test_a_stored_watchlist_pattern_the_rules_refuse_closes_open_web_the_others_count(self):
+    def test_a_stored_watchlist_pattern_the_rules_refuse_lets_nothing_through_the_others_count(self):
         write(os.path.join(self.conf, "watchlist.json"),
               lists_tests.record(lists_tests.watch("exfil.example"), watch_rx(r"^(a+)+\.example$", "c2")))
         self.start()
@@ -697,7 +695,7 @@ class ListsProxyTest(detection_tests.ProxyTest):
         self.assertIsNone(self.alert("aaa.example"))
         self.open_web()
         self.assertEqual(self.connect("plain.example"), ACCESS_DENIED)
-        self.assertEqual(self.blocked_reason("plain.example"), "Watchlist unreadable, Open web closed")
+        self.assertEqual(self.blocked_reason("plain.example"), "Watchlist unreadable")
 
     def test_a_stored_legitimate_pattern_the_rules_refuse_lifts_nothing_the_others_count(self):
         write(os.path.join(self.conf, "watchlist.json"), lists_tests.record())
@@ -733,7 +731,7 @@ class HarmlessCliTest(detection_tests.CliTest):
         rep = json.loads(self.run_agentbox("check-domain", "npm-cache-mirror.example", "--json")[1])
         self.assertEqual((rep["harmless"], rep["harmless_regex"], rep["alert"], rep["strong"]),
                          (self.MARK, True, False, True))
-        self.assertIn(f"marked harmless (pattern {self.MARK}): no Alert, stays blocked in Open web",
+        self.assertIn(f"marked harmless (pattern {self.MARK}): no Alert, stays blocked, also with an Allowlist entry or in Open web",
                       self.run_agentbox("check-domain", "npm-cache-mirror.example")[1])
         self.assertEqual(self.run_agentbox("unmark-harmless", "--regex", self.MARK),
                          (0, f"pattern {self.MARK} no longer marked harmless\n", ""))
@@ -787,7 +785,7 @@ class SelfTestTest(unittest.TestCase):
         return r.returncode, r.stdout
 
     def test_it_fails_on_a_watchlist_pattern_the_rules_refuse(self):
-        # Open web stays closed for it, as for a broken Watchlist: setup stops and says which
+        # the proxy lets nothing through for it, as for a broken Watchlist: setup stops and says which
         with tempfile.TemporaryDirectory() as conf:
             shutil.copy(os.path.join(REPO, "proxy", "legitimate-domains"), conf)
             write(os.path.join(conf, "watchlist.json"), lists_tests.record(watch_rx("(a+)+", "c2")))
@@ -803,8 +801,10 @@ class SelfTestTest(unittest.TestCase):
                      "ok      mirror1-selftest.example: expected -, got -",            # Legitimate domains
                      "ok      pypi-1-selftest.example: expected -, got -",             # Harmless marks
                      "ok      y.exfil-selftest.example: Allowlist pattern: expected blocked (suspicious: exfil)",
-                     "ok      free1-selftest.example: Allowlist pattern: expected blocked (Watchlist unreadable, "
-                     "regex entries closed)"):
+                     "ok      free1-selftest.example: Allowlist pattern: expected blocked (Watchlist unreadable)",
+                     # domain entries let neither through (ADR 0021)
+                     "ok      www.evil-selftest.example: Allowlist domain: expected blocked (suspicious: threat)",
+                     "ok      listed-selftest.example: Allowlist domain: expected blocked (Watchlist unreadable)"):
             self.assertIn(line, out)
 
     def test_it_fails_when_a_pattern_lets_strong_signals_through(self):
@@ -819,6 +819,25 @@ class SelfTestTest(unittest.TestCase):
             code, out = self.run_self_test(os.path.join(d, "agentbox-suspicious"))
         self.assertEqual(code, 1)
         self.assertIn("FAILED  y.exfil-selftest.example: Allowlist pattern", out)
+        self.assertIn("FAILED  www.evil-selftest.example: Allowlist domain", out)
+
+    def test_it_fails_when_a_domain_entry_lets_strong_signals_through(self):
+        # the order before ADR 0021: an Allowlist entry decided before the Signals
+        with tempfile.TemporaryDirectory() as prefix:
+            d = proxy_layout.libexec(prefix)
+            with open(PROXY) as f:
+                source = f.read()
+            old = ("    why = refusal(tags)\n    if why:\n        return None, why\n"
+                   "    keys = granting(host, lists, now)\n    if keys:\n        return keys, None\n")
+            self.assertIn(old, source)
+            new = ("    keys = granting(host, lists, now)\n    if keys:\n        return keys, None\n"
+                   "    why = refusal(tags)\n    if why:\n        return None, why\n")
+            write(os.path.join(d, "agentbox-proxy"), source.replace(old, new), 0o755)
+            shutil.copy(SUSPICIOUS, d)
+            code, out = self.run_self_test(os.path.join(d, "agentbox-suspicious"))
+        self.assertEqual(code, 1)
+        self.assertIn("FAILED  www.evil-selftest.example: Allowlist domain", out)
+        self.assertIn("FAILED  listed-selftest.example: Allowlist domain", out)
 
 
 if __name__ == "__main__":

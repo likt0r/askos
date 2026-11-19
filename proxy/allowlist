@@ -11,8 +11,8 @@ githubusercontent.com
 anthropic.com
 claude.ai
 claude.com
-# Artifacts von claude.ai: im Allowlist-Eintrag laufen sie in jeder VM ohne offenes Web;
-# ein Treffer der Threat-Intelligence-Liste auf einer Subdomain loest einen Alert aus
+# claude.ai artifacts: with this entry they load in every VM without Open web; a subdomain the
+# threat-intelligence Feed lists stays blocked, with an Alert (ADR 0021)
 claudeusercontent.com
 openai.com
 chatgpt.com

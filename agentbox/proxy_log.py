@@ -5,7 +5,7 @@ uses and previews and the Alerts of Activity. One line per connection, English (
                                                         or (open web)
   [<vm>] BLOCKED <host> (<reason>)      a client reason names the client's address instead
   [<vm>] ALERT <host> [<signal>,...]
-  [<vm>] CLOSED <host> (<reason>)       tunnel closed by the proxy (ADR 0005)
+  [<vm>] CLOSED <host> (<reason>)       tunnel closed by the proxy (ADR 0005, ADR 0021)
   [<vm>] ERROR <host> (<error>)         destination unreachable
 Other lines (message()) are no events: parse() returns None for them.
 
@@ -16,17 +16,17 @@ import re
 
 # why the proxy blocked a connection (BLOCKED), and why it closed a tunnel (CLOSED)
 NOT_ALLOWED = "not on the Allowlist"
-OPEN_WEB_CLOSED = "Watchlist unreadable, Open web closed"
-REGEX_CLOSED = "Watchlist unreadable, regex entries closed"     # a Regex entry matched
+# which Signals are strong is unknown then: nothing passes, and every tunnel closes (ADR 0021)
+WATCHLIST_UNREADABLE = "Watchlist unreadable"
 NOT_PUBLIC = "does not resolve to a public address"
 NOT_TLS = "not a TLS handshake"
 NO_SERVER_NAME = "no server name"
-SUSPICIOUS = "suspicious: "         # followed by the Signals that keep the destination blocked
+# followed by the Signals that keep the destination blocked, whatever would allow it (ADR 0021)
+SUSPICIOUS = "suspicious: "
 OPEN_WEB_ENDED = "Open web ended"
 REMOVED = "removed from the Allowlist"
 # the reasons of BLOCKED as stable codes the Control Room words (docs/control-room-api.md)
-BLOCK_REASONS = {NOT_ALLOWED: "not-allowed", OPEN_WEB_CLOSED: "watchlist-unreadable",
-                 REGEX_CLOSED: "watchlist-unreadable", NOT_PUBLIC: "not-public",
+BLOCK_REASONS = {NOT_ALLOWED: "not-allowed", WATCHLIST_UNREADABLE: "watchlist-unreadable", NOT_PUBLIC: "not-public",
                  # a connection the proxy took no destination from: the line names the client
                  NOT_TLS: "not-tls", NO_SERVER_NAME: "no-server-name"}
 CLIENT_REASONS = (NOT_TLS, NO_SERVER_NAME)
@@ -53,7 +53,7 @@ def blocked(vm, host, reason):
 
 
 def suspicious(signals):
-    """The reason of a destination its strong Signals keep blocked."""
+    """The reason of a destination its strong Signals keep blocked, or of a tunnel they close."""
     return SUSPICIOUS + ",".join(signals)
 
 

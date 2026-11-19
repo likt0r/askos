@@ -1,9 +1,10 @@
 <script setup lang="ts">
 // Adds an Allowlist entry: scope (all VMs or one), domain or pattern, duration, note. Also used
 // from a VM's blocked list with the domain and scope given. Destinations with strong Signals are
-// refused by the backend (only the CLI can force them): shown with their Signals. A pattern (a
-// Regex entry, ADR 0013) is added only after its preview, the hosts of the proxy log it would
-// allow, and an explicit confirmation; it never allows a destination with strong Signals.
+// refused by the backend (no entry lets them through, ADR 0021): shown with their Signals and how
+// to lift them. A pattern (a Regex entry, ADR 0013) is added only after its preview, the hosts of
+// the proxy log it would allow, and an explicit confirmation; it never allows a destination with
+// strong Signals either.
 import type { AllowlistEntry, EntryDuration, RegexCheck } from '~/utils/access'
 
 const props = withDefaults(defineProps<{
@@ -29,7 +30,7 @@ const duration = ref<EntryDuration>('1h')
 const note = ref('')
 const busy = ref(false)
 const error = ref<unknown>(null)
-const refused = ref<{ domain: string, scope: string } | null>(null)
+const refused = ref<string | null>(null)
 const checked = ref<RegexCheck | null>(null)
 const confirmed = ref(false)
 
@@ -91,7 +92,7 @@ async function submit() {
     open.value = false
   }
   catch (e) {
-    if (e instanceof ApiError && e.code === 'domain_suspicious' && !isRegex.value) refused.value = { domain: what, scope: scope.value }
+    if (e instanceof ApiError && e.code === 'domain_suspicious' && !isRegex.value) refused.value = what
     else error.value = e
   }
   finally {
@@ -162,7 +163,7 @@ async function submit() {
           <UInput v-model="note" :placeholder="t('allowlist.add.notePlaceholder')" class="w-full" data-testid="add-note" />
         </UFormField>
 
-        <AllowlistRefusal v-if="refused" :domain="refused.domain" :scope="refused.scope" />
+        <AllowlistRefusal v-if="refused" :domain="refused" />
         <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(error)" role="alert" data-testid="add-error" />
         <button type="submit" class="hidden" />
       </form>

@@ -100,19 +100,24 @@ def feeds():
 
 
 def classify(domain):
-    """The Signals of a destination as (text, suspicious, why the hand-maintained Watchlist
-    cannot be read or None). The classifier prints the Signals and exits non-zero on strong
-    suspicion, 3 with the reason on stderr while the Watchlist cannot be read; without a
-    classifier, or when it does not answer in time, every domain counts as suspicious."""
+    """The Signals of a destination as (text, whether one is strong, None), or, when which of
+    them are strong cannot be told, (text, False, (code, why)): code watchlist_unreadable while
+    the hand-maintained Watchlist cannot be read (the classifier exits 3, the reason on stderr),
+    action_failed without a classifier, when it does not answer in time or fails otherwise. The
+    classifier prints the Signals and exits 2 when one is strong."""
     try:
         r = subprocess.run([paths.SUSPICIOUS, domain], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                            env=paths.classifier_env(), timeout=paths.CLASSIFIER_SECONDS)
-    except OSError:
-        return "", True, None
+    except OSError as e:
+        return "", False, ("action_failed", f"agentbox-suspicious cannot be started ({e.strerror or e})")
     except subprocess.TimeoutExpired:
-        return "agentbox-suspicious does not answer", True, None
-    unreadable = clean(r.stderr.decode("utf-8", "replace").strip(), False)[-300:] if r.returncode == 3 else None
-    return r.stdout.decode("utf-8", "replace").rstrip("\n"), r.returncode != 0, unreadable
+        return "", False, ("action_failed", "agentbox-suspicious does not answer")
+    tags = r.stdout.decode("utf-8", "replace").rstrip("\n")
+    if r.returncode == 3:
+        return tags, False, ("watchlist_unreadable", clean(r.stderr.decode("utf-8", "replace").strip(), False)[-300:])
+    if r.returncode not in (0, 2):
+        return tags, False, ("action_failed", f"agentbox-suspicious failed (exit {r.returncode})")
+    return tags, r.returncode == 2, None
 
 
 def self_test(conf):
