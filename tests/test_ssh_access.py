@@ -8,7 +8,7 @@ network in Network mode (the fake firewall-cmd). A running VM takes each change 
 agentbox-ssh, which the fake virsh runs for real in the VM's own root; a paused one when it
 resumes; removing a key and turning SSH access off end every SSH session. Keys are copied from
 another VM once (`--from`, `create --copy-ssh-keys-from`) or read from the owner's own ~/.ssh
-(`--mine`, with the caller's rights, after a confirmation).
+(`--mine`, with the caller's rights, after a confirmation); a FILE is read with the same rights.
 The real CLI runs with AGENTBOX_ROOT pointing at a temporary root and the fakes of
 test_registry.py (openssl is the real one, as in test_github_app.py); the guest side
 (vm/files/usr/lib/agentbox/fwcfg-ssh, which guest-setup runs, and the wrapper agentbox-ssh)
@@ -2541,8 +2541,69 @@ class ControlRoomCallerTest(SshTest):
                 self.assertEqual((code, json.loads(err.strip().splitlines()[-1])["error"]), (1, "invalid_argument"))
 
 
+class FileTest(SshTest):
+    """add-ssh-key <vm> FILE reads FILE as --mine reads its files (#155): with the caller's
+    rights and only a regular file; see OwnRightsTest for the switch to the user who ran sudo."""
+
+    def file(self, text, mode=0o644):
+        path = os.path.join(self.dir, "key.pub")
+        with open(path, "w") as f:
+            f.write(text)
+        os.chmod(path, mode)
+        return path
+
+    def refused(self, path, **env):
+        """The --json failure of add-ssh-key work FILE: nothing changes, Activity records it."""
+        before = self.files()
+        self.journald.datagrams.clear()
+        env = {"PATH": os.path.join(self.dir, "bin") + ":" + os.environ["PATH"], "FAKE_VIRSH_DIR": self.dir,
+               "FAKE_DIR": self.dir, "AGENTBOX_ROOT": self.root, "LANG": "C.UTF-8", "TZ": "UTC", **env}
+        r = subprocess.run([AGENTBOX, "add-ssh-key", "work", path, "--json"], input=LAPTOP + "\n",
+                           capture_output=True, text=True, env=env, timeout=60)
+        self.assertEqual((r.returncode, r.stdout), (1, ""), r.stderr)
+        self.assertEqual(self.files(), before)
+        self.assertEqual([(a, o) for a, _, o, _ in self.activity()], [("ssh.key-added", "failed")])
+        said = json.loads(r.stderr)
+        return said["error"], said["message"]
+
+    def test_a_file_the_user_cannot_read_is_refused_as_unreadable(self):
+        if os.geteuid() == 0:
+            self.skipTest("root reads every file")
+        path = self.file(LAPTOP + "\n", mode=0o000)
+        self.assertEqual(self.refused(path), ("invalid_argument", f"{path}: Permission denied"))
+        # the same through sudo: not root here, so nothing to switch to, and still unreadable
+        self.assertEqual(self.refused(path, SUDO_UID=str(os.getuid()), SUDO_GID=str(os.getgid())),
+                         ("invalid_argument", f"{path}: Permission denied"))
+
+    def test_a_fifo_or_a_folder_is_refused_without_blocking(self):
+        fifo = os.path.join(self.dir, "fifo.pub")
+        os.mkfifo(fifo)
+        started = time.monotonic()
+        self.assertEqual(self.refused(fifo), ("invalid_argument", f"{fifo}: not a regular file"))
+        self.assertLess(time.monotonic() - started, 30)
+        self.assertEqual(self.refused(self.dir), ("invalid_argument", f"{self.dir}: not a regular file"))
+
+    def test_a_file_too_long_or_not_utf8_is_no_valid_key(self):
+        self.assertEqual(self.refused(self.file("x" * 20000)),
+                         ("ssh_key_invalid", f"not a valid SSH public key: longer than {sshkeys.MAX_INPUT} bytes"))
+        path = os.path.join(self.dir, "latin1.pub")
+        with open(path, "wb") as f:
+            f.write(LAPTOP.encode() + b" \xe9\n")
+        self.assertEqual(self.refused(path), ("ssh_key_invalid", "not a valid SSH public key: not UTF-8 text"))
+
+    def test_a_relative_path_is_read_from_the_current_folder(self):
+        self.file(LAPTOP + "\n")
+        env = {"PATH": os.path.join(self.dir, "bin") + ":" + os.environ["PATH"], "FAKE_VIRSH_DIR": self.dir,
+               "FAKE_DIR": self.dir, "AGENTBOX_ROOT": self.root, "LANG": "C.UTF-8", "TZ": "UTC"}
+        r = subprocess.run([AGENTBOX, "add-ssh-key", "work", "key.pub", "--json"], capture_output=True, text=True,
+                           env=env, cwd=self.dir, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["fingerprint"], LAPTOP_FP)
+
+
 class OwnRightsTest(unittest.TestCase):
-    """--mine reads in a child process that runs as the user who ran sudo, as import packs (#47)."""
+    """--mine and FILE are read in a child process that runs as the user who ran sudo, as import
+    packs (#47, #155)."""
 
     def setUp(self):
         from unittest import mock
@@ -2559,22 +2620,67 @@ class OwnRightsTest(unittest.TestCase):
         with open(os.path.join(self.home, ".ssh", "id_ed25519.pub"), "w") as f:
             f.write(LAPTOP + "\n")
 
-    def read_as_root(self):
-        """_own_keys() as root would run it: who the child became, and what it read."""
+    def as_root(self, call, after_become=None):
+        """call() as root would run it: who the child became (None: nobody), and what call()
+        returned. The mocked switch sets HOME, and runs after_become in the child."""
         seen = os.path.join(self.tmp.name, "seen")
 
         def become(uid, gid):
             with open(seen, "w") as f:
                 json.dump([uid, gid], f)
             os.environ["HOME"] = self.home
+            if after_become:
+                after_become()
         with self.mock.patch.object(self.callers, "become", become), \
                 self.mock.patch("os.geteuid", return_value=0):
-            folder, files = self.ssh_access._own_keys()
+            got = call()
         try:
             with open(seen) as f:
-                return json.load(f), folder, files
+                return json.load(f), got
         except FileNotFoundError:
-            return None, folder, files
+            return None, got
+
+    def read_as_root(self):
+        """_own_keys() as root would run it: who the child became, and what it read."""
+        who, (folder, files) = self.as_root(self.ssh_access._own_keys)
+        return who, folder, files
+
+    def test_under_sudo_the_child_becomes_the_user_who_ran_it_and_reads_file(self):
+        if os.getuid() == 0:
+            self.skipTest("needs a user that is not root")
+        os.environ.update(SUDO_UID=str(os.getuid()), SUDO_GID=str(os.getgid()))
+        path = os.path.join(self.home, ".ssh", "id_ed25519.pub")
+        self.assertEqual(self.as_root(lambda: self.ssh_access._read_key(path)),
+                         ([os.getuid(), os.getgid()], LAPTOP + "\n"))
+        # a file only root can read: the mocked switch takes away the read right root had, and
+        # the child, which opens FILE only after the switch, finds it unreadable
+        from agentbox.errors import Fail
+        with self.assertRaises(Fail) as caught:
+            self.as_root(lambda: self.ssh_access._read_key(path), after_become=lambda: os.chmod(path, 0o000))
+        self.assertEqual((caught.exception.error, caught.exception.message),
+                         ("invalid_argument", f"{path}: Permission denied"))
+
+    def test_without_sudo_root_reads_file_itself(self):
+        path = os.path.join(self.home, ".ssh", "id_ed25519.pub")
+        for env in ({}, {"SUDO_UID": "0", "SUDO_GID": "0"}, {"SUDO_UID": "x", "SUDO_GID": "1"}):
+            with self.subTest(env=env), self.mock.patch.dict(os.environ, env):
+                self.assertEqual(self.as_root(lambda: self.ssh_access._read_key(path)), (None, LAPTOP + "\n"))
+
+    def test_what_the_child_sends_for_file_is_checked(self):
+        from agentbox.errors import Fail
+        path = os.path.join(self.tmp.name, "k\x1b[2J.pub")
+        for sent in ({"text": 1}, {"text": LAPTOP, "error": "x"}, {"error": "x"}, {"error": "x", "message": 1},
+                     {}, [], "x", None):
+            with self.subTest(sent=sent), self.mock.patch.object(self.ssh_access, "_read_file", return_value=sent):
+                with self.assertRaises(Fail) as caught:
+                    self.ssh_access._read_key(path)
+                self.assertEqual((caught.exception.error, caught.exception.message),
+                                 ("action_failed", f"reading {self.tmp.name}/k[2J.pub fails"))
+        sent = {"error": "invalid\x1b[2J", "message": "bad\x1b[2J\x07"}
+        with self.mock.patch.object(self.ssh_access, "_read_file", return_value=sent):
+            with self.assertRaises(Fail) as caught:
+                self.ssh_access._read_key(path)
+        self.assertNotRegex(caught.exception.error + caught.exception.message, "[\x00-\x1f]")
 
     def test_under_sudo_the_child_becomes_the_user_who_ran_it_and_reads_their_home(self):
         if os.getuid() == 0:

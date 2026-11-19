@@ -532,7 +532,9 @@ and is recorded as its Actor `SSH (<address>)`. You log in as `agent`, the user 
 agents run as, only with a key; `ssh -L` works, remote and agent forwarding do not. Allowed
 keys: Ed25519, ECDSA, their security-key forms (`sk-…`) and RSA of 3072 to 16384 bits, one line
 of a `.pub` file without options (`command=`, `from=`), at most 16 per VM; the comment becomes
-the key's name unless `--name` gives one.
+the key's name unless `--name` gives one. `add-ssh-key lab FILE` reads FILE with your rights,
+not root's (as the user who ran `sudo`), so a file you cannot read is refused even under `sudo`,
+and only a regular file: a FIFO or a folder is refused at once.
 
 Keys belong to one VM: a key that may enter `lab` does not enter `priv` until you add it there
 too. Two ways save typing it again. `add-ssh-key lab --from priv` copies every key of `priv`

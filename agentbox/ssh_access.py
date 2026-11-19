@@ -36,9 +36,10 @@ lock, which the change holds, and so meets the new key file, or the marker.
 
 Several keys go in as one change: `add-ssh-key <vm> --from <other>` copies the other VM's keys
 once (no link stays: later changes of either VM stay its own), `create --copy-ssh-keys-from`
-does it for a new VM, and `add-ssh-key <vm> --mine` adds the owner's own ~/.ssh/*.pub, read in a
-child process with the rights of the user who ran sudo (else the caller's), as `import` packs a
-folder, after the owner confirms the keys it shows (--yes skips that). Each key goes through
+does it for a new VM, and `add-ssh-key <vm> --mine` adds the owner's own ~/.ssh/*.pub after the
+owner confirms the keys it shows (--yes skips that). Those files, and the FILE of `add-ssh-key
+<vm> FILE`, are read in a child process with the rights of the user who ran sudo (else the
+caller's), as `import` packs a folder, and only as regular files. Each key goes through
 the rules and limits of one key (sshkeys.parse, sshkeys.add); one they refuse, or one entered
 already, is named and left out while the others go in. A copy across VMs is always this
 explicit owner action, never a default (ADR 0001).
@@ -363,16 +364,23 @@ def set_ssh(args):
 # --- add-ssh-key -------------------------------------------------------------
 
 def _read_key(path):
-    """The key's text from the file, or from stdin without one; at most sshkeys.MAX_INPUT
-    bytes. The text never appears in a message."""
+    """The key's text from FILE, read as --mine reads its files: with the rights of the user who
+    ran sudo (_as_caller) and only a regular file (_read_file); else from stdin. At most
+    sshkeys.MAX_INPUT bytes; the text never appears in a message."""
+    if path is not None:
+        shown = clean(path, False)[:200]
+        got = _as_caller(lambda: _read_file(path), f"reading {shown}")
+        if not (isinstance(got, dict) and all(isinstance(v, str) for v in got.values())
+                and set(got) in ({"text"}, {"error", "message"})):
+            die(f"reading {shown} fails", error="action_failed")
+        if "text" in got:
+            return got["text"]
+        error, message = clean(got["error"], False)[:64], clean(got["message"], False)[:500]
+        die(message if error == "ssh_key_invalid" else f"{shown}: {message}", error=error)
     try:
-        if path is None:
-            data = sys.stdin.buffer.read(sshkeys.MAX_INPUT + 1)
-        else:
-            with open(path, "rb") as f:
-                data = f.read(sshkeys.MAX_INPUT + 1)
+        data = sys.stdin.buffer.read(sshkeys.MAX_INPUT + 1)
     except OSError as e:
-        die(f"{clean(path or 'stdin', False)[:200]}: {e.strerror}", error="invalid_argument")
+        die(f"stdin: {e.strerror}", error="invalid_argument")
     if len(data) > sshkeys.MAX_INPUT:
         die(f"not a valid SSH public key: longer than {sshkeys.MAX_INPUT} bytes", error="ssh_key_invalid")
     try:
@@ -566,11 +574,13 @@ def _confirm(name, folder, found, refused):
 MAX_OWN_FILES = 32           # ~/.ssh/*.pub read at most, by name; the others are named and left out
 
 
-def _own_keys():
-    """The owner's own SSH public keys: ~/.ssh/*.pub of the user who ran sudo, else of the caller,
-    read in a child process with that user's rights, as `import` packs a folder (callers.py),
-    so root reads nothing for it that this user could not read: (folder, [{"file", "text"} or
-    {"file", "error", "message"}]). Dies when the folder cannot be read or holds no such file."""
+def _as_caller(read, what):
+    """read() in a child process with the rights of the user who ran sudo, else of the caller,
+    as `import` packs a folder (callers.py), so root reads nothing for it that this user could
+    not read: what read() returned, through JSON (None for what is no JSON). A Fail in the
+    child is raised again with its text cleaned; what names the reading in any other failure.
+    What the child sends is untrusted, the caller checks it: the user it ran as decides what
+    it read."""
     r, w = os.pipe()
     sys.stdout.flush()
     sys.stderr.flush()
@@ -582,11 +592,11 @@ def _own_keys():
             who = callers.sudo_user()
             if os.geteuid() == 0 and who:
                 callers.become(*who)
-            result, status = _read_own(), 0
+            result, status = read(), 0
         except Fail as f:
             result = {"fail": f.message, "error": f.error}
         except BaseException as e:                 # the child reports every failure
-            result = {"fail": f"reading ~/.ssh fails ({type(e).__name__}: {e})", "error": "action_failed"}
+            result = {"fail": f"{what} fails ({type(e).__name__}: {e})", "error": "action_failed"}
         try:
             with os.fdopen(w, "w") as pipe:
                 json.dump(result, pipe)
@@ -601,13 +611,20 @@ def _own_keys():
         os.waitpid(pid, 0)
         raise
     os.waitpid(pid, 0)
-    # what the child sends is taken as untrusted: the user it ran as decides what it read
     try:
         result = json.loads(data)
     except (ValueError, RecursionError):
-        result = None
+        return None
     if isinstance(result, dict) and isinstance(result.get("fail"), str) and isinstance(result.get("error"), str):
         raise Fail(clean(result["fail"], False)[:500], error=clean(result["error"], False)[:64])
+    return result
+
+
+def _own_keys():
+    """The owner's own SSH public keys: ~/.ssh/*.pub of the user who ran sudo, else of the caller,
+    read with that user's rights (_as_caller): (folder, [{"file", "text"} or {"file", "error",
+    "message"}]). Dies when the folder cannot be read or holds no such file."""
+    result = _as_caller(_read_own, "reading ~/.ssh")
     files = result.get("files") if isinstance(result, dict) else None
     if not (isinstance(files, list) and isinstance(result.get("folder"), str)
             and all(isinstance(f, dict) and isinstance(f.get("file"), str)
@@ -631,36 +648,38 @@ def _read_own():
         die(f"no SSH key found: {clean(folder, False)}: {e.strerror}", error="ssh_key_invalid")
     if not names:
         die(f"no SSH key found: {clean(folder, False)} has no *.pub file", error="ssh_key_invalid")
-    files = [_read_own_file(folder, n) for n in names[:MAX_OWN_FILES]]
+    files = [{"file": clean(n, False)[:200], **_read_file(os.path.join(folder, n))}
+             for n in names[:MAX_OWN_FILES]]
     files += [{"file": clean(n, False)[:200], "error": "invalid_argument",
                "message": f"not read: only the first {MAX_OWN_FILES} *.pub files by name are"}
               for n in names[MAX_OWN_FILES:]]
     return {"folder": folder, "files": files}
 
 
-def _read_own_file(folder, n):
-    """One .pub file: {"file", "text"}, or {"file", "error", "message"} when it is no regular
-    file, cannot be read, is too long or no UTF-8 text. Its text never appears in a message."""
-    shown = clean(n, False)[:200]
+def _read_file(path):
+    """In the child, with the user's rights: one key file (a .pub of --mine, or FILE), {"text"},
+    or {"error", "message"} when it is no regular file, cannot be read, is too long or no UTF-8
+    text. It is opened without blocking, so a FIFO is refused, not waited on. Its text never
+    appears in a message."""
     try:
-        fd = os.open(os.path.join(folder, n), os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
     except OSError as e:
-        return {"file": shown, "error": "invalid_argument", "message": e.strerror}
+        return {"error": "invalid_argument", "message": e.strerror}
     if not stat.S_ISREG(os.fstat(fd).st_mode):
         os.close(fd)
-        return {"file": shown, "error": "invalid_argument", "message": "not a regular file"}
+        return {"error": "invalid_argument", "message": "not a regular file"}
     with os.fdopen(fd, "rb") as f:
         try:
             data = f.read(sshkeys.MAX_INPUT + 1)
         except OSError as e:
-            return {"file": shown, "error": "invalid_argument", "message": e.strerror}
+            return {"error": "invalid_argument", "message": e.strerror}
     if len(data) > sshkeys.MAX_INPUT:
-        return {"file": shown, "error": "ssh_key_invalid",
+        return {"error": "ssh_key_invalid",
                 "message": f"not a valid SSH public key: longer than {sshkeys.MAX_INPUT} bytes"}
     try:
-        return {"file": shown, "text": data.decode("utf-8")}
+        return {"text": data.decode("utf-8")}
     except UnicodeDecodeError:
-        return {"file": shown, "error": "ssh_key_invalid", "message": "not a valid SSH public key: not UTF-8 text"}
+        return {"error": "ssh_key_invalid", "message": "not a valid SSH public key: not UTF-8 text"}
 
 
 # --- remove-ssh-key ----------------------------------------------------------
