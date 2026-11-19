@@ -1,25 +1,25 @@
-# Bekannte legitime Domains (gilt jeweils inkl. Subdomains): nur die Erstbefuellung
-# eines neuen Hosts. agentbox setup installiert sie, agentbox migrate-lists uebernimmt
-# sie einmalig nach /etc/agentbox/legitimate.json; danach aendert sie nur noch
-# agentbox legitimate-add/-remove, Aenderungen hier erreichen den Host nicht mehr.
+# Known legitimate domains (each including subdomains): only the initial fill of a new
+# Host. agentbox setup installs it, agentbox migrate-lists takes it over once into
+# /etc/agentbox/legitimate.json; after that only agentbox legitimate-add/-remove
+# change it, changes here no longer reach the Host.
 #
-# Wirkung (proxy/agentbox-suspicious):
-# - keine Muster-Merkmale (lookalike, tld, random-label, ...) fuer diese Domains, ausser
-#   dem Blockchain-Muster (rpc., mainnet, infura, ...): das bleibt ein starkes Merkmal;
-# - Treffer der HaGeZi-Listen fuer eine davon oder eine Subdomain zaehlen nicht, damit
-#   eine fehlerhafte Liste die normale Arbeit nicht stoert; nicht aber fuer die
-#   eingebauten User-Content-Domains (unten markiert): Treffer auf deren Subdomains
-#   zaehlen, dort kann jeder veroeffentlichen.
-# Die Verdachtsliste von Hand (suspicious-domains) gilt trotzdem. Die Liste gibt
-# nichts frei; das tut nur die Allowlist.
+# Effect (proxy/agentbox-suspicious):
+# - no pattern Signals (lookalike, tld, random-label, ...) for these domains, except
+#   the blockchain pattern (rpc., mainnet, infura, ...): that stays a strong Signal;
+# - hits of the HaGeZi lists for one of them or a subdomain do not count, so that
+#   a faulty list does not disturb normal work; but not for the
+#   builtin user-content domains (marked below): hits on their subdomains
+#   count, anyone can publish there.
+# The manual Watchlist (suspicious-domains) applies regardless. This list releases
+# nothing; only the Allowlist does that.
 #
-# Nur Domains, die ihr Betreiber selbst kontrolliert. Keine Hoster fuer beliebige
-# Nutzerinhalte (amazonaws.com, pages.dev, vercel.app, jsdelivr.net, ...): dort
-# liegen echte Bedrohungen, die die Listen kennen.
+# Only domains whose operator controls them itself. No hosts for arbitrary
+# user content (amazonaws.com, pages.dev, vercel.app, jsdelivr.net, ...): real
+# threats live there, which the lists know.
 
-# GitHub und andere Code-Hoster; githubusercontent.com und github.io sind eingebaute
-# User-Content-Domains, ihre Subdomains zaehlen darum wie Hoster fuer Nutzerinhalte
-# (eingebaute Domains uebernimmt migrate-lists nicht, sie stehen hier nur der Uebersicht halber)
+# GitHub and other code hosts; githubusercontent.com and github.io are builtin
+# user-content domains, so their subdomains count like hosts for user content
+# (migrate-lists does not take over builtin domains, they are listed here only for overview)
 github.com
 githubusercontent.com
 githubassets.com
@@ -31,13 +31,13 @@ bitbucket.org
 codeberg.org
 sourceforge.net
 
-# KI-Anbieter
+# AI providers
 anthropic.com
 claude.ai
 claude.com
-# Artifacts von claude.ai (<id>.claudeusercontent.com): eine eingebaute User-Content-Domain
-# wie github.io, Treffer der Listen auf ihren Subdomains zaehlen, auch wo ein Host sie
-# aus dieser Liste noch als eigenen Eintrag hat
+# Artifacts of claude.ai (<id>.claudeusercontent.com): a builtin user-content domain
+# like github.io, hits of the lists on its subdomains count, even where a Host
+# still has it from this list as its own entry
 claudeusercontent.com
 openai.com
 chatgpt.com
@@ -51,7 +51,7 @@ mistral.ai
 generativelanguage.googleapis.com
 onorca.dev
 
-# JavaScript und TypeScript
+# JavaScript and TypeScript
 npmjs.org
 npmjs.com
 npmmirror.com
@@ -117,7 +117,7 @@ jetbrains.com
 kotlinlang.org
 adoptium.net
 
-# Weitere Sprachen
+# Other languages
 rubygems.org
 ruby-lang.org
 packagist.org
@@ -140,7 +140,7 @@ flutter.dev
 julialang.org
 r-project.org
 
-# Container und Kubernetes
+# Containers and Kubernetes
 docker.io
 docker.com
 quay.io
@@ -149,7 +149,7 @@ k8s.io
 kubernetes.io
 helm.sh
 
-# Distributionen und Betriebssysteme
+# Distributions and operating systems
 fedoraproject.org
 getfedora.org
 redhat.com
@@ -165,7 +165,7 @@ microsoft.com
 visualstudio.com
 apple.com
 
-# Standards, Dokumentation, Infrastruktur
+# Standards, documentation, infrastructure
 openapis.org
 json-schema.org
 w3.org

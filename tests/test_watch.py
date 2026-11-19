@@ -48,7 +48,7 @@ UNITS = [
     ["agentbox-ssh-work@6-12293-192.0.2.8:2201-192.0.2.36:50022.service", "loaded", "active", "running",
      "SSH connection to VM work"],
     ["agentbox-ghvm-work@0-1-10.77.1.1:9100-10.77.1.2:4000.service", "loaded", "active", "running", "Token"],
-    ["agentbox-proxy-work.service", "loaded", "active", "running", "Allowlist-Proxy fuer VM work"],
+    ["agentbox-proxy-work.service", "loaded", "active", "running", "Allowlist proxy for VM work"],
     ["agentbox-feeds.timer", "loaded", "active", "waiting", "HaGeZi-Listen"],
     ["ollama.service", "loaded", "failed", "failed", "Ollama Service"],
 ]
@@ -352,7 +352,7 @@ class SnapshotTest(WatchTest):
 
     def test_services_name_the_timer_or_socket_that_starts_them(self):
         feeds = ["agentbox-feeds.service", "loaded", "inactive", "dead", "HaGeZi-Listen holen"]
-        socket = ["agentbox-proxy-work.socket", "loaded", "active", "running", "Allowlist-Proxy fuer VM work"]
+        socket = ["agentbox-proxy-work.socket", "loaded", "active", "running", "Allowlist proxy for VM work"]
         triggered = {"agentbox-feeds.service": ["agentbox-feeds.timer"],
                      "agentbox-proxy-work.service": ["agentbox-proxy-work.socket"]}
         vms = {"priv": {"state": "shut off", "managed_save": True}}

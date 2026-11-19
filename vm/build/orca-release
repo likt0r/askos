@@ -1,26 +1,26 @@
 #!/usr/bin/python3
-"""Orca fuer das Base image, im Build-Container (vm/Containerfile, #113). Laeuft nur dort, nie
-auf dem Host: GitHubs Antworten und die Downloads liest kein Prozess von root auf dem Host.
+"""Orca for the Base image, in the Build container (vm/Containerfile, #113). Runs only there, never
+on the Host: no root process on the Host reads GitHub's responses and the downloads.
 agentbox fetch-versions (as agentbox-feeds) loads this file as a module and chooses the
 release with choose, asset_ok, version_of and rpm_asset from here (agentbox/versions.py,
 orca_rules, ORCA_RULES); main does not run then, and loading must do nothing else.
 
-  orca-release rpm ZIEL --min-age-days N [--version X.Y.Z]
-      waehlt ein Release von Orca auf GitHub (stablyai/orca): mit --version genau dieses
-      (orca_version der Einstellungen), sonst das neueste, also das mit der hoechsten
-      Version, das kein Entwurf und keine Vorabversion ist und vor mindestens N Tagen
-      veroeffentlicht wurde (package_min_age_days). Laedt dessen orca-ide-<v>.x86_64.rpm
-      nur ueber HTTPS nach ZIEL und prueft es gegen den SHA-256, den GitHub fuer die Datei
-      angibt. Gibt die Version aus.
-  orca-release runtime ORCA ZIEL
-      die Node-Laufzeit von Orcas Server, die Orca beim ersten Start sonst selbst laedt, auf
-      demselben Weg: das Archiv von nodejs.org, das das installierte Orca unter ORCA
-      festlegt (resources/app.asar.unpacked/out/shared/node-runtime/node-runtime-pin.js),
-      geprueft gegen den SHA-256 dort, daraus bin/node, geprueft gegen den SHA-256 dort und in
-      Orcas Vorlage (orcad-template/targets/linux-x64-glibc/.runtime-node). Legt es nach
-      ZIEL/node-<SHA-256>/bin/node, wo guest-setup es fuer den Agenten abholt.
+  orca-release rpm DEST --min-age-days N [--version X.Y.Z]
+      chooses a release of Orca on GitHub (stablyai/orca): with --version exactly that one
+      (orca_version of the settings), otherwise the newest, that is the one with the highest
+      version that is no draft and no prerelease and was published at least N days ago
+      (package_min_age_days). Downloads its orca-ide-<v>.x86_64.rpm
+      to DEST over HTTPS only and checks it against the SHA-256 GitHub gives for the file.
+      Prints the version.
+  orca-release runtime ORCA DEST
+      the Node runtime of Orca's server, which Orca otherwise downloads itself at first start,
+      the same way: the archive from nodejs.org that the installed Orca specifies under ORCA
+      (resources/app.asar.unpacked/out/shared/node-runtime/node-runtime-pin.js),
+      checked against the SHA-256 there, from it bin/node, checked against the SHA-256 there and in
+      Orca's template (orcad-template/targets/linux-x64-glibc/.runtime-node). Puts it at
+      DEST/node-<SHA-256>/bin/node, where guest-setup picks it up for the agent.
 
-Jeder Fehler endet mit Exit 1 und einer Zeile auf stderr, und damit der Build.
+Every error ends with exit 1 and a line on stderr, and so the Build.
 """
 import datetime
 import hashlib
@@ -37,13 +37,13 @@ import time
 REPO = "stablyai/orca"
 API = f"https://api.github.com/repos/{REPO}/releases"
 DOWNLOAD = f"https://github.com/{REPO}/releases/download"
-NODE_DIST = "https://nodejs.org/dist"                 # Orcas Quelle "official" (nodeRuntimeReleaseUrl)
+NODE_DIST = "https://nodejs.org/dist"                 # Orca's source "official" (nodeRuntimeReleaseUrl)
 VERSION = re.compile(r"(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})")
 DIGEST = re.compile(r"sha256:([0-9a-f]{64})")
-PAGES, PER_PAGE = 3, 100              # die Liste ist nach Erstellung sortiert, neueste zuerst
-MAX_API = 64 << 20                    # eine Seite mit 100 Releases: etwa 6 MiB
+PAGES, PER_PAGE = 3, 100              # the list is sorted by creation, newest first
+MAX_API = 64 << 20                    # one page of 100 releases: about 6 MiB
 MAX_RPM = 1 << 30                     # orca-ide 1.4: 160 MB
-MAX_NODE_ARCHIVE = 200 << 20          # wie Orca (maxArchiveBytes)
+MAX_NODE_ARCHIVE = 200 << 20          # as in Orca (maxArchiveBytes)
 TARGET = "linux-x64-glibc"
 # tsc's output of Orca's src/shared/node-runtime/node-runtime-pin.ts, beside app.asar
 PIN_FILE = "resources/app.asar.unpacked/out/shared/node-runtime/node-runtime-pin.js"
@@ -65,8 +65,8 @@ class Failed(Exception):
 # --- which release (agentbox fetch-versions chooses with these too) ------------------------------------
 
 def version_of(release):
-    """Die Version eines veroeffentlichten Releases (Tag vX.Y.Z, kein Entwurf, keine
-    Vorabversion), sonst None."""
+    """The version of a published release (tag vX.Y.Z, no draft, no
+    prerelease), otherwise None."""
     if not isinstance(release, dict) or release.get("draft") is not False or release.get("prerelease") is not False:
         return None
     tag = release.get("tag_name")
@@ -76,12 +76,12 @@ def version_of(release):
 
 
 def published(release):
-    """Wann das Release veroeffentlicht wurde (Epoch-Sekunden), None wenn unbekannt."""
+    """When the release was published (epoch seconds), None if unknown."""
     return _stamp(release.get("published_at"))
 
 
 def _stamp(stamp):
-    """Ein Zeitstempel von GitHub (ISO 8601 mit Zeitzone) als Epoch-Sekunden, sonst None."""
+    """A timestamp from GitHub (ISO 8601 with time zone) as epoch seconds, otherwise None."""
     if not isinstance(stamp, str):
         return None
     try:
@@ -96,11 +96,11 @@ def _key(version):
 
 
 def asset_ok(release, version, cutoff, pinned=False):
-    """Ob das RPM des Releases nicht erst kuerzlich angelegt oder ersetzt wurde: created_at und
-    updated_at des Assets spaetestens cutoff (Epoch-Sekunden). Mit pinned (orca_version waehlt
-    das Release auch, wenn es juenger ist) hoechstens eine Stunde nach der Veroeffentlichung,
-    wenn das spaeter ist. Ein Release ohne dieses Asset gilt als ok (rpm_asset meldet es);
-    ein Zeitstempel, den es nicht gibt oder der nicht zu lesen ist, als zu jung."""
+    """Whether the release's RPM was not created or replaced only recently: created_at and
+    updated_at of the asset at cutoff (epoch seconds) at the latest. With pinned (orca_version chooses
+    the release even if it is younger) at most one hour after publication,
+    if that is later. A release without this asset counts as ok (rpm_asset reports it);
+    a timestamp that is missing or unreadable counts as too young."""
     name = f"orca-ide-{version}.x86_64.rpm"
     assets = release.get("assets")
     found = [a for a in assets if isinstance(a, dict) and a.get("name") == name] if isinstance(assets, list) else []
@@ -117,9 +117,9 @@ def asset_ok(release, version, cutoff, pinned=False):
 
 
 def choose(releases, cutoff, pin=None):
-    """Das Release, das ein Build aus GitHubs Liste nimmt: mit pin das veroeffentlichte dieser
-    Version, sonst die hoechste Version unter den veroeffentlichten, die spaetestens zu
-    cutoff (Epoch-Sekunden) erschienen sind und deren RPM nicht juenger ist (asset_ok). None, wenn es keins gibt."""
+    """The release a Build takes from GitHub's list: with pin the published one of this
+    version, otherwise the highest version among the published ones that appeared at
+    cutoff (epoch seconds) at the latest and whose RPM is not younger (asset_ok). None if there is none."""
     found = []
     for release in releases if isinstance(releases, list) else []:
         version = version_of(release)
@@ -136,8 +136,8 @@ def choose(releases, cutoff, pin=None):
 
 
 def rpm_asset(release, version):
-    """(Name, SHA-256, Groesse) des RPM fuer x86_64 im Release; Failed, wenn es fehlt, keinen
-    SHA-256 hat oder zu gross ist."""
+    """(Name, SHA-256, size) of the RPM for x86_64 in the release; Failed if it is missing, has no
+    SHA-256 or is too large."""
     name = f"orca-ide-{version}.x86_64.rpm"
     assets = release.get("assets")
     found = [a for a in assets if isinstance(a, dict) and a.get("name") == name] if isinstance(assets, list) else []
@@ -154,22 +154,22 @@ def rpm_asset(release, version):
     return name, digest.group(1), size
 
 
-# --- Internet: nur curl, nur HTTPS -----------------------------------------------------------------
+# --- Internet: only curl, only HTTPS -----------------------------------------------------------------
 
 def _printable(text):
     return re.sub(r"[^\x20-\x7e]", "?", text)[-300:]
 
 
 def api(url):
-    """(HTTP-Status, JSON oder None) von GET url bei GitHubs API; Failed, wenn GitHub nicht
-    erreichbar ist oder zu viel antwortet."""
+    """(HTTP status, JSON or None) of GET url on GitHub's API; Failed if GitHub is not
+    reachable or answers with too much."""
     argv = [*CURL, "-m", "300", "--max-filesize", str(MAX_API), "-H", "Accept: application/vnd.github+json",
             "-H", "X-GitHub-Api-Version: 2022-11-28", "-w", "\\n%{http_code}", url]
     try:
         proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except OSError as e:
         raise Failed(f"curl: {e.strerror}")
-    # --max-filesize begrenzt keine Antwort ohne Laenge (chunked): hoechstens so viel lesen
+    # --max-filesize does not limit a response without a length (chunked): read at most this much
     out = proc.stdout.read(MAX_API + 64)
     too_big = len(out) > MAX_API + 32
     if too_big:
@@ -191,10 +191,10 @@ def api(url):
 
 
 def download(url, dest, cap, size=None):
-    """url nach dest, nur ueber HTTPS (auch jede Weiterleitung), hoechstens cap Bytes (bei
-    bekannter size: genau so viele) und, wenn bekannt, genau size; was misslingt, bleibt nicht
-    liegen. curl schreibt in eine Pipe, die hier mit hartem Limit gelesen wird: --max-filesize
-    begrenzt keine Antwort ohne Laenge."""
+    """url to dest, over HTTPS only (every redirect too), at most cap bytes (with a
+    known size: exactly that many) and, if known, exactly size; what fails does not stay
+    behind. curl writes into a pipe that is read here with a hard limit: --max-filesize
+    does not limit a response without a length."""
     limit = min(cap, size) if size is not None else cap
     argv = [*CURL, "-f", "-L", "--max-redirs", "5", "-m", "1800", "--max-filesize", str(cap), "-o", "-", url]
     got = 0
@@ -251,7 +251,7 @@ def sha256(path):
 # --- orca-release rpm ------------------------------------------------------------------------------
 
 def find(days, pin, now):
-    """Das Release, das der Build nimmt (siehe choose), von GitHub."""
+    """The release the Build takes (see choose), from GitHub."""
     if pin is not None:
         status, release = api(f"{API}/tags/v{pin}")
         if status == 404:
@@ -272,7 +272,7 @@ def find(days, pin, now):
         everything += releases
         if len(releases) < PER_PAGE:
             break
-    release = choose(everything, now - days * 86400)       # erst nach allen Seiten: die hoechste Version
+    release = choose(everything, now - days * 86400)       # only after all pages: the highest version
     if release is None:
         raise Failed(f"no release of Orca that is at least {days} days old (among the newest {PAGES * PER_PAGE})"
                      " and whose RPM is not younger")
@@ -303,7 +303,7 @@ def rpm(dest, days, pin):
 # --- orca-release runtime --------------------------------------------------------------------------
 
 def _read(path, cap):
-    """Der Inhalt einer regulaeren Datei (keine Verknuepfung), hoechstens cap Bytes."""
+    """The content of a regular file (no link), at most cap bytes."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     except OSError as e:
@@ -320,8 +320,8 @@ def _read(path, cap):
 
 
 def pin_of(orca):
-    """Was das installierte Orca fuer seinen Server festlegt: (Node-Version, Archiv,
-    SHA-256 des Archivs, SHA-256 und Groesse von bin/node)."""
+    """What the installed Orca specifies for its server: (Node version, archive,
+    SHA-256 of the archive, SHA-256 and size of bin/node)."""
     if not os.path.lexists(os.path.join(orca, PIN_FILE)):
         raise Failed(f"{orca}: no {PIN_FILE}, where Orca keeps its Node runtime pin (moved in a new Orca?)")
     text = _read(os.path.join(orca, PIN_FILE), MAX_PIN_FILE)
@@ -375,7 +375,7 @@ def runtime(orca, dest):
     return target
 
 
-# --- Aufruf ----------------------------------------------------------------------------------------
+# --- Invocation ----------------------------------------------------------------------------------------
 
 USAGE = "orca-release rpm DEST --min-age-days N [--version X.Y.Z] | orca-release runtime ORCA DEST"
 

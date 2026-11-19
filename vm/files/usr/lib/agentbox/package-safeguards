@@ -1,10 +1,10 @@
 #!/bin/sh
-# Paket-Schutz des Base image: npm ohne Install-Skripte, und npm, pnpm, Bun und uv
-# nehmen nur Paketversionen, die mindestens <tage> alt sind. Laeuft beim Bauen
-# (vm/Containerfile) mit package_min_age_days aus den Einstellungen; nach jedem
-# Build prueft agentbox auf dem Host, dass alles hier Geschriebene so im Image steht.
-#   package-safeguards <tage> [<wurzel>]
-# <wurzel> nur fuer Tests (Standard: das Image selbst).
+# Package safeguards of the Base image: npm without install scripts, and npm, pnpm, Bun and uv
+# take only package versions at least <days> old. Runs during the Build
+# (vm/Containerfile) with package_min_age_days from the settings; after every
+# Build agentbox checks on the Host that everything written here is in the Image as written.
+#   package-safeguards <days> [<root>]
+# <root> only for tests (default: the Image itself).
 set -eu
 
 days=${1:-}
@@ -16,9 +16,9 @@ esac
 npm="$root/usr/lib/node_modules/npm"
 mkdir -p "$root/etc/uv" "$npm" "$root/usr/lib/agentbox" "$root/usr/lib/systemd/system.conf.d"
 
-# npm: globale Konfiguration. Ohne Angabe liest npm (Prefix /usr) /usr/etc/npmrc, das es in
-# einem bootc-Image nicht geben darf; npm 12 bringt Fedoras eingebaute Konfiguration, die auf
-# /etc/npmrc zeigt, nicht mit. Die eingebaute Konfiguration hier tut das wieder.
+# npm: global configuration. By default npm (prefix /usr) reads /usr/etc/npmrc, which must not
+# exist in a bootc image; npm 12 does not ship Fedora's builtin configuration that points to
+# /etc/npmrc. The builtin configuration written here does that again.
 cat > "$root/etc/npmrc" <<EOF
 # Package safeguards of the Agent Box (package-safeguards, owned by root)
 ignore-scripts=true
@@ -29,19 +29,19 @@ cat > "$npm/npmrc" <<EOF
 globalconfig=/etc/npmrc
 EOF
 
-# uv: Konfigurationsdatei und (unten) Umgebung
+# uv: configuration file and (below) environment
 cat > "$root/etc/uv/uv.toml" <<EOF
 exclude-newer = "$days days"
 EOF
 
-# Bun liest seine globale Konfiguration nur aus dem Home; guest-setup legt sie dort ab
+# Bun reads its global configuration only from the home; guest-setup puts it there
 cat > "$root/usr/lib/agentbox/bunfig.toml" <<EOF
 [install]
 # packages only once they are $days days old (in seconds)
 minimumReleaseAge = $((days * 86400))
 EOF
 
-# Umgebung aller Dienste der VM (orca serve, Agenten, Terminals): uv und pnpm (Minuten)
+# Environment of all services of the VM (orca serve, agents, terminals): uv and pnpm (minutes)
 cat > "$root/usr/lib/systemd/system.conf.d/agentbox-packages.conf" <<EOF
 # Package safeguards of the Agent Box (package-safeguards)
 [Manager]

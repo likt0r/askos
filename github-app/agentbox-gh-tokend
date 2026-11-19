@@ -38,7 +38,7 @@ import time
 import urllib.error
 import urllib.request
 
-# AGENTBOX_ROOT nur fuer Tests (wie beim agentbox-CLI)
+# AGENTBOX_ROOT only for tests (as with the agentbox CLI)
 ROOT = os.environ.get("AGENTBOX_ROOT", "")
 CONF_DIR = ROOT + "/etc/agentbox/github"
 REGISTRY = ROOT + "/etc/agentbox/vms"
@@ -78,7 +78,7 @@ def read_conf(path):
 
 
 def vm_owners(vm):
-    """GitHub-Owner der VM aus ihrem Registry-Eintrag, klein geschrieben."""
+    """The VM's GitHub owner from its registry entry, lowercased."""
     try:
         if not VM_NAME.fullmatch(vm):
             raise FileNotFoundError

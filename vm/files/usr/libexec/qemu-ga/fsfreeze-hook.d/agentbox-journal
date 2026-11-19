@@ -1,8 +1,8 @@
 #!/bin/sh
-# Ruft titan per guest-exec auf (agentbox logs/pair) und startet nur journalctl,
-# mit Zeitlimit. Liegt in diesem Verzeichnis, weil SELinux Programme des
-# Gast-Agenten nur von hier uneingeschraenkt laufen laesst
-# (virt_qemu_ga_unconfined_exec_t; Boolean virt_qemu_ga_run_unconfined setzt
-# guest-setup). Kein fsfreeze-Hook: freeze/thaw werden ignoriert.
+# Called by the Host through guest-exec (agentbox logs/pair); it only starts journalctl,
+# with a time limit. It lives in this directory because SELinux lets programs of the
+# guest agent run unconfined only from here
+# (virt_qemu_ga_unconfined_exec_t; guest-setup sets the boolean
+# virt_qemu_ga_run_unconfined). Not an fsfreeze hook: freeze/thaw are ignored.
 case "${1:-}" in freeze|thaw) exit 0 ;; esac
 exec /usr/bin/timeout 20 /usr/bin/journalctl --no-pager "$@"

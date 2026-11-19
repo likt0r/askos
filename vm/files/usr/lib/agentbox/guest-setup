@@ -11,10 +11,10 @@ DATA=/var/lib/agentbox-data
 HOME_DIR=/var/home/agent
 AGENT_UID=1000
 
-# titan liest das Journal per Gast-Agent (agentbox logs/pair) ueber
-# /usr/libexec/qemu-ga/fsfreeze-hook.d/agentbox-journal; SELinux erlaubt das
-# nur mit diesem Boolean. Zuerst, damit die Logs auch dann lesbar sind, wenn
-# der Rest hier scheitert. Gilt bis zum naechsten Start.
+# The Host reads the journal through the guest agent (agentbox logs/pair) via
+# /usr/libexec/qemu-ga/fsfreeze-hook.d/agentbox-journal; SELinux allows that
+# only with this boolean. First, so the logs are readable even if the rest
+# here fails. Lasts until the next start.
 setsebool virt_qemu_ga_run_unconfined 1 || true
 
 fwcfg() {
@@ -25,19 +25,19 @@ fwcfg() {
 modprobe qemu_fw_cfg
 CONTEXT=$(fwcfg context)
 ORCA_PORT=$(fwcfg orca_port)
-# die Adresse, unter der Geraete den Host erreichen (sie steht im Host setup, nicht im Image)
+# the address devices reach the Host at (it is in the Host setup, not in the Image)
 PAIRING_ADDRESS=$(fwcfg pairing_address)
 install -d -m 755 /run/agentbox
 install -m 600 /dev/null /run/agentbox/env
-# Fuer Shells (Orca-Terminals) zusaetzlich als Datei, die nur agent lesen darf
+# For shells (Orca terminals) also as a file only agent may read
 install -m 640 -g agent /dev/null /run/agentbox/agent-env
 # VM variables (agentbox set-env, checked on the Host so that none switches a Safeguard
 # off) come first, so the fixed values of Agent Box below win. A missing entry means none.
 /usr/lib/agentbox/fwcfg-env /sys/firmware/qemu_fw_cfg/by_name/opt/agentbox/env/raw \
   /run/agentbox/env /run/agentbox/agent-env
 printf 'AGENTBOX_CONTEXT=%s\nORCA_PORT=%s\nPAIRING_ADDRESS=%s\n' "$CONTEXT" "$ORCA_PORT" "$PAIRING_ADDRESS" >> /run/agentbox/env
-# Claude-Token von titan (leer, solange keins hinterlegt ist). Orca gibt es
-# an alle Terminals und Agenten weiter.
+# Claude token from the Host (empty as long as none is stored). Orca passes it
+# on to all terminals and agents.
 token=$(fwcfg claude_token 2>/dev/null | tr -d '[:space:]' || true)
 if [[ "$token" == sk-ant-* ]]; then
   printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$token" >> /run/agentbox/env
@@ -66,7 +66,7 @@ echo "$gw host.agentbox" >> /etc/hosts
 rm -f /etc/resolv.conf
 echo "nameserver $gw" > /etc/resolv.conf
 
-# Ohne Datenplatte lieber nicht starten als still auf die Systemplatte schreiben
+# Better not to start without the Data disk than to write silently to the System disk
 mountpoint -q "$DATA" || { echo "guest-setup: the Data disk is not mounted" >&2; exit 1; }
 
 # The home is on the System disk and goes with the next Reset; what lasts beyond is only
@@ -87,11 +87,11 @@ done
 chown -h agent:agent "$HOME_DIR"/.config "$HOME_DIR"/.claude "$HOME_DIR"/.codex "$HOME_DIR"/.cargo \
   "$HOME_DIR"/.local "$HOME_DIR"/.local/share
 
-# Der Android-Emulator (SwiftShader) braucht ausfuehrbaren Heap. Die Grenze
-# ist hier die VM, nicht SELinux in ihr; gilt nur bis zum naechsten Start.
+# The Android emulator (SwiftShader) needs an executable heap. The boundary here
+# is the VM, not SELinux inside it; lasts only until the next start.
 setsebool selinuxuser_execheap 1 || true
 
-# Node-Laufzeit fuer Orcas Server bereitlegen (sonst laedt Orca sie beim Start)
+# Put the Node runtime for Orca's server in place (otherwise Orca downloads it at start)
 rt="$HOME_DIR/.config/orca/orcad-artifacts/linux-x64-glibc/runtimes"
 for r in /usr/lib/agentbox/orca-runtimes/node-*; do
   [ -e "$r" ] || continue
@@ -100,16 +100,16 @@ for r in /usr/lib/agentbox/orca-runtimes/node-*; do
   runuser -u agent -- cp -a "$r" "$rt/"
 done
 
-# Claude Code zeigt sonst bei jedem frischen Home den Login-Dialog, obwohl
-# ein Token gesetzt ist
+# Otherwise Claude Code shows the login dialog at every fresh home, even though
+# a token is set
 [ -e "$HOME_DIR/.claude.json" ] || { echo '{"hasCompletedOnboarding": true}' > "$HOME_DIR/.claude.json"; chown -h agent:agent "$HOME_DIR/.claude.json"; }
 
-# Bun liest seine globale Config nur aus dem Home (Mindestalter von Paketen,
-# geschrieben von package-safeguards beim Bauen des Images)
+# Bun reads its global config only from the home (minimum age of packages,
+# written by package-safeguards when the Image is built)
 install -m 644 -o agent -g agent /usr/lib/agentbox/bunfig.toml "$HOME_DIR/.bunfig.toml"
 
-# Git-Hooks in den Repos zaehlen nicht (core.hooksPath), aber Reste entfernen,
-# damit sie auch bei geaenderter Config nicht greifen.
+# Git hooks in the repos do not count (core.hooksPath), but remove leftovers
+# so they do not take effect even if the config changes.
 find "$DATA/home/code" -path '*/.git/hooks/*' -type f ! -name '*.sample' -delete 2>/dev/null || true
 
 # SSH access (ADR 0020): the host key and the SSH keys from the Host into the root-owned

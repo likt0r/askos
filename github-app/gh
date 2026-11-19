@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# gh-Wrapper: Fuer Agent-User holt er ein kurzlebiges App-Token fuer das Repo,
-# um das es geht (-R/--repo oder origin im aktuellen Verzeichnis).
-# Alle anderen User bekommen das normale gh.
+# gh wrapper: for the agent user it fetches a short-lived App token for the repo in question
+# (-R/--repo, or origin in the current directory).
+# All other users get the normal gh.
 set -euo pipefail
 
 REAL_GH=/usr/bin/gh

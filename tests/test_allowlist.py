@@ -243,7 +243,7 @@ class ScopeTest(ProxyTest):
         self.assertIn("[work] ERROR ", self.log())
 
     def test_legacy_files_apply_until_the_store_exists(self):
-        write(os.path.join(self.conf, "allowlist"), "# alle\nall.example  # Kommentar\nUPPER.Example.\n")
+        write(os.path.join(self.conf, "allowlist"), "# all\nall.example  # comment\nUPPER.Example.\n")
         write(os.path.join(self.conf, "allowlist-work"), "work.example\n")
         write(os.path.join(self.conf, "allowlist-priv"), "priv.example\n")
         self.start()
@@ -665,10 +665,10 @@ class AllowTest(CliTest):
                 self.assertEqual(out, f"work: {domain} allowed until {self.until(expires)}\n")
 
     def test_temporary_with_the_default_duration(self):
-        self.ok("allow", "priv", "example.org", "--temporary", "--note=fuer eine Recherche")
+        self.ok("allow", "priv", "example.org", "--temporary", "--note=for a research task")
         e = self.one("example.org", "priv")
         self.assertAlmostEqual(e["expires"], time.time() + 3600, delta=60)
-        self.assertEqual(e["note"], "fuer eine Recherche")
+        self.assertEqual(e["note"], "for a research task")
 
     def test_temporary_follows_the_settings(self):
         with open(os.path.join(self.root, "etc/agentbox/settings.json"), "w") as f:
@@ -1017,9 +1017,9 @@ class MigrateTest(CliTest):
     def legacy(self):
         """The files of the Allowlist before allowlist.json, as on the Host."""
         write(os.path.join(self.conf, "allowlist"),
-              "# Domains fuer alle\n\n# GitHub\ngithub.com\nGitHubUserContent.com.  # Kommentar\n*.wildcard.example\n"
+              "# Domains for all\n\n# GitHub\ngithub.com\nGitHubUserContent.com.  # comment\n*.wildcard.example\n"
               "github.com\n")
-        write(os.path.join(self.conf, "allowlist-priv"), "# Freigaben nur fuer priv (agentbox allow/disallow)\ndocs.rs\n")
+        write(os.path.join(self.conf, "allowlist-priv"), "# Entries only for priv (agentbox allow/disallow)\ndocs.rs\n")
         write(os.path.join(self.conf, "allowlist-work"), "")
 
     def test_keeps_every_entry_and_moves_the_files_aside(self):

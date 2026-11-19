@@ -445,8 +445,8 @@ ENDPOINTS = [
     ("POST", "/api/v1/allowlist/all/x.org/extend", {"duration": "7d"}, ["extend", "all", "x.org", "--for=7d",
                                                                         "--json"], 200),
     ("POST", "/api/v1/allowlist/all/x.org/make-permanent", {}, ["make-permanent", "all", "x.org", "--json"], 200),
-    ("PUT", "/api/v1/allowlist/work/x.org/note", {"note": "fuer --docs"},
-     ["set-note", "work", "x.org", "--note=fuer --docs", "--json"], 200),
+    ("PUT", "/api/v1/allowlist/work/x.org/note", {"note": "for --docs"},
+     ["set-note", "work", "x.org", "--note=for --docs", "--json"], 200),
     # Regex entries (ADR 0013): the pattern verbatim, as the value of --regex, never lowercased;
     # in a path under /regex it is the query parameter regex
     ("POST", "/api/v1/allowlist", {"scope": "work", "regex": " \t^Mirror\\d+\\.example$\r\n", "duration": "1h",

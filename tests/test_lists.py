@@ -672,13 +672,13 @@ class MigrationTest(CliTest):
     def test_a_leftover_text_file_is_merged_into_the_record(self):
         # a record already, and the text file again (put back by hand): its new entries are
         # added, the record's own stay as they are
-        write(os.path.join(self.conf, "watchlist.json"), record(watch("exfil.example", "c2", "Host", "eigene Notiz")))
+        write(os.path.join(self.conf, "watchlist.json"), record(watch("exfil.example", "c2", "Host", "own note")))
         result = self.json("migrate-lists")
         self.assertEqual(result["watchlist"], {"migrated": 1, "file": "suspicious-domains",
                                                "skipped": ["Bad_Name.example exfil", "odd.example spam"]})
         self.assertEqual([(e["domain"], e["category"], e["source"], e["note"], e["added_by"])
                           for e in self.stored("watchlist.json")],
-                         [("exfil.example", "c2", "Host", "eigene Notiz", "bewr"),
+                         [("exfil.example", "c2", "Host", "own note", "bewr"),
                           ("jsonkeeper.example", "payload", "Contagious Interview", "", "migration")])
         names = os.listdir(self.conf)
         self.assertIn("suspicious-domains.migrated", names)

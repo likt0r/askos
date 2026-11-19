@@ -121,10 +121,10 @@ class MigrateTest(RegistryTest):
     def legacy(self):
         """The state of the fixed VMs work and priv before the registry."""
         self.write("etc/agentbox/github/owners-priv",
-                   "# GitHub-Accounts/Orgs, fuer die priv Tokens bekommt (einer pro Zeile)\nlikt0r\n\n# alt: x\n",
+                   "# GitHub accounts/orgs that priv gets tokens for (one per line)\nlikt0r\n\n# old: x\n",
                    mode=0o640)
         self.write("etc/agentbox/github/owners-work",
-                   "# GitHub-Accounts/Orgs, fuer die work Tokens bekommt (einer pro Zeile)\n\n", mode=0o640)
+                   "# GitHub accounts/orgs that work gets tokens for (one per line)\n\n", mode=0o640)
         for vm in ("work", "priv"):
             self.write(f"var/lib/agentbox/vms/{vm}-data.qcow2", "{}")
 

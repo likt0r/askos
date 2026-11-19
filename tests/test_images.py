@@ -202,7 +202,7 @@ class BaseBuildTest(ImagesTest):
         """#113: the Containerfile downloads Orca (orca_version, else the newest release at
         least package_min_age_days old); nothing of Orca is mounted from the Host, and a
         build.conf an earlier setup wrote is not read."""
-        self.write("etc/agentbox/build.conf", "# Erzeugt von agentbox setup: Orcas Node-Laufzeit fuer die Builds\n"
+        self.write("etc/agentbox/build.conf", "# Created by agentbox setup: Orca's Node runtime for the Builds\n"
                    f"ORCA_RUNTIMES={self.path('home/bewr/nothing-here')}\n")
         self.ok("set-settings", "orca_version=1.4.250")
         out = self.built()

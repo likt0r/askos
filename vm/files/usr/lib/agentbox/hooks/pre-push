@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Agenten pushen nicht auf main/master, sondern auf Branches mit PR.
-# Bremse gegen Versehen, keine Sperre: --no-verify umgeht den Hook.
+# Agents do not push to main/master but to branches with a PR.
+# A brake against slips, not a lock: --no-verify bypasses the hook.
 while read -r _local_ref _local_sha remote_ref _remote_sha; do
   case "$remote_ref" in
     refs/heads/main | refs/heads/master)
