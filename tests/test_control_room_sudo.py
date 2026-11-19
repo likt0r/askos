@@ -277,7 +277,7 @@ class CallerTest(ActivityTest):
         self.assertIn("status is not for the Control Room", err)
 
     def test_anyone_else_through_sudo_is_not_limited(self):
-        code, _, err = self.through_sudo("alice", "allow", "work", "evil.example", "--force")
+        code, _, err = self.through_sudo("alice", "allow", "work", "plain.example", "--force")
         self.assertEqual(code, 0, err)
         code, _, err = self.through_sudo("alice", "version")
         self.assertEqual(code, 0, err)

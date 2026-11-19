@@ -85,10 +85,11 @@ Controls the agent VMs on this Host.
   agentbox allowlist [<vm>|all] [--json]             Allowlist entries (all, a VM's, those for all VMs)
                                                      with time left and use in the last 24 hours
   agentbox allow <vm|all> <domain>|--regex PATTERN [--confirm-pattern] [--for D|--temporary] [--note TEXT] [--force] [--json]
-                Allowlist entry for one VM or all, permanent or temporary (suspicious ones only
-                with --force)
-                Regex entry: never allows strong Signals; without --confirm-pattern it only shows
-                which hosts of the proxy log of the last 7 days it would allow
+                Allowlist entry for one VM or all, permanent or temporary; strong Signals block a
+                destination whatever allows it, so none for one with them, also with --force
+                (lift the Signal instead); while they cannot be checked only with --force
+                Regex entry: without --confirm-pattern it only shows which hosts of the proxy
+                log of the last 7 days it would allow
   agentbox check-regex <list> --regex PATTERN [<host>...] [--scope vm|all] [--json]
                 whether the pattern can be an entry of that list,
                                                      which hosts it matches, for the Allowlist the preview
@@ -205,7 +206,7 @@ DECLARATIONS = {name: declaration for module in MODULES for name, declaration in
 CONTROL_ROOM_USER = "agentbox-web"
 GLOBAL_OPTIONS = {"actor": True}
 # The commands the backend runs, and no others (tests/test_control_room_sudo.py checks that it
-# calls exactly these). Never --force: what lifts strong Signals, allows a destination while the
+# calls exactly these). Never --force: what lifts strong Signals, stores an Allowlist entry while the
 # Watchlist cannot be read or replaces a Host setup is the CLI's at the Host (ADR 0009).
 def control_room_commands():
     """The commands declared for the Control Room."""

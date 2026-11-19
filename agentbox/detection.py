@@ -7,8 +7,8 @@ The harmless list (<CONF>/harmless, root-owned, one domain per line, including
 subdomains, or "regex <pattern>" for a Regex entry, ADR 0013) is read by the
 classifier: a harmless domain raises no Alert, except for Signals that do not depend
 on its name. Everything else stays as it is: with
-strong Signals it is still blocked in Open web and allowed only with --force, so
-marking a domain harmless never opens a way out. Seen marks are per VM in
+strong Signals it is still blocked, whatever allows it (ADR 0021), so marking a domain
+harmless never opens a way out. Seen marks are per VM in
 <STATE>/alerts-seen-<vm>.json ({domain or "*": epoch seconds}); an Alert counts
 as seen when it happened before its mark.
 """
@@ -81,7 +81,7 @@ def domain_arg(d):
 # --- check-domain -------------------------------------------------------------
 
 def verdict(rep):
-    blocked = "blocked in Open web, allowed only with --force"
+    blocked = "blocked, also with an Allowlist entry or in Open web, until the Signal is lifted"
     if rep.get("harmless"):
         mark = f"pattern {rep['harmless']}" if rep.get("harmless_regex") else rep["harmless"]
         quiet = f"marked harmless ({mark}): " + ("Alert" if rep.get("alert") else "no Alert")
@@ -148,7 +148,7 @@ def harmless(args):
 
 def mark_harmless(args):
     """agentbox mark-harmless <domain>|--regex PATTERN [--json]: no more Alerts for it (a
-    false positive); blocking in Open web and allow --force stay as they are"""
+    false positive); strong Signals keep blocking it"""
     ref, as_json = _mark_target(args)
     if ref[0] == "regex":
         patterns.checked(ref[1])

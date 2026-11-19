@@ -555,7 +555,7 @@ class EndpointTest(V1Test):
         timeline = {"entries": [
             {"time": "2026-11-09T12:00:00.000000Z", "vm": "work", "actor": "Firefox/Linux (127.0.0.1)",
              "kind": "allowlist", "action": "allow", "outcome": "failed",
-             "description": "Allow evil.example: evil.example is suspicious (exfil). Allowing it only with --force",
+             "description": "Allow evil.example: evil.example has strong Signals (exfil), which block it whatever the Allowlist says",
              "code": "allow", "params": {"domain": "evil.example", "scope": "work"}, "error": "domain_suspicious",
              "error_params": {"domain": "evil.example"}},
             {"time": "2026-11-09T11:00:00.000000Z", "vm": None, "actor": "timer", "kind": "allowlist",
@@ -784,16 +784,16 @@ class ErrorTest(V1Test):
             ("guest_agent_unavailable", "priv: the guest agent does not answer (timeout)", 4, 503),
             ("vm_query_timeout", "x: query stopped in the VM after 20 s, narrow the filters", 5, 504),
             ("vm_journal_failed", "priv: journalctl fails in the VM: x", 6, 502),
-            ("domain_suspicious", "evil.example is suspicious (exfil). Allowing it only with --force", 1, 409),
+            ("domain_suspicious", "evil.example has strong Signals (exfil), which block it whatever the Allowlist says, also with --force", 1, 409),
             ("allowlist_entry_not_found", "all VMs: x.org is not on the Allowlist", 1, 404),
             ("force_required", "x.org is on the Watchlist as exfil. Removing it only with --force", 1, 409),
-            ("watchlist_recreate_force_required", "Watchlist unreadable, Open web closed: x missing; ... Creating it "
+            ("watchlist_recreate_force_required", "Watchlist unreadable, the proxy lets nothing through: x missing; ... Creating it "
                                                   "again only with --force", 1, 409),
             ("builtin_entry", "github.com is built in and stays legitimate", 1, 409),
             ("watchlist_entry_not_found", "x.org is not on the Watchlist", 1, 404),
             ("legitimate_domain_not_found", "x.org is not an added Legitimate domain", 1, 404),
             ("invalid_category", "--category must be exfil, c2", 1, 400),
-            ("watchlist_unreadable", "Watchlist unreadable, Open web closed", 1, 409),
+            ("watchlist_unreadable", "Watchlist unreadable, the proxy lets nothing through", 1, 409),
             ("legitimate_unreadable", "Legitimate domains unreadable", 1, 409),
             ("migration_required", "1 line cannot be taken over", 1, 409),
             ("build_running", "a Build of base runs already", 1, 409),

@@ -87,7 +87,7 @@ class AllowTest(AllowlistTest):
                          + [["allow", "priv", "blocked.example", "--temporary", "--json"]])
 
     def test_strong_signals_are_refused_with_the_explanation(self):
-        reason = "evil.example is suspicious (exfil). Allowing it only with --force"
+        reason = "evil.example has strong Signals (exfil), which block it whatever the Allowlist says, also with --force"
         self.respond("", stderr=failure("domain_suspicious", reason, domain="evil.example"), exitcode=1)
         answer = self.request("POST", "/api/v1/allowlist", {"scope": "priv", "domain": "evil.example",
                                                             "duration": "1h"})

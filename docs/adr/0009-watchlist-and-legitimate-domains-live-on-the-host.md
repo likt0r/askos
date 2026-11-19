@@ -14,6 +14,8 @@ A Watchlist that cannot be read closes Open web. When `watchlist.json` is broken
 
 _Amended by #85 (2026-11-08):_ `vm/setup-vms.sh` is gone. The RPM ([ADR 0009](0009-agent-box-ships-as-a-fedora-rpm.md)) ships the repository's lists in `/usr/share/agentbox/lists`, and `agentbox setup` does what the script did here: it installs them only where there is no record, no text file and no `*.migrated` file, goes on when `migrate-lists` only warns, and does not refill a deleted record but says how to restore it.
 
+_Amended by [ADR 0021](0021-strong-signals-always-block.md) (2026-11-19, #59):_ strong Signals block a destination whatever allows it, an Allowlist entry included, so no `allow --force` makes a blockchain endpoint reachable any more, and nothing else does. A Watchlist that cannot be read no longer closes only Open web: the proxy lets nothing through, Allowlist entries included, and closes every tunnel until the file is fixed. `allow`, `extend` and `make-permanent` still need `--force` while it cannot be read, which now stores the entry unchecked; the proxy checks it once the Watchlist can be read. The changes this ADR guards with `--force` make a destination with strong Signals reachable at all, not only in Open web, and only the CLI on the Host can make them, as before.
+
 ## Consequences
 
 - The migration never weakens an entry. A domain listed twice in the text file keeps its strongest category. Lines the records cannot take (an unknown category such as `threat`, which the classifier read as strong, or an invalid name) are left out only by `migrate-lists` on the Host, which names them and records how many in Activity; a change that would migrate such a file refuses (`migration_required`), so the Control Room cannot drop them unseen.
