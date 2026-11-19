@@ -41,7 +41,8 @@ export interface Vm {
   /** wakes that gave up since the VM's last start */
   failed_wakes?: { count: number, last: string | null, address: string | null } | null
   open_web_until?: string | null
-  devices?: { address: string, connections: number }[] | null
+  /** open connections per remote address and kind: to the Orca port, or SSH sessions */
+  devices?: { address: string, kind?: 'orca' | 'ssh', connections: number }[] | null
   [key: string]: unknown
 }
 

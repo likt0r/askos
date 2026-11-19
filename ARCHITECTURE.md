@@ -413,7 +413,11 @@ flowchart LR
 - VMs are reset automatically once their System disk is seven days old, and with automatic
   updates (`auto_update`) once their Image has a newer current Build than the one their
   System disk came from (not when pinned to a Build), but only when no Orca client is
-  connected and no agent is working (read from Orca as the Observer).
+  connected, no SSH session is open and no agent is working (read from Orca as the Observer).
+  An established connection from the Host to port 22 of the VM counts as an open SSH session,
+  as one to its Orca port counts as a connected Orca client, and the Reset is postponed with
+  its own reason, `ssh-connected`; when `ss` cannot tell, it is postponed as for unknown
+  devices (`gui-unknown`).
   They are never paused automatically; when the Host sleeps, the VMs sleep with it.
 - What libvirt and systemd say about the state of a VM, its network and a unit is read in one
   module, [agentbox/states.py](agentbox/states.py), which names it in these terms: libvirt's
@@ -1145,8 +1149,9 @@ to 60 s apart). It writes one JSON line per event, and changes nothing but what 
 about a VM's answers (the VM's wakes file) and records Activity only for a VM it finds not
 responding (see Activity): VM objects
 (`agentbox describe --json`: state, agents, whether the VM answers and its failed wakes,
-System disk and its Build, Image and pin, devices on the Orca port from the
-`agentbox-gui-<vm>@` instances) when one changes, polled every 3 s (agents and whether Orca
+System disk and its Build, Image and pin, SSH access, devices on the Orca port and the SSH
+port from the `agentbox-gui-<vm>@` and `agentbox-ssh-<vm>@` instances, by address and kind)
+when one changes, polled every 3 s (agents and whether Orca
 answers every 15 s) rather than taken from libvirt's events, because most of the object is
 not libvirt's; Activity, Alerts and GitHub tokens from following the journald namespace
 `agentbox`; Build records and the build unit's journal; the Host's agentbox units; and

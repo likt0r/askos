@@ -40,6 +40,18 @@ describe('VM overview', () => {
     expect(api.calls.some(c => c.path.startsWith('/activity'))).toBe(true)
   })
 
+  it('names an open SSH session as why a Reset waits, and lists it beside the Orca connections of the same address', async () => {
+    fakeApi({
+      'GET /session': SIGNED_IN,
+      'GET /activity?kind=reset&vm=work&since=-14d&lines=1':
+        OK({ entries: [{ action: 'reset.postponed', reason: 'ssh-connected', kind: 'reset', vm: 'work' }] }),
+    })
+    await openApp('/vms/work/web', [{ ...WORK, devices: [{ address: '192.0.2.36', kind: 'orca', connections: 2 },
+      { address: '192.0.2.36', kind: 'ssh', connections: 1 }] }])
+    expect(text('overview-postponed')).toBe('Automatic Reset postponed: an SSH session is open')
+    expect(byTestId('overview-devices').findAll('li')).toHaveLength(2)
+  })
+
   it('follows vm events: state, buttons and pin change without reloading', async () => {
     fakeApi({ 'GET /session': SIGNED_IN, 'GET /activity?kind=reset&vm=work&since=-14d&lines=1': POSTPONED })
     const { es } = await openApp('/vms/work/web', [WORK])

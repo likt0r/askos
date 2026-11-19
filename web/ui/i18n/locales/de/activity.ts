@@ -179,6 +179,7 @@ export default {
       'idle': 'untätig',
       'stopped': 'VM war aus',
       'gui-connected': 'ein Gerät ist verbunden',
+      'ssh-connected': 'eine SSH-Sitzung ist offen',
       'gui-unknown': 'verbundene Geräte unbekannt',
       'agents-working': 'Agenten arbeiten',
       'agents-unknown': 'Zustand der Agenten unbekannt',

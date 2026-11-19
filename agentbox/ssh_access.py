@@ -694,6 +694,21 @@ def remove_ssh_key(args):
 
 # --- ssh ---------------------------------------------------------------------
 
+def _listed(k):
+    return {"name": k["name"], "type": sshkeys.key_type(k["key"]), "fingerprint": k["fingerprint"],
+            "added": k["added"]}
+
+
+def described(rec):
+    """The VM's SSH access as `describe` shows it: on or off, its SSH port, the fingerprint of
+    its host key (None before there is one), its SSH keys and whether the VM has yet to take a
+    change."""
+    host = sshkeys.host_public(generate.host_key(rec["name"]) or b"")
+    return {"enabled": registry.ssh_access(rec), "port": registry.ssh_port(rec),
+            "host_key_fingerprint": sshkeys.fingerprint(host) if host else None,
+            "keys": [_listed(k) for k in registry.ssh_keys(rec)], "pending": pending(rec["name"])}
+
+
 def ssh(args):
     """agentbox ssh <vm> [--json]: the VM's SSH access, its SSH port, the fingerprint of its host
     key with a known_hosts line, its SSH keys, and whether the VM has yet to take a change."""
@@ -705,8 +720,7 @@ def ssh(args):
     port, on = registry.ssh_port(rec), registry.ssh_access(rec)
     host = sshkeys.host_public(generate.host_key(name) or b"")
     known = sshkeys.known_hosts_line(name, host) if host else None     # under its alias, as ssh-config gives it
-    keys = [{"name": k["name"], "type": sshkeys.key_type(k["key"]), "fingerprint": k["fingerprint"],
-             "added": k["added"], "added_by": k["added_by"]} for k in registry.ssh_keys(rec)]
+    keys = [{**_listed(k), "added_by": k["added_by"]} for k in registry.ssh_keys(rec)]
     waiting = pending(name)
     if "json" in opts:
         print(json.dumps({"vm": name, "enabled": on, "port": port,

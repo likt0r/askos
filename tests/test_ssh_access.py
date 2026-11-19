@@ -832,6 +832,28 @@ class ShowTest(SshTest):
         self.assertEqual(self.json("ssh", "priv")["port"], 2202)
         self.assertEqual(self.refused("ssh"), "agentbox: ssh <vm> [--json]\n")
 
+    def test_describe_shows_it_with_and_without_ssh_access(self):
+        self.assertEqual(self.json("describe", "work")["ssh"], {"enabled": False, "port": 2201,
+                                                                "host_key_fingerprint": None, "keys": [],
+                                                                "pending": False})
+        self.assertNotIn("SSH access", self.ok("describe", "work"))
+        self.add()
+        self.ok("set-ssh", "work", "on")
+        shown = self.json("ssh", "work")
+        described = self.json("describe", "work")["ssh"]
+        listed = [{k: shown["keys"][0][k] for k in ("name", "type", "fingerprint", "added")}]
+        self.assertEqual(described, {"enabled": True, "port": 2201, "host_key_fingerprint": shown["host_key_fingerprint"],
+                                     "keys": listed, "pending": False})
+        self.assertRegex(described["host_key_fingerprint"], r"^SHA256:[A-Za-z0-9+/]{43}$")
+        self.assertEqual(described["keys"][0]["fingerprint"], LAPTOP_FP)
+        self.assertIn("  SSH access:   on, port 2201, 1 SSH key(s)\n", self.ok("describe", "work"))
+        os.makedirs(os.path.dirname(self.path(PENDING.format("work"))), exist_ok=True)
+        open(self.path(PENDING.format("work")), "w").close()
+        self.assertTrue(self.json("describe", "work")["ssh"]["pending"])
+        self.ok("set-ssh", "work", "off")
+        self.assertEqual({k: v for k, v in self.json("describe", "work")["ssh"].items() if k != "pending"},
+                         {**{k: v for k, v in described.items() if k != "pending"}, "enabled": False})
+
 
 class SshConfigTest(SshTest):
     """agentbox ssh-config (#134): a ~/.ssh/config block per VM with SSH access, named

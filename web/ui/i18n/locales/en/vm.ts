@@ -22,6 +22,7 @@ export default {
     resetPostponed: 'Automatic Reset postponed: {reason}',
     reasons: {
       'gui-connected': 'a device is connected',
+      'ssh-connected': 'an SSH session is open',
       'gui-unknown': 'connected devices unknown',
       'agents-working': 'agents are working',
       'agents-unknown': 'agent status unknown',

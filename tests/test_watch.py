@@ -45,6 +45,8 @@ UNITS = [
      "Orca-Verbindung zur VM work"],
     ["agentbox-gui-priv@5-12292-192.0.2.8:6802-192.0.2.50:1000.service", "loaded", "inactive", "dead",
      "Orca-Verbindung zur VM priv"],
+    ["agentbox-ssh-work@6-12293-192.0.2.8:2201-192.0.2.36:50022.service", "loaded", "active", "running",
+     "SSH connection to VM work"],
     ["agentbox-ghvm-work@0-1-10.77.1.1:9100-10.77.1.2:4000.service", "loaded", "active", "running", "Token"],
     ["agentbox-proxy-work.service", "loaded", "active", "running", "Allowlist-Proxy fuer VM work"],
     ["agentbox-feeds.timer", "loaded", "active", "waiting", "HaGeZi-Listen"],
@@ -329,8 +331,10 @@ class SnapshotTest(WatchTest):
                          {"age_days": 3, "file": "base-20261020.qcow2", "image": "base", "build": "20261020"})
         self.assertTrue(work["reset_changes_build"])
         self.assertEqual((work["memory_mib"], work["orca_port"], work["address"]), (26624, 6801, "10.77.1.2"))
-        self.assertEqual(work["devices"], [{"address": "192.0.2.36", "connections": 2},
-                                           {"address": "192.0.2.41", "connections": 1}])
+        # counted per address and kind: an SSH session beside the Orca connections of the same address
+        self.assertEqual(work["devices"], [{"address": "192.0.2.36", "kind": "orca", "connections": 2},
+                                           {"address": "192.0.2.36", "kind": "ssh", "connections": 1},
+                                           {"address": "192.0.2.41", "kind": "orca", "connections": 1}])
         self.assertEqual(priv["devices"], [])
         self.assertEqual(priv["agents"], {})
         self.assertEqual(snap["problems"], [])
@@ -651,6 +655,10 @@ class DescribeTest(WatchTest):
                                                                                         "192.0.2.36"))
         # running without an Observer: agents unknown
         self.assertIsNone(work["agents"])
+        self.assertEqual([(d["address"], d["kind"]) for d in work["devices"]],
+                         [("192.0.2.36", "orca"), ("192.0.2.36", "ssh"), ("192.0.2.41", "orca")])
+        self.assertIn("  Devices:      192.0.2.36 (2), 192.0.2.36 SSH (1), 192.0.2.41 (1)\n",
+                      self.run_agentbox("describe", "work")[1])
 
     def test_idle_is_running_for_the_control_room_and_status(self):
         self.scenario(vms={"work": {"state": "idle"}, "priv": {"state": "shut off"}})

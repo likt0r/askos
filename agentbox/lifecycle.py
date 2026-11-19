@@ -100,16 +100,26 @@ def _days(seconds):
     return d if seconds >= 0 else -d
 
 
-def gui_connections(ctx):
-    """Established TCP connections to the VM's Orca (a laptop's GUI is attached),
-    or None when ss cannot tell."""
+def _established(ip, port):
+    """Established TCP connections from the Host to ip:port, or None when ss cannot tell."""
     try:
-        ip, port = registry.orca_address(ctx)
         r = subprocess.run(["ss", "-Htn", "state", "established", f"( dst {ip}:{port} )"],
                            capture_output=True, text=True, errors="replace", timeout=15)
     except (OSError, subprocess.TimeoutExpired):
         return None
     return r.stdout.count("\n") if r.returncode == 0 else None
+
+
+def gui_connections(ctx):
+    """Established TCP connections to the VM's Orca (a laptop's GUI is attached),
+    or None when ss cannot tell."""
+    return _established(*registry.orca_address(ctx))
+
+
+def ssh_connections(ctx):
+    """Established TCP connections to port 22 of the VM (an SSH session is open: through its
+    SSH port, or straight from the Host), or None when ss cannot tell."""
+    return _established(registry.guest_ip(registry.load(ctx)), 22)
 
 
 # --- Orca in the VM, reached from the Host as its own Paired device ---------
@@ -568,8 +578,8 @@ def reset_check(as_json=False):
 
 
 CHECK_REASONS = {"idle": "idle", "stopped": "the VM was off", "gui-connected": "a device is connected",
-                 "gui-unknown": "connected devices unknown", "agents-working": "agents are working",
-                 "agents-unknown": "agent status unknown"}
+                 "ssh-connected": "an SSH session is open", "gui-unknown": "connected devices unknown",
+                 "agents-working": "agents are working", "agents-unknown": "agent status unknown"}
 
 
 def _record_check(ctx, action, reason, update, message, error=None, error_params=None):
@@ -619,6 +629,13 @@ def _check_one(ctx, now, say, age_days, update):
     if gui > 0:
         say(f"{ctx}: {what} postponed (GUI connected)")
         return "postponed", "gui-connected"
+    ssh = ssh_connections(ctx)
+    if ssh is None:
+        say(f"{ctx}: {what} postponed (SSH sessions unknown)")
+        return "postponed", "gui-unknown"
+    if ssh > 0:
+        say(f"{ctx}: {what} postponed (SSH session open)")
+        return "postponed", "ssh-connected"
     agents = agents_text(agent_states(ctx))
     if agents == "?" or "working=" in agents:
         say(f"{ctx}: {what} postponed (agents: {agents})")

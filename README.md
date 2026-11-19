@@ -557,6 +557,8 @@ command saves it and fails with `ssh_pending`, and each SSH connection hands it 
 is refused until the VM takes it; Orca connections go on. Turning SSH access on or off and
 adding or removing a key are recorded in Activity, a change saved but not applied yet as that
 change with why it waits; each connection is not.
+An open SSH session postpones the automatic Reset of its VM like a connected Orca client
+(reason `ssh-connected`), and `agentbox describe` lists it among the VM's devices, marked SSH.
 Deleting the VM deletes its keys and host key.
 
 ### Viewing a dev server
@@ -749,7 +751,7 @@ an update that runs keeps it from starting; the next day's check tries again. Th
 until those Builds have finished; its Reset check then also resets every VM whose Image has a
 newer current Build than its System disk,
 however young the disk, with the same rules as the Reset by age: only when no Orca client is
-connected and no agent works, else it is postponed to the next night; a VM pinned to a Build
+connected, no SSH session is open and no agent works, else it is postponed to the next night; a VM pinned to a Build
 is left alone. Activity shows the start (`build.automatic`), each Build and each automatic
 Reset with the reason `update`. With `auto_update=false` new versions come with the weekly
 rebuild and VMs get them at their Reset by age, as before.
