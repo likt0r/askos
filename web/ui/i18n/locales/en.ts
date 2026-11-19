@@ -128,6 +128,8 @@ export default {
     ssh_keys_too_large: 'The SSH keys of a VM take at most 64512 bytes together; with this one they would take more.',
     ssh_key_not_found: 'This VM has no such SSH key.',
     ssh_missing: 'The change is saved, but the VM\'s Build cannot apply SSH access while it runs: the VM keeps the SSH keys it started with. Build its Image and reset the VM.',
+    ssh_pending: 'The change is saved, but the running VM has not taken it yet. Each connection to its SSH port hands it over first and is refused until the VM takes it.',
+    ssh_not_applied: 'The change is saved, but a step on the Host that applies it failed. {finish} on the Host finishes it.',
     guest_agent_unavailable: 'The VM\'s guest agent does not answer.',
     vm_query_timeout: 'A query inside the VM took too long.',
     vm_journal_failed: 'Reading the VM\'s journal failed.',

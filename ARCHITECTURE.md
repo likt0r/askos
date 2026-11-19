@@ -385,7 +385,10 @@ flowchart LR
   file at every login, so a removed key logs in no more. It waits up to 30 s for `guest-setup`,
   which writes the same files at a start from what QEMU read then. Only `{"keys": N, "sshd":
   true|false}` comes back, and it must be exactly what the Host sent; anything else, a failure
-  or a VM that does not answer fails the command with the change saved. A VM that is not
+  or a VM that does not answer fails the command with the change saved. Such a change, and one
+  whose step on the Host failed, is recorded in Activity as the change made, with the key,
+  failed with `ssh_pending` (the VM has not taken it yet) or `ssh_not_applied` (with the
+  command that finishes it), as `set-env` records `env_not_applied`. A VM that is not
   running and not off (paused) gets a pending marker instead
   (`/var/lib/agentbox/pending/ssh-<vm>`), written before the change is saved (when it cannot
   be written, nothing changes) and also left by a running VM that did not take the change:

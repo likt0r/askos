@@ -534,8 +534,12 @@ next start. Removing a key ends every open SSH session of the VM (the Host canno
 session used which key), and so does `set-ssh <name> off`, which also closes the port at once
 and keeps the keys. A VM whose Build lacks the wrapper that applies a change in the VM
 (`agentbox-ssh`) cannot take one while it runs: the command saves it and fails with
-`ssh_missing`, and the VM keeps its keys until a Reset onto a newer Build. Turning SSH access
-on or off and adding or removing a key are recorded in Activity, each connection is not.
+`ssh_missing`, and the VM keeps its keys until a Reset onto a newer Build. A running VM that
+does not take a change (its guest agent does not answer, for instance) gets it later: the
+command saves it and fails with `ssh_pending`, and each SSH connection hands it over first and
+is refused until the VM takes it; Orca connections go on. Turning SSH access on or off and
+adding or removing a key are recorded in Activity, a change saved but not applied yet as that
+change with why it waits; each connection is not.
 Deleting the VM deletes its keys and host key.
 
 ### Viewing a dev server

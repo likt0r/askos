@@ -128,6 +128,8 @@ export default {
     ssh_keys_too_large: 'Die SSH-Schlüssel einer VM belegen zusammen höchstens 64512 Bytes; mit diesem wären es mehr.',
     ssh_key_not_found: 'Diese VM hat keinen solchen SSH-Schlüssel.',
     ssh_missing: 'Die Änderung ist gespeichert, aber der Build der VM kann den SSH-Zugang nicht im laufenden Betrieb ändern: Die VM behält die SSH-Schlüssel, mit denen sie gestartet ist. Baue ihr Image und setze die VM zurück.',
+    ssh_pending: 'Die Änderung ist gespeichert, aber die laufende VM hat sie noch nicht übernommen. Jede Verbindung zu ihrem SSH-Port übergibt sie zuerst und wird abgewiesen, bis die VM sie übernimmt.',
+    ssh_not_applied: 'Die Änderung ist gespeichert, aber ein Schritt auf dem Host, der sie anwendet, ist fehlgeschlagen. {finish} auf dem Host holt das nach.',
     guest_agent_unavailable: 'Der Gast-Agent der VM antwortet nicht.',
     vm_query_timeout: 'Eine Abfrage in der VM hat zu lange gedauert.',
     vm_journal_failed: 'Das Journal der VM konnte nicht gelesen werden.',

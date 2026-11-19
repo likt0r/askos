@@ -573,7 +573,8 @@ class SetSshTest(SshTest):
         code, out, err = self.run_agentbox("set-ssh", "work", "on", "--json")
         self.assertEqual((code, out), (1, ""))
         said = json.loads(err)
-        self.assertEqual((said["error"], said["params"]), ("action_failed", {"vm": "work"}))
+        self.assertEqual((said["error"], said["params"]),
+                         ("ssh_not_applied", {"vm": "work", "finish": "agentbox regenerate"}))
         self.assertTrue(said["message"].startswith("work: the change is saved, but not applied: "), said["message"])
         self.assertTrue(said["message"].endswith("; agentbox regenerate finishes it"), said["message"])
         self.assertIs(self.record()["ssh_access"], True)
@@ -1235,7 +1236,7 @@ class LiveTest(SshTest):
         self.scenario(systemctl_fails=["stop"])
         said = self.failed("set-ssh", "work", "off")
         self.assertTrue(said["message"].startswith("work: the change is saved, but not applied: "), said["message"])
-        self.assertTrue(said["message"].endswith("; the same call again finishes it"), said["message"])
+        self.assertTrue(said["message"].endswith("; agentbox set-ssh work off finishes it"), said["message"])
         self.assertIs(self.record()["ssh_access"], False)
         self.scenario()
         self.forget_calls()
@@ -1278,7 +1279,7 @@ class LiveTest(SshTest):
         self.on_with_two_keys()
         self.scenario(agent_down=True)
         said = self.failed("remove-ssh-key", "work", LAPTOP_FP)
-        self.assertEqual(said["error"], "guest_agent_unavailable")
+        self.assertEqual(said["error"], "ssh_pending")
         self.assertEqual(len(self.record()["ssh_keys"]), 1)
         self.assertEqual(self.authorized().count("\n"), 2)
         self.scenario()
@@ -1303,7 +1304,7 @@ class LiveTest(SshTest):
         os.makedirs(self.guest(""), exist_ok=True)
         open(self.guest("starting"), "w").close()              # guest-setup never finishes
         said = self.failed("remove-ssh-key", "work", LAPTOP_FP)
-        self.assertEqual(said["error"], "action_failed")
+        self.assertEqual(said["error"], "ssh_pending")
         self.assertEqual(said["message"], "work: the change is saved, but the VM did not take it (the VM is still "
                                           "starting); each connection to its SSH port hands it over first and is "
                                           "refused while that fails")
@@ -1346,11 +1347,51 @@ class LiveTest(SshTest):
         self.assertEqual([c for c in calls if not c or c[0] == "qemu-agent-command"], [])
         self.assertTrue(self.exists(PENDING.format("work")))
 
+    def test_a_saved_change_that_is_not_applied_is_recorded_as_made(self):
+        """As for set-env: the command's one entry names the change with its key, failed with an
+        error that says the change is saved and waits for the VM (ssh_pending) or for a step on
+        the Host, with what finishes it (ssh_not_applied)."""
+        self.on_with_two_keys()
+        self.scenario(agent_down=True)
+        for args, stdin in ((("remove-ssh-key", "work", LAPTOP_FP), ""), (("add-ssh-key", "work"), LAPTOP + "\n"),
+                            (("set-ssh", "work", "off"), "")):
+            with self.subTest(args=args):
+                said = self.failed(*args, stdin=stdin)
+                self.assertEqual((said["error"], said["params"]), ("ssh_pending", {"vm": "work"}))
+                self.assertTrue(said["message"].startswith("work: the change is saved, but the VM did not take it "
+                                                           "(the guest agent does not answer"), said["message"])
+        self.scenario(virt_install_fails=["agentbox-work"])
+        for args, finish in ((("set-ssh", "work", "on"), "agentbox regenerate"),
+                             (("remove-ssh-key", "work", LAPTOP_FP), f"agentbox remove-ssh-key work {LAPTOP_FP}"),
+                             (("set-ssh", "work", "off"), "agentbox set-ssh work off")):
+            with self.subTest(args=args):
+                said = self.failed(*args)
+                self.assertEqual((said["error"], said["params"]), ("ssh_not_applied", {"vm": "work", "finish": finish}))
+                self.assertTrue(said["message"].startswith("work: the change is saved, but not applied: "),
+                                said["message"])
+                self.assertTrue(said["message"].endswith(f"; {finish} finishes it"), said["message"])
+        entries = self.journald.entries()
+        self.assertEqual([(e["AGENTBOX_ACTION"], e["AGENTBOX_OUTCOME"], e["AGENTBOX_ERROR"],
+                           e["AGENTBOX_DESCRIPTION"].partition(": work: ")[0]) for e in entries], [
+            ("ssh.key-removed", "failed", "ssh_pending", f"Remove the SSH key {LAPTOP_FP} (laptop)"),
+            ("ssh.key-added", "failed", "ssh_pending", f"Add the SSH key {LAPTOP_FP} (laptop)"),
+            ("ssh.disabled", "failed", "ssh_pending", "Turn SSH access off"),
+            ("ssh.enabled", "failed", "ssh_not_applied", "Turn SSH access on"),
+            ("ssh.key-removed", "failed", "ssh_not_applied", f"Remove the SSH key {LAPTOP_FP} (laptop)"),
+            ("ssh.disabled", "failed", "ssh_not_applied", "Turn SSH access off")])
+        self.assertEqual([p for _, _, _, p in self.activity()], [{"fingerprint": LAPTOP_FP, "name": "laptop"}] * 2
+                         + [{}, {}, {"fingerprint": LAPTOP_FP, "name": "laptop"}, {}])
+        self.assertEqual(entries[3]["AGENTBOX_ERROR_PARAM_FINISH"], "agentbox regenerate")
+        # the same call again with nothing left to change claims no saved change
+        said = self.failed("set-ssh", "work", "off")
+        self.assertEqual(said["error"], "action_failed")
+        self.assertTrue(said["message"].startswith("work: nothing changed, but "), said["message"])
+
     def test_the_same_call_again_hands_a_pending_change_over(self):
         self.on_with_two_keys()
         self.scenario(agent_down=True)
         said = self.failed("set-ssh", "work", "off")
-        self.assertEqual(said["error"], "guest_agent_unavailable")
+        self.assertEqual(said["error"], "ssh_pending")
         self.assertTrue(said["message"].startswith("work: the change is saved, but the VM did not take it (the guest "
                                                    "agent does not answer"), said["message"])
         self.assertFalse(self.exists(SOCKET.format("work")))
@@ -1366,7 +1407,7 @@ class LiveTest(SshTest):
             with self.subTest(answer=answer):
                 self.scenario(responses=[{"stdout": answer}])
                 said = self.failed("add-ssh-key", "work", stdin=key(seed=len(answer)) + "\n")
-                self.assertEqual(said["error"], "action_failed")
+                self.assertEqual(said["error"], "ssh_pending")
                 self.assertIn("(agentbox-ssh in the VM answered something other than what the Host sent)",
                               said["message"])
                 self.assertNotIn(answer[:10], said["message"])
