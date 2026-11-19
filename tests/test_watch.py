@@ -38,13 +38,13 @@ CLAUDE = "sk-ant-oat01-" + "b" * 40
 CODE = "orca://pair?code=Zz9_secret-code"
 UNITS = [
     ["agentbox-gui-work@2-12289-192.0.2.8:6801-192.0.2.36:36576.service", "loaded", "active", "running",
-     "Orca-Verbindung zur VM work"],
+     "Orca connection to VM work"],
     ["agentbox-gui-work@3-12290-192.0.2.8:6801-192.0.2.36:36590.service", "loaded", "active", "running",
-     "Orca-Verbindung zur VM work"],
+     "Orca connection to VM work"],
     ["agentbox-gui-work@4-12291-192.0.2.8:6801-192.0.2.41:40000.service", "loaded", "activating", "start-pre",
-     "Orca-Verbindung zur VM work"],
+     "Orca connection to VM work"],
     ["agentbox-gui-priv@5-12292-192.0.2.8:6802-192.0.2.50:1000.service", "loaded", "inactive", "dead",
-     "Orca-Verbindung zur VM priv"],
+     "Orca connection to VM priv"],
     ["agentbox-ssh-work@6-12293-192.0.2.8:2201-192.0.2.36:50022.service", "loaded", "active", "running",
      "SSH connection to VM work"],
     ["agentbox-ghvm-work@0-1-10.77.1.1:9100-10.77.1.2:4000.service", "loaded", "active", "running", "Token"],
@@ -533,7 +533,7 @@ class JournalTest(WatchTest):
 
     def test_secrets_never_leave(self):
         self.log("x", "agentbox-activity", AGENTBOX_KIND="credentials", AGENTBOX_ACTION="set-claude-token",
-                 AGENTBOX_DESCRIPTION=f"Token {CLAUDE} und {TOKEN}")
+                 AGENTBOX_DESCRIPTION=f"Token {CLAUDE} and {TOKEN}")
         self.log(f"[work] refused: '{TOKEN}': invalid-request: {CODE}", "agentbox-gh-work")
         self.log(f"Pairing: {CODE}", "agentbox", namespace=None, _SYSTEMD_UNIT="agentbox-build@base.service")
         self.event("activity")

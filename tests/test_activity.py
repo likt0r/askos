@@ -957,7 +957,7 @@ OTHER_USERS = [
 WRONG_WRITERS = [
     # sign-ins come from the Control Room only; no trusted fields at all
     written_by(recorded(HOUR, "signin", "signin", "forged: angemeldet"), FORGED),
-    written_by(recorded(HOUR, "action", "reset", "forged: ohne Absender", vm="work"), {}),
+    written_by(recorded(HOUR, "action", "reset", "forged: no sender", vm="work"), {}),
     # the services never record commands, the CLI never Alerts or GitHub tokens
     written_by(recorded(HOUR, "action", "delete", "forged: vom Proxy", vm="work"), proxy("work")),
     written_by(recorded(HOUR, "allowlist", "allow", "forged: vom Token-Dienst", vm="priv"), token_service("priv")),
@@ -1066,9 +1066,9 @@ class RetentionTest(JournalTest):
 
     def test_older_entries_are_not_shown(self):
         self.journal([recorded(91 * DAY, "signin", "signin", "zu alt"),
-                      recorded(89 * DAY, "signin", "signin", "noch da"),
+                      recorded(89 * DAY, "signin", "signin", "still there"),
                       journal_entry("agentbox-proxy-work", "[work] ALERT old.example [exfil]", 91 * DAY)])
-        self.assertEqual(self.descriptions(), ["noch da"])
+        self.assertEqual(self.descriptions(), ["still there"])
 
     def test_an_earlier_since_is_cut_at_the_retention(self):
         self.journal([recorded(91 * DAY, "signin", "signin", "zu alt"), recorded(DAY, "signin", "signin", "neu")])

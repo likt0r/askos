@@ -134,7 +134,7 @@ class GitHubAppTest(CredentialsTest):
         self.assertIn("- v1 PUT put_github_app -> ok", self.server_log())
 
     def test_refusal_from_agentbox(self):
-        message = "GitHub lehnt App-ID oder Schluessel ab (HTTP 401: Integration not found), nichts geaendert"
+        message = "GitHub refuses the App ID or key (HTTP 401: Integration not found), nothing changed"
         self.respond("", stderr=failure("github_app_rejected", message), exitcode=1)
         answer = self.put({"app_id": "54321", "private_key": KEY})
         self.assertError(answer, 422, "github_app_rejected")

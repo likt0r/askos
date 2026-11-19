@@ -92,7 +92,7 @@ class PairingsTest(ActivityTest):
     def test_invalid_input_and_broken_answers(self):
         self.assertEqual(self.run_agentbox("pairings", "nope")[0], 1)
         self.assertEqual(self.run_agentbox("pairings", "work", "--bogus")[0], 2)
-        self.scenario(responses=[{"stdout": "kein JSON"}])
+        self.scenario(responses=[{"stdout": "no JSON"}])
         self.assertEqual(self.run_agentbox("pairings", "work")[0], 6)
 
     def test_listing_is_not_recorded_as_activity(self):

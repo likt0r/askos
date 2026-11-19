@@ -862,9 +862,9 @@ class ChangeTest(CliTest):
 
     def test_set_note(self):
         self.store(entry("a.example", "all", note="alt"))
-        self.assertEqual(self.ok("set-note", "all", "a.example", "--note", "Paketquelle von X"),
+        self.assertEqual(self.ok("set-note", "all", "a.example", "--note", "package source of X"),
                          "all VMs: note on a.example saved\n")
-        self.assertEqual(self.one("a.example", "all")["note"], "Paketquelle von X")
+        self.assertEqual(self.one("a.example", "all")["note"], "package source of X")
         self.ok("set-note", "all", "a.example", "--note=")
         self.assertEqual(self.one("a.example", "all")["note"], "")
         self.assertEqual(self.refused("set-note", "all", "a.example"), "set-note needs --note TEXT")

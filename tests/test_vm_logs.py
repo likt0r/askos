@@ -104,10 +104,10 @@ class LogsTest(AgentboxTest):
     """#4: reading the journal through the guest agent."""
 
     def test_reads_current_boot_through_guest_agent(self):
-        self.scenario(responses=[{"entries": [entry("Orca bereit")]}])
+        self.scenario(responses=[{"entries": [entry("Orca ready")]}])
         code, out, _ = self.run_agentbox("logs", "priv")
         self.assertEqual(code, 0)
-        self.assertIn("priv orca[42]: Orca bereit", out)
+        self.assertIn("priv orca[42]: Orca ready", out)
         args = self.journalctl_args()
         self.assertIn("--boot=0", args)
         self.assertIn("--lines=200", args)
@@ -119,13 +119,13 @@ class LogsTest(AgentboxTest):
         self.assertEqual({c["path"] for c in self.calls("guest-exec")}, {WRAPPER_PATH})
 
     def test_strips_control_characters(self):
-        self.scenario(responses=[{"entries": [entry("\x1b[31mrot\x07 und\x9b2J \u202eweiter\nzweite Zeile")]}])
+        self.scenario(responses=[{"entries": [entry("\x1b[31mred\x07 and\x9b2J \u202enext\nsecond line")]}])
         code, out, _ = self.run_agentbox("logs", "priv")
         self.assertEqual(code, 0)
         for bad in ("\x1b", "\x07", "\x9b", "\u202e"):
             self.assertNotIn(bad, out)
         # the color sequence is removed as a whole, not just its escape byte
-        self.assertIn("rot und2J weiter\nzweite Zeile", out)
+        self.assertIn("red and2J next\nsecond line", out)
         self.assertNotIn("[31m", out)
 
     def test_hides_pairing_codes(self):

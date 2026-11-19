@@ -219,7 +219,7 @@ class LogsTest(ControlRoomTest):
             "since": ("-1h", "--since=-1h"),
             "until": ("2025-10-29 10:00", "--until=2025-10-29 10:00"),
             "boot": ("all", "--boot=all"),
-            "grep": ("Orca bereit", "--grep=Orca bereit"),
+            "grep": ("Orca ready", "--grep=Orca ready"),
             "lines": ("50", "--lines=50"),
             "after_cursor": ("s=1a;i=7;b=b1", "--after-cursor=s=1a;i=7;b=b1"),
         }
@@ -263,23 +263,23 @@ class LogsTest(ControlRoomTest):
         self.assertError(self.request("GET", "/api/v1/vms/other/logs"), 404, "vm_not_found")
 
     def test_response_body_is_the_json_from_agentbox(self):
-        answer = canned("Orca bereit", "zweite Zeile")
+        answer = canned("Orca ready", "second line")
         answer["truncated"] = True
         self.respond(answer)
         self.assertEqual(self.logs("lines=2"), (200, answer))
 
     def test_log_content_and_pairing_code_are_not_written_to_the_journal(self):
-        self.respond(canned("Orca bereit", f"Pairing: {CODE}", "geheime Logzeile"),
+        self.respond(canned("Orca ready", f"Pairing: {CODE}", "secret log line"),
                      stderr="agentbox: Ausgabe gekuerzt, Filter enger fassen")
         status, obj = self.logs("grep=Pairing")
         self.assertEqual(status, 200)
         self.assertIn(CODE, json.dumps(obj))
         log = self.server_log()
-        for secret in (CODE, "SECRET", "Orca bereit", "geheime Logzeile", "s=1a;i=", "entries"):
+        for secret in (CODE, "SECRET", "Orca ready", "secret log line", "s=1a;i=", "entries"):
             self.assertNotIn(secret, log)
 
     def test_invalid_json_from_agentbox_is_an_error_without_its_content(self):
-        self.respond(f"kein JSON {CODE}")
+        self.respond(f"no JSON {CODE}")
         answer = self.request("GET", "/api/v1/vms/priv/logs")
         self.assertError(answer, 502, "bad_agentbox_answer")
         self.assertNotIn("SECRET", json.dumps(answer[1]))

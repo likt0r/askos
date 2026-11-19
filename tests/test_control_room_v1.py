@@ -1209,7 +1209,7 @@ class EventsTest(V1Test):
             ("alert", {"time": "t", "vm": "work", "domain": "paste.example:443", "signals": ["paste", "young"]}),
             ("github-token", {"time": "t", "vm": "work", "action": "issued", "repository": "a/b", "request": "a/b"}),
             ("github-token", {"time": "t", "vm": "work", "action": "refused", "request": "evil/repo",
-                              "reason": "Owner evil nicht erlaubt"}),
+                              "reason": "Owner evil not allowed"}),
             ("build", {"image": "base", "build": "20261103-120000", "status": "running", "step": "build"}),
             ("build", {"image": "rust", "build": "20261103-130000", "status": "failed", "error": "podman"}),
             ("build", {"image": "base", "build": "20261103-120000", "status": "rejected", "error": "npm"}),
@@ -1221,7 +1221,7 @@ class EventsTest(V1Test):
             ("build-rejected", "critical", None), ("host-reboot", "warning", None)])
         self.assertEqual(got[0]["text"], "work tried to reach paste.example:443 (paste, young)")
         self.assertEqual(got[1]["text"], "work: GitHub token refused for evil/repo")
-        self.assertEqual(got[1]["detail"], "Owner evil nicht erlaubt")
+        self.assertEqual(got[1]["detail"], "Owner evil not allowed")
         self.assertEqual(got[2]["text"], "Build rust-20261103-130000 failed; the previous Build stays in use")
         for n in got:
             self.assertRegex(n["time"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
