@@ -1163,6 +1163,25 @@ class LiveTest(SshTest):
                 for secret in secrets:
                     self.assertNotIn(secret, " ".join(call))
 
+    def test_the_largest_file_the_vm_reads_reaches_it_whole_through_virsh_s_stdin(self):
+        """Keys that fill their part of the file up to MAX_KEY_BYTES: the line virsh reads on its
+        stdin is about 87 KB (base64 in JSON), and the wrapper gets the file whole."""
+        self.ok("set-ssh", "work", "on")
+        for i in range(4):
+            self.add(line=long_key(i))
+        left = sshkeys.MAX_KEY_BYTES - sum(len(f"key {k['key']}\n") for k in self.record()["ssh_keys"])
+        size = 3 * (left - 32) // 4 - 70          # the application string that makes the last line fit
+        last = next(line for n in range(size, size - 8, -1)
+                    if len(f"key {(line := key('sk-ssh-ed25519@openssh.com', seed=9, application=b'ssh:' + b'b' * n))}"
+                           "\n") <= left)
+        self.forget_calls()
+        self.add(line=last)
+        self.assertGreater(sum(len(f"key {k['key']}\n") for k in self.record()["ssh_keys"]), sshkeys.MAX_KEY_BYTES - 4)
+        entry = self.read(SSH_FILE.format("work"))
+        self.assertGreater(len(base64.b64encode(entry.encode())), 86000)
+        self.assertEqual(self.applied(), [(["apply"], entry)])
+        self.assertEqual(self.authorized().count("\n"), 5)
+
     def test_removing_a_key_takes_it_out_of_the_vm_and_ends_every_session(self):
         self.on_with_two_keys()
         result = self.json("remove-ssh-key", "work", LAPTOP_FP)
