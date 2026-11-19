@@ -41,8 +41,10 @@ Every error has the same shape and an HTTP status that fits:
 - `message`: short English text, a fallback when the UI has no translation.
 - `field` (optional): the request field that is wrong.
 - `params` (optional): the parameters the UI words a refusal with, for the codes that have
-  them: `invalid_pattern` (`reason`), `pattern_too_broad` (`host`) and the VM variable
-  `env_name_reserved`, `invalid_env_value` and `env_too_large` name (`name`), and the command
+  them: `invalid_pattern` (`reason`), `pattern_too_broad` (`host`), the VM variable
+  `env_name_reserved`, `invalid_env_value`, `env_too_large` and `env_name_is_secret` name and
+  the secret `secret_name_reserved`, `invalid_secret_value`, `secret_too_large` and
+  `secret_name_is_env` name (`name`, never a value), and the command
   that finishes a change of SSH access (`finish` of `ssh_not_applied`), each only in the form
   agentbox gives it.
 - `detail` (optional): agentbox's own message (English, untranslated, for diagnosis);
@@ -96,7 +98,14 @@ else `500 action_failed`, with the message in `detail`:
 | 400 | `invalid_env_name` | the name of a VM variable is not `^[A-Za-z_][A-Za-z0-9_]*$` of at most 64 characters (`field`: `env`); the backend refuses such a name itself, before agentbox |
 | 400 | `env_name_reserved` | a Safeguard or Agent Box itself sets or reads this variable, so it cannot be a VM variable (parameter `name`, `field`: `env`): the patterns of the safeguard check apart from proxy names, the names Agent Box sets for the VM, every variable of the Image's `DefaultEnvironment` and the variables bash sets itself. Proxy variables (`HTTPS_PROXY`, ...) are accepted |
 | 400 | `invalid_env_value` | the value of a VM variable has a control character other than tab (a line break, NUL, ...) or is not UTF-8, such as a lone UTF-16 surrogate (`"\ud800"`), which the backend refuses itself, before agentbox (parameter `name`, `field`: `env`) |
-| 400 | `env_too_large` | more than 64 VM variables, or a value over 4 KiB in UTF-8 (parameter `name` for a value, `field`: `env`) |
+| 400 | `env_too_large` | more than 64 VM variables and secrets together, or a value over 4 KiB in UTF-8 (parameter `name` for a value, `field`: `env`) |
+| 409 | `env_name_is_secret` | the name is a secret of the VM; a name cannot be both a VM variable and a secret (parameter `name`, `field`: `env`) |
+| 500 | `secret_not_applied` | the secrets are saved, but the file the VM reads was not written or the VM could not be defined again; `agentbox regenerate` finishes it |
+| 400 | `invalid_secret_name` | the name of a secret is not `^[A-Za-z_][A-Za-z0-9_]*$` of at most 64 characters (`field`: `name`); the backend refuses such a name in the path itself, before agentbox |
+| 400 | `secret_name_reserved` | a Safeguard or Agent Box itself sets or reads this variable, so it cannot be a secret: the same names as for `env_name_reserved` (parameter `name`, `field`: `name`) |
+| 400 | `invalid_secret_value` | the value of a secret has a control character other than tab (a line break, NUL, ...) or is not UTF-8, which the backend refuses itself, before agentbox (parameter `name`, `field`: `value`) |
+| 400 | `secret_too_large` | more than 64 VM variables and secrets together, or a value over 4 KiB in UTF-8 (parameter `name` for a value, `field`: `value`) |
+| 409 | `secret_name_is_env` | the name is a VM variable of the VM; a name cannot be both (parameter `name`, `field`: `name`) |
 | 400 | `ssh_key_invalid` | not one valid SSH public key: no key type first, its base64 does not decode, or decodes to a key of another type or form (an RSA number not in its shortest form, an RSA key over 16384 bits, an ECDSA point not on its curve); a key with a NUL or without a UTF-8 form (a lone UTF-16 surrogate) the backend refuses itself, before agentbox (`field`: `key`) |
 | 400 | `ssh_key_type_refused` | an SSH key of a type other than Ed25519, ECDSA (P-256, P-384, P-521), their security-key forms or RSA |
 | 400 | `ssh_key_too_weak` | an RSA key of fewer than 3072 bits |
@@ -240,6 +249,7 @@ the Actor); without it no link is made.
   "container_image_cleanup": true, "container_image_cleanup_days": 7,
   "github_owners": ["likt0r"], "created": "2026-11-03T12:00:00Z",
   "env": {"DATABASE_URL": "postgres://db.example/app"}, "env_refused": [],
+  "secrets": ["STAGING_API_KEY"], "secrets_refused": [],
   "image": "base", "build_pin": null,
   "image_build": "20261101-120000", "next_build": "20261101-120000",
   "system_disk": {"since": "2026-10-31T09:12:00Z", "age_days": 3, "file": "base-20261020.qcow2",
@@ -329,6 +339,12 @@ the Actor); without it no link is made.
 - `env_refused`: the names in `env` that a later release refuses (a Safeguard or Agent Box
   reads them now): the record keeps them, the VM never gets them; `[]` usually. Saving the
   list with such a name fails (`400 env_name_reserved`); leave it out to remove it.
+- `secrets`: the names of the VM's secrets, never their values: the registry record holds
+  only the names, the values are only in `/etc/agentbox/secrets/env-<vm>` on the Host, and no
+  endpoint returns one. `[]` without any. A running or paused VM has the ones it started with
+  until its next Restart or Reset (`PUT`/`DELETE /vms/<vm>/secrets/<name>`).
+- `secrets_refused`: the names in `secrets` that a later release refuses, as `env_refused`;
+  `DELETE /vms/<vm>/secrets/<name>` removes one.
 - Memory in use is not part of it: `vms.<name>.memory_bytes` of the `host` event and of
   `GET /host`.
 
@@ -349,6 +365,8 @@ the Actor); without it no link is made.
 | `PUT /vms/<vm>/container-image-cleanup` | `{"enabled": true, "days": 14}` | `set-container-image-cleanup <vm> [on\|off] [--days N] --json`: `{"vm", "container_image_cleanup", "container_image_cleanup_days", "previous": {"container_image_cleanup", "container_image_cleanup_days"}, "changed", "message"}`; both keys optional, at least one (`enabled` a boolean, `days` a whole number, else `400 invalid_field` with `field` `enabled` or `days`); `400 invalid_cleanup_days` (`field` `days`), `404 vm_not_found`; works in every state of the VM and takes effect at the next hourly run |
 | `PUT /vms/<vm>/memory` | `{"memory_mib": 16384}` | `set-memory`: `{"vm", "memory_mib", "previous_mib", "changed", "state", "applies": "next_start"\|"next_restart"\|null, "message"}`; `next_start`: the VM is off and starts with it, `next_restart`: it keeps running with its memory until its next Restart or Reset; `null`: nothing changed. A paused VM is refused (`409 vm_paused`) |
 | `PUT /vms/<vm>/env` | `{"env": {"NAME": "value", ...}}` | `set-env --replace NAME=value ...`: the whole list in one step, `{}` removes every variable. `{"vm", "env", "changed", "state", "applies": "next_start"\|"next_restart"\|null, "message"}`; `next_start`: the VM is off and starts with them, `next_restart`: it runs or is paused and keeps the variables it started with until its next Restart or Reset; `null`: nothing changed. A domain defined before VM variables is defined again (a paused VM's once it has no Pause: the message says so); if that fails, the variables stay saved (`500 env_not_applied`). Names a Safeguard or Agent Box reads are refused (`400 env_name_reserved`, nothing changes). The body limit of 8 KiB applies (the UI says so before it sends a longer list); `agentbox set-env` on the Host takes the whole 64 variables of up to 4 KiB |
+| `PUT /vms/<vm>/secrets/<name>` | `{"value": "..."}` | `set-secret <vm> <name> --no-prompt` with the value on stdin, never as an argument: adds the secret or replaces its value. `{"vm", "secrets": [names], "changed": true, "state", "applies": "next_start"\|"next_restart", "message"}`, as `PUT /vms/<vm>/env`; setting a value always counts as a change, so no answer tells whether it was the stored one. The value never comes back, neither in the answer, an error, the backend's log nor Activity (`secret` field: should agentbox ever echo it, the backend hides it). `value` not text: `400 invalid_field`; with a NUL, a line break or no UTF-8 form: `400 invalid_secret_value` before agentbox; a name not of the form of one: `400 invalid_secret_name` before agentbox; a reserved name: `400 secret_name_reserved`; a VM variable's name: `409 secret_name_is_env`; more than 64 together with the VM variables: `400 secret_too_large`; saved but not applied: `500 secret_not_applied` |
+| `DELETE /vms/<vm>/secrets/<name>` | | `unset-secret <vm> <name>`: removes the secret, name and value. `{"vm", "secrets", "changed", "state", "applies", "message"}`; a name the VM does not have changes nothing (`applies: null`) |
 | `PUT /vms/<vm>/ssh` | `{"enabled": true}` | `set-ssh <vm> on\|off`: `{"vm", "enabled", "port", "keys", "changed", "state", "applies": "now"\|"on_resume"\|"next_start"\|null, "message"}` (`keys`: how many the VM has); `now`: the running VM has it, `on_resume`: a paused VM gets it when it resumes, `next_start`: the VM is off and gets it at its next start; `null`: nothing changed. Off closes the SSH port and ends every SSH session of the VM, the keys stay. `enabled` not a boolean: `400 invalid_field` |
 | `POST /vms/<vm>/ssh-keys` | `{"key": "ssh-ed25519 AAAA… laptop", "name"?: "laptop"}` | `add-ssh-key <vm> [--name=<name>]` with the key, one line of a `.pub` file, on stdin: `201 {"vm", "fingerprint", "name", "type", "enabled", "keys", "state", "applies", "message"}` (`applies` as above). `name` trimmed; empty or missing: the key's comment is its name. The key's checks and limits are agentbox's (`ssh_key_*`, `ssh_keys_*`). The Control Room passes a key only this way: agentbox refuses a file, `--mine` and `--yes` from it (`control_room_refused`). The body limit of 8 KiB holds any key agentbox takes (RSA of 16384 bits is ~2.8 KiB) |
 | `POST /vms/<vm>/ssh-keys` | `{"from": "<other vm>"}` | `add-ssh-key <vm> --from=<other>`: a one-time copy of the other VM's SSH keys, no link stays. `200 {"vm", "from", "added": [{"type", "fingerprint", "name"}], "skipped": [{"type"?, "fingerprint"?, "name"?, "error", "message"}], "enabled", "keys", "state", "applies", "message"}`: each key goes through the checks and limits of one key, a key refused or entered already is in `skipped` with its code (`ssh_key_duplicate`, `ssh_keys_too_many`, ...) and agentbox's English `message`, the others go in; neither list need have an entry. `from` with `key` or `name`, or naming the VM itself: `400 invalid_field`; not a VM name: `404 vm_not_found` (`field` `from`) before agentbox runs; a VM that does not exist: `404 vm_not_found` from agentbox. A copy saved but not taken by a running VM fails like one key (`ssh_missing`, `ssh_pending`, `ssh_not_applied`), without the lists |
@@ -499,6 +517,7 @@ first:
 | `container-image-cleanup.failed` | `days`; outcome `failed` with an error code (`guest_agent_unavailable`, `vm_query_timeout`, `container_image_cleanup_missing`, `container_image_cleanup_failed`); actor `timer` |
 | `set-env` | `env` (the variables as `NAME=value`, joined with `", "`; only those whose name has the form of one), `replace`. Like every parameter at most 500 characters: a longer list keeps the whole variables that fit and ends in `, … +<n>`, the number left out |
 | `unset-env` | `names`, cut like `env` |
+| `set-secret`, `unset-secret` | `name` (the secret's name, when it has the form of one); never its value, which comes on stdin and reaches no entry |
 | `allow` | `domain` or, for a Regex entry, `regex` (the pattern; so for every command below that names `domain`), `scope` (a VM or `all`), `duration` (`15min`, `1h`, `8h`, `7d`) or `temporary`, `force` |
 | `extend` | `domain`, `scope`, `duration`, `force` |
 | `make-permanent` | `domain`, `scope`, `force` |

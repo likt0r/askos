@@ -4,7 +4,8 @@ and the Host configuration of every VM generated from it.
 `agentbox regenerate` writes per VM the libvirt network, the proxy and
 token-service sockets and services, the Orca port forwarder, the SSH port
 forwarder while the VM has SSH access, the Data disk, the Claude-token
-placeholder, the file of its VM variables (vmenv.py), the file of its SSH access
+placeholder, the file of its VM variables (vmenv.py), the file of its secrets (never
+from the record: it holds their values, the record only their names), the file of its SSH access
 with the SSH host key it makes once (sshkeys.py), the Observer directory and the
 libvirt domain (through virt-install, ADR 0004);
 for all VMs together the nftables rules of the VM networks and the storage
@@ -48,6 +49,7 @@ SAID = {"network": "network created or started", "units": "units written",
                                      "a running VM to a restarted network)",
         "data-disk": "Data disk created", "claude-token": "placeholder for the Claude token created",
         "vm-env": "VM variables written (apply from the next start)",
+        "vm-secrets": "secrets written (apply from the next start)",
         "ssh-host-key": "SSH host key made, SSH access written (applies from the next start)",
         "vm-ssh": "SSH access written (applies from the next start)",
         "observer": "directory for the Observer created",
@@ -309,15 +311,16 @@ def virt_install_args(rec, uuid):
         "--events", "on_poweroff=destroy,on_reboot=restart,on_crash=destroy",
         "--features", "acpi=on,apic=on",
         # the VM learns its name, Orca port, Claude token, the address devices pair with, its
-        # VM variables and its SSH access at boot; values that could hold a comma only as files
-        # (virt-install splits --sysinfo at commas)
+        # VM variables, its SSH access and its secrets at boot; values that could hold a comma
+        # only as files (virt-install splits --sysinfo at commas)
         "--sysinfo", f"type=fwcfg,entry0.name=opt/agentbox/context,entry0={vm},"
                      f"entry1.name=opt/agentbox/orca_port,entry1={rec['orca_port']},"
                      f"entry2.name=opt/agentbox/claude_token,entry2.file={footprint.claude_token_file(vm)},"
                      f"entry3.name=opt/agentbox/pairing_address,"
                      f"entry3={hostsetup.pairing_address(hostsetup.load())},"
                      f"entry4.name=opt/agentbox/env,entry4.file={footprint.vm_env_file(vm)},"
-                     f"entry5.name=opt/agentbox/ssh,entry5.file={footprint.vm_ssh_file(vm)}",
+                     f"entry5.name=opt/agentbox/ssh,entry5.file={footprint.vm_ssh_file(vm)},"
+                     f"entry6.name=opt/agentbox/secrets,entry6.file={footprint.vm_secrets_file(vm)}",
         "--disk", disk.format(footprint.system_disk(vm), "vda"),
         "--disk", disk.format(footprint.data_disk(vm), "vdb") + ",serial=agentbox-data",
         "--network", f"network={dom(vm)},mac={mac(rec)},model=virtio",
@@ -538,6 +541,33 @@ def vm_env(rec):
     """The file of the VM's VM variables (vmenv.py), from its record; a VM picks a change up at
     its next start. Written before the domain is defined, which names it."""
     return fw_cfg_file(footprint.vm_env_file(rec["name"]), vmenv.fw_cfg(rec.get("env", {})))
+
+
+def secrets_file(rec, values):
+    """The content of the VM's secrets file: these values of the secrets its record names, in
+    their order (vmenv.fw_cfg: "none" without any, never a refused name)."""
+    return vmenv.fw_cfg({n: values[n] for n in registry.secrets(rec) if n in values})
+
+
+def read_secrets(name):
+    """The values in the VM's secrets file (vmenv.parse); {} without the file."""
+    try:
+        with open(footprint.vm_secrets_file(name), "rb") as f:
+            return vmenv.parse(f.read())
+    except FileNotFoundError:
+        return {}
+
+
+def vm_secrets(rec):
+    """The file of the VM's secrets, the only place their values are kept: created as "none"
+    when it is missing, as the Claude token's placeholder is, else written again only to leave
+    out what the record no longer names or a secret may no longer have (and to fix its mode).
+    No value ever comes from the record. Written before the domain is defined, which names it."""
+    try:
+        values = read_secrets(rec["name"])
+    except OSError as e:
+        die(f"{rec['name']}: {e.filename}: {e.strerror}", error="action_failed", vm=rec["name"])
+    return fw_cfg_file(footprint.vm_secrets_file(rec["name"]), secrets_file(rec, values))
 
 
 # the DER of an Ed25519 key as openssl writes it: PKCS#8 ending in the key's 32-byte secret,
@@ -1031,7 +1061,8 @@ def apply():
     for rec in records:
         done = []
         for key, step in (("network", _network), ("units", _units), ("data-disk", _data_disk),
-                          ("claude-token", _claude_token), ("vm-env", vm_env), ("vm-ssh", vm_ssh),
+                          ("claude-token", _claude_token), ("vm-env", vm_env), ("vm-secrets", vm_secrets),
+                          ("vm-ssh", vm_ssh),
                           ("observer", _observer)):
             got = step(rec)
             if got:

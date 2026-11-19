@@ -179,6 +179,23 @@ export function envFromRows(rows: readonly EnvRow[]): { env: Record<string, stri
   return { env, problems, tooMany: Object.keys(env).length > MAX_ENV_VARIABLES, tooBig: body > MAX_BODY_BYTES }
 }
 
+// --- Secrets per VM (agentbox set-secret) ----------------------------------------------
+
+export type SecretProblem = 'name' | 'env' | 'exists' | 'value' | 'long'
+
+/** What is wrong with a secret about to be sent (PUT /vms/<vm>/secrets/<name>), or null: the
+ * form of its name (a new one: neither a VM variable nor a secret the VM has already) and of
+ * its value, as for VM variables. Reserved names are agentbox's to refuse. */
+export function secretProblem(name: string, value: string, vm: { env?: Record<string, string>, secrets?: string[] },
+  adding: boolean): SecretProblem | null {
+  if (!ENV_NAME.test(name)) return 'name'
+  if (adding && vm.env && Object.hasOwn(vm.env, name)) return 'env'
+  if (adding && Array.isArray(vm.secrets) && vm.secrets.includes(name)) return 'exists'
+  if (/[\u0000-\u0008\u000a-\u001f\u007f-\u009f]/.test(value)) return 'value'
+  if (new TextEncoder().encode(value).length > MAX_ENV_VALUE_BYTES) return 'long'
+  return null
+}
+
 /** What the VM's buttons may do in its state. */
 export function lifecycleActions(vm: Pick<Vm, 'state'>) {
   const s = vm.state

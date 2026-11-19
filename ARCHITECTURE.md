@@ -193,7 +193,8 @@ flowchart LR
   `agentbox regenerate` derives everything else from it: the libvirt network and the domain
   (through virt-install), the proxy, token-service and Orca-port units, the SSH port's units
   while the VM has SSH access, the nftables rules, the storage pool of the disks, the Data
-  disk, the Claude-token placeholder, the file of its VM variables and the file of its SSH
+  disk, the Claude-token placeholder, the file of its VM variables, the placeholder of its
+  secrets file and the file of its SSH
   access (with the host key, made once while the VM has SSH access and has none). Running it again changes nothing; a changed definition applies at the
   VM's next start, and not while the VM is paused. A VM network whose resolver differs from
   the current definition is defined again and, when active, stopped and started, since
@@ -212,7 +213,7 @@ flowchart LR
   [ADR 0001](docs/adr/0001-vm-is-the-unit-of-separation.md)), no SSH access and no SSH keys
   (optionally a one-time copy of another VM's keys) and a System disk, then runs
   `regenerate`. It refuses names the CLI or the Control Room use themselves and anything an
-  earlier VM of that name left behind (Data disk, Claude token, VM variables, SSH host key,
+  earlier VM of that name left behind (Data disk, Claude token, VM variables, secrets, SSH host key,
   SSH access, Observer, domain, network), so nothing carries over between VMs. The VM starts on its first `agentbox pair` or Orca
   connection.
 - `agentbox set-memory` changes a VM's memory limit (1024 MiB up to the Host's memory, as
@@ -245,8 +246,8 @@ flowchart LR
   and says `agentbox regenerate` finishes it (`env_not_applied`). A paused VM is not refused;
   if its definition changed, it is defined again only once it no longer has a Pause (by
   `regenerate`, like every changed definition), and the command says so. At most
-  64 variables, names `^[A-Za-z_][A-Za-z0-9_]*$` up to 64 characters, values up to 4 KiB of
-  UTF-8 without control characters other than tab (so no NUL and no line break). VM
+  64 variables (together with the secrets), names `^[A-Za-z_][A-Za-z0-9_]*$` up to 64
+  characters, values up to 4 KiB of UTF-8 without control characters other than tab (so no NUL and no line break). VM
   variables never switch a Safeguard off: the Host refuses every name a Safeguard or Agent
   Box itself reads (see Images and Builds).
   A record keeps a variable whose name a later release refuses, so the record stays valid (a
@@ -258,10 +259,30 @@ flowchart LR
   `systemctl set-environment` is not used, so services started apart from `orca serve` (the
   user manager `user@1000`, rootless Podman) do not see them; containers never inherit them
   anyway.
+- **VM secrets** are values of one VM that a project needs and that are credentials (an API key
+  for a staging service, a registry token, a database password): the VM gets them like VM
+  variables, the Host never shows or logs them. `agentbox set-secret <vm> NAME` reads the value
+  from stdin, typed without echo on a terminal (`--no-prompt` for the Control Room), never from
+  an argument, so it stays out of shell history and `ps`; `unset-secret <vm> NAME` removes one.
+  They take the locks, the name rules and the limits of VM variables, apply at the next start
+  like them, and the 64 names count VM variables and secrets together; no name is both, so
+  `set-env` refuses a secret's name (`env_name_is_secret`) and `set-secret` a VM variable's
+  (`secret_name_is_env`). The record holds only their names (`"secrets"`); the values are only
+  in `/etc/agentbox/secrets/env-<vm>` (see Credentials).
+  A value is never shown or logged on the Host: `describe`, `agentbox env` and the Control Room
+  name the secrets only, the Control Room can set, replace or remove one but never read it,
+  Activity entries carry the name only, and no message repeats a value.
+  Setting a value always counts as a change, so no answer tells whether it was the one stored.
+  A secret that is added goes into the file before its name goes into the record, and one that
+  is removed leaves the record first, so a run that dies in between leaves at most a value no
+  name points to, which the next `regenerate` takes out of the file. `regenerate` creates the
+  file as `none` when it is missing, like the Claude token's placeholder, and never writes a
+  value from the record, which has none. A secret whose name a later release refuses stays in
+  the record, as such a VM variable does, but the file the VM reads loses its value.
 - `agentbox delete` needs the name typed again (`--confirm`). It moves the record into a
   marker under `/var/lib/agentbox/pending`, so nothing wakes or regenerates the VM, then
   stops the VM and removes its domain (with any Pause), network, units, Claude token, VM
-  variables, SSH host key, Observer directory and its own Allowlist entries; its SSH keys go
+  variables, secrets, SSH host key, Observer directory and its own Allowlist entries; its SSH keys go
   with its record, also when its Data disk is archived. The System disk is deleted, the Data disk archived
   under `/var/lib/agentbox/archive` unless deleting it is asked for. The VM's nftables rule
   stays until its network is gone; running `delete` again finishes an interrupted run.
@@ -297,10 +318,10 @@ flowchart LR
   Image have them), and the guest-agent wrappers that run as the agent run only once it has
   finished (`agentbox-inbox` waits up to 60 s, the Container image cleanup skips the VM for
   that hour).
-- A VM learns its name, Orca port, Pairing address, Claude token, VM variables and SSH access
-  from the Host at boot (QEMU fw_cfg); the token never touches the Data disk. The token and the VM
-  variables are files QEMU reads (`root:qemu`, mode 0640, in directories of mode 0750),
-  never values in virt-install's `--sysinfo`, which it splits at commas: the VM variables
+- A VM learns its name, Orca port, Pairing address, Claude token, VM variables, secrets and
+  SSH access from the Host at boot (QEMU fw_cfg); the token never touches the Data disk. The
+  token, the VM variables and the secrets are files QEMU reads (`root:qemu`, mode 0640, in
+  directories of mode 0750), never values in virt-install's `--sysinfo`, which it splits at commas: the VM variables
   are `/var/lib/agentbox/vm-env/<vm>.env`, entry `opt/agentbox/env`, one line
   `NAME=<base64 of the value>` per variable, or `none` without any (QEMU refuses empty
   fw_cfg files). `guest-setup` hands them on with `/usr/lib/agentbox/fwcfg-env` at every
@@ -311,6 +332,10 @@ flowchart LR
   `/run/agentbox/agent-env` (sourced by `/etc/profile.d/agentbox.sh` for shells), before
   the fixed values of Agent Box, which so win. A domain defined before the entry existed has
   none, which counts as no variables.
+  The secrets are `/etc/agentbox/secrets/env-<vm>`, entry `opt/agentbox/secrets`, in the same
+  format, and `guest-setup` hands them on the same way right after the VM variables, into the
+  same two files only: `/run/agentbox/env` (mode 0600) and `/run/agentbox/agent-env` (0640,
+  group `agent`), never into a file anyone else may read or into the Image.
   SSH access is `/var/lib/agentbox/vm-ssh/<vm>.ssh` (also `root:qemu`, 0640), entry
   `opt/agentbox/ssh`: `none` without SSH access, else a line `host_key <base64 of the host
   key>` and a line `key <type> <base64>` per SSH key. The host key is an Ed25519 key the Host
@@ -811,6 +836,13 @@ sees](#what-detection-sees) below).
   switch it back in Claude Code's user or project settings (`env` in `~/.claude/settings.json`
   or in a repository's `.claude/settings.json`). Either way, it would still need a claude.ai
   login in the VM.
+- **VM secrets** (see VMs): credentials a project needs in one VM, set with `agentbox
+  set-secret` or in the Control Room. Their values are kept only in
+  `/etc/agentbox/secrets/env-<vm>` beside the VM's Claude token (`root:qemu`, mode 0640, in the
+  `root:qemu` directory of mode 0750), and reach the VM at boot like its VM variables. A secret
+  protects the value from being shown and logged on the Host; it does not protect it from the
+  agent in the VM, which reads it as it reads the Claude token and can send it out only
+  through the Allowlist ([Credentials in a VM](#credentials-in-a-vm)).
 - No package-publishing tokens exist anywhere on the box.
 
 Replacing a credential never breaks a working one:
@@ -843,8 +875,9 @@ Replacing a credential never breaks a working one:
   The token service logs one English line per request, never the token; a refusal names a
   stable reason (`owner-not-allowed`, `not-installed`, ...) that the Control Room words.
 
-Keys reach openssl through a pipe and JWTs and tokens reach curl on stdin, and a guest-agent
-command that carries data for a wrapper in a VM (the VM's SSH host key for `agentbox-ssh`)
+Keys reach openssl through a pipe, JWTs and tokens reach curl on stdin, the value of a VM
+secret reaches agentbox on stdin, and a guest-agent command that carries data for a wrapper
+in a VM (the VM's SSH host key for `agentbox-ssh`)
 reaches virsh on stdin, as a command of its interactive shell, so no secret is ever a process
 argument. Error messages never repeat input, and the Control Room removes
 whatever it was sent as a secret from anything it answers or logs, should agentbox ever echo it.
@@ -1717,10 +1750,17 @@ laptops.
   network a request comes from ([Credentials](#credentials)). A token taken out works anywhere
   until it expires. Mitigation: one repository, one hour, no workflows or administration
   permission.
+- **VM secrets are in the VM, readable by its code.** A secret is kept from being shown or
+  logged on the Host, not from the VM: every agent and terminal there has it in its
+  environment, as it has the Claude token ([VMs](#vms), [Credentials](#credentials)). Code in
+  the VM can read it and send it out through any allowed service, and it then works wherever
+  the service it belongs to accepts it, until it is revoked there; `agentbox set-secret`
+  replaces the value the VM gets at its next start and revokes nothing. Mitigation: secrets are
+  per VM, so a VM has only the ones set for it; the Allowlist limits where it can send them.
 - **Credentials you bring into a VM yourself** get none of this: a Codex or OpenCode login, an
   API key in a project's `.env`. Every agent in the VM can read them, and those on the Data disk
-  outlive a Reset; [Credentials](#credentials) covers GitHub and Claude only. Mitigation: keep
-  them out of VMs; no package-publishing token exists on the box unless one is brought in.
+  outlive a Reset; [Credentials](#credentials) covers GitHub, Claude and VM secrets only.
+  Mitigation: keep them out of VMs; no package-publishing token exists on the box unless one is brought in.
 
 ### Inside a VM
 

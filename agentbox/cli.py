@@ -43,11 +43,16 @@ Controls the agent VMs on this Host.
                                                      how many days an unused Container image goes (1 to 365);
                                                      whatever state the VM is in
   agentbox env <vm> [--json]                         the VM's VM variables (environment variables for orca
-                                                     serve, agents, terminals and shells)
+                                                     serve, agents, terminals and shells) and the names of
+                                                     its secrets
   agentbox set-env <vm> NAME=VALUE [NAME=VALUE ...] [--replace] [--json]
                 add or change VM variables (--replace: these are all of them); names a Safeguard or
                 Agent Box reads are refused; applies from the next start, for a running VM after a Restart
   agentbox unset-env <vm> NAME [NAME ...] [--json]   remove VM variables; applies like set-env
+  agentbox set-secret <vm> NAME [--no-prompt] [--json]
+                add a secret or replace its value, read from stdin (typed without echo on a terminal):
+                the VM gets it like a VM variable, the Host never shows or logs it; applies like set-env
+  agentbox unset-secret <vm> NAME [--json]           remove a secret; applies like set-env
   agentbox ssh <vm> [--json]                         the VM's SSH access: on or off, its SSH port, the host key's
                                                      fingerprint with a known_hosts line, its SSH keys
   agentbox set-ssh <vm> on|off [--json]              SSH access through the SSH port (2200 + network number, on
@@ -233,7 +238,7 @@ def check_control_room(cmd, args):
     # the arguments as the command reads them; arguments it refuses fail here as they would there
     positional, values = options.parse(args[declaration.option_offset:], {**declaration.options, "json": False},
                                        exit=declaration.option_exit, positional=declaration.positional,
-                                       allow_unknown=declaration.allow_unknown)
+                                       allow_unknown=declaration.allow_unknown, hide=declaration.hide_arguments)
     for name in values:
         if allowed is not None and name != "json" and name not in allowed:
             raise Fail(f"{cmd} --{name} is not for the Control Room: only the CLI at the Host passes it",
@@ -300,7 +305,8 @@ def main(argv=None):
                                                {**declaration.options, "json": False},
                                                exit=declaration.option_exit, prefix=prefix,
                                                positional=declaration.positional,
-                                               allow_unknown=declaration.allow_unknown)
+                                               allow_unknown=declaration.allow_unknown,
+                                               hide=declaration.hide_arguments)
             return options.Parsed(args, positional, values)
 
         with activity.command(cmd, args, declaration, parse_command) as parsed:

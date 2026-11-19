@@ -353,6 +353,15 @@ def describe_unset_env(a):
     return said("Remove VM variables" + (": " + _env_listed(names) if names else ""), names=_env_param(names))
 
 
+def describe_secret(named, unnamed):
+    """set-secret and unset-secret: the secret's name only, when it has the form of one (its
+    value comes on stdin and never reaches an entry)."""
+    def describe(a):
+        secret = _arg(a.positional, 1)
+        return said(f"{named} {secret}", name=secret) if vmenv.is_name(secret) else said(unnamed)
+    return describe
+
+
 def describe_owners(a):
     owners = list(a.positional[1:])
     return said("Set GitHub owners: " + ", ".join(owners), owners=owners)

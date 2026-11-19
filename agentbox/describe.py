@@ -204,6 +204,9 @@ def vm(rec, units, observed, backing, now=None, current=None, starts=None):
         # except those whose name is refused since they were set (never passed on)
         "env": dict(rec.get("env", {})),
         "env_refused": vmenv.refused(rec.get("env", {})),
+        # the names of its secrets, never their values (the record has none)
+        "secrets": registry.secrets(rec),
+        "secrets_refused": vmenv.refused(dict.fromkeys(registry.secrets(rec))),
         "created": rec["created"],
         "image": rec["image"],
         "build_pin": rec["build"],
@@ -294,6 +297,9 @@ def describe(args):
         if v["env"]:
             print(f"  VM variables: {', '.join(v['env'])} (agentbox env {v['name']})"
                   + (f"; {', '.join(v['env_refused'])} not passed on" if v["env_refused"] else ""))
+        if v["secrets"]:
+            print(f"  Secrets:      {', '.join(v['secrets'])} (values not shown)"
+                  + (f"; {', '.join(v['secrets_refused'])} not passed on" if v["secrets_refused"] else ""))
         if ssh["enabled"] or ssh["keys"]:
             print(f"  SSH access:   {'on' if ssh['enabled'] else 'off'}, port {ssh['port']}, "
                   f"{len(ssh['keys'])} SSH key(s)" + (", a change pending" if ssh["pending"] else ""))

@@ -28,6 +28,10 @@ export interface Vm {
   env?: Record<string, string>
   /** names in `env` that agentbox no longer passes on to the VM (reserved since they were saved) */
   env_refused?: string[]
+  /** the names of the VM's secrets; their values never leave the Host's secrets file */
+  secrets?: string[]
+  /** names in `secrets` that agentbox no longer passes on to the VM (reserved since they were set) */
+  secrets_refused?: string[]
   image?: string
   build_pin?: string | null
   image_build?: string | null

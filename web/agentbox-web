@@ -956,7 +956,19 @@ AGENTBOX_ERRORS = {
     "env_name_reserved": (400, "A Safeguard or Agent Box itself sets or reads this variable; it cannot be a "
                                "VM variable"),
     "invalid_env_value": (400, "Invalid value of a VM variable (no line breaks or other control characters)"),
-    "env_too_large": (400, "Too many VM variables (at most 64) or a value longer than 4 KiB"),
+    "env_too_large": (400, "Too many VM variables (at most 64 together with the secrets) or a value longer than "
+                           "4 KiB"),
+    "env_name_is_secret": (409, "This name is a secret of the VM; a name cannot be both"),
+    "secret_not_applied": (500, "The secrets are saved, but the file the VM reads or its definition is not; "
+                                "agentbox regenerate finishes it"),
+    "invalid_secret_name": (400, "Invalid name of a secret (A-Z, a-z, 0-9 and _, not starting with a digit, "
+                                 "at most 64 characters)"),
+    "secret_name_reserved": (400, "A Safeguard or Agent Box itself sets or reads this variable; it cannot be a "
+                                  "secret"),
+    "invalid_secret_value": (400, "Invalid value of a secret (no line breaks or other control characters)"),
+    "secret_too_large": (400, "Too many secrets (at most 64 together with the VM variables) or a value longer "
+                              "than 4 KiB"),
+    "secret_name_is_env": (409, "This name is a VM variable of the VM; a name cannot be both"),
     "ssh_key_invalid": (400, "Not a valid SSH public key"),
     "ssh_key_type_refused": (400, "SSH keys of this type are refused (allowed: Ed25519, ECDSA, their security-key "
                                   "forms, RSA of at least 3072 bits)"),
@@ -1104,10 +1116,15 @@ def refused(code, detail=None, field=None, params=None):
 # the host of the breadth check's sample it matches
 ERROR_PARAMS = {"invalid_pattern": {"reason": re.compile(r"[a-z][a-z-]{0,39}").fullmatch},
                 "pattern_too_broad": {"host": re.compile(r"[a-z0-9][a-z0-9.-]{0,252}").fullmatch},
-                # the VM variable refused, as agentbox names it
+                # the VM variable or secret refused, as agentbox names it (never a value)
                 "env_name_reserved": {"name": vmenv.is_name},
                 "invalid_env_value": {"name": vmenv.is_name},
                 "env_too_large": {"name": vmenv.is_name},
+                "env_name_is_secret": {"name": vmenv.is_name},
+                "secret_name_reserved": {"name": vmenv.is_name},
+                "invalid_secret_value": {"name": vmenv.is_name},
+                "secret_too_large": {"name": vmenv.is_name},
+                "secret_name_is_env": {"name": vmenv.is_name},
                 # the command that finishes a change of SSH access saved but not applied
                 "ssh_not_applied": {"finish": re.compile(
                     rf"agentbox (regenerate|set-ssh {VM_NAME.pattern} off"
@@ -1122,7 +1139,7 @@ def error_params(error, params):
 def error_field(error, params):
     """The request field a refusal is about: the setting an invalid_setting names (only a
     known key), memory_mib for invalid_memory, days for invalid_cleanup_days, env for a refused
-    VM variable."""
+    VM variable, name or value for a refused secret."""
     if error == "invalid_setting":
         key = params.get("setting")
         return key if isinstance(key, str) and key in SETTING_KEYS else None
@@ -1130,8 +1147,12 @@ def error_field(error, params):
         return "memory_mib"
     if error == "invalid_cleanup_days":
         return "days"
-    if error in ("invalid_env_name", "env_name_reserved", "invalid_env_value", "env_too_large"):
+    if error in ("invalid_env_name", "env_name_reserved", "invalid_env_value", "env_too_large", "env_name_is_secret"):
         return "env"
+    if error in ("invalid_secret_name", "secret_name_reserved", "secret_name_is_env"):
+        return "name"
+    if error in ("invalid_secret_value", "secret_too_large"):
+        return "value"
     return None
 
 
@@ -1160,13 +1181,14 @@ def run_json(*args, **kw):
 
 
 def hide(text, values):
-    """The text without these secrets: each whole, without whitespace (as agentbox stores a
-    token) and line by line (a PEM key), so an echo in any of these forms is hidden."""
+    """The text without these secrets: each whole, whatever its length (a VM secret may be
+    short), and without whitespace (as agentbox stores a token) and line by line (a PEM key)
+    where such a part has 16 characters or more, so an echo in any of these forms is hidden."""
     for v in values:
         if not isinstance(v, str):
             continue
-        parts = {v.strip(), "".join(v.split()), *(line.strip() for line in v.splitlines())}
-        for part in sorted((p for p in parts if len(p) >= 16), key=len, reverse=True):
+        parts = {p for p in ("".join(v.split()), *(line.strip() for line in v.splitlines())) if len(p) >= 16}
+        for part in sorted({v.strip(), *parts} - {""}, key=len, reverse=True):
             text = text.replace(part, "[hidden]")
     return text
 
@@ -1519,6 +1541,36 @@ def put_env(h, m, url, body):
         if "\0" in value or not utf8(value):
             raise refused("invalid_env_value", field="env", params={"name": name})
     return 200, run_json("set-env", m["vm"], "--replace", *(f"{k}={v}" for k, v in env.items()), "--json")
+
+
+SECRET = VM + r"/secrets/(?P<name>[^/]+)"
+
+
+def secret_name(m):
+    """The secret's name from the path, if it has the form of one (agentbox checks the rest)."""
+    if not vmenv.is_name(m["name"]):
+        raise refused("invalid_secret_name", field="name")
+    return m["name"]
+
+
+@route("PUT", SECRET, secret=("value",))
+def put_secret(h, m, url, body):
+    """Add a secret or replace its value (set-secret --no-prompt): the value goes to agentbox on
+    stdin only, never as an argument, and never back in an answer, an error or a log line. Text
+    in UTF-8 without NUL or line break (agentbox would take a line break at its end as the end
+    of the value, and refuses every other)."""
+    name = secret_name(m)
+    value = body.get("value")
+    if not isinstance(value, str):
+        raise invalid("value", "value must be text")
+    if any(c in value for c in "\0\r\n") or not utf8(value):
+        raise refused("invalid_secret_value", field="value", params={"name": name})
+    return 200, run_json("set-secret", m["vm"], name, "--no-prompt", "--json", stdin=value, secrets_in=(value,))
+
+
+@route("DELETE", SECRET)
+def delete_secret(h, m, url, body):
+    return 200, run_json("unset-secret", m["vm"], secret_name(m), "--json")
 
 
 @route("PUT", VM + "/claude-token", secret=("token",))

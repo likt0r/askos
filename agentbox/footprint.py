@@ -81,6 +81,12 @@ def vm_env_file(name):
     return os.path.join(host_paths.STATE, "vm-env", f"{name}.env")
 
 
+def vm_secrets_file(name):
+    """The values of the VM's secrets, the only place they are kept, beside its Claude token;
+    QEMU passes the file in as it is (fw_cfg opt/agentbox/secrets)."""
+    return os.path.join(host_paths.CONF, "secrets", f"env-{name}")
+
+
 def ssh_host_key_file(name):
     """The VM's SSH host key, made once by the Host (ADR 0020)."""
     return os.path.join(host_paths.CONF, "secrets", f"ssh-host-key-{name}")
@@ -223,7 +229,7 @@ def paths(rec):
     return (record_file(name), data_disk(name), system_disk(name), delete_marker(name),
             legacy_owners_file(name), legacy_allowlist_file(name), legacy_allowlist_migrated_file(name),
             observer_dir(name), open_web_file(name), claude_token_file(name), vm_env_file(name),
-            ssh_host_key_file(name), ssh_host_key_public_file(name), vm_ssh_file(name),
+            vm_secrets_file(name), ssh_host_key_file(name), ssh_host_key_public_file(name), vm_ssh_file(name),
             ssh_pending_file(name), seen_file(name), wakes_file(name), container_image_cleanup_file(name),
             domain_file(name),
             *unit_files(rec), *socket_pending_files(rec))
@@ -358,7 +364,7 @@ def _files(rec, say):
     from . import allowlist, responding
     name = rec["name"]
     responding.clear(name)           # bookkeeping only, never fails (the stop removed it already)
-    gone = [state_files.remove(f) for f in (claude_token_file(name), vm_env_file(name),
+    gone = [state_files.remove(f) for f in (claude_token_file(name), vm_env_file(name), vm_secrets_file(name),
                                             ssh_host_key_file(name), ssh_host_key_public_file(name),
                                             vm_ssh_file(name), open_web_file(name), legacy_owners_file(name),
                                             seen_file(name), container_image_cleanup_file(name),
