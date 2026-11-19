@@ -22,12 +22,15 @@ class Declaration:
     positional: bool = True
     allow_unknown: bool = False
     option_offset: int = 0
+    # no message repeats an unknown option or a value (a secret's commands)
+    hide_arguments: bool = False
 
 
 def declare(handler, usage, *, options=None, needs_root=True, control_room=False, control_room_options=None,
             control_room_positional=None, read_only=False, own_entries=False, kind="action", describe=None,
-            option_exit=2, prefix="", positional=True, allow_unknown=False, option_offset=0):
+            option_exit=2, prefix="", positional=True, allow_unknown=False, option_offset=0,
+            hide_arguments=False):
     """Keep all command facts beside its handler; usage is also the operator reference."""
     return Declaration(handler, usage, options or {}, needs_root, control_room, control_room_options,
                        control_room_positional, read_only, own_entries, kind, describe, option_exit, prefix,
-                       positional, allow_unknown, option_offset)
+                       positional, allow_unknown, option_offset, hide_arguments)

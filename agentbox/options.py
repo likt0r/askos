@@ -33,25 +33,30 @@ class Parsed:
         return self.raw[index]
 
 
-def parse(args, known=None, *, exit=2, positional=True, prefix="", allow_unknown=False):
+def parse(args, known=None, *, exit=2, positional=True, prefix="", allow_unknown=False, hide=False):
     """(positional arguments, options). known: option name (without --) -> False for a flag
     (True when given), True for one value, MANY for a value that may repeat (a list of them),
     or a function that checks the one value (true when it is valid). positional=False: a
-    positional argument is an unknown option. prefix: put before every message."""
+    positional argument is an unknown option. prefix: put before every message. hide: no
+    message repeats an unknown option or a value (a secret's command: one typed there by mistake
+    goes nowhere)."""
     if isinstance(args, Parsed):
         return list(args.positional), dict(args.values)
 
     known = known or {}
     found, opts, i = [], {}, 0
 
+    def shown(text):
+        return "?" if hide else clean(text, False)[:60]
+
     def fail(message, name):
-        error = "--" + clean(name, False)[:60]
+        error = "--" + shown(name)
         failure = Fail(prefix + message, exit, error="invalid_argument", option=error)
         failure.parsed = Parsed(args, found, opts)
         raise failure
 
     def stray(a):
-        error = clean(a, False)[:60]
+        error = shown(a)
         failure = Fail(prefix + "unknown option: " + error, exit, error="invalid_argument", option=error)
         failure.parsed = Parsed(args, found, opts)
         raise failure
@@ -69,7 +74,7 @@ def parse(args, known=None, *, exit=2, positional=True, prefix="", allow_unknown
             if allow_unknown and positional:
                 found.append(a)
                 continue
-            fail("unknown option: " + clean(a, False)[:60], name)
+            fail("unknown option: " + shown(a), name)
         kind = known[name]
         if kind is False:
             if eq:
@@ -81,7 +86,7 @@ def parse(args, known=None, *, exit=2, positional=True, prefix="", allow_unknown
                 fail(f"--{name} needs a value", name)
             value, i = args[i], i + 1
         if callable(kind) and not kind(value):
-            fail(f"invalid value for --{name}: " + clean(value, False)[:60], name)
+            fail(f"invalid value for --{name}: " + shown(value), name)
         if kind == MANY:
             opts.setdefault(name, []).append(value)
         elif name in opts:

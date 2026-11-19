@@ -105,7 +105,9 @@ def is_name(name):
 def valid_name(name, kind=VARIABLE):
     """The name if it has the form of one (removing a variable needs no more); dies otherwise."""
     if not is_name(name):
-        die(f"invalid name of a {kind.noun}: {_shown(name) if isinstance(name, str) else '?'} "
+        # a secret's is not repeated: a value typed there by mistake (NAME=value) goes nowhere
+        shown = _shown(name) if isinstance(name, str) and kind is not SECRET else "?"
+        die(f"invalid name of a {kind.noun}: {shown} "
             f"(up to {MAX_NAME} characters from A-Z, a-z, 0-9 and _, not starting with a digit)",
             error=kind.invalid_name)
     return name

@@ -673,8 +673,9 @@ DECLARATIONS = {
                    option_exit=1),
     "set-secret": declare(set_secret, "agentbox set-secret <vm> NAME [--no-prompt] [--json]",
                           options={"no-prompt": False, "json": False}, control_room=True,
-                          option_exit=1, describe=activity.describe_secret("Set the secret", "Set a secret")),
+                          option_exit=1, hide_arguments=True,
+                          describe=activity.describe_secret("Set the secret", "Set a secret")),
     "unset-secret": declare(unset_secret, "agentbox unset-secret <vm> NAME [--json]", options={"json": False},
-                            control_room=True, option_exit=1,
+                            control_room=True, option_exit=1, hide_arguments=True,
                             describe=activity.describe_secret("Remove the secret", "Remove a secret")),
 }

@@ -552,7 +552,19 @@ class SecretTest(ActivityTest):
                          ("secret_name_reserved", "NODE_OPTIONS"))
         self.assertEqual(entries[2]["AGENTBOX_ERROR"], "invalid_secret_value")
         self.assertEqual(entries[4]["AGENTBOX_DESCRIPTION"], "Remove the secret API_KEY")
-        # not even the value given as an argument by mistake, which set-secret refuses
+        # not even the value given as an extra argument, which set-secret refuses
+        self.assertNotIn(b"Geheim", self.raw())
+
+    def test_a_value_mistyped_into_the_name_or_an_option_reaches_no_entry_and_no_output(self):
+        """A secret command never repeats what stands where its name or an option belongs: a
+        value typed there by mistake (NAME=value, as set-env takes it) goes nowhere."""
+        value = "Geheim-s3cr3t-value"
+        for args in (["set-secret", "work", f"API_KEY={value}"], ["set-secret", "work", value],
+                     ["set-secret", "work", "API_KEY", f"--value={value}"], ["set-secret", f"--{value}"],
+                     ["unset-secret", "work", f"API_KEY={value}"], ["unset-secret", "work", value]):
+            code, out, err = self.run_agentbox("--actor", FIREFOX, *args, stdin=value)
+            self.assertNotEqual(code, 0, args)
+            self.assertNotIn("Geheim", out + err, args)
         self.assertNotIn(b"Geheim", self.raw())
 
     def test_refused_claude_token_echoed_back(self):

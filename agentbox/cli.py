@@ -238,7 +238,7 @@ def check_control_room(cmd, args):
     # the arguments as the command reads them; arguments it refuses fail here as they would there
     positional, values = options.parse(args[declaration.option_offset:], {**declaration.options, "json": False},
                                        exit=declaration.option_exit, positional=declaration.positional,
-                                       allow_unknown=declaration.allow_unknown)
+                                       allow_unknown=declaration.allow_unknown, hide=declaration.hide_arguments)
     for name in values:
         if allowed is not None and name != "json" and name not in allowed:
             raise Fail(f"{cmd} --{name} is not for the Control Room: only the CLI at the Host passes it",
@@ -305,7 +305,8 @@ def main(argv=None):
                                                {**declaration.options, "json": False},
                                                exit=declaration.option_exit, prefix=prefix,
                                                positional=declaration.positional,
-                                               allow_unknown=declaration.allow_unknown)
+                                               allow_unknown=declaration.allow_unknown,
+                                               hide=declaration.hide_arguments)
             return options.Parsed(args, positional, values)
 
         with activity.command(cmd, args, declaration, parse_command) as parsed:
