@@ -90,8 +90,8 @@ if _package_dir() not in sys.path:
     sys.path.insert(0, _package_dir())
 from agentbox import list_records as records  # noqa: E402
 from agentbox import proxy_log  # noqa: E402
-from agentbox.list_records import (CATEGORIES, PATTERN_HOST, compile_pattern, pattern_matches,  # noqa: E402,F401
-                                   pattern_problem, printable, refused_entry)
+from agentbox.list_records import (CATEGORIES, PATTERN_HOST, STRONG, compile_pattern,  # noqa: E402,F401
+                                   pattern_matches, pattern_problem, printable, refused_entry)
 
 CONF_DIR = os.environ.get("AGENTBOX_CONF_DIR", "/etc/agentbox")
 # Host records (only agentbox writes them) and the text files from before
@@ -105,9 +105,6 @@ FEEDS_DIR = os.environ.get("AGENTBOX_FEEDS_DIR", "/var/lib/agentbox/feeds")
 FEEDS = ("threat-intelligence", "newly-registered")
 FEED_STATUS = os.path.join(FEEDS_DIR, "status.json")
 
-# With these Signals the proxy blocks a destination, whatever would allow it (ADR 0021)
-STRONG = {"exfil", "c2", "tunnel", "paste", "phishing", "blockchain", "lookalike", "raw-ip", "metadata",
-          "threat"}
 # --lifts names at most this many entries of the Threat Intelligence list
 LIFTS_SHOWN = 5
 # Do not depend on the name: they also apply to Legitimate domains and also raise Alerts

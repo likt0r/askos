@@ -1214,11 +1214,22 @@ class EventsTest(V1Test):
             ("build", {"image": "rust", "build": "20261103-130000", "status": "failed", "error": "podman"}),
             ("build", {"image": "base", "build": "20261103-120000", "status": "rejected", "error": "npm"}),
             ("host-reboot", {"needed": True, "packages": ["kernel-core"], "checked": "t"}),
-            ("host-reboot", {"needed": True, "packages": ["kernel-core"], "checked": "t2"}))
-        got = [json.loads(s.event("notification")["data"]) for _ in range(5)]
+            ("host-reboot", {"needed": True, "packages": ["kernel-core"], "checked": "t2"}),
+            # a Pause by an Alert (#11), and one that failed (no notification of its own)
+            ("activity", {"time": "t", "vm": "work", "kind": "alert", "action": "alert.paused", "outcome": "ok",
+                          "code": "alert.paused", "params": {"domain": "paste.example", "signals": "paste, young"},
+                          "description": "Paused for an Alert: paste.example [paste,young]"}),
+            ("activity", {"time": "t", "vm": "priv", "kind": "alert", "action": "alert.paused", "outcome": "failed",
+                          "code": "alert.paused", "params": {"domain": "paste.example", "signals": "paste"},
+                          "description": "Pause for an Alert failed"}))
+        got = [json.loads(s.event("notification")["data"]) for _ in range(6)]
         self.assertEqual([(n["kind"], n["severity"], n["vm"]) for n in got], [
             ("alert", "critical", "work"), ("github-refused", "warning", "work"), ("build-failed", "warning", None),
-            ("build-rejected", "critical", None), ("host-reboot", "warning", None)])
+            ("build-rejected", "critical", None), ("host-reboot", "warning", None), ("alert", "critical", "work")])
+        self.assertEqual({k: got[5][k] for k in ("text", "domain", "signals", "paused")},
+                         {"text": "work paused: it tried to reach paste.example (paste, young)",
+                          "domain": "paste.example", "signals": ["paste", "young"], "paused": True})
+        self.assertNotIn("paused", got[0])
         self.assertEqual(got[0]["text"], "work tried to reach paste.example:443 (paste, young)")
         self.assertEqual(got[1]["text"], "work: GitHub token refused for evil/repo")
         self.assertEqual(got[1]["detail"], "Owner evil not allowed")

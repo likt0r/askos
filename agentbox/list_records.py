@@ -37,6 +37,10 @@ ALL = "all"             # the scope of an Allowlist entry for every VM
 DOMAIN = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+")
 # the Watchlist's categories, each also the Signal of a hit; payload is a weak one
 CATEGORIES = ("exfil", "c2", "tunnel", "paste", "phishing", "blockchain", "payload")
+# the strong Signals: the proxy blocks a destination with one whatever would allow it (ADR 0021),
+# and its Alert pauses the VM (ADR 0022); every other Signal is weak and only raises an Alert
+STRONG = frozenset({"exfil", "c2", "tunnel", "paste", "phishing", "blockchain", "lookalike", "raw-ip", "metadata",
+                    "threat"})
 # the fields of an entry besides domain or regex; an entry that differs breaks its record
 WATCH_FIELDS = {"category": str, "source": str, "note": str, "added": int, "added_by": str}
 LEGITIMATE_FIELDS = {"note": str, "added": int, "added_by": str}

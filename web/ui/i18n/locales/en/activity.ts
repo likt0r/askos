@@ -129,6 +129,8 @@ export default {
       signout: 'Signed out',
       alert: 'Alert: {domain}',
       alertSignals: 'Alert: {domain} ({signals})',
+      alertPaused: 'Paused for an Alert: {domain} ({signals})',
+      alertPauseFailed: 'Pause for an Alert: {domain} ({signals})',
       githubToken: 'GitHub token for {repository}',
       githubRefused: 'GitHub token for {request} refused: {reason}',
       githubError: 'GitHub token for {request} failed',

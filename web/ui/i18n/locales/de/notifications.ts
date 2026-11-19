@@ -16,6 +16,7 @@ export default {
     title: {
       section: 'Benachrichtigungen in diesem Browser',
       alert: 'Alert: {vm}',
+      'alert-paused': 'Wegen Verdacht pausiert: {vm}',
       'github-refused': 'GitHub-Token abgelehnt: {vm}',
       'build-failed': 'Build gescheitert: {image}',
       'build-rejected': 'Build verworfen: {image}',
@@ -25,6 +26,7 @@ export default {
     },
     text: {
       alert: '{vm} wollte {domain} erreichen ({signals})',
+      'alert-paused': '{vm} wollte {domain} erreichen ({signals}) und wurde pausiert',
       'github-refused': '{vm}: Die Anfrage nach einem GitHub-Token für {request} wurde abgelehnt',
       'build-failed': 'Build {image}-{build} ist gescheitert. Der vorherige Build bleibt in Gebrauch.',
       'build-rejected': 'Build {image}-{build} wurde verworfen: eine Schutzmaßnahme fehlt oder ist abgeschwächt. Der vorherige Build bleibt in Gebrauch.',

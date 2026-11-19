@@ -43,7 +43,9 @@ export function useNotificationPrefs() {
 export function useNotificationText() {
   const { t, te } = useI18n()
   return (n: NotificationEvent): { title: string, body: string } => {
-    const key = `notifications.text.${n.kind}`
+    // an Alert whose VM was paused for it (agentbox alert-watch, #11) has words of its own
+    const kind = n.kind === 'alert' && n.paused === true ? 'alert-paused' : n.kind
+    const key = `notifications.text.${kind}`
     const params = {
       vm: n.vm ?? '',
       domain: String(n.domain ?? ''),
@@ -56,7 +58,7 @@ export function useNotificationText() {
       sensor: String(n.device ?? n.reading ?? ''),
     }
     return {
-      title: te(`notifications.title.${n.kind}`) ? t(`notifications.title.${n.kind}`, params) : t('notifications.title.other'),
+      title: te(`notifications.title.${kind}`) ? t(`notifications.title.${kind}`, params) : t('notifications.title.other'),
       body: te(key) ? t(key, params) : n.text,
     }
   }

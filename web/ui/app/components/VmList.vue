@@ -45,7 +45,7 @@ function diskText(vm: Vm) {
         class="grid grid-cols-[1fr_auto] md:grid-cols-[minmax(8rem,1.2fr)_8.5rem_minmax(7rem,1fr)_minmax(8rem,1.2fr)_7rem_8rem] items-center gap-x-3 gap-y-1 px-4 py-2.5 text-sm hover:bg-elevated/60 focus-visible:bg-elevated/60 focus-visible:outline-none"
       >
         <span class="font-medium text-highlighted truncate">{{ vm.name }}</span>
-        <span class="justify-self-end md:justify-self-start"><VmStateBadge :state="vm.state" /></span>
+        <span class="justify-self-end md:justify-self-start"><VmStateBadge :state="vm.state" :by-alert="!!pausedByAlert(vm)" /></span>
         <span class="text-muted truncate font-mono text-xs">
           {{ vm.image ?? '—' }}<template v-if="vm.build_pin"> @ {{ vm.build_pin }}</template>
         </span>

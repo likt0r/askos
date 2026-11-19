@@ -437,6 +437,20 @@ class SnapshotTest(WatchTest):
         snap = self.event("vms")
         self.assertEqual([p["vm"] for p in snap["problems"]], ["bad"])
 
+    def test_a_pause_by_an_alert_is_marked_until_the_vm_runs(self):
+        """#11: agentbox alert-watch marks the VM it paused; the object shows the Alert while
+        the VM is paused, and nothing once it runs again."""
+        with open(self.path("var/lib/agentbox/alert-pause-priv.json"), "w") as f:
+            json.dump({"time": 1763546100, "domain": "upload.exfil.example", "signals": ["exfil", "young"]}, f)
+        self.start()
+        work, priv = self.event("vms")["vms"]
+        self.assertIsNone(work["paused_by_alert"])
+        self.assertEqual(priv["paused_by_alert"], {"time": "2025-11-19T09:55:00Z", "domain": "upload.exfil.example",
+                                                   "signals": ["exfil", "young"]})
+        self.domains(lambda d: d.update({"agentbox-priv": {"state": "running", "managed_save": False}}))
+        priv = self.event("vm", lambda v: v["name"] == "priv" and v["state"] != "paused")
+        self.assertIsNone(priv["paused_by_alert"])
+
     def test_devices_unknown_when_systemctl_fails(self):
         self.scenario(systemctl_fails=["list-units"])
         self.start()
@@ -465,6 +479,20 @@ class JournalTest(WatchTest):
                          {"vm": "work", "actor": "Firefox/Linux (192.0.2.20)", "kind": "action", "action": "reset",
                           "outcome": "ok", "description": "Reset"})
         self.assertRegex(a["time"], r"^\d{4}-\d\d-\d\dT")
+
+    def test_a_pause_by_an_alert(self):
+        # agentbox alert-watch's entry (#11): root in its unit, kind alert
+        self.log("work alert.paused ok (alert-watch): Paused for an Alert: evil.example [exfil]", "agentbox-activity",
+                 by={"_UID": "0", "_GID": "0", "_SYSTEMD_UNIT": "agentbox-alert-watch.service", "_COMM": "agentbox",
+                     "_TRANSPORT": "journal"},
+                 AGENTBOX_KIND="alert", AGENTBOX_ACTION="alert.paused", AGENTBOX_CODE="alert.paused", AGENTBOX_VM="work",
+                 AGENTBOX_OUTCOME="ok", AGENTBOX_ACTOR="alert-watch",
+                 AGENTBOX_DESCRIPTION="Paused for an Alert: evil.example [exfil]", AGENTBOX_PARAM_DOMAIN="evil.example",
+                 AGENTBOX_PARAM_SIGNALS="exfil")
+        a = self.event("activity")
+        self.assertEqual({k: a[k] for k in ("vm", "actor", "kind", "action", "code", "params")},
+                         {"vm": "work", "actor": "alert-watch", "kind": "alert", "action": "alert.paused",
+                          "code": "alert.paused", "params": {"domain": "evil.example", "signals": "exfil"}})
 
     def test_alert(self):
         self.log("[work] ALLOWED github.com:443", "agentbox-proxy-work")

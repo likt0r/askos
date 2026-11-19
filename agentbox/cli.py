@@ -9,7 +9,7 @@ import json
 import os
 import sys
 
-from . import activity, allowlist, container_images, credentials, describe, detection, generate, github, guest
+from . import activity, alert_watch, allowlist, container_images, credentials, describe, detection, generate, github, guest
 from . import images, lifecycle, lists, maintenance, network, options, pairings, paths, recipes, settings, setup, transfer
 from . import sign_in_links, ssh_access, ssh_config, version, versions, vms, watch
 from .errors import Fail
@@ -111,6 +111,8 @@ Controls the agent VMs on this Host.
   agentbox open-web <vm> <minutes> [--json]          allow every public domain for a while (Open web)
   agentbox close-web <vm> [--json]
   agentbox mark-seen <vm> [<domain>] [--json]        mark Alerts (all, or one domain's) as seen
+  agentbox alert-watch                               (service) pause a VM whose proxy raised an Alert with a
+                                                     strong Signal, while alert_action is pause
   agentbox check-domain <domain> [--json]            a domain's Signals with their reasons
   agentbox watchlist [--json]                        the Watchlist kept by hand, state of the HaGeZi lists
   agentbox watch-add <domain>|--regex PATTERN --category C [--source S] [--note TEXT] [--force] [--json]
@@ -199,7 +201,7 @@ Controls the agent VMs on this Host.
 With --json, a failure also goes to stderr as one JSON object:
   {"error": "<code>", "message": "<text>", "params": {...}}"""
 
-MODULES = (lifecycle, version, describe, setup, watch, vms, pairings, transfer, guest, credentials, network,
+MODULES = (lifecycle, version, describe, setup, watch, alert_watch, vms, pairings, transfer, guest, credentials, network,
            allowlist, detection, lists, generate, settings, github, images, recipes, versions, activity, maintenance,
            container_images, ssh_access, ssh_config, sign_in_links)
 DECLARATIONS = {name: declaration for module in MODULES for name, declaration in module.DECLARATIONS.items()}

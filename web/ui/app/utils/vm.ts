@@ -1,4 +1,4 @@
-import type { Vm } from './live'
+import type { PausedByAlert, Vm } from './live'
 
 /** Agent counts in a fixed order (working, waiting, done, then the rest). */
 export function agentCounts(vm: Vm): { key: string, n: number }[] | null {
@@ -28,6 +28,13 @@ export function containerImageCleanup(vm: Pick<Vm, 'container_image_cleanup' | '
     enabled: vm.container_image_cleanup ?? true,
     days: vm.container_image_cleanup_days ?? 7,
   }
+}
+
+/** The Alert that paused the VM (#11), while it is paused by it; null otherwise. */
+export function pausedByAlert(vm: Vm): PausedByAlert | null {
+  const a = vm.paused_by_alert
+  if (vm.state !== 'paused' || !a || typeof a.domain !== 'string') return null
+  return { time: a.time ?? null, domain: a.domain, signals: Array.isArray(a.signals) ? a.signals : [] }
 }
 
 export interface NotResponding {

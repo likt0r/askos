@@ -71,6 +71,11 @@ export default {
       'focus-off': 'Focus off. Paused VMs wake when Orca connects.',
     },
   },
+  pausedByAlert: {
+    title: 'Paused by an Alert',
+    what: 'The VM tried to reach {domain} ({signals}) and was paused at {time}.',
+    hint: 'The destination stays blocked. Look at what the agent was doing before you start the VM again or connect from Orca: it resumes where it stopped, and another attempt pauses it again.',
+  },
   notResponding: {
     what: {
       system: 'The system did not boot: neither Orca nor the guest agent answers.',

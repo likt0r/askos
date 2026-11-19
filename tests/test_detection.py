@@ -314,6 +314,65 @@ class HarmlessTest(ProxyTest):
 
 # --- the reasons of the Signals (#69) ---------------------------------------------
 
+class AlertPauseTest(ProxyTest):
+    """#11, ADR 0022: of the Alerts the proxy logs, agentbox alert-watch pauses the VM for those
+    with a strong Signal only (tests/test_alert_watch.py runs the watcher itself)."""
+
+    def pausing(self, host):
+        """The proxy's ALERT line for host, as the watcher reads it: the strong Signals that
+        pause the VM ([] for none)."""
+        sys.path.insert(0, ROOT)
+        from agentbox import alert_watch, proxy_log
+        before = len(self.log_text().splitlines())
+        self.assertEqual(self.connect(host), ACCESS_DENIED)
+        events = [proxy_log.parse(line) for line in self.log_text().splitlines()[before:]]
+        [alert] = [e for e in events if e and e.kind == "ALERT"]
+        self.assertEqual((alert.vm, alert.host), ("test", host))
+        return alert.signals, alert_watch.strong(alert.signals)
+
+    def test_a_weak_signal_never_pauses_a_strong_one_does(self):
+        write(os.path.join(self.conf, "suspicious-domains"), WATCHLIST + "payload.example    payload    # test\n")
+        self.start()
+        weak = {"fresh.example": ("young",), "files.payload.example": ("payload",),
+                "0123456789abcdef0123.example": ("random-label",), "shop.zip": ("tld",),
+                "a.b.c.d.e.f.example": ("many-labels",)}
+        for host, signals in weak.items():
+            with self.subTest(host=host):
+                self.assertEqual(self.pausing(host), (signals, []))
+        strong = {"bad.example": "threat", "upload.exfil.example": "exfil", "npnjs.com": "lookalike",
+                  "10.0.0.1": "raw-ip", "metadata.google.internal": "metadata"}
+        for host, signal_ in strong.items():
+            with self.subTest(host=host):
+                signals, pausing = self.pausing(host)
+                self.assertIn(signal_, signals)
+                self.assertEqual(pausing, [signal_])
+        # a strong one among weak ones
+        self.feed("newly-registered", ["fresh.example", "bad.example"])
+        self.assertEqual(self.pausing("bad.example"), (("threat", "young"), ["threat"]))
+
+    def test_a_harmless_mark_stops_the_alert_and_its_pause_not_the_block(self):
+        self.harmless("exfil.example")
+        self.start()
+        before = len(self.log_text().splitlines())
+        self.assertEqual(self.connect("upload.exfil.example"), ACCESS_DENIED)
+        lines = self.log_text().splitlines()[before:]
+        # no ALERT line, which is all agentbox alert-watch pauses for; the block stays
+        self.assertFalse([line for line in lines if "] ALERT " in line])
+        self.assertEqual(self.blocked_reason("upload.exfil.example"), "suspicious: exfil")
+
+    def test_the_strong_signals_are_those_the_proxy_blocks_by(self):
+        sys.path.insert(0, ROOT)
+        from agentbox import list_records
+        self.assertEqual(list_records.STRONG, {"threat", "exfil", "c2", "tunnel", "paste", "phishing", "blockchain",
+                                               "lookalike", "raw-ip", "metadata"})
+        self.assertEqual(set(list_records.CATEGORIES) - list_records.STRONG, {"payload"})
+        r = subprocess.run([sys.executable, "-I", SUSPICIOUS, "--constants"], capture_output=True, text=True,
+                           timeout=30, env={"PATH": os.environ["PATH"], "AGENTBOX_CONF_DIR": self.conf,
+                                            "AGENTBOX_FEEDS_DIR": self.feeds})
+        self.assertEqual({c for c, strong in json.loads(r.stdout)["categories"].items() if strong},
+                         set(list_records.CATEGORIES) & list_records.STRONG)
+
+
 class ReasonTest(unittest.TestCase):
     """Each Signal's reason: a stable code, its parameters (text) and the English text,
     which the Control Room words in its own language (the classifier with --json)."""

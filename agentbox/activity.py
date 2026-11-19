@@ -484,6 +484,9 @@ def journald_conf(days):
 #                         misses the unit of a CLI that has already ended.
 #                         The Control Room (agentbox-web.service as agentbox-web): its
 #                         sign-ins and sign-outs, without a VM, and nothing else.
+#                         agentbox alert-watch (agentbox-alert-watch.service as root): the
+#                         Pauses its Alerts made (kind alert, ALERT_PAUSED), the only
+#                         entries of kind alert under this identifier.
 #                         The proxy and token service users: nothing.
 #   agentbox-proxy-<vm>   that VM's proxy, agentbox-proxy-<vm>.service as agentbox-proxy
 #   agentbox-gh-<vm>      that VM's token service, agentbox-ghvm-<vm>@<connection>.service
@@ -497,6 +500,7 @@ SIGN_INS = {"signin", "signin.failed", "signin.link", "signin.link-refused", "si
             "signout"}                                                  # web/agentbox-web
 PROXY_USER, TOKEN_USER = "agentbox-proxy", "agentbox-gh"                # rpm/agentbox.sysusers
 CLI_KINDS = set(KINDS) - {"signin", "alert", "github"}                  # what record() is given
+ALERT_WATCH_UNIT, ALERT_PAUSED = "agentbox-alert-watch.service", "alert.paused"   # alert_watch.py
 SERVICE = re.compile(r"agentbox-(proxy|gh)-(" + registry.NAME.pattern + ")")
 SERVICE_UNIT = re.compile(r"agentbox-(proxy-[^@/]+|ghvm-[^@/]+@[^/]*)\.service")
 PASSWD, GROUP = paths.host("/etc/passwd"), paths.host("/etc/group")
@@ -533,6 +537,11 @@ def _uids(*users):
     return [f"_UID={u}" for u in (_uid(n) for n in users) if u is not None]
 
 
+def proxy_user_matches():
+    """journalctl matches for the entries the proxies' user wrote; none without that user."""
+    return _uids(PROXY_USER)
+
+
 def group_exists(name):
     """Whether /etc/group (tests: under AGENTBOX_ROOT) has this group."""
     try:
@@ -553,6 +562,10 @@ def trusted(e):
         if uid == _uid(CONTROL_ROOM[0]):
             return (unit == CONTROL_ROOM[1] and kind == "signin" and isinstance(action, str)
                     and action in SIGN_INS and "AGENTBOX_VM" not in e)
+        if kind == "alert":
+            # a Pause by an Alert: only root in the watcher's unit, which runs for as long as
+            # it writes, so journald always knows the unit
+            return uid == "0" and unit == ALERT_WATCH_UNIT and action == ALERT_PAUSED
         # never the services, by user and (should /etc/passwd not tell) by unit
         if uid in (_uid(PROXY_USER), _uid(TOKEN_USER)) or isinstance(unit, str) and SERVICE_UNIT.fullmatch(unit):
             return False

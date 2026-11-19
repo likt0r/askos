@@ -74,6 +74,7 @@ export default {
     starting: 'Starting',
     not_responding: 'Not responding',
     paused: 'Paused',
+    paused_by_alert: 'Paused by Alert',
     stopped: 'Stopped',
     suspended: 'Suspended',
     shutting_down: 'Shutting down',

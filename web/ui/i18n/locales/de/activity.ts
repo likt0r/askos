@@ -129,6 +129,8 @@ export default {
       signout: 'Abgemeldet',
       alert: 'Verdacht: {domain}',
       alertSignals: 'Verdacht: {domain} ({signals})',
+      alertPaused: 'Wegen Verdacht pausiert: {domain} ({signals})',
+      alertPauseFailed: 'Pause wegen Verdacht: {domain} ({signals})',
       githubToken: 'GitHub-Token für {repository}',
       githubRefused: 'GitHub-Token für {request} abgelehnt: {reason}',
       githubError: 'GitHub-Token für {request} gescheitert',

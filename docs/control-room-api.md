@@ -259,6 +259,7 @@ the Actor); without it no link is made.
   "agents": {"working": 1, "waiting": 2},
   "responding": {"guest_agent": null, "orca": true, "since": null},
   "failed_wakes": {"count": 0, "last": null, "address": null},
+  "paused_by_alert": null,
   "open_web_until": null,
   "claude_token_since": "2026-10-01T08:00:00Z",
   "ssh": {"enabled": true, "port": 2201,
@@ -309,6 +310,10 @@ the Actor); without it no link is made.
   A wake that reaches Orca, a start, and Restart, Reset, Pause and delete once the VM is
   off set `count` back to 0; a VM that stopped on its own keeps the count of its last
   start until it starts.
+- `paused_by_alert`: while the VM is `paused` by an Alert with a strong Signal (`alert_action`
+  `pause`, `agentbox alert-watch`), `{"time", "domain", "signals": [..]}`: when it was paused,
+  the destination and the Alert's Signals; `null` otherwise. Any start, Restart, Reset or
+  delete ends that Pause, and with it this field.
 - `image_build`: the Image's current Build; `build_pin`: the Build the VM is pinned to;
   `next_build`: what the next Reset uses (the pin, else the current Build).
 - `system_disk`: when the System disk was created (its last Reset) and from which Build;
@@ -657,10 +662,12 @@ Progress arrives live as `build` and `build-log` events; the log endpoint fills 
 Settings keys the Control Room may change: `reset_age_days`, `maintenance_time`, `rebuild_day`,
 `builds_kept`, `default_memory_mib`, `default_data_disk_gib`,
 `default_image`, `default_container_image_cleanup`, `default_container_image_cleanup_days`,
-`open_web_max_minutes`, `temporary_entry_default`, `young_domain_days`,
+`open_web_max_minutes`, `alert_action`, `temporary_entry_default`, `young_domain_days`,
 `feed_interval_hours`, `package_min_age_days`, `orca_version`, `playwright_version`, `activity_retention_days`,
 `session_hours`, `default_language`, `auto_update`. The password, home network and ports are
 not among them.
+`alert_action` (`pause`, the default, or `none`): whether an Alert with a strong Signal pauses
+its VM (`agentbox alert-watch`, [ADR 0022](adr/0022-a-root-watcher-pauses-a-vm-on-a-strong-alert.md)).
 `maintenance_time` (`HH:MM`, default `"02:00"`) is when the daily **Maintenance window** starts:
 it fetches the Feeds, checks the versions (with `auto_update` it builds every Image with an
 update and waits for those Builds), on `rebuild_day` rebuilds every Image, and then runs the
@@ -727,7 +734,7 @@ translation. Which kinds a browser shows is a per-browser preference kept by the
 
 | `kind` | `severity` | Extra fields | When |
 |---|---|---|---|
-| `alert` | critical | `domain`, `signals` | every Alert |
+| `alert` | critical | `domain`, `signals`; `paused: true` when the Alert paused the VM | every Alert, and again when it paused its VM (`alert_action`) |
 | `github-refused` | warning | `request`, `detail` (the token service's reason, English) | a GitHub token request was refused |
 | `build-failed` | warning | `image`, `build`, `detail` | a Build failed; the previous one stays in use |
 | `build-rejected` | critical | `image`, `build`, `detail` | a Build was discarded because a Safeguard was missing or weakened |

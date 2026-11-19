@@ -28,7 +28,7 @@ access its work needs, so that what goes wrong in one VM stays in it. It is buil
    chalk/debug, axios, TanStack, keyv). Against it stand the package minimum age and no install
    scripts ([Packages](#packages)), the VM that bounds what such code reaches, and detection:
    the proxy knows malware, phishing and exfiltration destinations (the Watchlist and its
-   Feeds), keeps those with strong Signals blocked and raises an Alert
+   Feeds), keeps those with strong Signals blocked, raises an Alert and pauses the VM
    ([Detection](#detection)). In the Build of an Image only the package minimum age and the pins
    stand against such code, and it runs as root on the Host there ([Agent Box's own
    code](#agent-boxs-own-code)).
@@ -468,7 +468,8 @@ flowchart LR
   as one to its Orca port counts as a connected Orca client, and the Reset is postponed with
   its own reason, `ssh-connected`; when `ss` cannot tell, it is postponed as for unknown
   devices (`gui-unknown`).
-  They are never paused automatically; when the Host sleeps, the VMs sleep with it.
+  They are paused automatically only by an Alert with a strong Signal ([Detection](#detection));
+  when the Host sleeps, the VMs sleep with it.
 - What libvirt and systemd say about the state of a VM, its network and a unit is read in one
   module, [agentbox/states.py](agentbox/states.py), which names it in these terms: libvirt's
   `idle` and `blocked` count as running and `status` calls both running, as the Control Room
@@ -479,7 +480,7 @@ flowchart LR
 - Each VM has a lifecycle lock (`/var/lib/agentbox/locks/lifecycle-<vm>.lock`). What
   stops a VM and needs it to stay off holds it for its whole length: Reset (also the
   automatic one, which holds it from its checks on, and the one in `create`), Restart,
-  Pause and the stop and undefine of `delete`. `agentbox import` holds it from the attach of
+  Pause (also one by an Alert, see [Detection](#detection)) and the stop and undefine of `delete`. `agentbox import` holds it from the attach of
   its disk to the deletion of its tar file, so no Reset or Pause comes in between; the
   Container image cleanup holds it while its wrapper runs in the VM, and so do the SSH commands while
   they change the VM's SSH access. What starts a VM (`start`, `wake` from a
@@ -780,6 +781,33 @@ a false positive and its subdomains (or the hosts its pattern matches), but noth
 destination with strong Signals stays blocked, whatever would allow it, so marking a domain
 harmless never opens a way out. Signals
 that do not depend on the name (raw IP, metadata address) still raise Alerts.
+
+**An Alert with a strong Signal pauses its VM**
+([ADR 0022](docs/adr/0022-a-root-watcher-pauses-a-vm-on-a-strong-alert.md)), while
+`alert_action` of the Settings is `pause` (the default; `none` turns it off): every attempt to
+reach a destination with a strong Signal is blocked and pauses the VM within seconds, also one
+whose open tunnel such a Signal closes. Weak Signals never pause a VM. A Harmless mark, which
+silences the Alert of a false positive, silences its Pause as well, and the destination stays
+blocked.
+- `agentbox alert-watch` does it, as root in `agentbox-alert-watch.service`, which `agentbox
+  setup` enables. It follows the proxies' `ALERT` lines in the journald namespace of Activity;
+  the proxy, which handles all of a VM's traffic, never calls it and has no way to root.
+- Only the VM's own proxy can pause it: an Alert counts only when journald's own fields name
+  `agentbox-proxy-<vm>.service` and the user `agentbox-proxy` for the identifier
+  `agentbox-proxy-<vm>` (see [Activity](#activity)) and the line names the same VM. Others are
+  counted and left out.
+- It is an ordinary Pause: under the VM's lifecycle lock, which it waits for (a Reset, Restart,
+  start or delete that holds it finishes first), and only when the VM then runs; a VM that is off,
+  paused already or no longer registered stays as it is and nothing is recorded. Each VM waits on
+  its own, so a held lock delays no other VM. `agentbox start`, a connection to its Orca or SSH
+  port, a Restart or a Reset ends it as any other.
+- A Pause made is recorded in Activity as `alert.paused` (kind `alert`, actor `alert-watch`) with
+  the host and the Signals, one that failed with outcome `failed`. Until the Pause ends,
+  `describe`, `watch` and the Control Room show the VM as paused by that Alert, and the Control
+  Room notifies of it.
+- Of a line the watcher takes the VM's name and, as text for the entry and the mark, the host and
+  the Signals; it runs nothing it reads. An Alert older than ten minutes pauses nothing; a
+  watcher started again goes on after the last Alert line it read.
 
 `agentbox setup` runs a self-test of the detection before it changes anything
 (`agentbox-suspicious --self-test`): it starts the proxy of the installed Release on a socket
@@ -1393,6 +1421,8 @@ gets `young_domain_days` as an environment variable, because `agentbox-feeds` ru
 unprivileged user and fetches only as many newly-registered bands. A changed unit is
 reloaded and its timer restarted (a restarted Feeds timer fetches the lists at once). The
 other readers take the file at the moment they need it: `create` (defaults for new VMs),
+`agentbox alert-watch` (`alert_action`, at every Alert with a strong Signal; a file agentbox
+refuses counts as `pause`, the stricter choice),
 `open-web` (longest Open web), the Maintenance window (`rebuild_day`; its Reset check
 `reset_age_days`, `auto_update`), `check-versions` (`auto_update`) and the Control Room
 (`session_hours`, read at every sign-in, 12 hours without the file or the key;
@@ -1441,7 +1471,8 @@ One timeline of what happened on the Host and who caused it, kept in journald
   each Build and the Resets of
   an Update (`reset.update`, with the actor who asked) by the Build's unit,
   expired Temporary allowlist
-  entries (`allowlist.expired`) by `expire-allowlist`, a VM that stopped responding
+  entries (`allowlist.expired`) by `expire-allowlist`, a Pause by an Alert with a strong Signal
+  (`alert.paused`, kind `alert`, actor `alert-watch`) by `alert-watch`, a VM that stopped responding
   (`wake.not-responding`, with what does not answer) once per incident, by whichever finds
   it first: a `wake` that gives up, or `watch` (actor `watch`), also when no Orca client
   connects. An incident lasts from the VM's start or from Orca's last answer (to a wake or
@@ -1487,7 +1518,7 @@ One timeline of what happened on the Host and who caused it, kept in journald
 
   | Identifier | Written by |
   |---|---|
-  | `agentbox-activity` | the CLI (root or a member of `agentbox-journal`): its commands and events, never sign-ins, Alerts or GitHub tokens; `agentbox-web.service` as `agentbox-web`: sign-ins and sign-outs without a VM, nothing else; never the proxy or token service users |
+  | `agentbox-activity` | the CLI (root or a member of `agentbox-journal`): its commands and events, never sign-ins, Alerts or GitHub tokens; `agentbox-alert-watch.service` as root: the Pauses its Alerts made (`alert.paused`), the only entries of kind `alert` here; `agentbox-web.service` as `agentbox-web`: sign-ins and sign-outs without a VM, nothing else; never the proxy or token service users |
   | `agentbox-proxy-<vm>` | `agentbox-proxy-<vm>.service` as `agentbox-proxy` |
   | `agentbox-gh-<vm>` | `agentbox-ghvm-<vm>@<connection>.service` as `agentbox-gh` |
 
@@ -1532,30 +1563,31 @@ certificate name, owner user) and does the Host steps, in this order
 8. **Expiry of Temporary allowlist entries**: `agentbox-allowlist-expire.timer` enabled and
    started.
 9. **Container image cleanup**: `agentbox-container-image-cleanup.timer` enabled and started.
-10. **`agentbox migrate`** and **`agentbox migrate-allowlist`**.
-11. **Certificate and password** of the Control Room: the certificate unless there is one; the
+10. **Pause on Alerts**: `agentbox-alert-watch.service` enabled and started (see Detection).
+11. **`agentbox migrate`** and **`agentbox migrate-allowlist`**.
+12. **Certificate and password** of the Control Room: the certificate unless there is one; the
     password, a new one only with `--new-password` (see below).
-12. **Firewall for the home network**: in Network mode the rules of the Control Room's, the
+13. **Firewall for the home network**: in Network mode the rules of the Control Room's, the
     Orca and the SSH ports, before any of them listens on every address; none in Local-only.
     Every rule it adds and every rule of a Host setup `--force` replaces that the new one does
-    not have is noted under `/var/lib/agentbox/pending` for step 19, before the firewall changes.
-13. **`regenerate`**: the Host setup written, then the VMs' networks, units, disks and
+    not have is noted under `/var/lib/agentbox/pending` for step 20, before the firewall changes.
+14. **`regenerate`**: the Host setup written, then the VMs' networks, units, disks and
     definitions from the VM registry. It loads the VM network rules before it brings up a VM
     network, so steps 5 and 6 and the rules are in place before any VM can start.
-14. **Proxies**, only while there are text lists to migrate (`suspicious-domains`,
+15. **Proxies**, only while there are text lists to migrate (`suspicious-domains`,
     `legitimate-domains`): the running proxies restarted onto the installed code and the units
     `regenerate` loaded. Code from before the records reads only those files and would go on
     without the Host's Watchlist and Legitimate domains once the next step moves them aside.
     A restart that fails stops setup before the lists move.
-15. **`agentbox migrate-lists`**.
-16. **Activity journal**: the namespace's runtime directory owned as journald owns it, its
+16. **`agentbox migrate-lists`**.
+17. **Activity journal**: the namespace's runtime directory owned as journald owns it, its
     running sockets with group and mode of the drop-in, in place; the proxies and the Control
     Room restart when a socket's group changed, and in the next run when that restart failed
     (see Activity).
-17. **Feeds**: the first fetch started at once, while none has run yet.
-18. **Control Room**: `agentbox-web.service` enabled and started; restarted after a new Host
+18. **Feeds**: the first fetch started at once, while none has run yet.
+19. **Control Room**: `agentbox-web.service` enabled and started; restarted after a new Host
     setup, also by the run that goes on after one that stopped before this step.
-19. **Firewall rules taken back**: every rule step 12 noted that the recorded Host setup does
+20. **Firewall rules taken back**: every rule step 13 noted that the recorded Host setup does
     not need is removed, only now that `regenerate` has moved the Orca and SSH port sockets and
     the Control Room has restarted, so on a switch to Local-only no port listens on every
     address without its rules. A run that stops before leaves them in place, and running setup
@@ -1607,7 +1639,7 @@ need not be there or belong to another Release.
 | Control Room UI | `/usr/share/agentbox/web/ui/` | `WEB_UI` |
 | Containerfile and guest files ([ADR 0010](docs/adr/0010-images-are-built-from-the-installed-release.md)): `vm/…` and `github-app/…` as in the repository | `/usr/share/agentbox/vm/` | `VM_SOURCE` |
 | Lists a new Host starts with (Allowlist, Watchlist, Legitimate domains) | `/usr/share/agentbox/lists/` | `SEED_LISTS` |
-| Units that come with the package (Control Room, VM network rules, expiry timer, Container image cleanup timer, journald socket drop-in) | `/usr/lib/systemd/system/` | |
+| Units that come with the package (Control Room, VM network rules, Alert watch, expiry timer, Container image cleanup timer, journald socket drop-in) | `/usr/lib/systemd/system/` | |
 | Service users and groups | `/usr/lib/sysusers.d/agentbox.conf` | |
 | The Control Room's sudoers rule | `/etc/sudoers.d/agentbox-web` | `CLI` |
 | Units generated by `agentbox regenerate` | `/etc/systemd/system/` | `SYSTEMD` |
@@ -1617,7 +1649,7 @@ The Host's records and state stay where they are: `/etc/agentbox` (`CONF`) and
 `/var/lib/agentbox/transfers` (`TRANSFERS`) while it is attached to the VM; the Control Room's
 sign-in links lie in `/run/agentbox-sign-in-links` (`SIGN_IN_LINKS`), which the package's
 tmpfiles entry makes at every boot. An update of the RPM replaces only the package's files: it
-restarts the Control Room, the expiry timer, the Container image cleanup timer and, when their code changed, the VMs' proxies,
+restarts the Control Room, the Alert watch, the expiry timer, the Container image cleanup timer and, when their code changed, the VMs' proxies,
 and never a VM; on a Host from before the Maintenance window it disables and deletes the timers
 of the version check and the weekly rebuild, and leaves the old Reset timer, which runs the
 whole window until `agentbox regenerate`; removing it also disables and deletes the units `agentbox regenerate` wrote,

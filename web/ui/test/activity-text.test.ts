@@ -280,6 +280,18 @@ describe('Activity text (unit)', () => {
     expect(activityText(refused, tr)).toBe(`${say('setSecret', { name: 'PATH' })}: errors.secret_name_reserved {"field":"","name":"PATH"}`)
   })
 
+  it('words a Pause by an Alert with its destination and Signals, and one that failed (#11)', () => {
+    const paused = coded(0, 'alert.paused', { domain: 'upload.exfil.example', signals: 'exfil, young' },
+      'Paused for an Alert: upload.exfil.example [exfil,young]', { kind: 'alert', actor: 'alert-watch' })
+    expect(activityText(paused, tr)).toBe(`activity.actions.alertPaused ${JSON.stringify({
+      domain: 'upload.exfil.example', signals: 'signals.names.exfil, signals.names.young' })}`)
+    const failed = { ...paused, outcome: 'failed', error: 'action_failed', description: 'Pause for an Alert failed: x: virsh' }
+    // the generic code: agentbox's own message says more
+    expect(activityText(failed, tr)).toBe('Pause for an Alert failed: x: virsh')
+    expect(activityText({ ...failed, error: 'unexpected_error' }, tr)).toContain('activity.actions.alertPauseFailed')
+    expect(activityText({ ...paused, params: {} }, tr)).toBe(paused.description)
+  })
+
   it('words one removed Container image in the singular', () => {
     const one = coded(0, 'container-image-cleanup.removed', { removed: '1', freed_bytes: '1048576', days: '7' }, 'stored')
     expect(activityText(one, tr)).toContain('activity.actions.cleanupRemovedOne')

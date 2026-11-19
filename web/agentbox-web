@@ -713,6 +713,12 @@ class Watch:
             notify("alert", "critical", f"{vm} tried to reach {data.get('domain')}"
                    + (f" ({signals})" if signals else ""), vm=vm, domain=data.get("domain"),
                    signals=data.get("signals") or [])
+        elif name == "activity" and data.get("code") == "alert.paused" and data.get("outcome") == "ok":
+            # a Pause by an Alert with a strong Signal (agentbox alert-watch), after its Alert
+            params = data.get("params") if isinstance(data.get("params"), dict) else {}
+            notify("alert", "critical", f"{vm} paused: it tried to reach {params.get('domain')}"
+                   + (f" ({params['signals']})" if params.get("signals") else ""), vm=vm, domain=params.get("domain"),
+                   signals=[s for s in str(params.get("signals") or "").split(", ") if s], paused=True)
         elif name == "github-token" and data.get("action") == "refused":
             notify("github-refused", "warning", f"{vm}: GitHub token refused for {data.get('request') or '?'}",
                    vm=vm, request=data.get("request"), detail=data.get("reason"))

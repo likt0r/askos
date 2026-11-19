@@ -361,6 +361,7 @@ def setup(args):
     steps.run("libvirt-guests", hoststeps.libvirt_guests)
     steps.run("Expiry of Temporary allowlist entries", hoststeps.expiry_timer)
     steps.run("Container image cleanup", hoststeps.container_image_cleanup_timer)
+    steps.run("Pause on Alerts", hoststeps.alert_watch)
     steps.run("migrate", hoststeps.migrate)
     steps.run("migrate-allowlist", hoststeps.migrate_allowlist)
 
