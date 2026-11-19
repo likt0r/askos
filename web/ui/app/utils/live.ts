@@ -43,7 +43,19 @@ export interface Vm {
   open_web_until?: string | null
   /** open connections per remote address and kind: to the Orca port, or SSH sessions */
   devices?: { address: string, kind?: 'orca' | 'ssh', connections: number }[] | null
+  /** SSH access (`agentbox ssh`): on or off, the SSH port, the host key's fingerprint, the keys, a change the VM has not taken yet */
+  ssh?: SshAccess | null
   [key: string]: unknown
+}
+
+export interface SshKey { name: string, type: string, fingerprint: string, added: string }
+
+export interface SshAccess {
+  enabled: boolean
+  port: number
+  host_key_fingerprint: string | null
+  keys: SshKey[]
+  pending: boolean
 }
 
 export interface VmProblem { vm: string, problem: string }

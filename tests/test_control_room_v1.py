@@ -398,6 +398,18 @@ ENDPOINTS = [
     ("PUT", "/api/v1/vms/work/env", {"env": {"DATABASE_URL": "postgres://db/x", "FLAG": "--json", "E": ""}},
      ["set-env", "work", "--replace", "DATABASE_URL=postgres://db/x", "FLAG=--json", "E=", "--json"], 200),
     ("PUT", "/api/v1/vms/work/env", {"env": {}}, ["set-env", "work", "--replace", "--json"], 200),
+    # SSH access: the key itself only on stdin (test_control_room_vms.SshAccessTest), its name a value
+    ("PUT", "/api/v1/vms/work/ssh", {"enabled": True}, ["set-ssh", "work", "on", "--json"], 200),
+    ("PUT", "/api/v1/vms/work/ssh", {"enabled": False}, ["set-ssh", "work", "off", "--json"], 200),
+    ("POST", "/api/v1/vms/work/ssh-keys", {"key": "ssh-ed25519 AAAA laptop", "name": " my laptop "},
+     ["add-ssh-key", "work", "--name=my laptop", "--json"], 201),
+    ("POST", "/api/v1/vms/work/ssh-keys", {"key": "ssh-ed25519 AAAA laptop", "name": ""},
+     ["add-ssh-key", "work", "--json"], 201),
+    ("POST", "/api/v1/vms/work/ssh-keys", {"key": "ssh-ed25519 AAAA", "name": "--mine"},
+     ["add-ssh-key", "work", "--name=--mine", "--json"], 201),
+    ("POST", "/api/v1/vms/work/ssh-keys/remove", {"fingerprint": "SHA256:ZkAslGjFiUHdGf/WUL8rQvkib4PTvQatUV0OUQSncCA"},
+     ["remove-ssh-key", "work", "SHA256:ZkAslGjFiUHdGf/WUL8rQvkib4PTvQatUV0OUQSncCA", "--json"], 200),
+    ("GET", "/api/v1/vms/work/ssh-config", None, ["ssh-config", "work", "--json"], 200),
     ("PUT", "/api/v1/vms/work/image", {"image": "rust", "build": None}, ["set-image", "work", "rust", "--json"], 200),
     ("PUT", "/api/v1/vms/work/image", {"image": "base", "build": "20261101-120000"},
      ["set-image", "work", "base", "--build=20261101-120000", "--json"], 200),
@@ -602,6 +614,23 @@ class EndpointTest(V1Test):
             # a lone UTF-16 surrogate (JSON "\\ud800") is no UTF-8 an argument could carry
             ("PUT", "/api/v1/vms/work/env", {"env": {"A": "a\ud800b"}}, "invalid_env_value"),
             ("PUT", "/api/v1/vms/work/env", {"env": {"A": "\udfff"}}, "invalid_env_value"),
+            ("PUT", "/api/v1/vms/work/ssh", {}, "invalid_field"),
+            ("PUT", "/api/v1/vms/work/ssh", {"enabled": "on"}, "invalid_field"),
+            ("PUT", "/api/v1/vms/work/ssh", {"enabled": 1}, "invalid_field"),
+            ("POST", "/api/v1/vms/work/ssh-keys", {}, "invalid_field"),
+            ("POST", "/api/v1/vms/work/ssh-keys", {"key": " \n"}, "invalid_field"),
+            ("POST", "/api/v1/vms/work/ssh-keys", {"key": ["ssh-ed25519 AAAA"]}, "invalid_field"),
+            ("POST", "/api/v1/vms/work/ssh-keys", {"key": "ssh-ed25519 AAAA", "name": 5}, "invalid_field"),
+            ("POST", "/api/v1/vms/work/ssh-keys", {"key": "ssh-ed25519 AAAA", "name": "a\u0000b"}, "invalid_field"),
+            ("POST", "/api/v1/vms/work/ssh-keys", {"key": "ssh-ed25519 AAAA", "name": "\ud800"}, "invalid_field"),
+            # what no stdin can carry: a NUL is no key either, a lone surrogate has no UTF-8
+            ("POST", "/api/v1/vms/work/ssh-keys", {"key": "ssh-ed25519 AAAA\u0000"}, "ssh_key_invalid"),
+            ("POST", "/api/v1/vms/work/ssh-keys", {"key": "ssh-ed25519 \ud800"}, "ssh_key_invalid"),
+            ("POST", "/api/v1/vms/work/ssh-keys/remove", {}, "invalid_field"),
+            ("POST", "/api/v1/vms/work/ssh-keys/remove", {"fingerprint": "--json"}, "invalid_field"),
+            ("POST", "/api/v1/vms/work/ssh-keys/remove", {"fingerprint": "SHA256:short"}, "invalid_field"),
+            ("POST", "/api/v1/vms/work/ssh-keys/remove",
+             {"fingerprint": "MD5:ZkAslGjFiUHdGf/WUL8rQvkib4PTvQatUV0OUQSncCA"}, "invalid_field"),
             ("PUT", "/api/v1/vms/work/image", {"image": "../x"}, "invalid_field"),
             ("PUT", "/api/v1/vms/work/image", {"image": "base", "build": "latest"}, "invalid_field"),
             ("PUT", "/api/v1/vms/work/claude-token", {"token": " "}, "invalid_field"),
@@ -925,6 +954,30 @@ class ErrorTest(V1Test):
         # a name only in the form of one
         answer = self.fails(failure("env_name_reserved", "x", name="<b>x</b>"), **env)
         self.assertNotIn("params", answer[1]["error"])
+
+    def test_ssh_access_refusals_pass_through_with_the_command_that_finishes_them(self):
+        add = dict(path="/api/v1/vms/work/ssh-keys", body={"key": "ssh-rsa AAAA old"})
+        for error, status in (("ssh_key_invalid", 400), ("ssh_key_type_refused", 400), ("ssh_key_too_weak", 400),
+                              ("ssh_key_options_refused", 400), ("ssh_key_duplicate", 409),
+                              ("ssh_keys_too_many", 409), ("ssh_keys_too_large", 409), ("ssh_missing", 409),
+                              ("ssh_pending", 503), ("control_room_refused", 500)):
+            with self.subTest(error=error):
+                self.assertError(self.fails(failure(error, "x", vm="work"), **add), status, error)
+        remove = dict(path="/api/v1/vms/work/ssh-keys/remove",
+                      body={"fingerprint": "SHA256:ZkAslGjFiUHdGf/WUL8rQvkib4PTvQatUV0OUQSncCA"})
+        self.assertError(self.fails(failure("ssh_key_not_found", "x", vm="work"), **remove), 404, "ssh_key_not_found")
+        # the UI names the command that finishes a change saved but not applied, only in its own form
+        for finish in ("agentbox regenerate", "agentbox set-ssh work off",
+                       "agentbox remove-ssh-key work SHA256:ZkAslGjFiUHdGf/WUL8rQvkib4PTvQatUV0OUQSncCA"):
+            with self.subTest(finish=finish):
+                answer = self.fails(failure("ssh_not_applied", "x", vm="work", finish=finish), **remove)
+                self.assertError(answer, 500, "ssh_not_applied")
+                self.assertEqual(answer[1]["error"]["params"], {"finish": finish})
+        for finish in ("rm -rf /", "agentbox regenerate; reboot", "agentbox set-ssh work on"):
+            with self.subTest(finish=finish):
+                answer = self.fails(failure("ssh_not_applied", "x", vm="work", finish=finish), method="PUT",
+                                    path="/api/v1/vms/work/ssh", body={"enabled": False})
+                self.assertNotIn("params", answer[1]["error"])
 
     def test_long_details_are_cut(self):
         answer = self.fails(failure("action_failed", "x" * 2000))

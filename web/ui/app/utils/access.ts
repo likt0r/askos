@@ -349,3 +349,33 @@ export function looksLikeDomain(d: string): boolean {
 export function looksLikeGithubOwner(name: string): boolean {
   return /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(name)
 }
+
+/** One VM's connection help, `GET /vms/<vm>/ssh-config` (`agentbox ssh-config <vm> --json`):
+ * the Host setup's mode, and the VM's block while it has SSH access (`hosts` is empty without). */
+export interface SshConfig {
+  mode: string
+  hosts: {
+    vm: string
+    /** `<vm>.agentbox`: the block's Host and HostKeyAlias */
+    host: string
+    options: Record<string, string | number>
+    /** the `~/.ssh/config` block, as `agentbox ssh-config` prints it */
+    config: string
+    /** the host key's `known_hosts` line under the alias; null before the Host made one */
+    known_hosts: string | null
+    /** the command that connects once the block and the line are in place */
+    command: string
+  }[]
+}
+
+/** Codes of a change of SSH access that agentbox saved but that has not reached the VM (yet). */
+export const SSH_SAVED_CODES = ['ssh_missing', 'ssh_pending', 'ssh_not_applied']
+/** The longest key line agentbox takes (agentbox/sshkeys.py MAX_INPUT): a longer file is no key. */
+export const SSH_KEY_MAX_BYTES = 16384
+/** At most so many SSH keys per VM (agentbox/sshkeys.py MAX_KEYS). */
+export const SSH_MAX_KEYS = 16
+
+/** A key's name as agentbox takes it: printable, at most 100 characters (agentbox/sshkeys.py). */
+export function looksLikeSshKeyName(name: string): boolean {
+  return name.length <= 100 && [...name].every(c => c >= ' ' && !(c >= '\u007f' && c <= '\u009f'))
+}

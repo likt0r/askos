@@ -214,7 +214,9 @@ def control_room_commands():
 
 def check_control_room(cmd, args):
     """Called through sudo by the Control Room (SUDO_USER, which sudo sets itself, not its
-    caller): only its commands, never --force. Before anything runs, nothing recorded."""
+    caller): only its commands, never --force, and of a command that limits them only the
+    options and positional arguments it declares for the Control Room (add-ssh-key: the key
+    on stdin, never a file or the Host user's ~/.ssh). Before anything runs, nothing recorded."""
     if os.environ.get("SUDO_USER") != CONTROL_ROOM_USER:
         return
     if cmd not in control_room_commands():
@@ -223,6 +225,22 @@ def check_control_room(cmd, args):
     if any(a == "--force" or a.startswith("--force=") for a in args):
         raise Fail("--force is not for the Control Room: only the CLI at the Host passes it",
                    error="control_room_refused", command=cmd, option="--force")
+    declaration = DECLARATIONS[cmd]
+    allowed, most = declaration.control_room_options, declaration.control_room_positional
+    if allowed is None and most is None:
+        return
+    # the arguments as the command reads them; arguments it refuses fail here as they would there
+    positional, values = options.parse(args[declaration.option_offset:], {**declaration.options, "json": False},
+                                       exit=declaration.option_exit, positional=declaration.positional,
+                                       allow_unknown=declaration.allow_unknown)
+    for name in values:
+        if allowed is not None and name != "json" and name not in allowed:
+            raise Fail(f"{cmd} --{name} is not for the Control Room: only the CLI at the Host passes it",
+                       error="control_room_refused", command=cmd, option=f"--{name}")
+    if most is not None and len(positional) > most:
+        raise Fail(f"{cmd} takes at most {most} argument{'s' if most != 1 else ''} from the Control Room: what "
+                   "else it would read on the Host is only for the CLI at the Host", error="control_room_refused",
+                   command=cmd)
 
 
 def wants_json(args, known=None):

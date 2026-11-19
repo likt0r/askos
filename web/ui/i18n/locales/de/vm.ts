@@ -15,6 +15,7 @@ export default {
     devices: 'Verbundene Geräte',
     noDevices: 'keine',
     connections: 'keine Verbindung | eine Verbindung | {n} Verbindungen',
+    sshSessions: 'SSH-Sitzungen',
     systemDisk: 'System disk',
     noDisk: 'keine System disk',
     diskSince: 'seit {date} (letzter Reset)',

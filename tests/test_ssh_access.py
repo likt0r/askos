@@ -900,7 +900,8 @@ class SshConfigTest(SshTest):
                                             "ForwardX11": "no", "StrictHostKeyChecking": "yes",
                                             "UserKnownHostsFile": "~/.ssh/known_hosts.agentbox"},
                                 "config": self.block("work", "127.0.0.1", 2201),
-                                "known_hosts": f"work.agentbox {self.public('work')}"})
+                                "known_hosts": f"work.agentbox {self.public('work')}",
+                                "command": "ssh work.agentbox"})
         # agentbox ssh gives the same line, under the alias as well
         self.assertEqual(self.json("ssh", "work")["known_hosts"], work["known_hosts"])
         self.assertIn(f"known_hosts: {work['known_hosts']}\n", self.ok("ssh", "work"))
@@ -2309,6 +2310,72 @@ class MineTest(SshTest):
         result = self.mine_json(SUDO_UID=str(os.getuid()), SUDO_GID=str(os.getgid()), SUDO_USER="someone")
         self.assertEqual([k["fingerprint"] for k in result["added"]], [LAPTOP_FP])
         self.assertEqual(self.record()["ssh_keys"][0]["added_by"], "someone")
+
+
+class ControlRoomCallerTest(SshTest):
+    """#135: the Control Room's backend runs set-ssh, add-ssh-key, remove-ssh-key and ssh-config
+    through sudo. add-ssh-key gets the key's text on stdin and nothing else: agentbox itself
+    refuses a FILE, --mine, --yes and --from from the Control Room before anything runs, so even
+    a taken-over backend reads no file on the Host, the Host user's ~/.ssh included."""
+
+    ACTOR = "--actor=Firefox/Linux (192.0.2.23)"
+
+    def setUp(self):
+        super().setUp()
+        SshConfigTest.in_libvirt(self, True)      # as root through sudo: ssh-config lets it in
+        self.home = os.path.join(self.dir, "home")
+        os.makedirs(os.path.join(self.home, ".ssh"))
+
+    def through_sudo(self, *args, stdin="", user="agentbox-web"):
+        """agentbox <command> --actor=… <args> --json as the backend runs it: through sudo by
+        agentbox-web (SUDO_USER and SUDO_UID set by sudo), HOME a home with a key in ~/.ssh."""
+        env = {"PATH": os.path.join(self.dir, "bin") + ":" + os.environ["PATH"], "FAKE_VIRSH_DIR": self.dir,
+               "FAKE_DIR": self.dir, "AGENTBOX_ROOT": self.root, "LANG": "C.UTF-8", "TZ": "UTC", "HOME": self.home,
+               "SUDO_USER": user, "SUDO_UID": str(os.getuid()), "SUDO_GID": str(os.getgid())}
+        r = subprocess.run([AGENTBOX, args[0], self.ACTOR, *args[1:], "--json"], input=stdin, capture_output=True,
+                           text=True, env=env, timeout=60)
+        return r.returncode, r.stdout, r.stderr
+
+    def test_it_runs_the_ssh_commands_with_the_key_on_stdin(self):
+        code, out, err = self.through_sudo("set-ssh", "work", "on")
+        self.assertEqual(code, 0, err)
+        code, out, err = self.through_sudo("add-ssh-key", "work", "--name=my laptop", stdin=LAPTOP + "\n")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["fingerprint"], LAPTOP_FP)
+        self.assertEqual([(k["key"], k["name"], k["added_by"]) for k in self.record()["ssh_keys"]],
+                         [(stored(LAPTOP), "my laptop", "Firefox/Linux (192.0.2.23)")])
+        code, out, err = self.through_sudo("ssh-config", "work")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["hosts"][0]["command"], "ssh work.agentbox")
+        code, out, err = self.through_sudo("remove-ssh-key", "work", LAPTOP_FP)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.record()["ssh_keys"], [])
+        self.assertEqual([(a, o) for a, _, o, _ in self.activity()],
+                         [("ssh.enabled", "ok"), ("ssh.key-added", "ok"), ("ssh.key-removed", "ok")])
+
+    def test_add_ssh_key_reads_no_file_on_the_host_for_it(self):
+        pub = os.path.join(self.home, ".ssh", "id_ed25519.pub")
+        with open(pub, "w") as f:
+            f.write(LAPTOP + "\n")
+        self.add("priv", PHONE)
+        self.journald.entries()
+        self.journald.datagrams.clear()
+        before = self.files()
+        for args, option in ((["--mine", "--yes"], "--mine"), (["--mine"], "--mine"), (["--yes"], "--yes"),
+                             (["--from=priv"], "--from"), (["--from", "priv"], "--from"),
+                             (["--name=x", "--mine", "--yes"], "--mine"), ([pub], None), (["--name=x", pub], None)):
+            with self.subTest(args=args):
+                code, out, err = self.through_sudo("add-ssh-key", "work", *args, stdin=LAPTOP + "\n")
+                self.assertEqual((code, out), (1, ""), err)
+                said = json.loads(err.strip().splitlines()[-1])
+                self.assertEqual(said["error"], "control_room_refused")
+                self.assertEqual(said["params"], {"command": "add-ssh-key", **({"option": option} if option else {})})
+        self.assertEqual(self.files(), before)
+        self.assertEqual(self.activity(), [], "recorded in Activity")
+        # the same arguments from anyone else through sudo, here --mine with --yes, still work
+        code, out, err = self.through_sudo("add-ssh-key", "work", "--mine", "--yes", user="alice")
+        self.assertEqual(code, 0, err)
+        self.assertEqual([k["fingerprint"] for k in json.loads(out)["added"]], [LAPTOP_FP])
 
 
 class OwnRightsTest(unittest.TestCase):

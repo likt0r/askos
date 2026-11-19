@@ -115,7 +115,8 @@ flowchart LR
   `regenerate`, and by `set-ssh` before it opens an SSH port, so an update that brings them
   needs no `setup`, and no SSH port listens on every address before its rules are loaded.
 - **SSH access** to a VM ([ADR 0020](docs/adr/0020-ssh-into-a-vm-through-its-own-host-port.md)) is
-  off for a new VM and changed only on the Host: `agentbox set-ssh <vm> on|off` turns it on or
+  off for a new VM and changed only by the owner, on the Host or in the Control Room: `agentbox
+  set-ssh <vm> on|off` turns it on or
   off, `agentbox add-ssh-key <vm> [--name N] [FILE]` adds an SSH key (one line of a `.pub` file,
   from stdin without a file; its comment is its name unless `--name` gives one), `agentbox
   remove-ssh-key <vm> <fingerprint>` removes one by its SHA256 fingerprint, and `agentbox
@@ -149,7 +150,10 @@ flowchart LR
   after a call that failed halfway: `set-ssh <vm> off` always, and `remove-ssh-key` of a key
   no longer in the record while the VM has a pending change, which it then hands over. Each
   change is recorded in Activity (`ssh.enabled`, `ssh.disabled`, `ssh.key-added` and
-  `ssh.key-removed` with the key's fingerprint and name), each connection is not.
+  `ssh.key-removed` with the key's fingerprint and name), each connection is not. The Control
+  Room's SSH section on the VM page runs the same commands; it passes a key only as its text on
+  stdin, and agentbox refuses a FILE, `--mine` and `--yes` from the Control Room before anything
+  runs, so it reads no file on the Host for it, the Host user's `~/.ssh` included.
 - **Names for SSH**: `agentbox ssh-config [<vm>...]` prints a `~/.ssh/config` block per VM with
   SSH access (of those named, else of all): `Host <vm>.agentbox`, `HostName` `127.0.0.1` in
   Local-only and the Pairing address in Network mode, `Port`, `User agent`, `HostKeyAlias
@@ -161,7 +165,8 @@ flowchart LR
   Agent Box never writes into a home: the owner redirects the output into files and includes
   the block. Root and the members of `libvirt` may run it, like `pair` and `sign-in-link`; it
   reads only what everyone may read, the records, the Host setup and the public halves of the
-  host keys.
+  host keys. The Control Room's connection help is its output for the VM (`--json`: the block,
+  the `known_hosts` line and the command `ssh <vm>.agentbox`), not a second version of it.
 - The Host applies security updates daily (dnf5-automatic, set up by the owner, not by Agent
   Box) and never reboots on its own.
   Agent Box itself is updated only by the owner, with `dnf upgrade` of a Release
@@ -1083,9 +1088,11 @@ run `agentbox` only with one of these commands as the first argument (a sudoers 
 expression, sudo 1.9.10 or later). Since sudo matches the arguments joined with spaces, a first
 argument such as `start setup` still passes it; agentbox knows no such command. Called through
 `sudo` by `agentbox-web`, agentbox itself also runs only these commands, and refuses every other
-command and `--force` before anything runs (`control_room_refused`), which no sudoers rule could
-tell from a note that contains it. So even a taken-over backend cannot run `setup`, `import` or
-`regenerate`, or lift strong Signals, and agentbox's own check holds should sudo's matching ever
+command, `--force` and the options and arguments a command keeps for the CLI at the Host (of
+`add-ssh-key` everything but the VM and `--name`: the key comes on stdin) before anything runs
+(`control_room_refused`), which no sudoers rule could tell from a note that contains them. So
+even a taken-over backend cannot run `setup`, `import` or `regenerate`, read a file on the Host
+through `add-ssh-key`, or lift strong Signals, and agentbox's own check holds should sudo's matching ever
 be got around. This holds until the Control Room uploads Recipes: a Recipe can then reach root on
 the Host through its Build ([The Host](#the-host),
 [ADR 0019](docs/adr/0019-the-host-and-what-its-owner-writes-are-trusted.md)). HTTPS with a

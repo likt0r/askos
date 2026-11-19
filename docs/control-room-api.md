@@ -42,8 +42,9 @@ Every error has the same shape and an HTTP status that fits:
 - `field` (optional): the request field that is wrong.
 - `params` (optional): the parameters the UI words a refusal with, for the codes that have
   them: `invalid_pattern` (`reason`), `pattern_too_broad` (`host`) and the VM variable
-  `env_name_reserved`, `invalid_env_value` and `env_too_large` name (`name`), each only in
-  the form agentbox gives it.
+  `env_name_reserved`, `invalid_env_value` and `env_too_large` name (`name`), and the command
+  that finishes a change of SSH access (`finish` of `ssh_not_applied`), each only in the form
+  agentbox gives it.
 - `detail` (optional): agentbox's own message (English, untranslated, for diagnosis);
   never shown as the main text.
 
@@ -96,7 +97,7 @@ else `500 action_failed`, with the message in `detail`:
 | 400 | `env_name_reserved` | a Safeguard or Agent Box itself sets or reads this variable, so it cannot be a VM variable (parameter `name`, `field`: `env`): the patterns of the safeguard check apart from proxy names, the names Agent Box sets for the VM, every variable of the Image's `DefaultEnvironment` and the variables bash sets itself. Proxy variables (`HTTPS_PROXY`, ...) are accepted |
 | 400 | `invalid_env_value` | the value of a VM variable has a control character other than tab (a line break, NUL, ...) or is not UTF-8, such as a lone UTF-16 surrogate (`"\ud800"`), which the backend refuses itself, before agentbox (parameter `name`, `field`: `env`) |
 | 400 | `env_too_large` | more than 64 VM variables, or a value over 4 KiB in UTF-8 (parameter `name` for a value, `field`: `env`) |
-| 400 | `ssh_key_invalid` | not one valid SSH public key: no key type first, its base64 does not decode, or decodes to a key of another type or form (an RSA number not in its shortest form, an RSA key over 16384 bits, an ECDSA point not on its curve) |
+| 400 | `ssh_key_invalid` | not one valid SSH public key: no key type first, its base64 does not decode, or decodes to a key of another type or form (an RSA number not in its shortest form, an RSA key over 16384 bits, an ECDSA point not on its curve); a key with a NUL or without a UTF-8 form (a lone UTF-16 surrogate) the backend refuses itself, before agentbox (`field`: `key`) |
 | 400 | `ssh_key_type_refused` | an SSH key of a type other than Ed25519, ECDSA (P-256, P-384, P-521), their security-key forms or RSA |
 | 400 | `ssh_key_too_weak` | an RSA key of fewer than 3072 bits |
 | 400 | `ssh_key_options_refused` | an SSH key line with options before the key (`command=`, `from=`, `restrict`, ...) |
@@ -106,7 +107,7 @@ else `500 action_failed`, with the message in `detail`:
 | 404 | `ssh_key_not_found` | the VM has no SSH key with this SHA256 fingerprint |
 | 409 | `ssh_missing` | the change of SSH access is saved, but the VM runs on a Build without the wrapper that applies it in a running VM (`agentbox-ssh`): the VM keeps the SSH keys it started with until a Reset onto a newer Build |
 | 503 | `ssh_pending` | the change of SSH access is saved, but the running VM has not taken it (its guest agent does not answer, it is still starting, or `agentbox-ssh` failed): each connection to its SSH port hands it over first and is refused while that fails |
-| 500 | `ssh_not_applied` | the change of SSH access is saved, but a step on the Host that applies it failed (the host key, the file the VM reads, its definition, its SSH port or ending its SSH sessions); the parameter `finish` is the command that finishes it: the same call again, or `agentbox regenerate` |
+| 500 | `ssh_not_applied` | the change of SSH access is saved, but a step on the Host that applies it failed (the host key, the file the VM reads, its definition, its SSH port or ending its SSH sessions); the parameter `finish` is the command that finishes it: the same call again (`agentbox set-ssh <vm> off`, `agentbox remove-ssh-key <vm> <fingerprint>`), or `agentbox regenerate` |
 | 503 | `guest_agent_unavailable` | the VM's guest agent does not answer |
 | 504 | `vm_query_timeout` | a query inside the VM took too long |
 | 502 | `vm_journal_failed` | journalctl failed inside the VM |
@@ -166,7 +167,7 @@ else `500 action_failed`, with the message in `detail`:
 | 502 | `container_image_cleanup_failed` | the Container image cleanup in the VM failed or answered something other than its two numbers (in Activity only) |
 | 400 | `invalid_argument` | any other value or option agentbox refused |
 | 500 | `sudo_failed` | sudo refused to run agentbox for the backend (its sudo rule is missing or does not allow the call), or agentbox did not run as root |
-| 500 | `control_room_refused` | agentbox refused a command or `--force` that only the CLI on the Host may run, not the Control Room (the command declarations in `agentbox/`) |
+| 500 | `control_room_refused` | agentbox refused a command, `--force`, or an option or argument that only the CLI on the Host may pass, not the Control Room (the command declarations in `agentbox/`; `add-ssh-key` takes no file, `--mine` or `--yes` from it) |
 | 500 | `action_failed` | anything else agentbox reported (e.g. libvirt failing, a broken file on the Host); also the code of every failure only the Host can cause (setup, regenerate, timers) |
 
 ### agentbox's failures
@@ -348,6 +349,10 @@ the Actor); without it no link is made.
 | `PUT /vms/<vm>/container-image-cleanup` | `{"enabled": true, "days": 14}` | `set-container-image-cleanup <vm> [on\|off] [--days N] --json`: `{"vm", "container_image_cleanup", "container_image_cleanup_days", "previous": {"container_image_cleanup", "container_image_cleanup_days"}, "changed", "message"}`; both keys optional, at least one (`enabled` a boolean, `days` a whole number, else `400 invalid_field` with `field` `enabled` or `days`); `400 invalid_cleanup_days` (`field` `days`), `404 vm_not_found`; works in every state of the VM and takes effect at the next hourly run |
 | `PUT /vms/<vm>/memory` | `{"memory_mib": 16384}` | `set-memory`: `{"vm", "memory_mib", "previous_mib", "changed", "state", "applies": "next_start"\|"next_restart"\|null, "message"}`; `next_start`: the VM is off and starts with it, `next_restart`: it keeps running with its memory until its next Restart or Reset; `null`: nothing changed. A paused VM is refused (`409 vm_paused`) |
 | `PUT /vms/<vm>/env` | `{"env": {"NAME": "value", ...}}` | `set-env --replace NAME=value ...`: the whole list in one step, `{}` removes every variable. `{"vm", "env", "changed", "state", "applies": "next_start"\|"next_restart"\|null, "message"}`; `next_start`: the VM is off and starts with them, `next_restart`: it runs or is paused and keeps the variables it started with until its next Restart or Reset; `null`: nothing changed. A domain defined before VM variables is defined again (a paused VM's once it has no Pause: the message says so); if that fails, the variables stay saved (`500 env_not_applied`). Names a Safeguard or Agent Box reads are refused (`400 env_name_reserved`, nothing changes). The body limit of 8 KiB applies (the UI says so before it sends a longer list); `agentbox set-env` on the Host takes the whole 64 variables of up to 4 KiB |
+| `PUT /vms/<vm>/ssh` | `{"enabled": true}` | `set-ssh <vm> on\|off`: `{"vm", "enabled", "port", "keys", "changed", "state", "applies": "now"\|"on_resume"\|"next_start"\|null, "message"}` (`keys`: how many the VM has); `now`: the running VM has it, `on_resume`: a paused VM gets it when it resumes, `next_start`: the VM is off and gets it at its next start; `null`: nothing changed. Off closes the SSH port and ends every SSH session of the VM, the keys stay. `enabled` not a boolean: `400 invalid_field` |
+| `POST /vms/<vm>/ssh-keys` | `{"key": "ssh-ed25519 AAAA… laptop", "name"?: "laptop"}` | `add-ssh-key <vm> [--name=<name>]` with the key, one line of a `.pub` file, on stdin: `201 {"vm", "fingerprint", "name", "type", "enabled", "keys", "state", "applies", "message"}` (`applies` as above). `name` trimmed; empty or missing: the key's comment is its name. The key's checks and limits are agentbox's (`ssh_key_*`, `ssh_keys_*`). The Control Room passes a key only this way: agentbox refuses a file, `--mine` and `--yes` from it (`control_room_refused`). The body limit of 8 KiB holds any key agentbox takes (RSA of 16384 bits is ~2.8 KiB) |
+| `POST /vms/<vm>/ssh-keys/remove` | `{"fingerprint": "SHA256:…"}` | `remove-ssh-key`: `{"vm", "fingerprint", "name", "type", "enabled", "keys", "state", "applies", "message"}`; every SSH session of the VM ends. A `fingerprint` not of the form `SHA256:` and 43 base64 characters: `400 invalid_field`; one the VM does not have: `404 ssh_key_not_found` |
+| `GET /vms/<vm>/ssh-config` | | `ssh-config <vm> --json`: `{"mode": "local"\|"network", "hosts": [{"vm", "host", "options", "config", "known_hosts", "command"}]}`, the connection help: `config` the `~/.ssh/config` block (`host` is `<vm>.agentbox`, `options` its settings by name, among them `UserKnownHostsFile`), `known_hosts` the line of its host key under that alias (`null` before the Host made one), `command` `ssh <vm>.agentbox`; `hosts` is `[]` while the VM has no SSH access. `mode` is the Host setup's: in Local-only `HostName` is `127.0.0.1`, so the block works on the Host itself |
 | `PUT /vms/<vm>/image` | `{"image", "build": null\|"<build>"}` | `set-image`: `{"vm", "image", "build", "message"}`; applies at the next Reset |
 | `PUT /vms/<vm>/github-owners` | `{"owners": ["likt0r", ...]}` | `set-owners`: `{"vm", "owners"}` |
 | `PUT /vms/<vm>/claude-token` | `{"token": "sk-ant-oat..."}` | `set-claude-token` (token on stdin, checked with Anthropic before it replaces the old one): `{"vm", "stored": true, "length"}` |

@@ -12,9 +12,12 @@ function agentsText(vm: Vm) {
   return counts.map(c => te(`vms.agents.${c.key}`) ? t(`vms.agents.${c.key}`, { n: c.n }) : `${c.n} ${c.key}`).join(' · ')
 }
 
+/** Orca devices, and SSH sessions apart when there are any */
 function devicesText(vm: Vm) {
   const n = deviceCount(vm)
-  return n === null ? t('vms.unknown') : t('vms.devices', n)
+  if (n === null) return t('vms.unknown')
+  const ssh = sshSessionCount(vm) ?? 0
+  return ssh ? `${t('vms.devices', n)} · ${t('vms.sshSessions', ssh)}` : t('vms.devices', n)
 }
 
 function diskText(vm: Vm) {

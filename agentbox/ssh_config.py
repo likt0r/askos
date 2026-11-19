@@ -86,7 +86,7 @@ def ssh_config(args):
         if known is None:
             print(f"agentbox: {rec['name']} has no host key yet (sudo agentbox regenerate)", file=sys.stderr)
         hosts.append({"vm": rec["name"], "host": alias, "options": settings, "config": block(alias, settings),
-                      "known_hosts": known})
+                      "known_hosts": known, "command": f"ssh {alias}"})
     if not hosts and not positional:
         print("agentbox: no VM has SSH access (sudo agentbox set-ssh <vm> on)", file=sys.stderr)
     if "json" in opts:
@@ -100,5 +100,5 @@ def ssh_config(args):
 DECLARATIONS = {
     "ssh-config": declare(ssh_config, "agentbox ssh-config [<vm>...] [--known-hosts] [--json]",
                           options={"known-hosts": False, "json": False}, needs_root=False, read_only=True,
-                          option_exit=1),
+                          control_room=True, option_exit=1),
 }

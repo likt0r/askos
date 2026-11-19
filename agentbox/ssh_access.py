@@ -742,10 +742,13 @@ def ssh(args):
 DECLARATIONS = {
     "ssh": declare(ssh, "agentbox ssh <vm> [--json]", options={"json": False}, read_only=True, option_exit=1),
     "set-ssh": declare(set_ssh, "agentbox set-ssh <vm> on|off [--json]", options={"json": False},
-                       own_entries=True, option_exit=1),
+                       control_room=True, own_entries=True, option_exit=1),
+    # the Control Room sends the key's text on stdin: never a FILE, --mine or --yes, which read
+    # files on the Host
     "add-ssh-key": declare(add_ssh_key, "agentbox " + USAGE_ADD,
                            options={"name": True, "from": True, "mine": False, "yes": False, "json": False},
+                           control_room=True, control_room_options=("name",), control_room_positional=1,
                            own_entries=True, option_exit=1),
     "remove-ssh-key": declare(remove_ssh_key, "agentbox remove-ssh-key <vm> <fingerprint> [--json]",
-                              options={"json": False}, own_entries=True, option_exit=1),
+                              options={"json": False}, control_room=True, own_entries=True, option_exit=1),
 }

@@ -2,6 +2,7 @@
 # --actor after it: CONTROL_ROOM_COMMANDS in agentbox/cli.py (tests/test_control_room_sudo.py
 # holds both lists equal), `watch` included. sudo matches the arguments joined with spaces, so
 # a first argument such as "start setup" passes here; agentbox knows no such command and
-# refuses it. agentbox itself also refuses every other command and --force, which this rule
-# leaves alone, since it could not tell --force from a note that contains it.
-agentbox-web ALL=(root) NOPASSWD: /usr/bin/agentbox ^(activity|alerts|allow|allowlist|blocked|build|build-log|check-domain|check-regex|close-web|containerfile|create|delete|describe|disallow|extend|focus|github-app|github-tokens|harmless|images|legitimate|legitimate-add|legitimate-remove|legitimate-set-note|logs|make-permanent|mark-harmless|mark-seen|open-web|pair|pairings|pause|remove-github-app|reset|restart|revoke-pairings|set-claude-token|set-container-image-cleanup|set-env|set-github-app|set-image|set-memory|set-note|set-owners|set-settings|settings|start|unmark-harmless|unpair|update-now|watch|watch-add|watch-remove|watch-set-note|watchlist)( .*)?$
+# refuses it. agentbox itself also refuses every other command, --force and the options and
+# arguments a command keeps for the CLI at the Host (add-ssh-key reads no file for the Control
+# Room), which this rule leaves alone, since it could not tell them from a note that contains them.
+agentbox-web ALL=(root) NOPASSWD: /usr/bin/agentbox ^(activity|add-ssh-key|alerts|allow|allowlist|blocked|build|build-log|check-domain|check-regex|close-web|containerfile|create|delete|describe|disallow|extend|focus|github-app|github-tokens|harmless|images|legitimate|legitimate-add|legitimate-remove|legitimate-set-note|logs|make-permanent|mark-harmless|mark-seen|open-web|pair|pairings|pause|remove-github-app|remove-ssh-key|reset|restart|revoke-pairings|set-claude-token|set-container-image-cleanup|set-env|set-github-app|set-image|set-memory|set-note|set-owners|set-settings|set-ssh|settings|ssh-config|start|unmark-harmless|unpair|update-now|watch|watch-add|watch-remove|watch-set-note|watchlist)( .*)?$

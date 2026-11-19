@@ -9,9 +9,9 @@ response.json (optional):
   stderr     printed on stderr (default "")
   exitcode   exit status (default 0)
 
-Calls with --no-prompt (the commands that read a secret) also record what they
-got on stdin, one JSON string per call in stdin.jsonl; other calls never read
-stdin, which the server does not provide for them.
+Calls with --no-prompt (the commands that read a secret) and of add-ssh-key (the key
+on stdin) also record what they got on stdin, one JSON string per call in stdin.jsonl;
+other calls never read stdin, which the server does not provide for them.
 
 `agentbox watch` (the backend starts it once, with its own stdin pipe) is not a call:
 each start is counted in watch-starts.jsonl instead. It prints the lines of
@@ -67,7 +67,7 @@ def main(args):
         return watch()
     with open(os.path.join(DIR, "calls.jsonl"), "a") as f:
         f.write(json.dumps(args) + "\n")
-    if "--no-prompt" in args:
+    if "--no-prompt" in args or args[:1] == ["add-ssh-key"]:
         with open(os.path.join(DIR, "stdin.jsonl"), "a") as f:
             f.write(json.dumps(sys.stdin.read()) + "\n")
     try:

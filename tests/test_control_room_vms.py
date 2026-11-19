@@ -1,8 +1,11 @@
-"""Control Room backend (`web/agentbox-web`): creating and deleting a VM, against a fake
-`agentbox` (see fake_agentbox.py), with the server harness of test_control_room.py.
+"""Control Room backend (`web/agentbox-web`): creating and deleting a VM and its SSH access,
+against a fake `agentbox` (see fake_agentbox.py), with the server harness of
+test_control_room.py.
 
 Run from the repo root: python3 -m unittest discover -s tests
 """
+import base64
+import json
 import os
 import sys
 import unittest
@@ -107,6 +110,68 @@ class DeleteTest(ControlRoomTest):
     def test_failure_is_reported(self):
         self.respond("", stderr=failure("vm_not_found", "No such VM: lab", vm="lab"), exitcode=1)
         self.assertError(self.delete({"confirm": "lab"}), 404, "vm_not_found")
+
+
+def rsa_line(bits, comment="laptop"):
+    """An ssh-rsa public key line of this size (of the right form, not a real key)."""
+    def string(data):
+        return len(data).to_bytes(4, "big") + data
+    blob = string(b"ssh-rsa") + string(b"\x01\x00\x01") + string(b"\x00" + b"\xa5" * (bits // 8))
+    return f"ssh-rsa {base64.b64encode(blob).decode()} {comment}"
+
+
+ADDED = {"vm": "work", "fingerprint": "SHA256:ZkAslGjFiUHdGf/WUL8rQvkib4PTvQatUV0OUQSncCA", "name": "laptop",
+         "type": "ssh-rsa", "enabled": True, "keys": 1, "state": "running", "applies": "now", "message": "added"}
+
+
+class SshAccessTest(ControlRoomTest):
+    """#135: SSH access from the Control Room. The key goes to agentbox only on stdin, never as
+    an argument (agentbox reads no file for the Control Room); the body limit leaves room for
+    any RSA key agentbox takes."""
+
+    def setUp(self):
+        super().setUp()
+        self.login()
+        self.respond(ADDED)
+
+    def test_the_key_goes_only_on_stdin(self):
+        line = rsa_line(4096)
+        status, obj, _ = self.request("POST", "/api/v1/vms/work/ssh-keys", {"key": line + "\n", "name": "laptop"})
+        self.assertEqual((status, obj), (201, ADDED))
+        self.assertEqual(self.calls(), [["add-ssh-key", "work", "--name=laptop", "--json"]])
+        self.assertEqual(self.stdins(), [line + "\n"])
+        self.assertNotIn(line.split()[1], json.dumps(self.raw_calls()))
+        self.assertIn("work v1 POST post_ssh_key -> ok", self.server_log())
+        self.assertNotIn(line.split()[1], self.server_log())
+
+    def test_the_body_limit_holds_and_takes_the_largest_rsa_key(self):
+        """RSA 4096 is the usual large key; agentbox takes RSA up to 16384 bits, ~2.8 KiB."""
+        for bits in (4096, 16384):
+            with self.subTest(bits=bits):
+                self.assertEqual(self.request("POST", "/api/v1/vms/work/ssh-keys", {"key": rsa_line(bits)})[0], 201)
+        self.assertEqual(len(self.calls()), 2)
+        answer = self.request("POST", "/api/v1/vms/work/ssh-keys", {"key": rsa_line(4096) + " " * 8192})
+        self.assertError(answer, 413, "body_too_large")
+        self.assertEqual(len(self.calls()), 2)
+
+    def test_the_connection_help_is_ssh_config_unchanged(self):
+        config = {"mode": "local", "hosts": [{"vm": "work", "host": "work.agentbox", "options": {"Port": 2201},
+                                              "config": "Host work.agentbox\n    Port 2201\n",
+                                              "known_hosts": "work.agentbox ssh-ed25519 AAAA",
+                                              "command": "ssh work.agentbox"}]}
+        self.respond(config)
+        self.assertEqual(self.get("/api/v1/vms/work/ssh-config"), (200, config))
+        self.assertEqual(self.calls(), [["ssh-config", "work", "--json"]])
+
+    def test_refusals_of_agentbox_pass_through(self):
+        self.respond("", stderr=failure("ssh_key_too_weak", "RSA keys need at least 3072 bits", vm="work"),
+                     exitcode=1)
+        answer = self.request("POST", "/api/v1/vms/work/ssh-keys", {"key": rsa_line(2048)})
+        self.assertError(answer, 400, "ssh_key_too_weak")
+        self.respond("", stderr=failure("ssh_pending", "the change is saved, but the VM did not take it", vm="work"),
+                     exitcode=1)
+        self.assertError(self.request("PUT", "/api/v1/vms/work/ssh", {"enabled": False}), 503, "ssh_pending")
+        self.assertEqual(self.calls()[-1], ["set-ssh", "work", "off", "--json"])
 
 
 class AccessTest(ControlRoomTest):
