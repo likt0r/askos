@@ -894,8 +894,8 @@ Host after every Build
   moved to `/usr/lib/orca`, where `agentbox-orca.service` starts it and `agentbox` reads its
   version. Orca's server (`orca serve`) runs on a Node runtime Orca pins and otherwise
   downloads at its first start: the RPM carries the pin
-  (`resources/app.asar.unpacked/out/shared/node-runtime-pin.js`: the Node version, the archive
-  and its SHA-256, the SHA-256 and size of `bin/node`; `bin/node`'s SHA-256 again in
+  (`resources/app.asar.unpacked/out/shared/node-runtime/node-runtime-pin.js`: the Node version,
+  the archive and its SHA-256, the SHA-256 and size of `bin/node`; `bin/node`'s SHA-256 again in
   `resources/orcad-template/targets/linux-x64-glibc/.runtime-node`), and the same script
   downloads that archive from `nodejs.org`, as Orca would, checks it against the pin and puts
   the checked `bin/node` into `/usr/lib/agentbox/orca-runtimes/node-<SHA-256>/`, from where
