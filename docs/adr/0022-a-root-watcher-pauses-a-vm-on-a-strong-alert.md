@@ -19,7 +19,7 @@ Since [ADR 0021](0021-strong-signals-always-block.md) a destination with a stron
 - A false positive among strong Signals stops the VM's work until the owner marks it harmless (no Alert, no Pause, still blocked) or lifts the Signal.
 - One more root service on the Host. It reads what the proxies write; journald's fields, not the lines' text, decide whose VM an Alert is.
 - While the watcher does not run (stopped, failing, the Host booting), Alerts block but do not pause; once it runs again it catches up on those of the last ten minutes.
-- `pair` without root starts a VM but may not remove the mark; the mark shows only while the VM is paused, so a later Pause by hand of such a VM would show the old Alert.
+- What resumes a VM without agentbox's cleanup leaves the mark: `pair` without root, `virsh start` by hand, libvirt resuming guests at Host boot. The mark shows only while the VM is paused, so a later Pause by hand of such a VM would show the old Alert.
 
 ## Considered Options
 

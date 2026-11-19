@@ -137,9 +137,11 @@ def _mark(name, host, signals):
 
 # --- the Pause ---------------------------------------------------------------------------
 
-def pause(name, host, signals):
-    """Pause the VM for this Alert, under its lifecycle lock, waited for; only when it runs
-    then. Returns "paused", "failed" or why it stayed as it is ("not-registered", "not-running")."""
+def pause(name, host, signals, at=None):
+    """Pause the VM for this Alert (raised at `at`, seconds), under its lifecycle lock, waited
+    for; only when it runs then and the Alert is still at most MAX_AGE old, so a VM that a Reset
+    or Restart held the lock for is not paused for its old system's Alert. Returns "paused",
+    "failed" or why it stayed as it is ("not-registered", "not-running", "too-old")."""
     try:
         registry.load(name)
     except Fail:
@@ -147,6 +149,8 @@ def pause(name, host, signals):
     text = f"{host} [{','.join(signals)}]"
     params = {"domain": host, "signals": ", ".join(signals)}
     with state_files.vm_lock(name):
+        if at is not None and time.time() - at > MAX_AGE:
+            return "too-old"
         if not states.running(name):
             return "not-running"
         r = virsh.run("managedsave", dom(name))
@@ -174,18 +178,18 @@ class Pauses:
         self.lock = threading.Lock()
         self.pending = set()
 
-    def add(self, name, host, signals):
+    def add(self, name, host, signals, at=None):
         """Start the VM's Pause; False when one is pending already, which this Alert leaves to."""
         with self.lock:
             if name in self.pending:
                 return False
             self.pending.add(name)
-        threading.Thread(target=self.run, args=(name, host, signals), name=f"pause-{name}", daemon=True).start()
+        threading.Thread(target=self.run, args=(name, host, signals, at), name=f"pause-{name}", daemon=True).start()
         return True
 
-    def run(self, name, host, signals):
+    def run(self, name, host, signals, at=None):
         try:
-            pause(name, host, signals)
+            pause(name, host, signals, at)
         except Exception as e:              # one VM's failure must not end the watcher
             warn(f"{name}: the Pause for an Alert failed ({type(e).__name__}: {e})")
         finally:
@@ -213,16 +217,19 @@ def _keep(usec):
 
 
 def handle(e, pauses, now=None):
+    """Pause for the entry if it is an Alert with a strong Signal; whether it is one."""
     found = alert(e, now)
     if found and wanted():
-        pauses.add(*found)
+        pauses.add(*found, at=times.journal_usec(e) / 1e6)
+    return bool(found)
 
 
 def follow(pauses):
     """Follow the proxies' Alert lines for ever (journalctl --follow); after an end, again
     after the last entry seen."""
     global _child
-    cursor, last, delay = None, _last(), RETRY
+    # a first run reads from its start on, also after a journalctl that ended before any line
+    cursor, last, delay = None, _last() or int(time.time() * 1e6), RETRY
     while True:
         started = time.monotonic()
         users = activity.proxy_user_matches()
@@ -233,10 +240,8 @@ def follow(pauses):
             continue
         if cursor:
             where = [f"--after-cursor={cursor}"]
-        elif last:                           # an earlier run read up to then, within MAX_AGE
+        else:                                # read up to then (or started then), within MAX_AGE
             where = [f"--since=@{max(int(last // 10**6), int(time.time()) - MAX_AGE)}"]
-        else:
-            where = ["--lines=0"]
         argv = ["journalctl", f"--namespace={activity.NAMESPACE}", "--follow", "--output=json", "--no-pager",
                 f"--grep={proxy_log.grep('ALERT')}", *users, *where]
         try:
@@ -256,18 +261,20 @@ def follow(pauses):
                 if not isinstance(e, dict):
                     continue
                 usec = times.journal_usec(e)
-                if not cursor and last and usec is not None and usec <= last:
+                if not cursor and usec is not None and usec <= last:
                     continue                 # read by the run before
                 c = field(e, "__CURSOR", limit=512)
                 if c:
                     cursor = c
                 try:
-                    handle(e, pauses)
+                    pausing = handle(e, pauses)
                 except Exception as ex:      # one odd entry must not end the watcher
+                    pausing = False
                     warn(f"entry skipped ({type(ex).__name__})")
-                if usec is not None and (last is None or usec > last):
+                if usec is not None and usec > last:
                     last = usec
-                    _keep(usec)
+                    if pausing:              # a restart reads weak ones again, which pause nothing
+                        _keep(usec)
                 untrusted = activity.untrusted_warning()
                 if untrusted:
                     warn(untrusted)

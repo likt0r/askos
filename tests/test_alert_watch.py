@@ -105,6 +105,12 @@ class AlertWatchTest(unittest.TestCase):
         """An Alert of the VM's own proxy."""
         self.line(f"[{vm}] ALERT {host} [{','.join(signals)}]", f"agentbox-proxy-{vm}", proxy(vm), age)
 
+    def read_up_to(self, age):
+        """As if an earlier run had read the journal up to `age` seconds ago."""
+        os.makedirs(self.path("var/lib/agentbox"), exist_ok=True)
+        with open(self.path("var/lib/agentbox/alert-watch.json"), "w") as f:
+            json.dump({"last": int((time.time() - age) * 1e6)}, f)
+
     # --- the watcher ------------------------------------------------------------------
 
     def start(self):
@@ -354,10 +360,14 @@ class WriterTest(AlertWatchTest):
     def test_it_asks_journalctl_only_for_the_proxies_alert_lines(self):
         self.start()
         [argv] = self.followers()
-        self.assertEqual(argv, ["--namespace=agentbox", "--follow", "--output=json", "--no-pager",
-                                r"--grep=^\[[a-z0-9-]+\] ALERT ", "_UID=962", "--lines=0"])
+        self.assertEqual(argv[:-1], ["--namespace=agentbox", "--follow", "--output=json", "--no-pager",
+                                     r"--grep=^\[[a-z0-9-]+\] ALERT ", "_UID=962"])
+        # from its start on, so a journalctl that ends before any line loses none written meanwhile
+        self.assertTrue(argv[-1].startswith("--since=@"), argv)
+        self.assertLessEqual(abs(int(argv[-1][len("--since=@"):]) - time.time()), 5)
 
     def test_an_old_alert_pauses_nothing(self):
+        self.read_up_to(1200)       # this run catches up, but only MAX_AGE back
         self.start()
         self.alert("work", "exfil.example", "exfil", age=700)
         self.alert("priv", "exfil.example", "exfil", age=60)
@@ -398,6 +408,23 @@ class LockTest(AlertWatchTest):
         time.sleep(QUIET)
         self.assertEqual(self.saves(), ["priv"])
         self.assertEqual([e["AGENTBOX_VM"] for e in self.entries()], ["priv"])
+
+
+    def test_an_alert_that_grew_too_old_while_the_lock_was_held_pauses_nothing(self):
+        """A Reset or Restart may hold the lock for minutes: its fresh system is not paused for
+        the old one's Alert."""
+        self.read_up_to(1200)
+        fd = self.hold("work")
+        try:
+            self.start()
+            self.alert("work", "exfil.example", "exfil", age=598)
+            time.sleep(QUIET + 1)
+        finally:
+            os.close(fd)
+        self.alert("priv", "exfil.example", "exfil")            # the sentinel
+        self.paused("priv")
+        time.sleep(QUIET)
+        self.assertEqual(self.saves(), ["priv"])
 
 
 class RestartTest(AlertWatchTest):
