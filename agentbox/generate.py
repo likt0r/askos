@@ -559,22 +559,29 @@ def ssh_host_key(rec):
     """The VM's SSH host key, made once and kept (ADR 0020): an Ed25519 key whose secret
     openssl makes, in OpenSSH's own format; owner root, group qemu, mode 0640, beside the
     Claude token. Made when SSH access is first turned on or a first SSH key is added;
-    regenerate makes one that is missing while the VM has SSH access. Whether it was made."""
+    regenerate makes one that is missing while the VM has SSH access. Its public half goes
+    beside, readable by everyone (footprint.ssh_host_key_public_file), also for a key made
+    before. Whether the key was made."""
     path = footprint.ssh_host_key_file(rec["name"])
-    if os.path.exists(path):
-        return False
-    what = f"{rec['name']}: making the SSH host key"
-    pem = programs.run(["openssl", "genpkey", "-algorithm", "ed25519"], 30, what=what, c_locale=True).stdout
-    public = programs.run(["openssl", "pkey", "-pubout"], 30, what=what, c_locale=True, input=pem).stdout
-    secret, public = _der(pem), _der(public)
-    if not (len(secret) == 48 and secret.startswith(ED25519_PRIVATE)
-            and len(public) == 44 and public.startswith(ED25519_PUBLIC)):
-        die(f"{what}: openssl gave no Ed25519 key", error="action_failed", vm=rec["name"])
-    gid = _qemu()[1]
-    state_files.directory(os.path.dirname(path), 0o750, gid)
-    state_files.write_atomic(path, sshkeys.host_key_file(secret[16:], public[12:], f"{rec['name']}.agentbox"),
-                             0o640, gid)
-    return True
+    made = not os.path.exists(path)
+    if made:
+        what = f"{rec['name']}: making the SSH host key"
+        pem = programs.run(["openssl", "genpkey", "-algorithm", "ed25519"], 30, what=what, c_locale=True).stdout
+        public = programs.run(["openssl", "pkey", "-pubout"], 30, what=what, c_locale=True, input=pem).stdout
+        secret, public = _der(pem), _der(public)
+        if not (len(secret) == 48 and secret.startswith(ED25519_PRIVATE)
+                and len(public) == 44 and public.startswith(ED25519_PUBLIC)):
+            die(f"{what}: openssl gave no Ed25519 key", error="action_failed", vm=rec["name"])
+        gid = _qemu()[1]
+        state_files.directory(os.path.dirname(path), 0o750, gid)
+        state_files.write_atomic(path, sshkeys.host_key_file(secret[16:], public[12:], sshkeys.alias(rec["name"])),
+                                 0o640, gid)
+    blob = sshkeys.host_public(host_key(rec["name"]) or b"")
+    if blob:
+        public_path = footprint.ssh_host_key_public_file(rec["name"])
+        state_files.directory(os.path.dirname(public_path), 0o755, only_new=True)
+        state_files.write_if_changed(public_path, (sshkeys.public_line(blob) + "\n").encode(), 0o644, fail=False)
+    return made
 
 
 def host_key(name):

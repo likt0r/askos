@@ -11,7 +11,7 @@ import sys
 
 from . import activity, allowlist, container_images, credentials, describe, detection, generate, github, guest
 from . import images, lifecycle, lists, maintenance, network, options, pairings, paths, recipes, settings, setup, transfer
-from . import sign_in_links, ssh_access, version, versions, vms, watch
+from . import sign_in_links, ssh_access, ssh_config, version, versions, vms, watch
 from .errors import Fail
 
 USAGE = """\
@@ -55,6 +55,9 @@ Controls the agent VMs on this Host.
   agentbox add-ssh-key <vm> [--name N] [FILE] [--json]
                 add an SSH key (a line of a .pub file) from FILE or stdin; its comment is its name; the VM
                 gets the keys from its next start, a running VM after a Restart
+  agentbox ssh-config [<vm>...] [--known-hosts] [--json]
+                a ~/.ssh/config block per VM with SSH access (ssh <vm>.agentbox), host keys under the
+                HostKeyAlias <vm>.agentbox; --known-hosts: their known_hosts lines; for root and libvirt
   agentbox start <vm> [--json]
   agentbox wake <vm> [--json]
   agentbox pause <vm> [--json]
@@ -187,7 +190,7 @@ With --json, a failure also goes to stderr as one JSON object:
 
 MODULES = (lifecycle, version, describe, setup, watch, vms, pairings, transfer, guest, credentials, network,
            allowlist, detection, lists, generate, settings, github, images, recipes, versions, activity, maintenance,
-           container_images, ssh_access, sign_in_links)
+           container_images, ssh_access, ssh_config, sign_in_links)
 DECLARATIONS = {name: declaration for module in MODULES for name, declaration in module.DECLARATIONS.items()}
 
 

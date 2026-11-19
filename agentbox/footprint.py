@@ -86,6 +86,12 @@ def ssh_host_key_file(name):
     return os.path.join(host_paths.CONF, "secrets", f"ssh-host-key-{name}")
 
 
+def ssh_host_key_public_file(name):
+    """The public half of the VM's SSH host key, which everyone may read: ssh-config prints it
+    also for the members of libvirt."""
+    return os.path.join(host_paths.CONF, "ssh-host-keys", f"{name}.pub")
+
+
 def vm_ssh_file(name):
     """SSH access, the SSH keys and the host key as QEMU passes them in (fw_cfg opt/agentbox/ssh)."""
     return os.path.join(host_paths.STATE, "vm-ssh", f"{name}.ssh")
@@ -204,7 +210,8 @@ def paths(rec):
     return (record_file(name), data_disk(name), system_disk(name), delete_marker(name),
             legacy_owners_file(name), legacy_allowlist_file(name), legacy_allowlist_migrated_file(name),
             observer_dir(name), open_web_file(name), claude_token_file(name), vm_env_file(name),
-            ssh_host_key_file(name), vm_ssh_file(name), seen_file(name), wakes_file(name), domain_file(name),
+            ssh_host_key_file(name), ssh_host_key_public_file(name), vm_ssh_file(name),
+            seen_file(name), wakes_file(name), domain_file(name),
             *unit_files(rec), *socket_pending_files(rec))
 
 
@@ -338,8 +345,8 @@ def _files(rec, say):
     name = rec["name"]
     responding.clear(name)           # bookkeeping only, never fails (the stop removed it already)
     gone = [state_files.remove(f) for f in (claude_token_file(name), vm_env_file(name),
-                                            ssh_host_key_file(name), vm_ssh_file(name),
-                                            open_web_file(name), legacy_owners_file(name),
+                                            ssh_host_key_file(name), ssh_host_key_public_file(name),
+                                            vm_ssh_file(name), open_web_file(name), legacy_owners_file(name),
                                             seen_file(name), domain_file(name))]
     gone.append(allowlist.drop_vm(name))
     observer = observer_dir(name)

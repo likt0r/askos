@@ -494,12 +494,29 @@ A VM has no SSH access until you turn it on, and only on the Host
 sudo agentbox add-ssh-key lab ~/.ssh/id_ed25519.pub   # or: ... add-ssh-key lab < key.pub, --name NAME
 sudo agentbox set-ssh lab on                          # the SSH port 2200 + network number opens
 sudo agentbox ssh lab                                 # port, host key fingerprint, known_hosts line, keys
-ssh -p 2203 agent@127.0.0.1                           # wakes the VM if it is off
+agentbox ssh-config > ~/.ssh/agentbox.conf            # a block per VM with SSH access: ssh lab.agentbox
+agentbox ssh-config --known-hosts > ~/.ssh/known_hosts.agentbox     # their host keys
+ssh lab.agentbox                                      # wakes the VM if it is off
 ```
+
+Put `Include agentbox.conf` once at the top of `~/.ssh/config`, before any `Host` line (an
+`Include` further down counts only for the `Host` block it stands in). Run both `ssh-config`
+lines again after turning SSH access on for another VM. Each block names the VM
+`<vm>.agentbox` and sets `HostName`, `Port`, `User agent`, `ForwardAgent no`, `ForwardX11 no`,
+`StrictHostKeyChecking yes` and `UserKnownHostsFile ~/.ssh/known_hosts.agentbox`, so `ssh`
+talks only to the host key the Host made and offers the VM neither your agent nor your
+display. The host key is keyed on `HostKeyAlias <vm>.agentbox`, not on the address and port:
+after switching the Host between Local-only and Network mode only `HostName` changes, so run
+the first line again and keep `known_hosts.agentbox`. `ssh-config lab` gives only `lab`'s block,
+`--json` the same parts for a script. `ssh-config` runs for root and the members of `libvirt`;
+it writes nothing, Agent Box never writes into your home. From another machine in Network
+mode, copy both outputs into the same two files there (`HostName` is then the Host's address
+in the home network). Tools that take neither the config file nor an alias reach the SSH port
+directly, `ssh -p 2203 -o HostKeyAlias=lab.agentbox agent@127.0.0.1`.
 
 Each VM has its own SSH port, 2200 + its network number (`agentbox ssh` names it), reachable
 where its Orca port is: on `127.0.0.1` in Local-only, also from the home network in Network mode
-(`ssh -p 2203 agent@<bind>`; see [the two modes](#local-only-and-network-mode)). The firewall
+(see [the two modes](#local-only-and-network-mode)). The firewall
 rules of the SSH ports come with `agentbox regenerate`, so an update needs no `setup` for them.
 A connection wakes the VM like an Orca connection
 and is recorded as its Actor `SSH (<address>)`. You log in as `agent`, the user Orca and the
@@ -507,8 +524,8 @@ agents run as, only with a key; `ssh -L` works, remote and agent forwarding do n
 keys: Ed25519, ECDSA, their security-key forms (`sk-…`) and RSA of 3072 to 16384 bits, one line
 of a `.pub` file without options (`command=`, `from=`), at most 16 per VM; the comment becomes
 the key's name unless `--name` gives one. The host key is made by the Host once per VM and
-stays the same across every Reset; put the `known_hosts` line `agentbox ssh` prints into your
-`~/.ssh/known_hosts` instead of answering "yes". The VM gets its SSH access and keys at its next
+stays the same across every Reset, so `ssh` never asks you to answer "yes" or warns about a
+changed host key. The VM gets its SSH access and keys at its next
 start: a running VM at its next Restart (`agentbox restart <name>`) or Reset. `set-ssh <name>
 off` closes the port at once and keeps the keys. Turning SSH access on or off and adding a key
 are recorded in Activity, each connection is not. Deleting the VM deletes its keys and host key.
@@ -808,8 +825,8 @@ not Settings and cannot be changed from the browser.
 
 Every command also takes `--json`, and `--actor TEXT` before the command or right after it
 names who caused it in Activity (the Control Room passes the browser's device and address,
-timers pass `timer`; without it, the user who ran `sudo`). Commands other than `logs`, `pair`
-and `sign-in-link` need root; those three also run for the members of `libvirt`.
+timers pass `timer`; without it, the user who ran `sudo`). Commands other than `logs`, `pair`,
+`sign-in-link` and `ssh-config` need root; those four also run for the members of `libvirt`.
 
 The Control Room offers the same in the browser. Its UI talks to the API `/api/v1`,
 described with its errors and live events in

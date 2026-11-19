@@ -145,7 +145,8 @@ def _leftovers(rec):
     name = rec["name"]
     files = [("Data disk", footprint.data_disk(name)), ("System disk", footprint.system_disk(name)),
              ("Claude token", footprint.claude_token_file(name)), ("VM variables", footprint.vm_env_file(name)),
-             ("SSH host key", footprint.ssh_host_key_file(name)), ("SSH access", footprint.vm_ssh_file(name)),
+             ("SSH host key", footprint.ssh_host_key_file(name)),
+             ("SSH host key", footprint.ssh_host_key_public_file(name)), ("SSH access", footprint.vm_ssh_file(name)),
              ("Observer", footprint.observer_dir(name)),
              *(("units", f) for f in footprint.unit_files(rec))]
     found = list(dict.fromkeys(what for what, path in files if os.path.lexists(path)))

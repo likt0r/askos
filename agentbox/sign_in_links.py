@@ -30,7 +30,7 @@ import stat
 import sys
 import time
 
-from . import hostsetup, paths, times
+from . import callers, hostsetup, paths, times
 from .commands import declare
 from .errors import die
 
@@ -39,9 +39,7 @@ FRAGMENT = "link"                # /sign-in#link=<token>
 TOKEN = re.compile(r"[A-Za-z0-9_-]{43}")       # secrets.token_urlsafe(32)
 HASH = re.compile(r"[0-9a-f]{64}")
 MAX_FILE = 256
-LIBVIRT = "libvirt"
-# the Host's groups (tests: under AGENTBOX_ROOT); libvirt is a local group (systemd-sysusers)
-GROUP = paths.host("/etc/group")
+LIBVIRT = callers.LIBVIRT
 
 
 def digest(token):
@@ -51,32 +49,6 @@ def digest(token):
 
 def _path(token):
     return os.path.join(paths.SIGN_IN_LINKS, digest(token))
-
-
-# --- who may make one -------------------------------------------------------------
-
-def _libvirt_gid():
-    try:
-        with open(GROUP, encoding="utf-8", errors="replace") as f:
-            for line in f:
-                parts = line.rstrip("\n").split(":")
-                if len(parts) > 2 and parts[0] == LIBVIRT and parts[2].isdigit():
-                    return int(parts[2])
-    except OSError:
-        pass
-    return None
-
-
-def check_caller():
-    """Root, or a member of libvirt in this login (a new membership counts from the next
-    one); anyone else is refused before anything is written. The directory's permissions say
-    the same."""
-    if os.geteuid() == 0:
-        return
-    gid = _libvirt_gid()
-    if gid is None or gid not in {os.getegid(), *os.getgroups()}:
-        die("sign-in-link is for root and the members of libvirt, who control every VM anyway: "
-            "sudo agentbox sign-in-link", error="sudo_failed", command="sign-in-link")
 
 
 # --- the links ----------------------------------------------------------------------
@@ -210,7 +182,7 @@ def _record():
 
 def sign_in_link(args):
     """agentbox sign-in-link [--json]"""
-    check_caller()
+    callers.check("sign-in-link")      # the directory's permissions say the same
     setup = hostsetup.load()
     token, expires = create()
     why = _record()
