@@ -263,9 +263,10 @@ def find_code(ctx, exclude=()):
     journal on start; until then (and while the guest agent does not answer yet)
     ask again, for about a minute, longer after a cold start."""
     budget = paths.tunable("AGENTBOX_PAIR_SECONDS", 60)
-    from . import responding             # responding imports this module (guest-ping)
+    from . import responding, ssh_access     # both import this module
     with state_files.vm_lock(ctx):       # not in the middle of a Reset (#52)
         if not states.running(ctx):
+            ssh_access.before_start(ctx)     # never with a file that holds a removed SSH key
             responding.clear(ctx)        # the failed wakes of its last start are over
             virsh.start(ctx)
             budget += 120                # boot, guest agent and Orca need time

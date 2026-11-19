@@ -192,9 +192,10 @@ def wake(ctx):
         started = not states.running(ctx)
         if started:
             resumed = states.has_pause(ctx)
+            ssh_access.before_start(ctx)  # never with a file that holds a removed SSH key
             responding.clear(ctx)         # the failed wakes of its last start are over
             must("start", dom(ctx))
-            if not resumed:               # also off without stop(): it reads its SSH access from fw_cfg
+            if not resumed:               # it started anew with the file written from the record
                 ssh_access.drop_pending(ctx)
     start = responding.start(ctx)         # the start of the VM this wake waits for
     waiting = responding.clock()
@@ -280,7 +281,6 @@ def stop(ctx):
         if states.running(ctx):
             must("destroy", dom(ctx))
     responding.clear(ctx)
-    ssh_access.drop_pending(ctx)         # its next start reads its SSH access from fw_cfg
 
 
 def _running_backing(ctx):
@@ -339,11 +339,23 @@ def reset_as_found(ctx, say):
             base = _reset(ctx, ran, say, progress)
         except (Fail, KeyboardInterrupt) as e:
             safe = "disk" not in progress or (isinstance(e, KeyboardInterrupt) and "fresh" in progress)
-            if ran and safe and not states.running(ctx) and virsh.run("start", dom(ctx)).returncode == 0:
+            if ran and safe and not states.running(ctx) and _may_start(ctx) \
+                    and virsh.run("start", dom(ctx)).returncode == 0:
                 ssh_access.drop_pending(ctx)
                 say(f"{ctx} started again" + ("" if "fresh" in progress else " (System disk unchanged)"))
             raise
     return ran, os.path.basename(base)
+
+
+def _may_start(ctx):
+    """ssh_access.before_start for a start after a failure: whether the VM may start; when it
+    may not, why goes to stderr and the failure that came first is the one raised."""
+    try:
+        ssh_access.before_start(ctx)
+    except Fail as f:
+        print(f"agentbox: {f.message}", file=sys.stderr, flush=True)
+        return False
+    return True
 
 
 def _reset(ctx, start, say, progress=None):
@@ -374,9 +386,14 @@ def _reset(ctx, start, say, progress=None):
             pass
     say(f"{ctx}: fresh System disk ({os.path.basename(base)})")
     if start:
+        try:
+            ssh_access.before_start(ctx)
+        except Fail as f:
+            die(f"{ctx}: fresh System disk, but {f.message.removeprefix(f'{ctx}: ')}", error="reset_start_failed",
+                vm=ctx)
         r = virsh.run("start", dom(ctx))
         if r.returncode == 0:
-            ssh_access.drop_pending(ctx)         # it started anew: it reads its SSH access from fw_cfg
+            ssh_access.drop_pending(ctx)         # it started anew with the file written from the record
             say(f"{ctx} started")
         _check_chain(ctx, base)
         if r.returncode != 0:
@@ -440,12 +457,14 @@ def status(args):
 def start_cmd(args):
     """agentbox start <vm> [--json]: start without waiting for Orca. A VM resumed from its
     Pause (or one that runs) gets a pending change of its SSH access at once; one that starts
-    anew reads it from fw_cfg. When the VM does not take it, a message says so and the marker
-    stays for the next connection (wake)."""
+    anew reads it from fw_cfg, written first while a change is pending (ssh_access.before_start).
+    When the VM does not take it, a message says so and the marker stays for the next connection
+    (wake)."""
     ctx, flags = _flags(args)
     with state_files.vm_lock(ctx):
         if not states.running(ctx):
             resumed = states.has_pause(ctx)
+            ssh_access.before_start(ctx)
             responding.clear(ctx)
             must("start", dom(ctx))
             if not resumed:
@@ -499,7 +518,9 @@ def restart_cmd(args):
     ctx, flags = _flags(args)
     with state_files.vm_lock(ctx):
         stop(ctx)
+        ssh_access.before_start(ctx)
         must("start", dom(ctx))
+        ssh_access.drop_pending(ctx)
     say, lines = reporter("--json" in flags)
     say(f"{ctx} restarted")
     _result(ctx, "--json" in flags, lines)

@@ -98,8 +98,9 @@ def vm_ssh_file(name):
 
 
 def ssh_pending_file(name):
-    """A change of the VM's SSH access the running VM has not taken yet (ssh_access.py): applied
-    before the next connection is forwarded, gone once it is or the VM is off."""
+    """A change of the VM's SSH access the VM has not taken yet (ssh_access.py): the file it reads
+    at a start is written again before any start, the change handed over before the next
+    connection is forwarded; gone once both are done or the VM started anew."""
     return os.path.join(host_paths.STATE, "pending", f"ssh-{name}")
 
 

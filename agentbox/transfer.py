@@ -326,9 +326,10 @@ def _ready(ctx):
         die(f"{ctx}: the VM is paused; start it first (agentbox start {ctx})", error="vm_paused", vm=ctx)
     if states.running(ctx):
         return
+    ssh_access.before_start(ctx)              # never with a file that holds a removed SSH key
     responding.clear(ctx)                     # the failed wakes of its last start are over
     lifecycle.must("start", dom(ctx))
-    ssh_access.drop_pending(ctx)              # it started anew: it reads its SSH access from fw_cfg
+    ssh_access.drop_pending(ctx)              # it started anew with the file written from the record
     deadline = time.monotonic() + paths.tunable("AGENTBOX_BOOT_SECONDS", 180)
     while not guest.ping(ctx):
         if time.monotonic() > deadline:

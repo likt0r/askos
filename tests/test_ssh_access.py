@@ -1518,8 +1518,17 @@ class LiveTest(SshTest):
         self.ok("restart", "work")
         self.assertFalse(self.exists(PENDING.format("work")))
         self.assertEqual(self.applied(), [])
-        # a VM that is off gets no marker at all
+        # so does a Reset
+        self.ok("pause", "work")
+        self.ok("set-ssh", "work", "off")
+        self.assertTrue(self.exists(PENDING.format("work")))
+        self.ok("reset", "work")
+        self.assertFalse(self.exists(PENDING.format("work")))
+        self.assertEqual(self.applied(), [])
+        # a VM that is off keeps no marker once its file is written
+        self.ok("set-ssh", "work", "on")
         self.turned_off("work")
+        self.forget_calls()
         result = self.json("remove-ssh-key", "work", fingerprint(self.PHONE))
         self.assertEqual(result["applies"], "next_start")
         self.assertFalse(self.exists(PENDING.format("work")))
@@ -1540,6 +1549,115 @@ class LiveTest(SshTest):
         self.assertEqual([c["cmd"] for c in self.virsh("start")], ["start"])
         self.assertFalse(self.exists(PENDING.format("work")))
         self.assertEqual(self.applied(), [])
+
+    def unwritable(self, vm="work"):
+        """The file the VM reads its SSH access from cannot be written: a directory in its place.
+        What it held before, which a failed write leaves behind."""
+        path, old = self.path(SSH_FILE.format(vm)), self.read(SSH_FILE.format(vm))
+        os.remove(path)
+        os.mkdir(path)
+        return old
+
+    def left_behind(self, old, vm="work"):
+        """The file is writable again, but still holds what the failed write left."""
+        os.rmdir(self.path(SSH_FILE.format(vm)))
+        self.write(SSH_FILE.format(vm), old, 0o640)
+
+    def test_a_vm_that_is_off_never_starts_with_what_a_failed_write_left_in_its_file(self):
+        """#153: a removal, or SSH access turned off, saved while the VM was off, but its file
+        not written: no start of any kind boots it with that file; each writes it from the
+        record first and refuses to start while that fails."""
+        folder = os.path.join(self.dir, "folder")
+        os.makedirs(folder)
+        for change, gone in ((("remove-ssh-key", "work", LAPTOP_FP), f"key {LAPTOP.rsplit(' ', 1)[0]}\n"),
+                             (("set-ssh", "work", "off"), f"key {self.PHONE.rsplit(' ', 1)[0]}\n")):
+            with self.subTest(change=change[0]):
+                if not self.record().get("ssh_keys"):
+                    self.add()
+                    self.add(line=self.PHONE)
+                self.ok("set-ssh", "work", "on")
+                self.turned_off("work")
+                old = self.unwritable()
+                self.assertIn(gone, old)
+                said = self.failed(*change)
+                self.assertEqual(said["error"], "ssh_not_applied")
+                self.assertTrue(self.exists(PENDING.format("work")))
+                self.forget_calls()
+                for args in (("start", "work"), ("wake", "work"), ("--actor=SSH (192.0.2.7)", "wake", "work"),
+                             ("--actor=Orca (192.0.2.7)", "wake", "work"), ("restart", "work"),
+                             ("reset", "work"), ("import", "work", folder), ("pair", "work")):
+                    with self.subTest(args=args):
+                        code, out, err = self.run_agentbox(*args)
+                        self.assertNotEqual(code, 0, out)
+                        self.assertIn("the VM does not start: the file it reads its SSH access from at a start "
+                                      "could not be written", err)
+                        self.assertEqual(self.virsh("start"), [])
+                        self.assertTrue(self.exists(PENDING.format("work")))
+                # the file is writable again but holds the old keys: the start writes it first
+                self.left_behind(old)
+                self.scenario(vms={"work": {"state": "shut off", "start_fails": True}})
+                self.assertEqual(self.run_agentbox("start", "work")[0], 1)
+                self.assertNotIn(gone, self.read(SSH_FILE.format("work")))
+                self.assertTrue(self.exists(PENDING.format("work")))
+                self.write(SSH_FILE.format("work"), old, 0o640)
+                self.turned_off("work")
+                self.ok("start", "work")
+                self.assertNotIn(gone, self.read(SSH_FILE.format("work")))
+                self.assertFalse(self.exists(PENDING.format("work")))
+                self.assertEqual(self.applied(), [])
+
+    def test_a_restart_never_boots_with_what_a_failed_write_left_in_the_file(self):
+        """A paused VM whose file was not written: a Restart discards the Pause and would boot it
+        anew with that file, so it stays off until the file is written."""
+        self.on_with_two_keys()
+        self.ok("pause", "work")
+        old = self.unwritable()
+        self.assertEqual(self.failed("remove-ssh-key", "work", LAPTOP_FP)["error"], "ssh_not_applied")
+        self.forget_calls()
+        code, _, err = self.run_agentbox("restart", "work")
+        self.assertEqual(code, 1)
+        self.assertIn("work: the VM does not start: ", err)
+        self.assertEqual(self.virsh("start"), [])
+        self.assertEqual(self.json("status")["work"]["state"], "shut off")
+        self.assertTrue(self.exists(PENDING.format("work")))
+        self.left_behind(old)
+        self.ok("start", "work")
+        self.assertNotIn(LAPTOP.rsplit(" ", 1)[0], self.read(SSH_FILE.format("work")))
+        self.assertFalse(self.exists(PENDING.format("work")))
+
+    def test_a_connection_hands_a_change_over_only_once_the_file_is_written(self):
+        """A running VM whose file was not written: the connection that hands the change over
+        writes the file first, so that no later start boots with the removed key, and is refused
+        while that fails."""
+        self.on_with_two_keys()
+        old = self.unwritable()
+        self.assertEqual(self.failed("remove-ssh-key", "work", LAPTOP_FP)["error"], "ssh_not_applied")
+        code, _, err = self.wake("SSH (192.0.2.7)")
+        self.assertEqual(code, 1)
+        self.assertIn("could not be written", err)
+        self.assertEqual(self.applied(), [])
+        self.assertTrue(self.exists(PENDING.format("work")))
+        self.left_behind(old)
+        code, _, err = self.wake("SSH (192.0.2.7)")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.authorized(), self.PHONE.rsplit(" ", 1)[0] + "\n")
+        self.assertNotIn(LAPTOP.rsplit(" ", 1)[0], self.read(SSH_FILE.format("work")))
+        self.assertFalse(self.exists(PENDING.format("work")))
+
+    def test_a_vm_that_is_off_gets_the_marker_first_too(self):
+        """A change for a VM that is off sets the marker before it is saved, and so changes
+        nothing when the marker cannot be written; once its file is written the marker goes."""
+        self.on_with_two_keys()
+        self.turned_off("work")
+        blocker = self.path(os.path.dirname(PENDING.format("work")))
+        shutil.rmtree(blocker, ignore_errors=True)
+        open(blocker, "w").close()                              # no directory for the marker
+        said = self.failed("remove-ssh-key", "work", LAPTOP_FP)
+        self.assertTrue(said["message"].startswith("work: nothing changed: "), said["message"])
+        self.assertEqual(len(self.record()["ssh_keys"]), 2)
+        os.remove(blocker)
+        self.assertEqual(self.json("remove-ssh-key", "work", LAPTOP_FP)["applies"], "next_start")
+        self.assertFalse(self.exists(PENDING.format("work")))
 
     def test_a_build_without_the_wrapper_keeps_the_change_and_says_ssh_missing(self):
         self.add()
