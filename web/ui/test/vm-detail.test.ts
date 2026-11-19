@@ -621,6 +621,110 @@ describe('VM variables', () => {
   })
 })
 
+describe('VM secrets', () => {
+  const VALUE = 'hunter2-Geheim'
+  const CHANGED = (secrets: string[], applies: string | null) => OK({ vm: 'work', secrets, changed: applies !== null,
+    state: applies === 'next_start' ? 'shut off' : 'running', applies, message: 'deutsch' })
+  const WITH = { ...WORK, reset_due: false, env: { NODE_ENV: 'development' }, secrets: ['API_KEY', 'DB_PASSWORD'] }
+
+  it('lists the names with •••• and never a value, none when there are none', async () => {
+    fakeApi({ 'GET /session': SIGNED_IN })
+    const { es } = await openApp('/vms/work/web', [WITH])
+    expect(text('overview-secret-API_KEY')).toContain('API_KEY')
+    expect(text('overview-secret-API_KEY')).toContain('••••')
+    expect(text('overview-secret-DB_PASSWORD')).toContain('••••')
+    expect(exists('overview-secret-refused-API_KEY')).toBe(false)
+    es.emit('vm', { ...WITH, secrets_refused: ['API_KEY'] })
+    await flushPromises()
+    expect(text('overview-secret-refused-API_KEY')).toBe('not passed on: the name is reserved')
+    es.emit('vm', { ...WITH, secrets: [] })
+    await flushPromises()
+    expect(text('overview-secrets-none')).toContain('None.')
+  })
+
+  it('adds one: the value goes in the body of a PUT once, and the form forgets it', async () => {
+    const api = fakeApi({ 'GET /session': SIGNED_IN, 'PUT /vms/work/secrets/TOKEN': CHANGED(['API_KEY', 'DB_PASSWORD', 'TOKEN'], 'next_restart'),
+      'POST /vms/work/restart': OK({ vm: 'work', state: 'running' }) })
+    await openApp('/vms/work/web', [WITH])
+    await click('secret-add')
+    expect(text('secret-applies')).toBe('Applies at the next Restart or Reset. Until then the VM keeps the secrets it started with.')
+    expect(byTestId('secret-value').attributes('type')).toBe('password')
+    expect(byTestId('secret-send').attributes('disabled')).toBeDefined()     // no name yet
+    await type('secret-name', 'TOKEN')
+    await type('secret-value', VALUE)
+    await submit('secret-dialog')
+    const put = api.calls.find(c => c.method === 'PUT')!
+    expect(put.path).toBe('/vms/work/secrets/TOKEN')
+    expect(put.headers['x-agentbox']).toBe('1')
+    expect(put.body).toEqual({ value: VALUE })
+    expect(text('secret-saved-text')).toBe('Secrets of work changed. They apply at the next Restart.')
+    expect(document.body.innerHTML).not.toContain(VALUE)
+    await click('secret-restart')
+    expect(api.calls.filter(c => c.path === '/vms/work/restart').map(c => c.method)).toEqual(['POST'])
+    expect(exists('secret-saved')).toBe(false)
+  })
+
+  it('replaces the value of one without asking for its name, and never shows the old one', async () => {
+    const api = fakeApi({ 'GET /session': SIGNED_IN, 'PUT /vms/work/secrets/API_KEY': CHANGED(['API_KEY', 'DB_PASSWORD'], 'next_start') })
+    await openApp('/vms/work/web', [{ ...WITH, state: 'stopped' }])
+    await click('secret-replace-API_KEY')
+    expect(exists('secret-name')).toBe(false)
+    expect((byTestId('secret-value').element as HTMLInputElement).value).toBe('')
+    expect(text('secret-applies')).toBe('Applies when the VM starts next.')
+    await type('secret-value', VALUE)
+    await submit('secret-dialog')
+    expect(api.calls.find(c => c.method === 'PUT')!.body).toEqual({ value: VALUE })
+    expect(exists('secret-dialog')).toBe(false)
+    expect(document.body.textContent).toContain('Secret API_KEY of work saved')
+    expect(document.body.innerHTML).not.toContain(VALUE)
+  })
+
+  it('removes one with DELETE after asking', async () => {
+    const api = fakeApi({ 'GET /session': SIGNED_IN, 'DELETE /vms/work/secrets/DB_PASSWORD': CHANGED(['API_KEY'], 'next_start') })
+    await openApp('/vms/work/web', [{ ...WITH, state: 'stopped' }])
+    await click('secret-remove-DB_PASSWORD')
+    expect(text('secret-remove-text')).toContain('Its value is gone for good.')
+    expect(exists('secret-value')).toBe(false)
+    expect(api.calls.some(c => c.method === 'DELETE')).toBe(false)
+    await submit('secret-dialog')
+    expect(api.calls.filter(c => c.method === 'DELETE').map(c => c.path)).toEqual(['/vms/work/secrets/DB_PASSWORD'])
+    expect(exists('secret-dialog')).toBe(false)
+    expect(document.body.textContent).toContain('Secret DB_PASSWORD of work removed')
+  })
+
+  it('says what is wrong before sending: the form of the name, a VM variable or a secret of that name, a control character', async () => {
+    const api = fakeApi({ 'GET /session': SIGNED_IN })
+    await openApp('/vms/work/web', [WITH])
+    await click('secret-add')
+    await type('secret-name', 'API-KEY')
+    expect(text('secret-problem')).toBe('A-Z, a-z, 0-9 and _, not starting with a digit, at most 64 characters.')
+    await type('secret-name', 'NODE_ENV')
+    expect(text('secret-problem')).toBe('This name is a VM variable of the VM. A name cannot be both.')
+    await type('secret-name', 'API_KEY')
+    expect(text('secret-problem')).toBe('The VM has a secret of this name already. Replace it in the list.')
+    await type('secret-name', 'NEW_KEY')
+    await type('secret-value', 'a\u0007b')
+    expect(text('secret-problem')).toBe('No line breaks or other control characters.')
+    expect(byTestId('secret-send').attributes('disabled')).toBeDefined()
+    await submit('secret-dialog')
+    expect(api.calls.some(c => c.method === 'PUT')).toBe(false)
+  })
+
+  it('names the secret agentbox refuses and stays open', async () => {
+    fakeApi({
+      'GET /session': SIGNED_IN,
+      'PUT /vms/work/secrets/NODE_OPTIONS': { status: 400, body: { error: { code: 'secret_name_reserved', message: 'x', field: 'name', params: { name: 'NODE_OPTIONS' } } } },
+    })
+    await openApp('/vms/work/web', [WITH])
+    await click('secret-add')
+    await type('secret-name', 'NODE_OPTIONS')
+    await type('secret-value', VALUE)
+    await submit('secret-dialog')
+    expect(text('secret-error')).toBe('NODE_OPTIONS: a Safeguard or Agent Box itself sets or reads this variable, it cannot be a secret.')
+    expect(exists('secret-dialog')).toBe(true)
+  })
+})
+
 describe('deleting a VM', () => {
   it('needs the typed name, archives the Data disk by default, and goes back to the list', async () => {
     const api = fakeApi({

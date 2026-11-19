@@ -32,10 +32,20 @@ on and 7 days, and only the field a call changes is written.
 the record, then the file QEMU passes into the VM at its next start. The domain names that
 file and is not defined again, so a paused VM is not refused: it resumes with the variables
 of its last boot and gets the new ones at its next Restart or Reset.
+
+`agentbox set-secret` and `unset-secret` do the same for a VM's secrets: values the VM gets
+like VM variables, which the Host never shows or logs. The record holds only their names,
+the values live only in footprint.vm_secrets_file (root:qemu, 0640), which QEMU passes in as
+fw_cfg opt/agentbox/secrets. set-secret reads the value from stdin, never from an argument,
+so it stays out of shell history, `ps` and Activity; no message, answer or Activity entry
+repeats it, and `env` and `describe` show the names only. No name is both a VM variable and a
+secret, and vmenv.MAX_VARIABLES counts both together.
 """
 import json
 import os
 import re
+import sys
+import termios
 import time
 
 from . import activity, allowlist, footprint, generate, images, lifecycle, paths, registry, settings, state_files
@@ -142,11 +152,11 @@ def _free_network(records):
 
 def _leftovers(rec):
     """What an earlier VM of this name left behind; a new VM must not take it over
-    (its Claude token, its Orca identity on the Data disk, a network with another number)."""
+    (its Claude token or secrets, its Orca identity on the Data disk, a network with another number)."""
     name = rec["name"]
     files = [("Data disk", footprint.data_disk(name)), ("System disk", footprint.system_disk(name)),
              ("Claude token", footprint.claude_token_file(name)), ("VM variables", footprint.vm_env_file(name)),
-             ("SSH host key", footprint.ssh_host_key_file(name)),
+             ("secrets", footprint.vm_secrets_file(name)), ("SSH host key", footprint.ssh_host_key_file(name)),
              ("SSH host key", footprint.ssh_host_key_public_file(name)), ("SSH access", footprint.vm_ssh_file(name)),
              ("Observer", footprint.observer_dir(name)),
              *(("units", f) for f in footprint.unit_files(rec))]
@@ -379,7 +389,12 @@ def _change_env(name, change):
             with state_files.vm_lock(name):
                 rec = registry.load(name)
                 before = dict(rec.get("env", {}))
-                after = vmenv.check(change(dict(before)), kept=before)
+                secrets = registry.secrets(rec)
+                after = vmenv.check(change(dict(before)), kept=before, besides=len(secrets))
+                for n in after:
+                    if n in secrets and n not in before:
+                        die(f"{n} is a secret of {name}, a name cannot be both (agentbox unset-secret {name} {n} "
+                            f"removes the secret)", error="env_name_is_secret", vm=name, name=n)
                 if after != before:
                     rec = {**rec, "env": after}
                     registry.save(rec)
@@ -406,23 +421,28 @@ def _what(before, after):
     return "VM variables " + "; ".join(parts) if parts else "VM variables written again"
 
 
+def _applies_message(name, said, applies, defined, what):
+    """The message of a change the VM gets at its next start (VM variables, secrets): said,
+    then when it applies."""
+    if defined == "domain-postponed":
+        # its saved memory belongs to the old definition (generate.domain); regenerate defines it
+        # once the VM runs again, as for every other change of its definition
+        return (f"{said}; the VM is paused, so it is defined again only once it no longer has a Pause "
+                f"(agentbox start {name}, then agentbox regenerate), and the {what} apply from the "
+                f"next Restart or Reset after that")
+    if applies is None:
+        return said
+    if applies == "next_start":
+        return f"{said}, applies from the next start"
+    return (f"{said}, applies from the next Restart (agentbox restart {name}) or Reset; "
+            f"until then the VM keeps the {what} it started with")
+
+
 def _env_answer(name, opts, before, after, state, applies, defined, what):
     said = f"{name}: VM variables unchanged" if applies is None else f"{name}: {what}"
     if applies is None:
         activity.unchanged()
-    if defined == "domain-postponed":
-        # its saved memory belongs to the old definition (generate.domain); regenerate defines it
-        # once the VM runs again, as for every other change of its definition
-        message = (f"{said}; the VM is paused, so it is defined again only once it no longer has a Pause "
-                   f"(agentbox start {name}, then agentbox regenerate), and the VM variables apply from the "
-                   f"next Restart or Reset after that")
-    elif applies is None:
-        message = said
-    elif applies == "next_start":
-        message = f"{said}, applies from the next start"
-    else:
-        message = (f"{said}, applies from the next Restart (agentbox restart {name}) or Reset; "
-                   f"until then the VM keeps the VM variables it started with")
+    message = _applies_message(name, said, applies, defined, "VM variables")
     if "json" in opts:
         print(json.dumps({"vm": name, "env": after, "changed": applies is not None, "state": state,
                           "applies": applies, "message": message}, ensure_ascii=False))
@@ -456,24 +476,168 @@ def unset_env(args):
 
 
 def env(args):
-    """agentbox env <vm> [--json]: the VM's VM variables, names and values."""
+    """agentbox env <vm> [--json]: the VM's VM variables, names and values, and the names of its
+    secrets, never their values."""
     positional, opts = options.parse(args)
     if len(positional) != 1:
         die("env <vm> [--json]", error="invalid_argument")
     name = registry.check(positional[0])
-    variables = registry.load(name).get("env", {})
-    refused = vmenv.refused(variables)
+    rec = registry.load(name)
+    variables, secrets = rec.get("env", {}), registry.secrets(rec)
+    refused, secrets_refused = vmenv.refused(variables), vmenv.refused(dict.fromkeys(secrets))
     if "json" in opts:
-        print(json.dumps({"vm": name, "env": variables, "refused": refused}, ensure_ascii=False))
-    elif not variables:
-        print(f"{name}: no VM variables")
+        print(json.dumps({"vm": name, "env": variables, "refused": refused, "secrets": secrets,
+                          "secrets_refused": secrets_refused}, ensure_ascii=False))
+        return
+    if not variables and not secrets:
+        print(f"{name}: no VM variables and no secrets")
+        return
+    # one line each; the values are text without line breaks (vmenv.check_value)
+    for n, v in variables.items():
+        print(f"{n}={clean(v, False)}")
+    for n in secrets:
+        print(f"{n} (secret, its value is not shown)")
+    for n in refused:
+        print(f"{name}: {n} is not passed on to the VM: a Safeguard or Agent Box itself sets or reads it "
+              f"(agentbox unset-env {name} {n} removes it)")
+    for n in secrets_refused:
+        print(f"{name}: the secret {n} is not passed on to the VM: a Safeguard or Agent Box itself sets or "
+              f"reads it (agentbox unset-secret {name} {n} removes it)")
+
+
+# --- Secrets per VM ----------------------------------------------------------
+
+def _read_secret(name, secret, opts):
+    """The value of a secret from stdin: on a terminal (without --no-prompt) one line typed
+    without echo, else all of stdin; one line break at its end is not part of it (a value
+    has none, vmenv.check_value). Read before any lock is taken."""
+    limit = vmenv.MAX_VALUE + 2              # the value and a line break (\r\n)
+    stdin = sys.stdin.buffer
+    if "no-prompt" not in opts and sys.stdin.isatty():
+        fd = sys.stdin.fileno()
+        before = termios.tcgetattr(fd)
+        quiet = termios.tcgetattr(fd)
+        quiet[3] &= ~termios.ECHO
+        try:
+            # echo off before the prompt, so nothing typed after it shows
+            termios.tcsetattr(fd, termios.TCSAFLUSH, quiet)
+            print(f"The value of the secret {secret} for {name} (it is not shown), then Enter:", file=sys.stderr,
+                  flush=True)
+            data = stdin.readline(limit + 1)
+        finally:
+            termios.tcsetattr(fd, termios.TCSAFLUSH, before)
+            print(file=sys.stderr, flush=True)
     else:
-        # one line each; the values are text without line breaks (vmenv.check_value)
-        for n, v in variables.items():
-            print(f"{n}={clean(v, False)}")
-        for n in refused:
-            print(f"{name}: {n} is not passed on to the VM: a Safeguard or Agent Box itself sets or reads it "
-                  f"(agentbox unset-env {name} {n} removes it)")
+        data = stdin.read(limit + 1)
+    data = data[:-2] if data.endswith(b"\r\n") else data[:-1] if data.endswith(b"\n") else data
+    if len(data) > vmenv.MAX_VALUE:
+        die(f"the value of {secret} is longer than {vmenv.MAX_VALUE} bytes", error="secret_too_large",
+            name=secret, max_bytes=vmenv.MAX_VALUE)
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        die(f"the value of {secret} is not valid UTF-8", error="invalid_secret_value", name=secret)
+
+
+def _change_secrets(name, change):
+    """Apply change(rec, names, values) -> (names, values) to the VM's secrets, under the locks
+    of _change_env. A secret that is added goes into the file before its name goes into the
+    record, one that is removed leaves the record first: whatever dies in between leaves at
+    most a value no name in the record points to, which regenerate removes from the file
+    (generate.vm_secrets). Then the VM is defined again if its definition changed (a domain
+    from before secrets lacks their fw_cfg entry). Returns (names before, names after,
+    written, defined), defined as generate.domain."""
+    path = footprint.vm_secrets_file(name)
+    with state_files.locked(paths.REGISTRY):
+        with state_files.locked(footprint.record_file(name)):
+            with state_files.vm_lock(name):
+                rec = registry.load(name)
+                before = registry.secrets(rec)
+                try:
+                    values = generate.read_secrets(name)
+                except OSError as e:
+                    die(f"{name}: {e.filename}: {e.strerror}", error="action_failed", vm=name)
+                after, values = change(rec, before, values)
+                new = {k: v for k, v in rec.items() if k != "secrets"}
+                if after:
+                    new["secrets"] = after
+
+                def write(saved):
+                    try:
+                        return generate.fw_cfg_file(path, generate.secrets_file(new, values))
+                    except (Fail, OSError) as e:
+                        why = e.message.strip() if isinstance(e, Fail) else f"{e.filename}: {e.strerror}"
+                        if not saved:
+                            die(f"{name}: the file of the secrets was not written, nothing changed: {why}",
+                                error="action_failed", vm=name)
+                        die(f"{name}: secrets saved, but the file the VM reads was not written: {why}; "
+                            f"agentbox regenerate finishes it", error="secret_not_applied", vm=name)
+
+                if set(after) - set(before):
+                    written = write(False)
+                    registry.save(new)
+                else:
+                    if after != before:
+                        registry.save(new)
+                    written = write(after != before)
+                try:
+                    defined = generate.domain(new)
+                except Fail as f:
+                    die(f"{name}: secrets saved, but the VM was not defined again: {f.message.strip()}; "
+                        f"agentbox regenerate finishes it", error="secret_not_applied", vm=name)
+    return before, after, written, defined
+
+
+def _secret_answer(name, opts, secrets, changed, defined, said):
+    """The answer of set-secret and unset-secret: names only, never a value."""
+    state, applies = _applies(name, changed or defined == "domain")
+    if applies is None:
+        activity.unchanged()
+    message = _applies_message(name, f"{name}: {said}" if applies else f"{name}: secrets unchanged", applies,
+                               defined, "secrets")
+    if "json" in opts:
+        print(json.dumps({"vm": name, "secrets": secrets, "changed": applies is not None, "state": state,
+                          "applies": applies, "message": message}, ensure_ascii=False))
+    else:
+        print(message)
+
+
+def set_secret(args):
+    """agentbox set-secret <vm> NAME [--no-prompt] [--json]: add a secret or replace its value,
+    read from stdin. Setting a value counts as a change even when it is the stored one, so no
+    answer tells whether a value was the one stored."""
+    positional, opts = options.parse(args)
+    if len(positional) != 2:
+        die("set-secret <vm> NAME [--no-prompt] [--json]  (the value on stdin)", error="invalid_argument")
+    name = registry.check(positional[0])
+    secret = vmenv.check_name(positional[1], vmenv.SECRET)
+    value = vmenv.check_value(secret, _read_secret(name, secret, opts), vmenv.SECRET)
+
+    def change(rec, names, values):
+        if secret in rec.get("env", {}):
+            die(f"{secret} is a VM variable of {name}, a name cannot be both (agentbox unset-env {name} {secret} "
+                f"removes the variable)", error="secret_name_is_env", vm=name, name=secret)
+        after = names if secret in names else [*names, secret]
+        vmenv.check_count(len(after), len(rec.get("env", {})), vmenv.SECRET)
+        return after, {**values, secret: value}
+
+    _, after, _, defined = _change_secrets(name, change)
+    _secret_answer(name, opts, after, True, defined, f"secret {secret} set")
+
+
+def unset_secret(args):
+    """agentbox unset-secret <vm> NAME [--json]: remove a secret, its name and its value; a name
+    the VM does not have changes nothing."""
+    positional, opts = options.parse(args)
+    if len(positional) != 2:
+        die("unset-secret <vm> NAME [--json]", error="invalid_argument")
+    name = registry.check(positional[0])
+    secret = vmenv.valid_name(positional[1], vmenv.SECRET)
+    before, after, written, defined = _change_secrets(
+        name, lambda rec, names, values: ([n for n in names if n != secret],
+                                          {k: v for k, v in values.items() if k != secret}))
+    _secret_answer(name, opts, after, before != after or written, defined,
+                   f"secret {secret} removed" if secret in before else "secrets written again")
 
 
 DECLARATIONS = {
@@ -507,4 +671,10 @@ DECLARATIONS = {
                          describe=activity.describe_unset_env, option_exit=1),
     "env": declare(env, "agentbox env <vm> [--json]", options={"json": False}, read_only=True,
                    option_exit=1),
+    "set-secret": declare(set_secret, "agentbox set-secret <vm> NAME [--no-prompt] [--json]",
+                          options={"no-prompt": False, "json": False}, control_room=True,
+                          option_exit=1, describe=activity.describe_secret("Set the secret", "Set a secret")),
+    "unset-secret": declare(unset_secret, "agentbox unset-secret <vm> NAME [--json]", options={"json": False},
+                            control_room=True, option_exit=1,
+                            describe=activity.describe_secret("Remove the secret", "Remove a secret")),
 }

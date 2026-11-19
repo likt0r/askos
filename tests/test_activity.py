@@ -528,6 +528,33 @@ class SecretTest(ActivityTest):
                          ("credentials", "set-claude-token", "ok", "Set the Claude token"))
         self.assertNotIn(b"sk-ant", self.raw())
 
+    def test_vm_secrets_by_name_without_their_value(self):
+        """set-secret and unset-secret carry the name only; the value comes on stdin and reaches no
+        entry, not even a failed one's."""
+        value = "Geheim-s3cr3t-value"
+        for args, stdin, code in ((["set-secret", "work", "API_KEY"], value, 0),
+                                  (["set-secret", "work", "NODE_OPTIONS"], value, 1),
+                                  (["set-secret", "work", "BAD"], value + "\x1b", 1),
+                                  (["set-secret", "work", "API_KEY", value], "", 1),
+                                  (["unset-secret", "work", "API_KEY"], "", 0)):
+            self.assertEqual(self.run_agentbox("--actor", FIREFOX, *args, stdin=stdin)[0], code, args)
+        entries = self.entries()
+        self.assertEqual([(e["AGENTBOX_ACTION"], e["AGENTBOX_VM"], e["AGENTBOX_OUTCOME"], e.get("AGENTBOX_PARAM_NAME"))
+                          for e in entries], [
+            ("set-secret", "work", "ok", "API_KEY"),
+            ("set-secret", "work", "failed", "NODE_OPTIONS"),
+            ("set-secret", "work", "failed", "BAD"),
+            ("set-secret", "work", "failed", "API_KEY"),
+            ("unset-secret", "work", "ok", "API_KEY"),
+        ])
+        self.assertEqual(entries[0]["AGENTBOX_DESCRIPTION"], "Set the secret API_KEY")
+        self.assertEqual((entries[1]["AGENTBOX_ERROR"], entries[1]["AGENTBOX_ERROR_PARAM_NAME"]),
+                         ("secret_name_reserved", "NODE_OPTIONS"))
+        self.assertEqual(entries[2]["AGENTBOX_ERROR"], "invalid_secret_value")
+        self.assertEqual(entries[4]["AGENTBOX_DESCRIPTION"], "Remove the secret API_KEY")
+        # not even the value given as an argument by mistake, which set-secret refuses
+        self.assertNotIn(b"Geheim", self.raw())
+
     def test_refused_claude_token_echoed_back(self):
         self.answer('{"type":"error","error":{"type":"authentication_error","message":"bad key '
                     + TOKEN[:20] + '"}}')

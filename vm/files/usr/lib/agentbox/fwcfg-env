@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Variables from one fw_cfg entry into the environment of orca serve and of shells
-# (agentbox/vmenv.py writes the entry on the Host). guest-setup runs it at every boot,
-# before it appends the fixed values of Agent Box, so those win.
+# Variables from one fw_cfg entry (the VM variables or the secrets) into the environment of
+# orca serve and of shells (agentbox/vmenv.py writes the entry on the Host). guest-setup runs
+# it at every boot, before it appends the fixed values of Agent Box, so those win. It never
+# prints a value, only names.
 #   fwcfg-env <entry file> <env file> <agent-env file>
 # The entry has one line NAME=<base64 of the value> per variable, or "none". A missing
 # entry means no variables: a VM whose new definition was postponed while it was paused

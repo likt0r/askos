@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // A VM at a glance: state, memory (its limit can be changed), Container image cleanup,
-// agents, connected devices and SSH sessions, its VM variables (changed in VmEnvDialog),
+// agents, connected devices and SSH sessions, its VM variables (changed in VmEnvDialog), the
+// names of its secrets (set, replaced or removed in VmSecretDialog, never shown),
 // System disk (age, Build, Reset due and why an automatic Reset was postponed), Image and
 // Build (pin, what the next Reset brings) with the versions of the tools in the VM (VmVersions,
 // from GET /images). Everything else comes live from the `vm` and `host` events.
@@ -16,6 +17,17 @@ const cleanupOpen = ref(false)
 const envOpen = ref(false)
 const env = computed(() => Object.entries(props.vm.env ?? {}).filter(([, v]) => typeof v === 'string'))
 const refused = computed(() => new Set(Array.isArray(props.vm.env_refused) ? props.vm.env_refused : []))
+// the names of its secrets only: the value of none ever reaches the Control Room
+const secrets = computed(() => (Array.isArray(props.vm.secrets) ? props.vm.secrets.filter(n => typeof n === 'string') : []))
+const secretsRefused = computed(() => new Set(Array.isArray(props.vm.secrets_refused) ? props.vm.secrets_refused : []))
+const secretOpen = ref(false)
+const secretName = ref<string | null>(null)
+const secretMode = ref<'set' | 'remove'>('set')
+function openSecret(name: string | null, mode: 'set' | 'remove') {
+  secretName.value = name
+  secretMode.value = mode
+  secretOpen.value = true
+}
 
 // devices connected to the Orca port, and SSH sessions apart (#135)
 const orcaDevices = computed(() => (props.vm.devices ?? []).filter(d => d.kind !== 'ssh'))
@@ -257,6 +269,57 @@ const postponedText = computed(() => {
       </dl>
     </section>
 
+    <!-- Secrets: names only, set, replace or remove, never read -->
+    <section class="rounded-lg border border-default bg-default p-4 space-y-2 sm:col-span-2 xl:col-span-3" data-testid="overview-secrets">
+      <div class="flex items-center justify-between gap-2">
+        <h3 class="text-xs font-medium uppercase tracking-wide text-dimmed">
+          {{ t('vm.secrets.heading') }}
+        </h3>
+        <UButton
+          size="xs"
+          color="neutral"
+          variant="outline"
+          icon="i-lucide-key-round"
+          :label="t('vm.secrets.add')"
+          :aria-label="t('vm.secrets.titleAdd', { name: props.vm.name })"
+          data-testid="secret-add"
+          @click="openSecret(null, 'set')"
+        />
+      </div>
+      <p v-if="!secrets.length" class="text-sm text-muted" data-testid="overview-secrets-none">
+        {{ t('vm.secrets.none') }}
+      </p>
+      <ul v-else class="space-y-1 text-sm" data-testid="overview-secrets-list">
+        <li v-for="name in secrets" :key="name" class="flex flex-wrap items-center gap-x-4 gap-y-1" :data-testid="`overview-secret-${name}`">
+          <span class="font-mono text-xs leading-5">{{ name }}</span>
+          <span class="font-mono text-xs leading-5 text-muted" aria-hidden="true">{{ t('vm.secrets.hidden') }}</span>
+          <span v-if="secretsRefused.has(name)" class="text-xs text-warning" :data-testid="`overview-secret-refused-${name}`">
+            {{ t('vm.secrets.refused') }}
+          </span>
+          <span class="ml-auto flex gap-1">
+            <UButton
+              size="xs"
+              color="neutral"
+              variant="ghost"
+              :label="t('vm.secrets.replace')"
+              :aria-label="t('vm.secrets.titleReplace', { name: props.vm.name, secret: name })"
+              :data-testid="`secret-replace-${name}`"
+              @click="openSecret(name, 'set')"
+            />
+            <UButton
+              size="xs"
+              color="error"
+              variant="ghost"
+              :label="t('vm.secrets.remove')"
+              :aria-label="t('vm.secrets.titleRemove', { name: props.vm.name, secret: name })"
+              :data-testid="`secret-remove-${name}`"
+              @click="openSecret(name, 'remove')"
+            />
+          </span>
+        </li>
+      </ul>
+    </section>
+
     <!-- the rest of the record -->
     <section class="rounded-lg border border-default bg-default p-4 sm:col-span-2 xl:col-span-3">
       <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm sm:grid-cols-[auto_1fr_auto_1fr]">
@@ -287,5 +350,6 @@ const postponedText = computed(() => {
     <VmMemoryDialog v-model:open="memoryOpen" :vm="props.vm" />
     <VmContainerImageCleanupDialog v-model:open="cleanupOpen" :vm="props.vm" />
     <VmEnvDialog v-model:open="envOpen" :vm="props.vm" />
+    <VmSecretDialog v-model:open="secretOpen" :vm="props.vm" :secret="secretName" :mode="secretMode" />
   </div>
 </template>

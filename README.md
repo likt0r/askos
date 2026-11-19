@@ -250,7 +250,8 @@ agentbox delete lab --confirm lab   # delete a VM, its Data disk is archived
 agentbox set-memory lab 32768       # memory limit in MiB, from the VM's next start or Restart
 agentbox set-container-image-cleanup lab off   # or on, and --days 14 (1 to 365)
 agentbox set-env lab DATABASE_URL=postgres://db.example/app   # a VM variable, from the next start or Restart
-agentbox env lab                    # the VM's VM variables
+agentbox env lab                    # the VM's VM variables and the names of its secrets
+agentbox set-secret lab NPM_TOKEN   # a secret, its value typed without echo (or on stdin)
 agentbox add-ssh-key lab ~/.ssh/id_ed25519.pub   # an SSH key for the VM (or on stdin)
 agentbox set-ssh lab on             # SSH access: ssh -p 22NN agent@127.0.0.1 (agentbox ssh lab)
 agentbox remove-ssh-key lab SHA256:…   # takes the key out at once, ends every SSH session
@@ -449,6 +450,20 @@ names of `A-Z`, `a-z`, `0-9` and `_` up to 64 characters, values up to 4 KiB wit
 breaks. The Control Room edits them as a table on the VM's overview
 (`PUT /api/v1/vms/<name>/env`, which replaces the whole list; requests there are limited to
 8 KiB).
+
+`agentbox set-secret <name> NAME` adds a **VM secret** or replaces its value: a credential the
+project needs in that VM (an API key for a staging service, a registry token, a database
+password). The VM gets it like a VM variable, from its next start or Restart, but the Host
+never shows or logs the value: it is read from stdin (typed without echo on a terminal, or
+piped in), never from an argument, so it stays out of shell history and `ps`; `describe`,
+`agentbox env`, the Control Room and Activity name the secret only. The record holds the
+names, the values live only in `/etc/agentbox/secrets/env-<name>` beside the Claude token.
+`agentbox unset-secret <name> NAME` removes one. Secrets follow the name rules of VM variables,
+the 64 count both together, and no name is both a VM variable and a secret. The Control Room
+lists them as `••••` on the VM's overview and can set, replace or remove one, never read it
+(`PUT` and `DELETE /api/v1/vms/<name>/secrets/<NAME>`). A secret protects the value on the
+Host, not from the agent in the VM: code there can read it as it reads the Claude token, and
+send it out only where the Allowlist lets it.
 
 `agentbox delete <name> --confirm <name>` stops the VM and removes everything the Host
 had for it. The System disk is deleted; the Data disk is moved to

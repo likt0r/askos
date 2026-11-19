@@ -29,10 +29,11 @@ CLEANUP_DAYS = (1, 365)
 CLEANUP_DEFAULT = (True, 7)
 FIELDS = {"name": str, "network": int, "orca_port": int, "image": str, "build": (str, type(None)),
           "memory_mib": int, "data_disk_gib": int, "github_owners": list, "created": str}
-# Fields a record may lack: the VM variables (vmenv.py), none when missing, the Container
-# image cleanup (CLEANUP_DEFAULT when missing), and SSH access and its SSH keys (sshkeys.py),
-# off and none when missing
-OPTIONAL = {"env": dict, "container_image_cleanup": bool, "container_image_cleanup_days": int,
+# Fields a record may lack: the VM variables (vmenv.py) and the names of the secrets (their
+# values live only in footprint.vm_secrets_file), none when missing, the Container image
+# cleanup (CLEANUP_DEFAULT when missing), and SSH access and its SSH keys (sshkeys.py), off and
+# none when missing
+OPTIONAL = {"env": dict, "secrets": list, "container_image_cleanup": bool, "container_image_cleanup_days": int,
             "ssh_access": bool, "ssh_keys": list}
 
 
@@ -69,8 +70,18 @@ def problem(rec, name):
     why = vmenv.problem(rec["env"]) if "env" in rec else None
     if why:
         return f"env: {why}"
+    why = vmenv.names_problem(rec["secrets"]) if "secrets" in rec else None
+    if why:
+        return f"secrets: {why}"
+    if len(rec.get("env", {})) + len(rec.get("secrets", [])) > vmenv.MAX_VARIABLES:
+        return f"more than {vmenv.MAX_VARIABLES} VM variables and secrets together"
     why = sshkeys.problem(rec["ssh_keys"]) if "ssh_keys" in rec else None
     return f"ssh_keys: {why}" if why else None
+
+
+def secrets(rec):
+    """The names of the VM's secrets (never their values: those are only in its secrets file)."""
+    return list(rec.get("secrets", []))
 
 
 def load(name):

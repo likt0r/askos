@@ -269,6 +269,17 @@ describe('Activity text (unit)', () => {
     expect(activityText(refused, tr)).toBe(`${say('setEnv', { env: 'NODE_OPTIONS=' })}: errors.env_name_reserved {"field":"","name":"NODE_OPTIONS"}`)
   })
 
+  it('words a secret by its name only', () => {
+    const say = (key: string, values: Record<string, string>) => `activity.actions.${key} ${JSON.stringify(values)}`
+    expect(activityText(coded(0, 'set-secret', { name: 'API_KEY' }, 'stored'), tr)).toBe(say('setSecret', { name: 'API_KEY' }))
+    expect(activityText(coded(0, 'set-secret', {}, 'stored'), tr)).toBe('activity.actions.setSecretAny')
+    expect(activityText(coded(0, 'unset-secret', { name: 'API_KEY' }, 'stored'), tr)).toBe(say('unsetSecret', { name: 'API_KEY' }))
+    expect(activityText(coded(0, 'unset-secret', {}, 'stored'), tr)).toBe('activity.actions.unsetSecretAny')
+    const refused = coded(0, 'set-secret', { name: 'PATH' }, 'stored',
+      { outcome: 'failed', error: 'secret_name_reserved', error_params: { name: 'PATH' } })
+    expect(activityText(refused, tr)).toBe(`${say('setSecret', { name: 'PATH' })}: errors.secret_name_reserved {"field":"","name":"PATH"}`)
+  })
+
   it('words one removed Container image in the singular', () => {
     const one = coded(0, 'container-image-cleanup.removed', { removed: '1', freed_bytes: '1048576', days: '7' }, 'stored')
     expect(activityText(one, tr)).toContain('activity.actions.cleanupRemovedOne')

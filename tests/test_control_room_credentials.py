@@ -98,6 +98,74 @@ class ClaudeTokenTest(CredentialsTest):
         self.assert_nowhere(TOKEN)
 
 
+class VmSecretTest(CredentialsTest):
+    """Secrets per VM (#30): PUT sets or replaces one with its value on stdin, DELETE removes one;
+    nothing ever reads a value back."""
+    VALUE = 'staging-Geheimnis "x" $(id) 0123456789'
+    CHANGED = {"vm": "priv", "secrets": ["API_KEY"], "changed": True, "state": "running", "applies": "next_restart",
+               "message": "priv: secret API_KEY set, applies from the next Restart"}
+
+    def put(self, body, name="API_KEY"):
+        return self.request("PUT", f"/api/v1/vms/priv/secrets/{name}", body)[:2]
+
+    def test_the_value_goes_on_stdin_only(self):
+        self.respond(self.CHANGED)
+        status, obj = self.put({"value": self.VALUE})
+        self.assertEqual((status, obj), (200, self.CHANGED))
+        self.assertEqual(self.calls(), [["set-secret", "priv", "API_KEY", "--no-prompt", "--json"]])
+        self.assertEqual(self.stdins(), [self.VALUE])
+        self.assertIn("priv v1 PUT put_secret -> ok", self.server_log())
+        self.assert_nowhere(self.VALUE, obj)
+
+    def test_delete_removes_it_by_name(self):
+        self.respond({**self.CHANGED, "secrets": []})
+        status, obj = self.request("DELETE", "/api/v1/vms/priv/secrets/API_KEY")[:2]
+        self.assertEqual((status, obj["secrets"]), (200, []))
+        self.assertEqual(self.calls(), [["unset-secret", "priv", "API_KEY", "--json"]])
+        self.assertIn("priv v1 DELETE delete_secret -> ok", self.server_log())
+
+    def test_refusals_before_agentbox(self):
+        for body, name, status, code, field in (
+                ({}, "API_KEY", 400, "invalid_field", "value"), ({"value": 42}, "API_KEY", 400, "invalid_field", "value"),
+                ({"value": None}, "API_KEY", 400, "invalid_field", "value"),
+                ({"value": "a\nb"}, "API_KEY", 400, "invalid_secret_value", "value"),
+                ({"value": "a\rb"}, "API_KEY", 400, "invalid_secret_value", "value"),
+                ({"value": "a\0b"}, "API_KEY", 400, "invalid_secret_value", "value"),
+                ({"value": "a\ud800b"}, "API_KEY", 400, "invalid_secret_value", "value"),
+                ({"value": self.VALUE}, "1BAD", 400, "invalid_secret_name", "name"),
+                ({"value": self.VALUE}, "A-B", 400, "invalid_secret_name", "name"),
+                ({"value": self.VALUE}, "A" * 65, 400, "invalid_secret_name", "name")):
+            with self.subTest(body=str(body)[:30], name=name):
+                answer = self.put(body, name)
+                self.assertError(answer, status, code)
+                self.assertEqual(answer[1]["error"]["field"], field)
+                self.assert_nowhere(self.VALUE, answer[1])
+        self.assertError(self.request("DELETE", "/api/v1/vms/priv/secrets/A-B")[:2], 400, "invalid_secret_name")
+        self.assertEqual(self.calls(), [])
+
+    def test_refusals_of_agentbox_name_the_secret_never_its_value(self):
+        for code, status, field in (("secret_name_reserved", 400, "name"), ("secret_name_is_env", 409, "name"),
+                                    ("invalid_secret_value", 400, "value"), ("secret_too_large", 400, "value")):
+            with self.subTest(code=code):
+                self.respond("", stderr=failure(code, "API_KEY: refused", vm="priv", name="API_KEY"), exitcode=1)
+                answer = self.put({"value": self.VALUE})
+                self.assertError(answer, status, code)
+                self.assertEqual((answer[1]["error"]["field"], answer[1]["error"]["params"]), (field, {"name": "API_KEY"}))
+                self.assertIn(f"priv v1 PUT put_secret -> FAILED {code}", self.server_log())
+        self.respond("", stderr=failure("secret_not_applied", "priv: secrets saved, but ...", vm="priv"), exitcode=1)
+        self.assertError(self.put({"value": self.VALUE}), 500, "secret_not_applied")
+        self.assert_nowhere(self.VALUE)
+
+    def test_a_value_echoed_by_mistake_is_hidden_also_a_short_one(self):
+        for value in (self.VALUE, "pw42"):
+            with self.subTest(value=value):
+                self.respond("", stderr=failure("action_failed", f"broken: {value}"), exitcode=1)
+                answer = self.put({"value": value})
+                self.assertError(answer, 500, "action_failed")
+                self.assertEqual(answer[1]["error"]["detail"], "broken: [hidden]")
+                self.assert_nowhere(value, answer[1])
+
+
 class SetOwnersTest(CredentialsTest):
     def put(self, body):
         return self.request("PUT", "/api/v1/vms/priv/github-owners", body)

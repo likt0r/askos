@@ -301,7 +301,8 @@ class SafeguardNamesTest(EnvTest):
         and agentbox env and describe say so. Setting it stays refused, removing it works."""
         vm_records.write(self.root, vm_records.record("work", 1, env={"NODE_OPTIONS": "x", "A": "1"}))
         self.assertEqual(self.json("env", "work"),
-                         {"vm": "work", "env": {"NODE_OPTIONS": "x", "A": "1"}, "refused": ["NODE_OPTIONS"]})
+                         {"vm": "work", "env": {"NODE_OPTIONS": "x", "A": "1"}, "refused": ["NODE_OPTIONS"],
+                          "secrets": [], "secrets_refused": []})
         self.assertEqual(self.ok("env", "work"),
                          "NODE_OPTIONS=x\nA=1\nwork: NODE_OPTIONS is not passed on to the VM: a Safeguard or Agent "
                          "Box itself sets or reads it (agentbox unset-env work NODE_OPTIONS removes it)\n")
@@ -320,7 +321,8 @@ class SafeguardNamesTest(EnvTest):
         said = self.failure("set-env", "work", "NODE_OPTIONS=y")
         self.assertEqual((said["error"], said["params"]), ("env_name_reserved", {"name": "NODE_OPTIONS"}))
         self.ok("unset-env", "work", "NODE_OPTIONS")
-        self.assertEqual(self.json("env", "work"), {"vm": "work", "env": {"A": "1", "B": "2"}, "refused": []})
+        self.assertEqual(self.json("env", "work"), {"vm": "work", "env": {"A": "1", "B": "2"}, "refused": [],
+                                                    "secrets": [], "secrets_refused": []})
 
     def test_a_record_with_malformed_variables_is_broken(self):
         for env in ({"A": 1}, ["A"], {"A": "x\n"}, {"1A": "x"}, {"A": "x" * 4097},
@@ -332,7 +334,8 @@ class SafeguardNamesTest(EnvTest):
                 self.assertIn("work.json: broken record (", err)
         # without the field: no VM variables
         vm_records.write(self.root, vm_records.record("work", 1))
-        self.assertEqual(self.json("env", "work"), {"vm": "work", "env": {}, "refused": []})
+        self.assertEqual(self.json("env", "work"), {"vm": "work", "env": {}, "refused": [], "secrets": [],
+                                                    "secrets_refused": []})
 
     def test_the_file_never_carries_a_refused_name(self):
         self.assertEqual(vmenv.fw_cfg({"NODE_OPTIONS": "x", "A": "1", "PATH": "/tmp"}), b"A=MQ==\n")
@@ -355,10 +358,11 @@ class UnsetAndShowTest(EnvTest):
         self.assertEqual(self.failure("unset-env", "work", "A-B")["error"], "invalid_env_name")
 
     def test_env_shows_names_and_values(self):
-        self.assertEqual(self.ok("env", "work"), "work: no VM variables\n")
+        self.assertEqual(self.ok("env", "work"), "work: no VM variables and no secrets\n")
         self.ok("set-env", "work", "A=x y", "B=")
         self.assertEqual(self.ok("env", "work"), "A=x y\nB=\n")
-        self.assertEqual(self.json("env", "work"), {"vm": "work", "env": {"A": "x y", "B": ""}, "refused": []})
+        self.assertEqual(self.json("env", "work"), {"vm": "work", "env": {"A": "x y", "B": ""}, "refused": [],
+                                                    "secrets": [], "secrets_refused": []})
         self.assertEqual(self.refused("env"), "agentbox: env <vm> [--json]\n")
 
     def test_each_waits_for_the_registry_the_record_and_the_lifecycle_lock(self):

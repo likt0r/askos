@@ -174,6 +174,9 @@ export const SENTENCES: Record<string, Sentence> = {
   'set-env': (p, tr) => (flag(p, 'replace') ? (has(p, 'env') ? say(tr, 'replaceEnv', { env: p.env }) : say(tr, 'clearEnv'))
     : has(p, 'env') ? say(tr, 'setEnv', { env: p.env }) : null),
   'unset-env': (p, tr) => (has(p, 'names') ? say(tr, 'unsetEnv', { names: p.names }) : null),
+  // a secret by its name only: its value never reaches an entry
+  'set-secret': either('name', 'setSecret', 'setSecretAny'),
+  'unset-secret': either('name', 'unsetSecret', 'unsetSecretAny'),
   // SSH access (agentbox/ssh_access.py): a key by its fingerprint and name
   'ssh.enabled': plain('sshEnabled'),
   'ssh.disabled': plain('sshDisabled'),

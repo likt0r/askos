@@ -22,12 +22,16 @@ name a later release refuses (a broken record would stop regenerate and create f
 it is never passed on (fw_cfg leaves it out, refused() names it), and only unset-env can
 still name it.
 
-Everything here works on a plain {name: value} dict, so another list of variables (secrets
-per VM) can use the same name check, limits and file format.
+Everything here works on a plain {name: value} dict, so the secrets per VM (vms.py) use the
+same name check, limits and file format; a KIND says which of the two a message and its error
+codes are about. The limit of MAX_VARIABLES counts VM variables and secrets together, and no
+name can be both.
 """
 import base64
+import binascii
 import re
 import unicodedata
+from typing import NamedTuple
 
 from . import safeguards
 from .errors import Fail, die
@@ -65,6 +69,19 @@ DEFAULT_ENVIRONMENT = frozenset({
     "UV_EXCLUDE_NEWER", "pnpm_config_minimum_release_age"})
 
 
+class Kind(NamedTuple):
+    """What a list of names and values holds: its noun in messages and its error codes."""
+    noun: str
+    invalid_name: str
+    reserved: str
+    invalid_value: str
+    too_large: str
+
+
+VARIABLE = Kind("VM variable", "invalid_env_name", "env_name_reserved", "invalid_env_value", "env_too_large")
+SECRET = Kind("secret", "invalid_secret_name", "secret_name_reserved", "invalid_secret_value", "secret_too_large")
+
+
 def _shown(name):
     return clean(name, False)[:MAX_NAME + 8]
 
@@ -85,54 +102,64 @@ def is_name(name):
     return isinstance(name, str) and bool(NAME.fullmatch(name)) and len(name) <= MAX_NAME
 
 
-def valid_name(name):
+def valid_name(name, kind=VARIABLE):
     """The name if it has the form of one (removing a variable needs no more); dies otherwise."""
     if not is_name(name):
-        die(f"invalid name of a VM variable: {_shown(name) if isinstance(name, str) else '?'} "
+        die(f"invalid name of a {kind.noun}: {_shown(name) if isinstance(name, str) else '?'} "
             f"(up to {MAX_NAME} characters from A-Z, a-z, 0-9 and _, not starting with a digit)",
-            error="invalid_env_name")
+            error=kind.invalid_name)
     return name
 
 
-def check_name(name):
-    """The name if a VM variable may have it; dies otherwise (invalid_env_name, env_name_reserved)."""
-    valid_name(name)
+def check_name(name, kind=VARIABLE):
+    """The name if a VM variable (or secret) may have it; dies otherwise (invalid_env_name,
+    env_name_reserved, or the codes of the secrets)."""
+    valid_name(name, kind)
     if reserved(name):
         why = "bash sets it itself" if name in SHELL else "a Safeguard or Agent Box itself sets or reads it"
-        die(f"{name} cannot be a VM variable: {why}", error="env_name_reserved", name=name)
+        die(f"{name} cannot be a {kind.noun}: {why}", error=kind.reserved, name=name)
     return name
 
 
-def check_value(name, value):
+def check_value(name, value, kind=VARIABLE):
     """The value if it may be one: valid UTF-8 text of at most MAX_VALUE bytes without control
     characters other than tab (so no NUL, newline or carriage return); dies otherwise
-    (invalid_env_value, env_too_large)."""
+    (invalid_env_value, env_too_large, or the codes of the secrets). No message repeats the
+    value: a secret's goes nowhere but its file."""
     if not isinstance(value, str):
-        die(f"the value of {name} is no text", error="invalid_env_value", name=name)
+        die(f"the value of {name} is no text", error=kind.invalid_value, name=name)
     try:
         size = len(value.encode("utf-8"))
     except UnicodeEncodeError:
-        die(f"the value of {name} is not valid UTF-8", error="invalid_env_value", name=name)
+        die(f"the value of {name} is not valid UTF-8", error=kind.invalid_value, name=name)
     if any(c != "\t" and unicodedata.category(c) == "Cc" for c in value):
         die(f"the value of {name} contains a control character (a line break, NUL, ...); only tabs are allowed",
-            error="invalid_env_value", name=name)
+            error=kind.invalid_value, name=name)
     if size > MAX_VALUE:
-        die(f"the value of {name} is {size} bytes long, at most {MAX_VALUE} are allowed", error="env_too_large",
+        die(f"the value of {name} is {size} bytes long, at most {MAX_VALUE} are allowed", error=kind.too_large,
             name=name, max_bytes=MAX_VALUE)
     return value
 
 
-def check(env, kept=()):
-    """The variables if every name and value may be one and there are at most MAX_VARIABLES;
-    dies at the first that may not, so a caller changes nothing. Names in kept (a record has
-    them already) may be refused ones: they stay, but are never passed on."""
+def check_count(count, besides, kind=VARIABLE):
+    """Dies when count names of this kind and besides of the other kind (secrets beside VM
+    variables, and the other way round) are more than MAX_VARIABLES together."""
+    if count + besides > MAX_VARIABLES:
+        what = (f"{count + besides} VM variables and secrets together" if besides
+                else f"{count} {kind.noun}s")
+        die(f"{what}, at most {MAX_VARIABLES} are allowed", error=kind.too_large, max_variables=MAX_VARIABLES)
+
+
+def check(env, kept=(), besides=0):
+    """The variables if every name and value may be one and there are at most MAX_VARIABLES
+    together with besides secrets; dies at the first that may not, so a caller changes nothing.
+    Names in kept (a record has them already) may be refused ones: they stay, but are never
+    passed on."""
     if not isinstance(env, dict):
         die("the VM variables are no list of names and values", error="invalid_argument")
     for name, value in env.items():
         check_value(valid_name(name) if name in kept else check_name(name), value)
-    if len(env) > MAX_VARIABLES:
-        die(f"{len(env)} VM variables, at most {MAX_VARIABLES} are allowed", error="env_too_large",
-            max_variables=MAX_VARIABLES)
+    check_count(len(env), besides)
     return env
 
 
@@ -151,6 +178,16 @@ def problem(env):
     return None
 
 
+def names_problem(names):
+    """What is wrong with the names of a record's secrets, or None (registry.problem): a list
+    of distinct names of the form of one, at most MAX_VARIABLES. A refused name is no problem."""
+    if not all(is_name(n) for n in names):
+        return "a name is no name of a secret"
+    if len(set(names)) != len(names):
+        return "a name is given twice"
+    return f"{len(names)} secrets, at most {MAX_VARIABLES} are allowed" if len(names) > MAX_VARIABLES else None
+
+
 def pairs(args):
     """NAME=VALUE arguments as {name: value}, each checked; a name given twice is refused."""
     env = {}
@@ -162,6 +199,22 @@ def pairs(args):
         if name in env:
             die(f"{name} given twice", error="invalid_argument", name=name)
         env[name] = value
+    return env
+
+
+def parse(data):
+    """The variables of an fw_cfg file as fw_cfg() writes it ({} for "none"); a line that is no
+    variable of that form is left out. The secrets file is read back with it."""
+    env = {}
+    for line in data.splitlines():
+        name, eq, b64 = line.partition(b"=")
+        try:
+            name = name.decode("ascii")
+            value = base64.b64decode(b64, validate=True).decode("utf-8")
+        except (UnicodeDecodeError, binascii.Error):
+            continue
+        if eq and is_name(name):
+            env[name] = value
     return env
 
 

@@ -32,8 +32,12 @@ install -m 600 /dev/null /run/agentbox/env
 # For shells (Orca terminals) also as a file only agent may read
 install -m 640 -g agent /dev/null /run/agentbox/agent-env
 # VM variables (agentbox set-env, checked on the Host so that none switches a Safeguard
-# off) come first, so the fixed values of Agent Box below win. A missing entry means none.
+# off) and secrets (agentbox set-secret, the same checks, values the Host never shows) come
+# first, so the fixed values of Agent Box below win. A missing entry means none. Both files
+# stay readable only by root and the agent (secrets never go into a world-readable file).
 /usr/lib/agentbox/fwcfg-env /sys/firmware/qemu_fw_cfg/by_name/opt/agentbox/env/raw \
+  /run/agentbox/env /run/agentbox/agent-env
+/usr/lib/agentbox/fwcfg-env /sys/firmware/qemu_fw_cfg/by_name/opt/agentbox/secrets/raw \
   /run/agentbox/env /run/agentbox/agent-env
 printf 'AGENTBOX_CONTEXT=%s\nORCA_PORT=%s\nPAIRING_ADDRESS=%s\n' "$CONTEXT" "$ORCA_PORT" "$PAIRING_ADDRESS" >> /run/agentbox/env
 # Claude token from the Host (empty as long as none is stored). Orca passes it

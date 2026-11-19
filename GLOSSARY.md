@@ -33,12 +33,16 @@ An isolated virtual machine in which agents work; the unit of separation, with i
 _Avoid_: context, environment, sandbox, container
 
 **VM registry**:
-The root-owned records on the Host that define which VMs exist, one per VM: name, network number, Orca port, Image, optional Build pin, memory limit, Data disk size, Container image cleanup, GitHub owners, VM variables, SSH access and creation date. Everything else about a VM is generated from its record.
+The root-owned records on the Host that define which VMs exist, one per VM: name, network number, Orca port, Image, optional Build pin, memory limit, Data disk size, Container image cleanup, GitHub owners, VM variables, the names of its VM secrets, SSH access and creation date. Everything else about a VM is generated from its record.
 _Avoid_: inventory, VM config
 
 **VM variables**:
 Environment variables of one VM, kept in its record and passed in at its next start, for `orca serve`, the agents and terminals it starts, and login shells (German UI: VM-Variablen). They are not secret; the Host refuses every name a Safeguard or Agent Box itself reads, so none switches a Safeguard off.
 _Avoid_: env vars, environment, env
+
+**VM secrets**:
+Values of one VM that it gets like VM variables, for credentials a project needs there (an API key, a registry token), which the Host never shows or logs: the record holds only their names, the values live in a file beside the Claude token, and the Control Room can set, replace or remove one but never read it (German UI: Geheimnisse). They keep the value from the Host's outputs and logs, not from the agent in the VM.
+_Avoid_: secret env vars, credentials (for these)
 
 **SSH access**:
 Whether a VM can be reached over SSH through its own SSH port on the Host, and with which SSH keys; off for a new VM. Only the user `agent` logs in, only with an SSH key, never with a password (German UI: SSH-Zugang).
