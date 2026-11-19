@@ -2313,10 +2313,11 @@ class MineTest(SshTest):
 
 
 class ControlRoomCallerTest(SshTest):
-    """#135: the Control Room's backend runs set-ssh, add-ssh-key, remove-ssh-key and ssh-config
-    through sudo. add-ssh-key gets the key's text on stdin and nothing else: agentbox itself
-    refuses a FILE, --mine, --yes and --from from the Control Room before anything runs, so even
-    a taken-over backend reads no file on the Host, the Host user's ~/.ssh included."""
+    """#135, #136: the Control Room's backend runs set-ssh, add-ssh-key, remove-ssh-key and
+    ssh-config through sudo. add-ssh-key gets the key's text on stdin, or --from another VM, and
+    nothing else: agentbox itself refuses a FILE, --mine and --yes from the Control Room before
+    anything runs, so even a taken-over backend reads no file on the Host, the Host user's ~/.ssh
+    included."""
 
     ACTOR = "--actor=Firefox/Linux (192.0.2.23)"
 
@@ -2362,8 +2363,9 @@ class ControlRoomCallerTest(SshTest):
         self.journald.datagrams.clear()
         before = self.files()
         for args, option in ((["--mine", "--yes"], "--mine"), (["--mine"], "--mine"), (["--yes"], "--yes"),
-                             (["--from=priv"], "--from"), (["--from", "priv"], "--from"),
-                             (["--name=x", "--mine", "--yes"], "--mine"), ([pub], None), (["--name=x", pub], None)):
+                             (["--from=priv", "--mine"], "--mine"), (["--from=priv", "--yes"], "--yes"),
+                             (["--name=x", "--mine", "--yes"], "--mine"), ([pub], None), (["--name=x", pub], None),
+                             (["--from=priv", pub], None)):
             with self.subTest(args=args):
                 code, out, err = self.through_sudo("add-ssh-key", "work", *args, stdin=LAPTOP + "\n")
                 self.assertEqual((code, out), (1, ""), err)
@@ -2376,6 +2378,32 @@ class ControlRoomCallerTest(SshTest):
         code, out, err = self.through_sudo("add-ssh-key", "work", "--mine", "--yes", user="alice")
         self.assertEqual(code, 0, err)
         self.assertEqual([k["fingerprint"] for k in json.loads(out)["added"]], [LAPTOP_FP])
+
+    def test_it_copies_the_keys_of_another_vm_once(self):
+        """--from, the one option besides --name the Control Room passes: the copy is work's own,
+        added by the browser that asked; a key work has already is named with why."""
+        self.add("priv")
+        self.add("priv", PHONE)
+        self.add("work")
+        self.journald.entries()
+        self.journald.datagrams.clear()
+        code, out, err = self.through_sudo("add-ssh-key", "work", "--from=priv")
+        self.assertEqual(code, 0, err)
+        result = json.loads(out)
+        self.assertEqual(result["added"], [{"type": "ssh-ed25519", "fingerprint": fingerprint(PHONE), "name": "phone"}])
+        self.assertEqual([(k["fingerprint"], k["error"]) for k in result["skipped"]], [(LAPTOP_FP, "ssh_key_duplicate")])
+        self.assertEqual([(k["fingerprint"], k["added_by"]) for k in self.record()["ssh_keys"]][1:],
+                         [(fingerprint(PHONE), "Firefox/Linux (192.0.2.23)")])
+        self.assertEqual(self.activity(), [
+            ("ssh.key-added", "work", "ok", {"fingerprint": fingerprint(PHONE), "name": "phone"})])
+        # once: priv's later keys stay in priv
+        self.add("priv", DESK)
+        self.assertEqual(len(self.record()["ssh_keys"]), 2)
+        # with a name, or from work itself, it is refused as on the Host
+        for args in (["--from=priv", "--name=x"], ["--from=work"]):
+            with self.subTest(args=args):
+                code, out, err = self.through_sudo("add-ssh-key", "work", *args)
+                self.assertEqual((code, json.loads(err.strip().splitlines()[-1])["error"]), (1, "invalid_argument"))
 
 
 class OwnRightsTest(unittest.TestCase):

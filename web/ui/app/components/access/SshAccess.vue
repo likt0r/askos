@@ -1,9 +1,10 @@
 <script setup lang="ts">
 // The VM's SSH access (#135, ADR 0020): the switch, its SSH keys (added from a .pub file or
-// pasted text, removed after a confirmation that says open sessions end), a change the VM has
-// not taken yet, and the connection help. The help is what `agentbox ssh-config <vm> --json`
-// gives (GET /vms/<vm>/ssh-config), shown as it is: no second version of the block here.
-import type { SshConfig } from '~/utils/access'
+// pasted text, removed after a confirmation that says open sessions end, copied once from
+// another VM), a change the VM has not taken yet, and the connection help. The help is what
+// `agentbox ssh-config <vm> --json` gives (GET /vms/<vm>/ssh-config), shown as it is: no second
+// version of the block here.
+import type { SshConfig, SshCopiedKey, SshCopy } from '~/utils/access'
 import type { SshKey, Vm } from '~/utils/live'
 
 const props = defineProps<{ vm: Vm }>()
@@ -109,6 +110,54 @@ async function addKey() {
     adding.value = false
     refresh()
   }
+}
+
+// --- copying the keys of another VM, once (ADR 0001): agentbox adds each by the rules of one
+// key and names those it leaves out (entered already, beyond 16 keys) with why ---
+const copyFrom = ref<string | undefined>(undefined)
+const copying = ref(false)
+const copyResult = ref<SshCopy | null>(null)
+const others = computed(() => live.state.vms.map(v => v.name).filter(n => n !== props.vm.name))
+const copyItems = computed(() => others.value.map(n => ({ value: n, label: n })))
+const canCopy = computed(() => !!copyFrom.value && others.value.includes(copyFrom.value) && !full.value && !copying.value)
+
+watch(() => props.vm.name, () => {
+  copyFrom.value = undefined
+  copyResult.value = null
+})
+
+async function copyKeys() {
+  if (!canCopy.value) return
+  const from = copyFrom.value!
+  copying.value = true
+  error.value = null
+  copyResult.value = null
+  try {
+    const r = await api<SshCopy>(`/vms/${props.vm.name}/ssh-keys`, { method: 'POST', body: { from } })
+    copyResult.value = {
+      ...r,
+      from: r?.from ?? from,
+      added: Array.isArray(r?.added) ? r.added : [],
+      skipped: Array.isArray(r?.skipped) ? r.skipped : [],
+    }
+    copyFrom.value = undefined
+  }
+  catch (e) {
+    error.value = e
+  }
+  finally {
+    copying.value = false
+    refresh()
+  }
+}
+
+function copiedLabel(k: SshCopiedKey) {
+  return k.name || k.fingerprint || t('access.ssh.copy.unreadable')
+}
+
+/** Why agentbox left a key out: its code translated, else agentbox's own message. */
+function skippedReason(k: { error: string, message: string }) {
+  return errorText(new ApiError(0, k.error, k.message))
 }
 
 // --- removing a key: every open SSH session of the VM ends ---
@@ -329,6 +378,75 @@ async function copy(what: string, text: string) {
       </UFormField>
       <div class="flex justify-end">
         <UButton type="submit" icon="i-lucide-plus" :label="t('access.ssh.add.submit')" :loading="adding" :disabled="!canAdd" data-testid="ssh-key-add" />
+      </div>
+    </form>
+
+    <!-- copying the keys of another VM -->
+    <form class="space-y-2" novalidate data-testid="ssh-copy" @submit.prevent="copyKeys">
+      <h4 class="text-sm font-medium text-highlighted">
+        {{ t('access.ssh.copy.title') }}
+      </h4>
+      <p class="text-sm text-muted">
+        {{ t('access.ssh.copy.help') }}
+      </p>
+      <p v-if="!others.length" class="text-sm text-muted" data-testid="ssh-copy-no-other">
+        {{ t('access.ssh.copy.noOther') }}
+      </p>
+      <div v-else class="flex flex-wrap items-end gap-2">
+        <UFormField :label="t('access.ssh.copy.from')" name="ssh-copy-from">
+          <USelect
+            v-model="copyFrom"
+            name="ssh-copy-from"
+            :items="copyItems"
+            :placeholder="t('access.ssh.copy.choose')"
+            :disabled="full || copying"
+            class="w-48"
+            data-testid="ssh-copy-from"
+          />
+        </UFormField>
+        <UButton type="submit" icon="i-lucide-copy-plus" :label="t('access.ssh.copy.submit')" :loading="copying" :disabled="!canCopy" data-testid="ssh-copy-submit" />
+      </div>
+      <div v-if="copyResult" class="space-y-2 rounded-md border border-default p-3" data-testid="ssh-copy-result">
+        <p class="text-sm" data-testid="ssh-copy-summary">
+          {{ copyResult.added.length || copyResult.skipped.length
+            ? t('access.ssh.copy.added', { from: copyResult.from }, copyResult.added.length)
+            : t('access.ssh.copy.nothing', { from: copyResult.from }) }}
+          <template v-if="copyResult.added.length && !copyResult.enabled">
+            {{ t('access.ssh.copy.off') }}
+          </template>
+        </p>
+        <ul v-if="copyResult.added.length" class="space-y-1" data-testid="ssh-copy-added">
+          <li
+            v-for="(k, i) in copyResult.added"
+            :key="k.fingerprint ?? i"
+            class="flex flex-wrap items-baseline gap-x-2 text-sm"
+            data-testid="ssh-copy-added-key"
+            :data-fingerprint="k.fingerprint"
+          >
+            <UIcon name="i-lucide-check" class="size-4 shrink-0 self-center text-success" />
+            <span class="font-medium break-all">{{ copiedLabel(k) }}</span>
+            <span v-if="k.name && k.fingerprint" class="font-mono text-xs break-all text-muted">{{ k.fingerprint }}</span>
+          </li>
+        </ul>
+        <template v-if="copyResult.skipped.length">
+          <p class="text-sm" data-testid="ssh-copy-skipped-title">
+            {{ t('access.ssh.copy.skipped') }}
+          </p>
+          <ul class="space-y-1" data-testid="ssh-copy-skipped">
+            <li
+              v-for="(k, i) in copyResult.skipped"
+              :key="k.fingerprint ?? i"
+              class="flex flex-wrap items-baseline gap-x-2 text-sm"
+              data-testid="ssh-copy-skipped-key"
+              :data-fingerprint="k.fingerprint"
+              :data-error="k.error"
+            >
+              <UIcon name="i-lucide-minus" class="size-4 shrink-0 self-center text-warning" />
+              <span class="font-medium break-all" data-testid="ssh-copy-skipped-name">{{ copiedLabel(k) }}</span>
+              <span class="text-muted" data-testid="ssh-copy-reason">{{ skippedReason(k) }}</span>
+            </li>
+          </ul>
+        </template>
       </div>
     </form>
 

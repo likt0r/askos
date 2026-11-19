@@ -67,6 +67,22 @@ class CreateTest(ControlRoomTest):
         self.assertEqual(self.calls(), [["create", "status", "--json"]])
         self.assertIn("v1 POST post_vms -> FAILED name_reserved", self.server_log())
 
+    def test_ssh_keys_are_copied_only_from_a_vm_name(self):
+        """#136: copy_ssh_keys_from goes only as the value of --copy-ssh-keys-from, and only a VM
+        name: anything else is no VM before agentbox runs."""
+        self.assertEqual(self.create({"copy_ssh_keys_from": " priv "})[0], 201)
+        self.assertEqual(self.calls(), [["create", "lab", "--copy-ssh-keys-from=priv", "--json"]])
+        for odd in ("priv --json", "--mine", "Priv", "../priv", "a" * 17, 5):
+            with self.subTest(copy_ssh_keys_from=odd):
+                answer = self.request("POST", "/api/v1/vms", {"name": "lab", "copy_ssh_keys_from": odd})
+                self.assertError(answer, 404, "vm_not_found")
+                self.assertEqual(answer[1]["error"]["field"], "copy_ssh_keys_from")
+        for odd in ({"vm": "priv"}, ["priv"], True):
+            with self.subTest(copy_ssh_keys_from=odd):
+                answer = self.request("POST", "/api/v1/vms", {"name": "lab", "copy_ssh_keys_from": odd})
+                self.assertError(answer, 400, "invalid_field")
+        self.assertEqual(len(self.calls()), 1)
+
     def test_invalid_names_never_reach_agentbox(self):
         for name in ("Lab", "x", "a" * 17, "--all", "..", 5):
             with self.subTest(name=name):
@@ -162,6 +178,33 @@ class SshAccessTest(ControlRoomTest):
         self.respond(config)
         self.assertEqual(self.get("/api/v1/vms/work/ssh-config"), (200, config))
         self.assertEqual(self.calls(), [["ssh-config", "work", "--json"]])
+
+    def test_a_copy_names_only_the_other_vm(self):
+        """#136: {"from": <vm>} is add-ssh-key --from=<vm>, nothing on stdin, nothing else: the
+        answer, with which keys went in and which not, passes through unchanged."""
+        copied = {"vm": "work", "from": "priv", "folder": None,
+                  "added": [{"type": "ssh-ed25519", "fingerprint": ADDED["fingerprint"], "name": "laptop"}],
+                  "skipped": [{"type": "ssh-ed25519", "fingerprint": "SHA256:" + "A" * 43, "name": "phone",
+                               "error": "ssh_key_duplicate", "message": "entered already"}],
+                  "enabled": True, "keys": 2, "state": "running", "applies": "now", "message": "copied"}
+        self.respond(copied)
+        self.assertEqual(self.request("POST", "/api/v1/vms/work/ssh-keys", {"from": "priv"})[:2], (200, copied))
+        self.assertEqual(self.calls(), [["add-ssh-key", "work", "--from=priv", "--json"]])
+        self.assertEqual(self.stdins(), [""])
+        for body, status, code in (({"from": "priv", "key": "ssh-ed25519 AAAA"}, 400, "invalid_field"),
+                                   ({"from": "priv", "name": "x"}, 400, "invalid_field"),
+                                   ({"from": "priv", "key": ""}, 400, "invalid_field"),
+                                   ({"from": "work"}, 400, "invalid_field"),
+                                   ({"from": "--mine"}, 404, "vm_not_found"),
+                                   ({"from": "priv --yes"}, 404, "vm_not_found"),
+                                   ({"from": "/root/.ssh/id_ed25519.pub"}, 404, "vm_not_found"),
+                                   ({"from": ["priv"]}, 404, "vm_not_found"),
+                                   ({"from": None}, 404, "vm_not_found")):
+            with self.subTest(body=body):
+                answer = self.request("POST", "/api/v1/vms/work/ssh-keys", body)
+                self.assertError(answer, status, code)
+                self.assertEqual(answer[1]["error"]["field"], "from")
+        self.assertEqual(len(self.calls()), 1)
 
     def test_refusals_of_agentbox_pass_through(self):
         self.respond("", stderr=failure("ssh_key_too_weak", "RSA keys need at least 3072 bits", vm="work"),

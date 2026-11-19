@@ -368,6 +368,25 @@ export interface SshConfig {
   }[]
 }
 
+/** A key of a copy from another VM, as `agentbox add-ssh-key <vm> --from <other> --json` names
+ * it; fields agentbox could not read of a key it left out are missing. */
+export interface SshCopiedKey {
+  type?: string
+  fingerprint?: string
+  name?: string
+}
+
+/** The answer to a copy of another VM's SSH keys (`POST /vms/<vm>/ssh-keys` with `from`): the
+ * keys that went in, and those left out with agentbox's code and English message. */
+export interface SshCopy {
+  vm: string
+  from: string
+  added: SshCopiedKey[]
+  skipped: (SshCopiedKey & { error: string, message: string })[]
+  enabled: boolean
+  keys: number
+}
+
 /** Codes of a change of SSH access that agentbox saved but that has not reached the VM (yet). */
 export const SSH_SAVED_CODES = ['ssh_missing', 'ssh_pending', 'ssh_not_applied']
 /**

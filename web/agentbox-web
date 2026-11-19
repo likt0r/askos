@@ -223,7 +223,7 @@ LOG_FILTERS = {"unit": "--unit", "priority": "--priority", "since": "--since", "
 
 # Neue VM: Feld -> Option von `agentbox create`; Netz und Orca-Port vergibt agentbox selbst
 CREATE_FIELDS = {"image": "--image", "memory_mib": "--memory-mib", "data_disk_gib": "--data-disk-gib",
-                 "copy_allowlist_from": "--copy-allowlist-from"}
+                 "copy_allowlist_from": "--copy-allowlist-from", "copy_ssh_keys_from": "--copy-ssh-keys-from"}
 
 # Filter der Aktivitaet (Query-Parameter) -> Option von `agentbox activity`
 ACTIVITY_FILTERS = {"kind": "--kind", "vm": "--vm", "since": "--since", "until": "--until",
@@ -1412,6 +1412,9 @@ def post_vms(h, m, url, body):
     name = value(body, "name", required=True)
     if not VM_NAME.fullmatch(name):
         raise refused("invalid_name", field="name")
+    ssh_source = value(body, "copy_ssh_keys_from")
+    if ssh_source is not None and not VM_NAME.fullmatch(ssh_source):
+        raise refused("vm_not_found", field="copy_ssh_keys_from")
     args = [f"{opt}={v}" for key, opt in CREATE_FIELDS.items() if (v := value(body, key)) is not None]
     args += [f"--owner={o}" for o in names(body, "github_owners")]
     return 201, run_json("create", name, *args, "--json", timeout=600)
@@ -1551,8 +1554,18 @@ def put_ssh(h, m, url, body):
 def post_ssh_key(h, m, url, body):
     """add-ssh-key with the key's text on stdin, the only way the Control Room passes a key: never
     a file or --mine, which read files on the Host (agentbox refuses them from the Control Room
-    too). An empty name: the key's comment is its name."""
+    too). An empty name: the key's comment is its name. With "from" instead: add-ssh-key --from,
+    a copy of another VM's keys once (ADR 0001), which keys went in and which not."""
     key, name = body.get("key"), body.get("name")
+    if "from" in body:
+        source = body["from"]
+        if key is not None or name is not None:
+            raise invalid("from", "from goes without key and name")
+        if not isinstance(source, str) or not VM_NAME.fullmatch(source):
+            raise refused("vm_not_found", field="from")
+        if source == m["vm"]:
+            raise invalid("from", "SSH keys are copied from another VM")
+        return 200, run_json("add-ssh-key", m["vm"], f"--from={source}", "--json", timeout=SSH_TIMEOUT)
     if not isinstance(key, str) or not key.strip():
         raise invalid("key", "key is missing")
     if not utf8(key) or "\0" in key:

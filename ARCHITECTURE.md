@@ -151,7 +151,8 @@ flowchart LR
   no longer in the record while the VM has a pending change, which it then hands over. Each
   change is recorded in Activity (`ssh.enabled`, `ssh.disabled`, `ssh.key-added` and
   `ssh.key-removed` with the key's fingerprint and name), each connection is not. The Control
-  Room's SSH section on the VM page runs the same commands; it passes a key only as its text on
+  Room's SSH section on the VM page runs the same commands, also the copy from another VM
+  (`--from`, and `--copy-ssh-keys-from` in its create dialog); it passes a key only as its text on
   stdin, and agentbox refuses a FILE, `--mine` and `--yes` from the Control Room before anything
   runs, so it reads no file on the Host for it, the Host user's `~/.ssh` included.
 - **Names for SSH**: `agentbox ssh-config [<vm>...]` prints a `~/.ssh/config` block per VM with
@@ -1089,7 +1090,7 @@ expression, sudo 1.9.10 or later). Since sudo matches the arguments joined with 
 argument such as `start setup` still passes it; agentbox knows no such command. Called through
 `sudo` by `agentbox-web`, agentbox itself also runs only these commands, and refuses every other
 command, `--force` and the options and arguments a command keeps for the CLI at the Host (of
-`add-ssh-key` everything but the VM and `--name`: the key comes on stdin) before anything runs
+`add-ssh-key` everything but the VM, `--name` and `--from`: the key comes on stdin) before anything runs
 (`control_room_refused`), which no sudoers rule could tell from a note that contains them. So
 even a taken-over backend cannot run `setup`, `import` or `regenerate`, read a file on the Host
 through `add-ssh-key`, or lift strong Signals, and agentbox's own check holds should sudo's matching ever
