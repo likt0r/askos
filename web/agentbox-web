@@ -973,6 +973,12 @@ AGENTBOX_ERRORS = {
     "ssh_key_duplicate": (409, "This SSH key is entered for this VM already"),
     "ssh_keys_too_many": (409, "At most 16 SSH keys per VM"),
     "ssh_keys_too_large": (409, "The SSH keys of a VM take at most 64512 bytes together"),
+    "ssh_key_not_found": (404, "No such SSH key for this VM"),
+    "ssh_missing": (409, "The change is saved, but the VM's Build cannot apply SSH access while it runs; "
+                         "build its Image and reset the VM"),
+    "ssh_pending": (503, "The change is saved, but the running VM has not taken it yet; a connection to its SSH "
+                         "port hands it over first and is refused until then"),
+    "ssh_not_applied": (500, "The change is saved, but a step on the Host that applies it failed"),
     "guest_agent_unavailable": (503, "The VM's guest agent does not answer"),
     "vm_query_timeout": (504, "The query in the VM took too long"),
     "vm_journal_failed": (502, "Reading the VM's journal failed"),

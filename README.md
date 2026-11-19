@@ -253,6 +253,7 @@ agentbox set-env lab DATABASE_URL=postgres://db.example/app   # a VM variable, f
 agentbox env lab                    # the VM's VM variables
 agentbox add-ssh-key lab ~/.ssh/id_ed25519.pub   # an SSH key for the VM (or on stdin)
 agentbox set-ssh lab on             # SSH access: ssh -p 22NN agent@127.0.0.1 (agentbox ssh lab)
+agentbox remove-ssh-key lab SHA256:…   # takes the key out at once, ends every SSH session
 agentbox blocked priv               # what a VM tried to reach and was refused
 agentbox allow priv docs.rs         # add an Allowlist entry for one VM
 agentbox allow all crates.io --for 8h --note "Rust crates"   # for all VMs, for 8 hours
@@ -497,6 +498,7 @@ sudo agentbox ssh lab                                 # port, host key fingerpri
 agentbox ssh-config > ~/.ssh/agentbox.conf            # a block per VM with SSH access: ssh lab.agentbox
 agentbox ssh-config --known-hosts > ~/.ssh/known_hosts.agentbox     # their host keys
 ssh lab.agentbox                                      # wakes the VM if it is off
+sudo agentbox remove-ssh-key lab SHA256:…             # the key stops working, every SSH session ends
 ```
 
 Put `Include agentbox.conf` once at the top of `~/.ssh/config`, before any `Host` line (an
@@ -526,10 +528,19 @@ keys: Ed25519, ECDSA, their security-key forms (`sk-…`) and RSA of 3072 to 163
 of a `.pub` file without options (`command=`, `from=`), at most 16 per VM; the comment becomes
 the key's name unless `--name` gives one. The host key is made by the Host once per VM and
 stays the same across every Reset, so `ssh` never asks you to answer "yes" or warns about a
-changed host key. The VM gets its SSH access and keys at its next
-start: a running VM at its next Restart (`agentbox restart <name>`) or Reset. `set-ssh <name>
-off` closes the port at once and keeps the keys. Turning SSH access on or off and adding a key
-are recorded in Activity, each connection is not. Deleting the VM deletes its keys and host key.
+changed host key. Every change applies at once: a running VM takes a new key, a removed key or
+SSH access turned off without a Restart, a paused VM when it resumes, a VM that is off at its
+next start. Removing a key ends every open SSH session of the VM (the Host cannot tell which
+session used which key), and so does `set-ssh <name> off`, which also closes the port at once
+and keeps the keys. A VM whose Build lacks the wrapper that applies a change in the VM
+(`agentbox-ssh`) cannot take one while it runs: the command saves it and fails with
+`ssh_missing`, and the VM keeps its keys until a Reset onto a newer Build. A running VM that
+does not take a change (its guest agent does not answer, for instance) gets it later: the
+command saves it and fails with `ssh_pending`, and each SSH connection hands it over first and
+is refused until the VM takes it; Orca connections go on. Turning SSH access on or off and
+adding or removing a key are recorded in Activity, a change saved but not applied yet as that
+change with why it waits; each connection is not.
+Deleting the VM deletes its keys and host key.
 
 ### Viewing a dev server
 

@@ -51,10 +51,13 @@ Controls the agent VMs on this Host.
   agentbox ssh <vm> [--json]                         the VM's SSH access: on or off, its SSH port, the host key's
                                                      fingerprint with a known_hosts line, its SSH keys
   agentbox set-ssh <vm> on|off [--json]              SSH access through the SSH port (2200 + network number, on
-                                                     127.0.0.1); the keys stay when it goes off
+                                                     127.0.0.1); off ends every SSH session, the keys stay
   agentbox add-ssh-key <vm> [--name N] [FILE] [--json]
-                add an SSH key (a line of a .pub file) from FILE or stdin; its comment is its name; the VM
-                gets the keys from its next start, a running VM after a Restart
+                add an SSH key (a line of a .pub file) from FILE or stdin; its comment is its name; a
+                running VM takes it at once, a paused one when it resumes
+  agentbox remove-ssh-key <vm> <fingerprint> [--json]
+                remove an SSH key (its SHA256 fingerprint, agentbox ssh lists them); it stops working at
+                once and every SSH session of the VM ends
   agentbox ssh-config [<vm>...] [--known-hosts] [--json]
                 a ~/.ssh/config block per VM with SSH access (ssh <vm>.agentbox), host keys under the
                 HostKeyAlias <vm>.agentbox; --known-hosts: their known_hosts lines; for root and libvirt

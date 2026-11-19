@@ -49,8 +49,17 @@ def to_vm_time(v):
     return local.astimezone().astimezone(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
+def _command(ctx, cmd, seconds=10, timeout=None):
+    """virsh qemu-agent-command with this command for the guest agent. One that carries data for
+    the VM (guest-exec's input-data) reaches virsh on its standard input, never as an argument
+    (virsh.run_unseen): what a wrapper reads on its standard input can be a secret."""
+    carries = "input-data" in (cmd.get("arguments") or {})
+    return (virsh.run_unseen if carries else virsh.run)("qemu-agent-command", dom(ctx), json.dumps(cmd),
+                                                         "--timeout", str(seconds), timeout=timeout)
+
+
 def agent(ctx, cmd):
-    r = virsh.run("qemu-agent-command", dom(ctx), json.dumps(cmd), "--timeout", "10")
+    r = _command(ctx, cmd)
     if r.returncode != 0:
         die(f"{ctx}: the guest agent does not answer (" + clean(r.stderr.strip(), False)[:200] + ")", 4,
             error="guest_agent_unavailable", vm=ctx)
@@ -65,8 +74,7 @@ def ping(ctx, seconds=3):
     Orca does not answer either did not boot, or runs without Orca). virsh itself gets a
     few seconds more, not its usual limit: the ping runs under the wakes file's lock and in
     watch's round of looks (responding.py), so a hanging libvirtd holds up nobody for long."""
-    r = virsh.run("qemu-agent-command", dom(ctx), json.dumps({"execute": "guest-ping"}), "--timeout",
-                  str(max(1, seconds)), timeout=max(1, seconds) + 3)
+    r = _command(ctx, {"execute": "guest-ping"}, max(1, seconds), timeout=max(1, seconds) + 3)
     if r.returncode != 0:
         return False
     try:
@@ -76,7 +84,7 @@ def ping(ctx, seconds=3):
     return isinstance(answer, dict) and "return" in answer
 
 
-def execute(ctx, wrapper, argv, wait, *, missing=None, answer=None):
+def execute(ctx, wrapper, argv, wait, *, missing=None, answer=None, stdin=None):
     """Run a wrapper of the Image in the VM through the guest agent (guest-exec) and wait
     up to `wait` seconds for it to end, asking after 0.2 s at first and every 2 s at most:
     (exit code, stdout, stderr, truncated). A wrapper stopped by a signal, or one that has
@@ -87,9 +95,11 @@ def execute(ctx, wrapper, argv, wait, *, missing=None, answer=None):
     answer of at most that many characters, decoded strictly (base64, UTF-8); None instead
     of it when it is anything else, longer or truncated, and stderr is not read (None).
     Without answer both are decoded leniently, undecodable UTF-8 replaced. A wrapper the Host
-    stopped waiting for has no output: (124, "", "", False)."""
-    r = virsh.run("qemu-agent-command", dom(ctx), json.dumps({"execute": "guest-exec", "arguments": {
-        "path": wrapper, "arg": argv, "capture-output": True}}), "--timeout", "10")
+    stopped waiting for has no output: (124, "", "", False). stdin: bytes the wrapper reads on
+    its standard input (guest-exec's input-data), which never become a process argument."""
+    given = {"input-data": base64.b64encode(stdin).decode()} if stdin is not None else {}
+    r = _command(ctx, {"execute": "guest-exec", "arguments": {
+        "path": wrapper, "arg": argv, **given, "capture-output": True}})
     if r.returncode != 0:
         if missing and "No such file or directory" in r.stderr:
             missing()

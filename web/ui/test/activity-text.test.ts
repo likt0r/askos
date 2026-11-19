@@ -59,6 +59,12 @@ const ENTRIES: ActivityEntry[] = [
   coded(23, 'signin.link', {}, 'Signed in with a sign-in link', { vm: null, kind: 'signin' }),
   coded(24, 'signin.link-refused', {}, 'Sign-in with a used, expired or unknown sign-in link',
     { vm: null, kind: 'signin', outcome: 'failed' }),
+  // an SSH change that is saved but not applied yet: the change, then why it waits
+  coded(25, 'ssh.key-removed', { fingerprint: 'SHA256:abc', name: 'laptop' },
+    'Remove the SSH key SHA256:abc (laptop): work: the change is saved, but the VM did not take it',
+    { outcome: 'failed', error: 'ssh_pending', error_params: { vm: 'work' } }),
+  coded(26, 'ssh.disabled', {}, 'Turn SSH access off: work: the change is saved, but not applied',
+    { outcome: 'failed', error: 'ssh_not_applied', error_params: { vm: 'work', finish: 'agentbox set-ssh work off' } }),
 ]
 
 const STORED = ['Frobnicate x', 'Freigabe example.org', 'Pause: something new', 'Allow : No such VM: x',
@@ -94,6 +100,10 @@ const EN = [
   'Create a sign-in link for the Control Room',
   'Signed in with a sign-in link',
   'Sign-in with a used, expired or unknown sign-in link',
+  'Remove the SSH key SHA256:abc (laptop): The change is saved, but the running VM has not taken it yet. Each '
+  + 'connection to its SSH port hands it over first and is refused until the VM takes it.',
+  'Turn SSH access off: The change is saved, but a step on the Host that applies it failed. agentbox set-ssh work '
+  + 'off on the Host finishes it.',
 ]
 
 const DE = [
@@ -118,6 +128,10 @@ const DE = [
   'Anmeldelink für den Control Room erzeugen',
   'Mit Anmeldelink angemeldet',
   'Anmeldung mit benutztem, abgelaufenem oder unbekanntem Anmeldelink',
+  'SSH-Schlüssel SHA256:abc (laptop) entfernen: Die Änderung ist gespeichert, aber die laufende VM hat sie noch nicht '
+  + 'übernommen. Jede Verbindung zu ihrem SSH-Port übergibt sie zuerst und wird abgewiesen, bis die VM sie übernimmt.',
+  'SSH-Zugang ausschalten: Die Änderung ist gespeichert, aber ein Schritt auf dem Host, der sie anwendet, ist '
+  + 'fehlgeschlagen. agentbox set-ssh work off auf dem Host holt das nach.',
 ]
 
 async function list(entries: ActivityEntry[]) {

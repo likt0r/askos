@@ -48,7 +48,13 @@ scenario.json:
               var/home/agent/code there), with the disk attached with the serial
               agentbox-inbox as its device; guest-exec of agentbox-container-images runs
               the real wrapper there too, with the agent's Podman a fake one
-              (fake_guest_podman.py, its Container images in podman.json of that root).
+              (fake_guest_podman.py, its Container images in podman.json of that root), and
+              guest-exec of agentbox-ssh runs the real wrapper there with guest-exec's
+              input-data on its stdin and the real fwcfg-ssh: its key files land in
+              run/agentbox/ssh of that root, and a fake systemctl there records each call in
+              systemctl.log; it says guest-setup is not active while the file starting
+              exists there and failed while the file setup-failed exists, and fails while sshd-fails
+              exists.
   still_running  guest-exec-status never says the program ended (default false)
   missing_wrappers  paths guest-exec cannot run: the guest agent fails as qemu-ga does
               for a program the Image lacks
@@ -71,6 +77,12 @@ Calls run at the same time (watch, wakes, a Restart): one call at a time reads a
 changes the VMs, networks and pools (changing), and their files are replaced whole
 (save), so no call reads half a file or undoes another's change. A test that changes
 them while virsh may be called does the same (with changing(dir) and save(name, data, dir)).
+
+virsh without a command reads its commands from stdin, one per line, as its interactive shell
+does (words split as virsh's own parser does): the prompt, the line and the command's output
+on stdout, a failure's error on stderr, and always exit code 0.
+
+The arguments of every call go to FAKE_VIRSH_DIR/argv.jsonl, one JSON list per call.
 
 Recorded: guest-exec, guest-ping (with the time it was asked; a held one when it goes on),
 attach-disk, detach-disk and the commands that change a VM (start, shutdown, destroy, managedsave,
@@ -99,6 +111,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 INBOX = "/usr/libexec/qemu-ga/fsfreeze-hook.d/agentbox-inbox"
 INBOX_DEVICE = "/dev/disk/by-id/virtio-agentbox-inbox"
 CONTAINER_IMAGES = "/usr/libexec/qemu-ga/fsfreeze-hook.d/agentbox-container-images"
+SSH = "/usr/libexec/qemu-ga/fsfreeze-hook.d/agentbox-ssh"
 
 
 def process_started(domain):
@@ -474,6 +487,8 @@ def meeting(scenario, cmd, domain):
 def main(args):
     while args and args[0] in ("-q", "-c"):
         args = args[2:] if args[0] == "-c" else args[1:]
+    if not args:
+        return interactive()
     cmd, rest = args[0], args[1:]
     scenario = load("scenario.json", {})
     hold(cmd)
@@ -483,6 +498,67 @@ def main(args):
         return meeting(scenario, cmd, rest[0])
     with changing():
         return libvirt(scenario, cmd, rest)
+
+
+def words(line):
+    """One command line split into its words as virsh's own parser does (vshCommandStringGetArg):
+    blanks between words, single quotes keep everything, double quotes all but a backslash, a
+    backslash outside single quotes takes the next character as it is. Only one command: ;, a #
+    that starts a word, a missing closing quote or a lone backslash at the end fail here."""
+    found, i = [], 0
+    while True:
+        while i < len(line) and line[i] in " \t":
+            i += 1
+        if i == len(line):
+            return found
+        if line[i] in ";#":
+            raise ValueError("one command only")
+        word, single, double = [], False, False
+        while i < len(line) and (single or double or line[i] not in " \t;"):
+            c = line[i]
+            if c == "\\" and not single:
+                i += 1
+                if i == len(line):
+                    raise ValueError("dangling \\")
+                word.append(line[i])
+            elif c == "'" and not double:
+                single = not single
+            elif c == '"' and not single:
+                double = not double
+            else:
+                word.append(c)
+            i += 1
+        if single or double:
+            raise ValueError("missing closing quote")
+        found.append("".join(word))
+
+
+def interactive():
+    """virsh without a command: each line of stdin is a command, run as virsh's interactive shell
+    runs it, through readline on a dumb terminal. The prompt and the line are shown on stdout
+    (a long line scrolled, so only its end, as readline does), then the command's output; a last
+    prompt and a line break at the end of stdin. A failure is its error on stderr, and virsh ends
+    with 0 either way."""
+    import io
+    for line in sys.stdin.read().split("\n"):
+        shown = line if len(line) < 70 else "\n<" + line[-47:]
+        sys.stdout.write("virsh # " + shown)
+        if not line:
+            break
+        sys.stdout.write("\n")
+        out = io.StringIO()
+        try:
+            args = words(line)
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            continue
+        with contextlib.redirect_stdout(out):
+            code = main(args)
+        sys.stdout.write(out.getvalue())
+        if code:
+            print("error: command failed", file=sys.stderr)
+    sys.stdout.write("\n")
+    return 0
 
 
 def libvirt(scenario, cmd, rest):
@@ -605,6 +681,32 @@ def run_container_images(domain, argv):
     return {"stdout": r.stdout, "stderr": r.stderr, "exitcode": r.returncode}
 
 
+def run_ssh(domain, argv, stdin):
+    """The real agentbox-ssh in the VM's own root, with the real fwcfg-ssh and a fake systemctl."""
+    import subprocess
+    root = guest_root(domain)
+    lib, bin_ = os.path.join(root, "usr", "lib", "agentbox"), os.path.join(root, "usr", "bin")
+    os.makedirs(lib, exist_ok=True)
+    os.makedirs(bin_, exist_ok=True)
+    fwcfg = os.path.join(lib, "fwcfg-ssh")
+    if not os.path.lexists(fwcfg):
+        os.symlink(os.path.join(REPO, "vm", "files", "usr", "lib", "agentbox", "fwcfg-ssh"), fwcfg)
+    fakes = {"systemctl": f'echo "$*" >> "{root}/systemctl.log"\n'
+                          f'case "$1" in is-active) [ ! -e "{root}/starting" ];; is-failed) [ -e "{root}/setup-failed" ];; '
+                          f'*) [ ! -e "{root}/sshd-fails" ] || {{ echo "Job failed." >&2; exit 1; }};; esac\n',
+             "selinuxenabled": "exit 1\n", "chcon": "exit 0\n"}
+    for name, body in fakes.items():
+        with open(os.path.join(bin_, name), "w") as f:
+            f.write("#!/bin/sh\n" + body)
+        os.chmod(os.path.join(bin_, name), 0o755)
+    r = subprocess.run([sys.executable, "-I", os.path.join(REPO, "vm", "files", SSH.lstrip("/")), *argv],
+                       input=stdin, capture_output=True,
+                       env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "AGENTBOX_SSH_ROOT": root,
+                            "AGENTBOX_SSH_SETUP_WAIT": "0.5"})
+    return {"stdout": r.stdout.decode("utf-8", "replace"), "stderr": r.stderr.decode("utf-8", "replace"),
+            "exitcode": r.returncode}
+
+
 def guest_agent(scenario, rest):
     request = json.loads(rest[1])
     if request["execute"] == "guest-ping":
@@ -618,9 +720,12 @@ def guest_agent(scenario, rest):
         print(json.dumps({"return": {}}))
         return 0
     if request["execute"] == "guest-exec":
+        import base64
         calls = [c for c in load_calls() if c["cmd"] == "guest-exec"]
         path, argv = request["arguments"]["path"], request["arguments"]["arg"]
-        record({"cmd": "guest-exec", "path": path, "arg": argv})
+        given = request["arguments"].get("input-data")
+        record({"cmd": "guest-exec", "path": path, "arg": argv,
+                **({"input": base64.b64decode(given).decode("utf-8", "replace")} if given is not None else {})})
         if path in (scenario.get("missing_wrappers") or ()):
             print("error: internal error: unable to execute QEMU agent command 'guest-exec': Failed to execute "
                   f"child process \u201c{path}\u201d (No such file or directory)", file=sys.stderr)
@@ -632,6 +737,9 @@ def guest_agent(scenario, rest):
         if path == CONTAINER_IMAGES and not scenario.get("responses") and not scenario.get("still_running"):
             with open(os.path.join(DIR, f"exec-{pid}.json"), "w") as f:
                 json.dump(run_container_images(rest[0], argv), f)
+        if path == SSH and not scenario.get("responses") and not scenario.get("still_running"):
+            with open(os.path.join(DIR, f"exec-{pid}.json"), "w") as f:
+                json.dump(run_ssh(rest[0], argv, base64.b64decode(given or "")), f)
         print(json.dumps({"return": {"pid": pid}}))
         return 0
     if request["execute"] == "guest-exec-status":
@@ -668,4 +776,6 @@ def load_calls():
 
 
 if __name__ == "__main__":
+    with open(os.path.join(DIR, "argv.jsonl"), "a") as f:
+        f.write(json.dumps(sys.argv[1:]) + "\n")
     sys.exit(main(sys.argv[1:]))

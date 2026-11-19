@@ -17,7 +17,7 @@ module expects, not the ones the repository happens to contain:
   (NetworkManager keeps out of /etc/resolv.conf, dns=none; systemd-resolved's configuration
   names no DNS or FallbackDNS servers), and no service carries a proxy variable or option:
   every connection goes to the Host, where the proxy reads its destination.
-- Guest agent: the four wrappers the Host runs through it (agentbox-journal, agentbox-devices,
+- Guest agent: four of the wrappers the Host runs through it (agentbox-journal, agentbox-devices,
   agentbox-inbox, which unpacks `agentbox import` as the agent with tarfile's "data" filter,
   and agentbox-container-images, which removes Container images as the agent, with `podman
   rmi` only and never by force).

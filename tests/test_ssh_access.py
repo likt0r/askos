@@ -1,14 +1,16 @@
-"""SSH access to a VM through its SSH port (#129, #130, ADR 0020).
+"""SSH access to a VM through its SSH port (#129, #130, #131, ADR 0020).
 
-`agentbox set-ssh`, `add-ssh-key` and `ssh` keep SSH access and the SSH keys in the VM's record,
+`agentbox set-ssh`, `add-ssh-key`, `remove-ssh-key` and `ssh` keep SSH access and the SSH keys in the VM's record,
 the Host makes the VM's host key once, `regenerate` and the commands write the fw_cfg file the
 VM reads at boot and the units of the SSH port (2200 + network number) while SSH access is on:
 on the loopback address in Local-only, on every address behind the firewall rules of the home
-network in Network mode (the fake firewall-cmd).
+network in Network mode (the fake firewall-cmd). A running VM takes each change at once through
+agentbox-ssh, which the fake virsh runs for real in the VM's own root; a paused one when it
+resumes; removing a key and turning SSH access off end every SSH session.
 The real CLI runs with AGENTBOX_ROOT pointing at a temporary root and the fakes of
 test_registry.py (openssl is the real one, as in test_github_app.py); the guest side
-(vm/files/usr/lib/agentbox/fwcfg-ssh, which guest-setup runs) against an fw_cfg file in a
-temporary directory.
+(vm/files/usr/lib/agentbox/fwcfg-ssh, which guest-setup runs, and the wrapper agentbox-ssh)
+against an fw_cfg file or stdin in a temporary directory.
 
 Run from the repo root: python3 -m unittest discover -s tests
 """
@@ -21,6 +23,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import struct
 import subprocess
 import sys
@@ -44,6 +47,10 @@ SOCKET = "etc/systemd/system/agentbox-ssh-{}.socket"
 SERVICE = "etc/systemd/system/agentbox-ssh-{}@.service"
 FWCFG_SSH = os.path.join(REPO, "vm", "files", "usr", "lib", "agentbox", "fwcfg-ssh")
 GUEST_SETUP = os.path.join(REPO, "vm", "files", "usr", "lib", "agentbox", "guest-setup")
+# the guest-agent wrapper that hands a change to a running VM, as the VM has it and in the repo
+WRAPPER = "/usr/libexec/qemu-ga/fsfreeze-hook.d/agentbox-ssh"
+AGENTBOX_SSH = os.path.join(REPO, "vm", "files", WRAPPER.lstrip("/"))
+PENDING = "var/lib/agentbox/pending/ssh-{}"
 DONE = "guest-setup: context work, Orca port 6801, the Host at 10.77.1.1\n"     # its last line
 # a key and its fingerprint as `ssh-keygen -lf` gives it
 LAPTOP = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f laptop"
@@ -208,7 +215,7 @@ class RecordTest(SshTest):
         self.assertNotIn("ssh_access", self.record())
         self.assertEqual(self.json("ssh", "work"),
                          {"vm": "work", "enabled": False, "port": 2201, "host_key_fingerprint": None,
-                          "known_hosts": None, "keys": []})
+                          "known_hosts": None, "keys": [], "pending": False})
         # no SSH port, and the VM learns it has no SSH access
         self.assertFalse(self.exists(SOCKET.format("work")))
         self.assertEqual(self.read(SSH_FILE.format("work")), "none\n")
@@ -430,10 +437,9 @@ class SetSshTest(SshTest):
         self.add()
         result = self.json("set-ssh", "work", "on")
         self.assertEqual(result.pop("message"),
-                         "work: SSH access on, port 2201 (ssh -p 2201 agent@127.0.0.1); the VM gets it from its next "
-                         "Restart (agentbox restart work) or Reset")
+                         "work: SSH access on, port 2201 (ssh -p 2201 agent@127.0.0.1); it applies in the VM now")
         self.assertEqual(result, {"vm": "work", "enabled": True, "port": 2201, "keys": 1, "changed": True,
-                                  "state": "running", "applies": "next_restart"})
+                                  "state": "running", "applies": "now"})
         # the host key: once, root and QEMU only, OpenSSH's own format
         host_key = self.read(HOST_KEY.format("work"))
         self.assertEqual(self.mode(HOST_KEY.format("work")), 0o640)
@@ -500,10 +506,12 @@ class SetSshTest(SshTest):
         host_key = self.read(HOST_KEY.format("work"))
         self.forget_calls()
         result = self.json("set-ssh", "work", "off")
-        self.assertEqual(result["message"], "work: SSH access off, port 2201 closed, its SSH keys stay; sshd in the VM "
-                                            "runs until its next Restart (agentbox restart work) or Reset")
-        self.assertEqual((result["enabled"], result["keys"], result["applies"]), (False, 1, "next_restart"))
-        self.assertEqual(self.systemctl(), [["disable", "--now", "agentbox-ssh-work.socket"], ["daemon-reload"]])
+        self.assertEqual(result["message"], "work: SSH access off, port 2201 closed and every SSH session ended, its "
+                                            "SSH keys stay")
+        self.assertEqual((result["enabled"], result["keys"], result["applies"]), (False, 1, "now"))
+        # the port closes, then every connection unit of it stops
+        self.assertEqual(self.systemctl(), [["disable", "--now", "agentbox-ssh-work.socket"], ["daemon-reload"],
+                                            ["stop", "agentbox-ssh-work@*.service"]])
         self.assertFalse(self.exists(SOCKET.format("work")))
         self.assertFalse(self.exists(SERVICE.format("work")))
         self.assertEqual(self.read(SSH_FILE.format("work")), "none\n")
@@ -565,7 +573,8 @@ class SetSshTest(SshTest):
         code, out, err = self.run_agentbox("set-ssh", "work", "on", "--json")
         self.assertEqual((code, out), (1, ""))
         said = json.loads(err)
-        self.assertEqual((said["error"], said["params"]), ("action_failed", {"vm": "work"}))
+        self.assertEqual((said["error"], said["params"]),
+                         ("ssh_not_applied", {"vm": "work", "finish": "agentbox regenerate"}))
         self.assertTrue(said["message"].startswith("work: the change is saved, but not applied: "), said["message"])
         self.assertTrue(said["message"].endswith("; agentbox regenerate finishes it"), said["message"])
         self.assertIs(self.record()["ssh_access"], True)
@@ -618,20 +627,21 @@ class SetSshTest(SshTest):
             f.write(re.sub(r",entry5\.name=opt/agentbox/ssh,entry5\.file=[^\"]*?(?=\")", "", xml))
         self.forget_calls()
         result = self.json("set-ssh", "work", "on")
-        self.assertEqual((result["changed"], result["state"], result["applies"]), (True, "paused", "next_restart"))
+        self.assertEqual((result["changed"], result["state"], result["applies"]), (True, "paused", "on_resume"))
         self.assertEqual(result["message"],
-                         "work: SSH access on, port 2201 (ssh -p 2201 agent@127.0.0.1); the VM is paused, so it is "
-                         "defined again only once it no longer has a Pause (agentbox start work, then agentbox "
-                         "regenerate), and SSH access applies from the next Restart or Reset after that")
+                         "work: SSH access on, port 2201 (ssh -p 2201 agent@127.0.0.1); the VM gets it when it "
+                         "resumes; it is defined again only once it no longer has a Pause (agentbox start work, then "
+                         "agentbox regenerate)")
         said = self.add(line=key(seed=2, comment="phone"))
-        self.assertTrue(said["message"].endswith("; the VM is paused, so it is defined again only once it no longer "
-                                                 "has a Pause (agentbox start work, then agentbox regenerate), and "
-                                                 "SSH access applies from the next Restart or Reset after that"),
-                        said["message"])
-        self.assertEqual(self.virsh("define", "start", "managedsave-remove"), [])
+        self.assertTrue(said["message"].endswith("; the VM gets it when it resumes; it is defined again only once it "
+                                                 "no longer has a Pause (agentbox start work, then agentbox "
+                                                 "regenerate)"), said["message"])
+        self.assertEqual(self.virsh("define", "start", "managedsave-remove", "guest-exec"), [])
         self.assertIs(self.record()["ssh_access"], True)
         self.assertTrue(self.exists(SOCKET.format("work")))
         self.ok("start", "work")
+        # resumed from its Pause, it takes both changes at once
+        self.assertEqual([c["path"] for c in self.virsh("guest-exec")], [WRAPPER])
         self.assertEqual(self.json("regenerate")["vms"]["work"], ["domain"])
         [defined] = [c["xml"] for c in self.virsh("define") if c["dom"] == "agentbox-work"]
         self.assertIn("entry5.name=opt/agentbox/ssh", defined)
@@ -784,17 +794,19 @@ class AddWhileOffTest(SshTest):
         self.assertEqual(result.pop("message"), f"work: SSH key {LAPTOP_FP} (laptop) added; SSH access is off "
                                                 "(agentbox set-ssh work on)")
         self.assertEqual(result, {"vm": "work", "fingerprint": LAPTOP_FP, "name": "laptop", "type": "ssh-ed25519",
-                                  "enabled": False, "keys": 1, "state": "running", "applies": "next_restart"})
+                                  "enabled": False, "keys": 1, "state": "running", "applies": "now"})
         # the host key is made with the first key; the VM still learns it has no SSH access
         self.assertTrue(self.exists(HOST_KEY.format("work")))
         self.assertEqual(self.read(SSH_FILE.format("work")), "none\n")
         self.assertFalse(self.exists(SOCKET.format("work")))
+        # nothing that reaches the VM changed, so the VM is not asked
+        self.assertEqual(self.virsh("guest-exec"), [])
 
     def test_a_key_added_with_ssh_access_goes_into_the_file(self):
         self.ok("set-ssh", "work", "on")
         result = self.add(line=key(seed=7, comment="phone"))
-        self.assertEqual(result["message"], f"work: SSH key {fingerprint(key(seed=7))} (phone) added; the VM gets it "
-                                            "from its next Restart (agentbox restart work) or Reset")
+        self.assertEqual(result["message"], f"work: SSH key {fingerprint(key(seed=7))} (phone) added; it applies in "
+                                            "the VM now")
         self.assertTrue(self.read(SSH_FILE.format("work")).endswith(f"key {key(seed=7)}\n"))
 
 
@@ -1056,6 +1068,531 @@ class CreateDeleteTest(SshTest):
         self.assertEqual(self.read(SSH_FILE.format("lab")), "none\n")
 
 
+# --- changes that apply at once (#131) ----------------------------------------------------------
+
+class LiveTest(SshTest):
+    """A running VM takes every change at once through agentbox-ssh (guest-exec of the fake virsh
+    runs the real wrapper with the real fwcfg-ssh in the VM's own root); removing a key and
+    turning SSH access off end every SSH session of the VM."""
+
+    PHONE = key(seed=7, comment="phone")
+
+    def guest(self, rel, vm="work"):
+        return os.path.join(self.dir, f"guest-{vm}", rel)
+
+    def authorized(self, vm="work"):
+        """The VM's key file, None when it has none."""
+        try:
+            with open(self.guest("run/agentbox/ssh/authorized_keys", vm)) as f:
+                return f.read()
+        except FileNotFoundError:
+            return None
+
+    def guest_systemctl(self, vm="work"):
+        try:
+            with open(self.guest("systemctl.log", vm)) as f:
+                return [line for line in f.read().splitlines() if not line.startswith("is-active")]
+        except FileNotFoundError:
+            return []
+
+    def applied(self):
+        """The guest-exec calls of agentbox-ssh, each with what it got on stdin."""
+        return [(c["arg"], c.get("input")) for c in self.virsh("guest-exec") if c["path"] == WRAPPER]
+
+    def failed(self, *args, stdin=""):
+        code, out, err = self.run_input(*args, "--json", stdin=stdin)
+        self.assertEqual((code, out), (1, ""), err)
+        return json.loads(err)
+
+    def wake(self, actor, vm="work"):
+        """agentbox wake as a connection to the VM's port runs it, Orca in the VM answering."""
+        srv = socket.socket()
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(16)
+        self.addCleanup(srv.close)
+        env = {"PATH": os.path.join(self.dir, "bin") + ":" + os.environ["PATH"], "FAKE_VIRSH_DIR": self.dir,
+               "FAKE_DIR": self.dir, "AGENTBOX_ROOT": self.root, "LANG": "C.UTF-8", "TZ": "UTC",
+               "AGENTBOX_ORCA_ADDR": "127.0.0.1:%d" % srv.getsockname()[1]}
+        r = subprocess.run([AGENTBOX, f"--actor={actor}", "wake", vm], capture_output=True, text=True, env=env,
+                           timeout=60)
+        return r.returncode, r.stdout, r.stderr
+
+    def on_with_two_keys(self):
+        self.add()
+        self.add(line=self.PHONE)
+        self.ok("set-ssh", "work", "on")
+        self.forget_calls()
+        self.journald.entries()
+        self.journald.datagrams.clear()
+
+    def test_a_key_added_to_a_running_vm_works_at_once(self):
+        self.ok("set-ssh", "work", "on")
+        self.assertEqual(self.authorized(), "")         # SSH access without a key: nothing to log in with
+        self.assertEqual(self.guest_systemctl(), ["stop sshd.service"])
+        self.forget_calls()
+        result = self.add()
+        self.assertEqual((result["state"], result["applies"]), ("running", "now"))
+        self.assertTrue(result["message"].endswith(" added; it applies in the VM now"), result["message"])
+        # the wrapper gets exactly what the VM reads at boot, on stdin; no argument carries a key
+        self.assertEqual(self.applied(), [(["apply"], self.read(SSH_FILE.format("work")))])
+        self.assertEqual(self.authorized(), LAPTOP.rsplit(" ", 1)[0] + "\n")
+        self.assertEqual(self.guest_systemctl()[-1], "start sshd.service")
+        # adding ends no session
+        self.assertNotIn("stop", [c[0] for c in self.systemctl()])
+        self.assertFalse(self.exists(PENDING.format("work")))
+        self.assertIs(self.json("ssh", "work")["pending"], False)
+
+    def test_the_host_key_is_in_no_argument_of_virsh(self):
+        """What agentbox-ssh reads holds the VM's private host key, and every local user can read
+        the arguments of a process: it reaches virsh on its stdin."""
+        self.ok("set-ssh", "work", "on")
+        self.forget_calls()
+        argv = os.path.join(self.dir, "argv.jsonl")
+        os.remove(argv)
+        self.add()
+        entry = self.read(SSH_FILE.format("work"))
+        self.assertEqual(self.applied(), [(["apply"], entry)])
+        secrets = [base64.b64encode(entry.encode()).decode()[:60], entry.split("\n")[0].split()[1][:60]]
+        secrets += [line for line in self.read(HOST_KEY.format("work")).splitlines() if not line.startswith("-")]
+        with open(argv) as f:
+            calls = [json.loads(line) for line in f]
+        self.assertIn([], [[a for a in c if a not in ("-q", "-c", "qemu:///system")] for c in calls])
+        for call in calls:
+            with self.subTest(call=call[:4]):
+                self.assertNotIn("input-data", " ".join(call))
+                for secret in secrets:
+                    self.assertNotIn(secret, " ".join(call))
+
+    def test_the_largest_file_the_vm_reads_reaches_it_whole_through_virsh_s_stdin(self):
+        """Keys that fill their part of the file up to MAX_KEY_BYTES: the line virsh reads on its
+        stdin is about 87 KB (base64 in JSON), and the wrapper gets the file whole."""
+        self.ok("set-ssh", "work", "on")
+        for i in range(4):
+            self.add(line=long_key(i))
+        left = sshkeys.MAX_KEY_BYTES - sum(len(f"key {k['key']}\n") for k in self.record()["ssh_keys"])
+        size = 3 * (left - 32) // 4 - 70          # the application string that makes the last line fit
+        last = next(line for n in range(size, size - 8, -1)
+                    if len(f"key {(line := key('sk-ssh-ed25519@openssh.com', seed=9, application=b'ssh:' + b'b' * n))}"
+                           "\n") <= left)
+        self.forget_calls()
+        self.add(line=last)
+        self.assertGreater(sum(len(f"key {k['key']}\n") for k in self.record()["ssh_keys"]), sshkeys.MAX_KEY_BYTES - 4)
+        entry = self.read(SSH_FILE.format("work"))
+        self.assertGreater(len(base64.b64encode(entry.encode())), 86000)
+        self.assertEqual(self.applied(), [(["apply"], entry)])
+        self.assertEqual(self.authorized().count("\n"), 5)
+
+    def test_removing_a_key_takes_it_out_of_the_vm_and_ends_every_session(self):
+        self.on_with_two_keys()
+        result = self.json("remove-ssh-key", "work", LAPTOP_FP)
+        self.assertEqual(result.pop("message"), f"work: SSH key {LAPTOP_FP} (laptop) removed and every SSH session "
+                                                "ended; it applies in the VM now")
+        self.assertEqual(result, {"vm": "work", "fingerprint": LAPTOP_FP, "name": "laptop", "type": "ssh-ed25519",
+                                  "enabled": True, "keys": 1, "state": "running", "applies": "now"})
+        # every connection unit of the SSH port stops first; the port itself stays open
+        self.assertEqual(self.systemctl()[0], ["stop", "agentbox-ssh-work@*.service"])
+        self.assertNotIn(["disable", "--now", "agentbox-ssh-work.socket"], self.systemctl())
+        self.assertTrue(self.exists(SOCKET.format("work")))
+        self.assertEqual(self.authorized(), self.PHONE.rsplit(" ", 1)[0] + "\n")
+        self.assertEqual(self.guest_systemctl()[-1], "start sshd.service")
+        self.assertNotIn(LAPTOP.split()[1], self.read(SSH_FILE.format("work")))
+        self.assertEqual([k["fingerprint"] for k in self.record()["ssh_keys"]], [fingerprint(self.PHONE)])
+        self.assertEqual(self.activity(), [("ssh.key-removed", "work", "ok",
+                                            {"fingerprint": LAPTOP_FP, "name": "laptop"})])
+        # the last key: sshd stops, the key file is empty
+        self.ok("remove-ssh-key", "work", fingerprint(self.PHONE))
+        self.assertEqual(self.authorized(), "")
+        self.assertEqual(self.guest_systemctl()[-1], "stop sshd.service")
+
+    def test_off_stops_sshd_in_the_vm_and_ends_every_session(self):
+        self.on_with_two_keys()
+        result = self.json("set-ssh", "work", "off")
+        self.assertEqual(result["applies"], "now")
+        # the port closes first, then its connection units stop, then the VM is told
+        self.assertEqual(self.systemctl()[0], ["disable", "--now", "agentbox-ssh-work.socket"])
+        self.assertIn(["stop", "agentbox-ssh-work@*.service"], self.systemctl())
+        self.assertEqual(self.applied(), [(["apply"], "none\n")])
+        self.assertEqual(os.listdir(self.guest("run/agentbox/ssh")), [])
+        self.assertEqual(self.guest_systemctl()[-1], "stop sshd.service")
+        # on again: the keys are back at once
+        self.ok("set-ssh", "work", "on")
+        self.assertEqual(self.authorized().count("\n"), 2)
+        self.assertEqual(self.guest_systemctl()[-1], "start sshd.service")
+
+    def test_sessions_end_also_when_a_later_step_fails(self):
+        self.on_with_two_keys()
+        self.scenario(virt_install_fails=["agentbox-work"])
+        said = self.failed("remove-ssh-key", "work", LAPTOP_FP)
+        self.assertTrue(said["message"].startswith("work: the change is saved, but not applied: "), said["message"])
+        self.assertEqual(self.systemctl()[0], ["stop", "agentbox-ssh-work@*.service"])
+        self.assertEqual(len(self.record()["ssh_keys"]), 1)
+        self.assertEqual(self.activity()[0][:3], ("ssh.key-removed", "work", "failed"))
+        self.assertEqual(self.activity()[0][3], {"fingerprint": LAPTOP_FP, "name": "laptop"})
+        # the VM still has the key: the marker stays, and the next connection hands the change over first
+        self.assertEqual(self.applied(), [])
+        self.assertTrue(self.exists(PENDING.format("work")))
+        self.assertIs(self.json("ssh", "work")["pending"], True)
+        self.assertIn("\npending: ", self.ok("ssh", "work"))
+        code, _, err = self.wake("SSH (192.0.2.7)")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.authorized(), self.PHONE.rsplit(" ", 1)[0] + "\n")
+        self.assertFalse(self.exists(PENDING.format("work")))
+
+    def test_sessions_end_also_when_closing_the_port_fails(self):
+        self.on_with_two_keys()
+        self.scenario(systemctl_fails=["disable"])
+        said = self.failed("set-ssh", "work", "off")
+        self.assertTrue(said["message"].startswith("work: the change is saved, but not applied: "), said["message"])
+        self.assertEqual(self.systemctl(), [["disable", "--now", "agentbox-ssh-work.socket"],
+                                            ["stop", "agentbox-ssh-work@*.service"]])
+        self.assertTrue(self.exists(PENDING.format("work")))
+        self.scenario()
+        self.assertEqual(self.json("regenerate")["vms"]["work"], ["units", "vm-ssh"])
+        self.assertFalse(self.exists(SOCKET.format("work")))
+
+    def test_off_again_ends_the_sessions_the_first_call_did_not(self):
+        self.on_with_two_keys()
+        self.scenario(systemctl_fails=["stop"])
+        said = self.failed("set-ssh", "work", "off")
+        self.assertTrue(said["message"].startswith("work: the change is saved, but not applied: "), said["message"])
+        self.assertTrue(said["message"].endswith("; agentbox set-ssh work off finishes it"), said["message"])
+        self.assertIs(self.record()["ssh_access"], False)
+        self.scenario()
+        self.forget_calls()
+        # the record does not change any more, but the sessions end and the rest is finished
+        self.assertEqual(self.ok("set-ssh", "work", "off"), "work: SSH access off, port 2201 closed and every SSH "
+                                                            "session ended, its SSH keys stay\n")
+        self.assertIn(["stop", "agentbox-ssh-work@*.service"], self.systemctl())
+        self.assertEqual(self.read(SSH_FILE.format("work")), "none\n")
+        self.assertFalse(self.exists(SOCKET.format("work")))
+        self.assertIsNone(self.authorized())
+        self.assertFalse(self.exists(PENDING.format("work")))
+
+    def test_a_marker_that_cannot_be_written_changes_nothing(self):
+        self.on_with_two_keys()
+        self.ok("pause", "work")
+        blocker = self.path(os.path.dirname(PENDING.format("work")))
+        shutil.rmtree(blocker, ignore_errors=True)
+        open(blocker, "w").close()                              # no directory for the marker
+        said = self.failed("remove-ssh-key", "work", LAPTOP_FP)
+        self.assertEqual(said["error"], "action_failed")
+        self.assertTrue(said["message"].startswith("work: nothing changed: "), said["message"])
+        self.assertNotIn("regenerate", said["message"])
+        # the key stays in the record: the paused VM that still has it resumes with what the record says
+        self.assertEqual(len(self.record()["ssh_keys"]), 2)
+        os.remove(blocker)
+        self.ok("remove-ssh-key", "work", LAPTOP_FP)
+        self.assertTrue(self.exists(PENDING.format("work")))
+        # the same call again while it waits for the resume: every SSH session ends again, nothing else
+        self.forget_calls()
+        self.assertEqual(self.ok("remove-ssh-key", "work", LAPTOP_FP),
+                         f"work: no SSH key {LAPTOP_FP} in the record any more; every SSH session ended and the VM's "
+                         "pending SSH change waits; the VM gets it when it resumes\n")
+        self.assertEqual(self.systemctl()[0], ["stop", "agentbox-ssh-work@*.service"])
+        self.assertEqual(self.applied(), [])
+        self.assertTrue(self.exists(PENDING.format("work")))
+        self.ok("start", "work")
+        self.assertEqual(self.authorized(), self.PHONE.rsplit(" ", 1)[0] + "\n")
+
+    def test_remove_again_hands_the_pending_removal_over_and_ends_the_sessions(self):
+        self.on_with_two_keys()
+        self.scenario(agent_down=True)
+        said = self.failed("remove-ssh-key", "work", LAPTOP_FP)
+        self.assertEqual(said["error"], "ssh_pending")
+        self.assertEqual(len(self.record()["ssh_keys"]), 1)
+        self.assertEqual(self.authorized().count("\n"), 2)
+        self.scenario()
+        self.forget_calls()
+        self.journald.entries()
+        self.journald.datagrams.clear()
+        result = self.json("remove-ssh-key", "work", LAPTOP_FP)
+        self.assertEqual(result.pop("message"), f"work: no SSH key {LAPTOP_FP} in the record any more; every SSH "
+                                                "session ended and the VM's pending SSH change is handed over; it "
+                                                "applies in the VM now")
+        self.assertEqual(result, {"vm": "work", "fingerprint": LAPTOP_FP, "name": None, "type": None,
+                                  "enabled": True, "keys": 1, "state": "running", "applies": "now"})
+        self.assertEqual(self.systemctl()[0], ["stop", "agentbox-ssh-work@*.service"])
+        self.assertEqual(self.authorized(), self.PHONE.rsplit(" ", 1)[0] + "\n")
+        self.assertFalse(self.exists(PENDING.format("work")))
+        self.assertEqual(self.activity(), [("ssh.key-removed", "work", "ok", {"fingerprint": LAPTOP_FP})])
+        # nothing pending any more: the same call is refused again
+        self.assertEqual(self.failed("remove-ssh-key", "work", LAPTOP_FP)["error"], "ssh_key_not_found")
+
+    def test_a_failed_guest_setup_is_named_and_its_marker_stays(self):
+        self.on_with_two_keys()
+        os.makedirs(self.guest(""), exist_ok=True)
+        open(self.guest("starting"), "w").close()
+        open(self.guest("setup-failed"), "w").close()
+        said = self.failed("remove-ssh-key", "work", LAPTOP_FP)
+        self.assertEqual(said["error"], "ssh_pending")
+        self.assertIn("guest-setup failed in the VM", said["message"])
+        self.assertIn("agentbox logs work", said["message"])
+        self.assertNotIn("still starting", said["message"])
+        self.assertTrue(self.exists(PENDING.format("work")))
+
+    def test_a_save_that_fails_leaves_no_marker(self):
+        self.on_with_two_keys()
+        folder = self.path("etc/agentbox/vms")
+        os.chmod(folder, 0o555)                          # the record cannot be replaced
+        try:
+            self.failed("remove-ssh-key", "work", LAPTOP_FP)
+        finally:
+            os.chmod(folder, 0o755)
+        self.assertFalse(self.exists(PENDING.format("work")))
+        self.assertEqual(len(self.json("ssh", "work")["keys"]), 2)
+
+    def test_a_vm_that_does_not_take_it_refuses_ssh_connections_until_it_does(self):
+        self.on_with_two_keys()
+        os.makedirs(self.guest(""), exist_ok=True)
+        open(self.guest("starting"), "w").close()              # guest-setup never finishes
+        said = self.failed("remove-ssh-key", "work", LAPTOP_FP)
+        self.assertEqual(said["error"], "ssh_pending")
+        self.assertEqual(said["message"], "work: the change is saved, but the VM did not take it (the VM is still "
+                                          "starting); each connection to its SSH port hands it over first and is "
+                                          "refused while that fails")
+        self.assertEqual(self.systemctl()[0], ["stop", "agentbox-ssh-work@*.service"])
+        self.assertEqual(self.authorized().count("\n"), 2)
+        self.assertTrue(self.exists(PENDING.format("work")))
+        # a connection to the SSH port is refused; one to the Orca port goes on without asking the VM
+        code, _, err = self.wake("SSH (192.0.2.7)")
+        self.assertEqual(code, 1)
+        self.assertIn("work: the VM is still starting", err)
+        calls = len(self.applied())
+        code, _, err = self.wake("Orca (192.0.2.7)")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(self.applied()), calls)
+        self.assertTrue(self.exists(PENDING.format("work")))
+        # once the VM takes it, the next connection goes through
+        os.remove(self.guest("starting"))
+        code, _, err = self.wake("SSH (192.0.2.7)")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.authorized(), self.PHONE.rsplit(" ", 1)[0] + "\n")
+        self.assertFalse(self.exists(PENDING.format("work")))
+        # nothing pending: a connection does not ask the VM
+        calls = len(self.applied())
+        self.assertEqual(self.wake("SSH (192.0.2.7)")[0], 0)
+        self.assertEqual(len(self.applied()), calls)
+
+    def test_an_orca_connection_does_not_ask_the_vm_for_a_pending_change(self):
+        """Only a connection to the SSH port hands a pending change over: one to the Orca port goes
+        on at once, without a guest-agent call that would hold it and the VM's lifecycle lock up."""
+        self.on_with_two_keys()
+        self.scenario(agent_down=True)
+        self.failed("remove-ssh-key", "work", LAPTOP_FP)
+        argv = os.path.join(self.dir, "argv.jsonl")
+        os.remove(argv)
+        code, _, err = self.wake("Orca (192.0.2.7)")
+        self.assertEqual(code, 0, err)
+        with open(argv) as f:
+            calls = [[a for a in json.loads(line) if a not in ("-q", "-c", "qemu:///system")] for line in f]
+        self.assertTrue(calls)
+        self.assertEqual([c for c in calls if not c or c[0] == "qemu-agent-command"], [])
+        self.assertTrue(self.exists(PENDING.format("work")))
+
+    def test_a_saved_change_that_is_not_applied_is_recorded_as_made(self):
+        """As for set-env: the command's one entry names the change with its key, failed with an
+        error that says the change is saved and waits for the VM (ssh_pending) or for a step on
+        the Host, with what finishes it (ssh_not_applied)."""
+        self.on_with_two_keys()
+        self.scenario(agent_down=True)
+        for args, stdin in ((("remove-ssh-key", "work", LAPTOP_FP), ""), (("add-ssh-key", "work"), LAPTOP + "\n"),
+                            (("set-ssh", "work", "off"), "")):
+            with self.subTest(args=args):
+                said = self.failed(*args, stdin=stdin)
+                self.assertEqual((said["error"], said["params"]), ("ssh_pending", {"vm": "work"}))
+                self.assertTrue(said["message"].startswith("work: the change is saved, but the VM did not take it "
+                                                           "(the guest agent does not answer"), said["message"])
+        self.scenario(virt_install_fails=["agentbox-work"])
+        for args, finish in ((("set-ssh", "work", "on"), "agentbox regenerate"),
+                             (("remove-ssh-key", "work", LAPTOP_FP), f"agentbox remove-ssh-key work {LAPTOP_FP}"),
+                             (("set-ssh", "work", "off"), "agentbox set-ssh work off")):
+            with self.subTest(args=args):
+                said = self.failed(*args)
+                self.assertEqual((said["error"], said["params"]), ("ssh_not_applied", {"vm": "work", "finish": finish}))
+                self.assertTrue(said["message"].startswith("work: the change is saved, but not applied: "),
+                                said["message"])
+                self.assertTrue(said["message"].endswith(f"; {finish} finishes it"), said["message"])
+        entries = self.journald.entries()
+        self.assertEqual([(e["AGENTBOX_ACTION"], e["AGENTBOX_OUTCOME"], e["AGENTBOX_ERROR"],
+                           e["AGENTBOX_DESCRIPTION"].partition(": work: ")[0]) for e in entries], [
+            ("ssh.key-removed", "failed", "ssh_pending", f"Remove the SSH key {LAPTOP_FP} (laptop)"),
+            ("ssh.key-added", "failed", "ssh_pending", f"Add the SSH key {LAPTOP_FP} (laptop)"),
+            ("ssh.disabled", "failed", "ssh_pending", "Turn SSH access off"),
+            ("ssh.enabled", "failed", "ssh_not_applied", "Turn SSH access on"),
+            ("ssh.key-removed", "failed", "ssh_not_applied", f"Remove the SSH key {LAPTOP_FP} (laptop)"),
+            ("ssh.disabled", "failed", "ssh_not_applied", "Turn SSH access off")])
+        self.assertEqual([p for _, _, _, p in self.activity()], [{"fingerprint": LAPTOP_FP, "name": "laptop"}] * 2
+                         + [{}, {}, {"fingerprint": LAPTOP_FP, "name": "laptop"}, {}])
+        self.assertEqual(entries[3]["AGENTBOX_ERROR_PARAM_FINISH"], "agentbox regenerate")
+        # the same call again with nothing left to change claims no saved change
+        said = self.failed("set-ssh", "work", "off")
+        self.assertEqual(said["error"], "action_failed")
+        self.assertTrue(said["message"].startswith("work: nothing changed, but "), said["message"])
+
+    def test_the_same_call_again_hands_a_pending_change_over(self):
+        self.on_with_two_keys()
+        self.scenario(agent_down=True)
+        said = self.failed("set-ssh", "work", "off")
+        self.assertEqual(said["error"], "ssh_pending")
+        self.assertTrue(said["message"].startswith("work: the change is saved, but the VM did not take it (the guest "
+                                                   "agent does not answer"), said["message"])
+        self.assertFalse(self.exists(SOCKET.format("work")))
+        self.scenario()
+        self.assertEqual(self.ok("set-ssh", "work", "off"), "work: SSH access stays off\n")
+        self.assertIsNone(self.authorized())
+        self.assertFalse(self.exists(PENDING.format("work")))
+
+    def test_the_answer_of_the_vm_is_checked(self):
+        self.ok("set-ssh", "work", "on")
+        for answer in ('{"keys": 5, "sshd": true}', '{"keys": 1, "sshd": true, "more": 1}', '{"keys": true, '
+                       '"sshd": true}', "not json", '{"keys": 1, "sshd": 1}', "x" * 300):
+            with self.subTest(answer=answer):
+                self.scenario(responses=[{"stdout": answer}])
+                said = self.failed("add-ssh-key", "work", stdin=key(seed=len(answer)) + "\n")
+                self.assertEqual(said["error"], "ssh_pending")
+                self.assertIn("(agentbox-ssh in the VM answered something other than what the Host sent)",
+                              said["message"])
+                self.assertNotIn(answer[:10], said["message"])
+                self.assertTrue(self.exists(PENDING.format("work")))
+        for response, why in (({"exitcode": 1, "stdout": '{"keys": 1, "sshd": true}'}, "failed (exit 1)"),
+                              ({"signal": 9}, "did not end within")):
+            with self.subTest(why=why):
+                self.scenario(responses=[response])
+                said = self.failed("add-ssh-key", "work", stdin=key(seed=len(why) + 50) + "\n")
+                self.assertIn(why, said["message"])
+
+    def test_a_paused_vm_gets_it_when_it_resumes(self):
+        self.on_with_two_keys()
+        self.ok("pause", "work")
+        self.forget_calls()
+        result = self.json("remove-ssh-key", "work", LAPTOP_FP)
+        self.assertEqual((result["state"], result["applies"]), ("paused", "on_resume"))
+        self.assertTrue(result["message"].endswith("; the VM gets it when it resumes"), result["message"])
+        self.assertEqual(self.applied(), [])
+        self.assertTrue(self.exists(PENDING.format("work")))
+        # start resumes it and hands the change over at once
+        self.ok("start", "work")
+        self.assertEqual(self.applied(), [(["apply"], self.read(SSH_FILE.format("work")))])
+        self.assertEqual(self.authorized(), self.PHONE.rsplit(" ", 1)[0] + "\n")
+        self.assertFalse(self.exists(PENDING.format("work")))
+        # and so does a connection that wakes it
+        self.ok("pause", "work")
+        self.json("set-ssh", "work", "off")
+        self.assertTrue(self.exists(PENDING.format("work")))
+        code, _, err = self.wake("SSH (192.0.2.7)")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.applied()[-1], (["apply"], "none\n"))
+        self.assertFalse(self.exists(PENDING.format("work")))
+
+    def test_a_vm_that_starts_anew_reads_it_from_fw_cfg(self):
+        self.on_with_two_keys()
+        self.ok("pause", "work")
+        self.ok("remove-ssh-key", "work", LAPTOP_FP)
+        self.assertTrue(self.exists(PENDING.format("work")))
+        # a Restart discards the Pause: the VM boots with the file, nothing is pending
+        self.ok("restart", "work")
+        self.assertFalse(self.exists(PENDING.format("work")))
+        self.assertEqual(self.applied(), [])
+        # a VM that is off gets no marker at all
+        self.turned_off("work")
+        result = self.json("remove-ssh-key", "work", fingerprint(self.PHONE))
+        self.assertEqual(result["applies"], "next_start")
+        self.assertFalse(self.exists(PENDING.format("work")))
+        self.ok("start", "work")
+        self.assertEqual(self.applied(), [])
+
+    def test_a_vm_that_went_off_by_itself_reads_it_from_fw_cfg_when_a_connection_starts_it(self):
+        """Shut down from inside, crashed or forced off without agentbox: the wake that starts it
+        anew drops the marker, as start does, and does not ask the VM."""
+        self.on_with_two_keys()
+        self.scenario(agent_down=True)
+        self.failed("remove-ssh-key", "work", LAPTOP_FP)
+        self.assertTrue(self.exists(PENDING.format("work")))
+        self.turned_off("work")
+        self.forget_calls()
+        code, _, err = self.wake("SSH (192.0.2.7)")
+        self.assertEqual(code, 0, err)
+        self.assertEqual([c["cmd"] for c in self.virsh("start")], ["start"])
+        self.assertFalse(self.exists(PENDING.format("work")))
+        self.assertEqual(self.applied(), [])
+
+    def test_a_build_without_the_wrapper_keeps_the_change_and_says_ssh_missing(self):
+        self.add()
+        self.scenario(missing_wrappers=[WRAPPER])
+        said = self.failed("set-ssh", "work", "on")
+        self.assertEqual((said["error"], said["params"]), ("ssh_missing", {"vm": "work"}))
+        self.assertEqual(said["message"], "work: the change is saved, but the VM's Build cannot apply SSH access "
+                                          "while it runs (it has no agentbox-ssh), so the VM keeps the SSH keys it "
+                                          "started with until a Reset onto a newer Build (agentbox build <image> "
+                                          "--reset work)")
+        # turning it on is not refused: saved, the port open, the file the VM reads at its next start written
+        self.assertIs(self.record()["ssh_access"], True)
+        self.assertTrue(self.exists(SOCKET.format("work")))
+        self.assertTrue(self.read(SSH_FILE.format("work")).startswith("host_key "))
+        self.assertFalse(self.exists(PENDING.format("work")))
+        self.assertEqual(self.activity()[-1][:3], ("ssh.enabled", "work", "failed"))
+        said = self.failed("add-ssh-key", "work", stdin=self.PHONE + "\n")
+        self.assertEqual(said["error"], "ssh_missing")
+        self.assertEqual(len(self.record()["ssh_keys"]), 2)
+        # a paused VM of such a Build: its resume drops the marker, which it can never take
+        self.ok("pause", "work")
+        self.ok("remove-ssh-key", "work", LAPTOP_FP)
+        code, _, err = self.wake("SSH (192.0.2.7)")
+        self.assertEqual(code, 0, err)
+        self.assertIn("it has no agentbox-ssh", err)
+        self.assertFalse(self.exists(PENDING.format("work")))
+
+    def test_an_unknown_fingerprint_is_refused(self):
+        self.add()
+        self.journald.entries()
+        self.journald.datagrams.clear()
+        for given in ("SHA256:" + "A" * 43, "laptop"):
+            with self.subTest(given=given):
+                said = self.failed("remove-ssh-key", "work", given)
+                self.assertEqual((said["error"], said["params"]), ("ssh_key_not_found", {"vm": "work"}))
+                self.assertEqual(said["message"], f"work: no SSH key {given} (agentbox ssh work lists them)")
+        self.assertEqual(len(self.record()["ssh_keys"]), 1)
+        self.assertEqual(self.systemctl(), [])
+        # recorded, with the fingerprint only when it is one
+        self.assertEqual([(a, o, p) for a, _, o, p in self.activity()],
+                         [("ssh.key-removed", "failed", {"fingerprint": "SHA256:" + "A" * 43}),
+                          ("ssh.key-removed", "failed", {})])
+        for args in (("work",), ("work", LAPTOP_FP, "x"), ()):
+            with self.subTest(args=args):
+                self.assertEqual(self.refused("remove-ssh-key", *args),
+                                 "agentbox: remove-ssh-key <vm> <fingerprint> [--json]\n")
+        self.assertEqual(self.refused("remove-ssh-key", "nope", LAPTOP_FP), "agentbox: No such VM: nope\n")
+
+    def test_removing_a_key_without_ssh_access(self):
+        self.add()
+        self.forget_calls()
+        result = self.json("remove-ssh-key", "work", LAPTOP_FP)
+        self.assertEqual(result["message"], f"work: SSH key {LAPTOP_FP} (laptop) removed; SSH access is off")
+        self.assertEqual(self.record()["ssh_keys"], [])
+        # nothing that reaches the VM changed
+        self.assertEqual(self.applied(), [])
+
+    def test_remove_waits_for_the_locks(self):
+        self.add()
+        path = self.path("var/lib/agentbox/locks/lifecycle-work.lock")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        env = {"PATH": os.path.join(self.dir, "bin") + ":" + os.environ["PATH"], "FAKE_VIRSH_DIR": self.dir,
+               "FAKE_DIR": self.dir, "AGENTBOX_ROOT": self.root, "LANG": "C.UTF-8", "TZ": "UTC"}
+        p = subprocess.Popen([AGENTBOX, "remove-ssh-key", "work", LAPTOP_FP], stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True, env=env)
+        try:
+            time.sleep(1)
+            self.assertIsNone(p.poll())
+            self.assertEqual(len(self.record()["ssh_keys"]), 1)
+        finally:
+            os.close(fd)
+        _, err = p.communicate(timeout=60)
+        self.assertEqual(p.returncode, 0, err)
+        self.assertEqual(self.record()["ssh_keys"], [])
+
+
 # --- in the VM ----------------------------------------------------------------------------------
 
 class GuestTest(unittest.TestCase):
@@ -1158,8 +1695,9 @@ class GuestTest(unittest.TestCase):
     def test_selinux_labels_where_selinux_is_on(self):
         self.selinux(True)
         self.run_guest(self.entry_lines(key()))
-        self.assertEqual(self.calls(), [f"chcon -t sshd_key_t {self.out}/host_key",
-                                        f"chcon -t ssh_home_t {self.out}/authorized_keys",
+        # each file gets its type before it is renamed into place, so sshd never meets it without
+        self.assertEqual(self.calls(), [f"chcon -t sshd_key_t {self.out}/host_key.new",
+                                        f"chcon -t ssh_home_t {self.out}/authorized_keys.new",
                                         "systemctl start --no-block sshd.service"])
 
     def run_guest_setup(self, lines):
@@ -1244,6 +1782,156 @@ class GuestTest(unittest.TestCase):
         # after the home is set up and everything else; only the closing message follows
         self.assertEqual([line.split()[0] for line in code[call + 1:]], ["echo"])
         self.assertNotIn("sshd", "\n".join(code[:call]))
+
+
+class WrapperTest(unittest.TestCase):
+    """agentbox-ssh run directly, as the guest agent runs it in a running VM: the entry on stdin,
+    checked again with fwcfg-ssh's own checks, the key files replaced whole, sshd started or
+    stopped, and only a small JSON answer. AGENTBOX_SSH_ROOT moves its paths into a temporary
+    root with a fake systemctl."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = tmp.name
+        lib, self.bin = os.path.join(self.root, "usr/lib/agentbox"), os.path.join(self.root, "usr/bin")
+        os.makedirs(lib)
+        os.makedirs(self.bin)
+        os.symlink(FWCFG_SSH, os.path.join(lib, "fwcfg-ssh"))
+        self.fake("systemctl", 'echo "$*" >> "$ROOT/calls"\ncase "$1" in is-active) [ ! -e "$ROOT/starting" ];; '
+                               'is-failed) [ -e "$ROOT/setup-failed" ];; '
+                               '*) [ ! -e "$ROOT/fails" ] || { echo "Job failed." >&2; exit 1; };; esac\n')
+        self.fake("selinuxenabled", "exit 1\n")
+        self.out = os.path.join(self.root, "run/agentbox/ssh")
+        self.host_key = sshkeys.host_key_file(bytes(32), bytes(range(32)), "work.agentbox")
+
+    def fake(self, name, body):
+        path = os.path.join(self.bin, name)
+        with open(path, "w") as f:
+            f.write(f'#!/bin/sh\nROOT="{self.root}"\n' + body)
+        os.chmod(path, 0o755)
+
+    def run_wrapper(self, data, *args, wait="1"):
+        r = subprocess.run([AGENTBOX_SSH, *(args or ("apply",))], input=data, capture_output=True, timeout=60,
+                           env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "AGENTBOX_SSH_ROOT": self.root,
+                                "AGENTBOX_SSH_SETUP_WAIT": wait})
+        return r.returncode, r.stdout.decode(), r.stderr.decode()
+
+    def entry(self, *keys):
+        return sshkeys.fw_cfg(True, [{"key": k} for k in keys], self.host_key)
+
+    def calls(self):
+        try:
+            with open(os.path.join(self.root, "calls")) as f:
+                return f.read().splitlines()
+        except FileNotFoundError:
+            return []
+
+    def files(self):
+        return sorted(os.listdir(self.out)) if os.path.isdir(self.out) else []
+
+    def authorized(self):
+        with open(os.path.join(self.out, "authorized_keys")) as f:
+            return f.read()
+
+    def test_keys_go_in_whole_and_sshd_starts(self):
+        code, out, err = self.run_wrapper(self.entry(key(seed=1), key("ssh-rsa", seed=2)))
+        self.assertEqual((code, json.loads(out)), (0, {"keys": 2, "sshd": True}), err)
+        self.assertEqual(self.authorized(), f"{key(seed=1)}\n{key('ssh-rsa', seed=2)}\n")
+        with open(os.path.join(self.out, "host_key"), "rb") as f:
+            self.assertEqual(f.read(), self.host_key)
+        modes = {n: os.stat(os.path.join(self.out, n)).st_mode & 0o7777 for n in self.files()}
+        self.assertEqual(modes, {"host_key": 0o600, "authorized_keys": 0o644})
+        # it waited for guest-setup, then started sshd and waited for it
+        self.assertEqual(self.calls(), ["is-active --quiet agentbox-guest-setup.service", "start sshd.service"])
+        # a key removed: the file is replaced, with nothing left beside it
+        inode = os.stat(os.path.join(self.out, "authorized_keys")).st_ino
+        code, out, _ = self.run_wrapper(self.entry(key("ssh-rsa", seed=2)))
+        self.assertEqual(json.loads(out), {"keys": 1, "sshd": True})
+        self.assertEqual(self.authorized(), f"{key('ssh-rsa', seed=2)}\n")
+        self.assertNotEqual(os.stat(os.path.join(self.out, "authorized_keys")).st_ino, inode)
+        self.assertEqual(self.files(), ["authorized_keys", "host_key"])
+
+    def test_without_keys_or_without_ssh_access_sshd_stops(self):
+        self.run_wrapper(self.entry(key()))
+        code, out, _ = self.run_wrapper(self.entry())
+        self.assertEqual((code, json.loads(out)), (0, {"keys": 0, "sshd": False}))
+        self.assertEqual(self.authorized(), "")
+        self.assertEqual(self.calls()[-1], "stop sshd.service")
+        code, out, _ = self.run_wrapper(b"none\n")
+        self.assertEqual((code, json.loads(out)), (0, {"keys": 0, "sshd": False}))
+        self.assertEqual(self.files(), [])
+        self.assertEqual(self.calls()[-1], "stop sshd.service")
+
+    def test_it_checks_the_keys_again_as_fwcfg_ssh_does(self):
+        ed = key().split()[1]
+        data = self.entry(key(seed=3)) + "".join(
+            f"key {line}\n" for line in (f'command="x" ssh-ed25519 {ed}', f"ssh-dss {ed}", f"ssh-rsa {ed}",
+                                         "ssh-ed25519 !!!", key(seed=3))).encode()
+        code, out, err = self.run_wrapper(data)
+        self.assertEqual(json.loads(out), {"keys": 1, "sshd": True})
+        self.assertEqual(self.authorized(), f"{key(seed=3)}\n")
+        self.assertEqual(err.count("left out"), 5, err)
+        # at most 16 keys
+        code, out, _ = self.run_wrapper(self.entry(*(key(seed=i) for i in range(20))))
+        self.assertEqual(json.loads(out), {"keys": 16, "sshd": True})
+        # no host key, or more than the entry may hold: no SSH access
+        for data in (f"key {key()}\n".encode(), self.entry(key()) + b"#" * sshkeys.MAX_ENTRY):
+            with self.subTest(size=len(data)):
+                code, out, _ = self.run_wrapper(data)
+                self.assertEqual((code, json.loads(out)), (0, {"keys": 0, "sshd": False}))
+                self.assertEqual(self.files(), [])
+
+    def test_it_never_writes_before_guest_setup(self):
+        open(os.path.join(self.root, "starting"), "w").close()
+        code, out, err = self.run_wrapper(self.entry(key()), wait="0.5")
+        self.assertEqual((code, out), (75, ""))
+        self.assertIn("the VM is still starting", err)
+        self.assertEqual(self.files(), [])
+        self.assertNotIn("start sshd.service", self.calls())
+
+    def test_a_failed_guest_setup_is_named_at_once(self):
+        open(os.path.join(self.root, "starting"), "w").close()
+        open(os.path.join(self.root, "setup-failed"), "w").close()
+        t = time.monotonic()
+        code, out, err = self.run_wrapper(self.entry(key()), wait="20")
+        self.assertLess(time.monotonic() - t, 10)
+        self.assertEqual((code, out), (76, ""))
+        self.assertIn("guest-setup has failed", err)
+        self.assertEqual(self.files(), [])
+        self.assertNotIn("start sshd.service", self.calls())
+
+    def test_failures_print_no_answer(self):
+        open(os.path.join(self.root, "fails"), "w").close()
+        code, out, err = self.run_wrapper(self.entry(key()))
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("starting sshd failed: Job failed.", err)
+        os.remove(os.path.join(self.root, "fails"))
+        shutil.rmtree(self.out)
+        os.symlink(self.root, self.out)                     # no directory it writes into
+        code, out, err = self.run_wrapper(self.entry(key()))
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("is no directory", err)
+        self.assertEqual(self.calls()[-1], "is-active --quiet agentbox-guest-setup.service")
+
+    def test_arguments(self):
+        for args in (("apply", "x"), ("prune",), ("--help",)):
+            with self.subTest(args=args):
+                code, out, err = self.run_wrapper(b"", *args)
+                self.assertEqual((code, out), (2, ""))
+                self.assertIn("agentbox-ssh: apply", err)
+        for hook in ("freeze", "thaw"):
+            self.assertEqual(self.run_wrapper(b"", hook)[:2], (0, ""))
+        self.assertEqual(self.calls(), [])
+
+    def test_it_is_a_fixed_wrapper_beside_the_others(self):
+        self.assertTrue(os.access(AGENTBOX_SSH, os.X_OK))
+        with open(AGENTBOX_SSH) as f:
+            text = f.read()
+        self.assertTrue(text.startswith("#!/usr/bin/python3 -I\n"))
+        # its checks are fwcfg-ssh's, loaded from the Image's fixed path, not a copy
+        self.assertIn('FWCFG_SSH = "/usr/lib/agentbox/fwcfg-ssh"', text)
+        self.assertNotIn("TYPES", text)
 
 
 if __name__ == "__main__":
