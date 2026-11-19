@@ -946,6 +946,23 @@ class SshConfigTest(SshTest):
         self.ok("regenerate")
         self.assertEqual(self.ok("ssh-config", "--known-hosts"), line + "\n")
 
+    def test_no_public_host_key_yet_leaves_known_hosts_empty_and_a_garbled_one_fails(self):
+        self.ok("set-ssh", "work", "on")
+        pub = self.path(PUBLIC_KEY.format("work"))
+        os.remove(pub)
+        code, out, err = self.run_agentbox("ssh-config")
+        self.assertEqual((code, out), (0, self.block("work", "127.0.0.1", 2201)))
+        self.assertIn("work has no host key yet (sudo agentbox regenerate)", err)
+        result = self.json("ssh-config")
+        self.assertIsNone(result["hosts"][0]["known_hosts"])
+        self.assertEqual(result["hosts"][0]["config"], self.block("work", "127.0.0.1", 2201))
+        with open(pub, "w") as f:
+            f.write("this is not a key\n")
+        for args in (("ssh-config",), ("ssh-config", "--json"), ("ssh-config", "--known-hosts")):
+            code, out, err = self.run_agentbox(*args)
+            self.assertEqual(code, 1, args)
+            self.assertIn("not an SSH public key; agentbox regenerate writes it again", out + err)
+
     def test_only_root_and_the_members_of_libvirt(self):
         self.ok("set-ssh", "work", "on")
         self.in_libvirt(False)

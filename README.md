@@ -501,11 +501,12 @@ ssh lab.agentbox                                      # wakes the VM if it is of
 
 Put `Include agentbox.conf` once at the top of `~/.ssh/config`, before any `Host` line (an
 `Include` further down counts only for the `Host` block it stands in). Run both `ssh-config`
-lines again after turning SSH access on for another VM. Each block names the VM
+lines again after turning SSH access on for another VM. After an update, `sudo agentbox regenerate` writes the public host keys of VMs that had SSH access before. Each block names the VM
 `<vm>.agentbox` and sets `HostName`, `Port`, `User agent`, `ForwardAgent no`, `ForwardX11 no`,
 `StrictHostKeyChecking yes` and `UserKnownHostsFile ~/.ssh/known_hosts.agentbox`, so `ssh`
 talks only to the host key the Host made and offers the VM neither your agent nor your
-display. The host key is keyed on `HostKeyAlias <vm>.agentbox`, not on the address and port:
+display (the first value `ssh` finds wins, so `ssh -A`, `ssh -X` or an earlier
+`Host *` with `ForwardAgent yes` overrides it: keep `Include` at the top). The host key is keyed on `HostKeyAlias <vm>.agentbox`, not on the address and port:
 after switching the Host between Local-only and Network mode only `HostName` changes, so run
 the first line again and keep `known_hosts.agentbox`. `ssh-config lab` gives only `lab`'s block,
 `--json` the same parts for a script. `ssh-config` runs for root and the members of `libvirt`;
