@@ -76,7 +76,7 @@ def ping(ctx, seconds=3):
     return isinstance(answer, dict) and "return" in answer
 
 
-def execute(ctx, wrapper, argv, wait, *, missing=None, answer=None):
+def execute(ctx, wrapper, argv, wait, *, missing=None, answer=None, stdin=None):
     """Run a wrapper of the Image in the VM through the guest agent (guest-exec) and wait
     up to `wait` seconds for it to end, asking after 0.2 s at first and every 2 s at most:
     (exit code, stdout, stderr, truncated). A wrapper stopped by a signal, or one that has
@@ -87,9 +87,11 @@ def execute(ctx, wrapper, argv, wait, *, missing=None, answer=None):
     answer of at most that many characters, decoded strictly (base64, UTF-8); None instead
     of it when it is anything else, longer or truncated, and stderr is not read (None).
     Without answer both are decoded leniently, undecodable UTF-8 replaced. A wrapper the Host
-    stopped waiting for has no output: (124, "", "", False)."""
+    stopped waiting for has no output: (124, "", "", False). stdin: bytes the wrapper reads on
+    its standard input (guest-exec's input-data)."""
+    given = {"input-data": base64.b64encode(stdin).decode()} if stdin is not None else {}
     r = virsh.run("qemu-agent-command", dom(ctx), json.dumps({"execute": "guest-exec", "arguments": {
-        "path": wrapper, "arg": argv, "capture-output": True}}), "--timeout", "10")
+        "path": wrapper, "arg": argv, **given, "capture-output": True}}), "--timeout", "10")
     if r.returncode != 0:
         if missing and "No such file or directory" in r.stderr:
             missing()

@@ -97,6 +97,12 @@ def vm_ssh_file(name):
     return os.path.join(host_paths.STATE, "vm-ssh", f"{name}.ssh")
 
 
+def ssh_pending_file(name):
+    """A change of the VM's SSH access the running VM has not taken yet (ssh_access.py): applied
+    before the next connection is forwarded, gone once it is or the VM is off."""
+    return os.path.join(host_paths.STATE, "pending", f"ssh-{name}")
+
+
 def seen_file(name):
     return os.path.join(host_paths.STATE, f"alerts-seen-{name}.json")
 
@@ -211,7 +217,7 @@ def paths(rec):
             legacy_owners_file(name), legacy_allowlist_file(name), legacy_allowlist_migrated_file(name),
             observer_dir(name), open_web_file(name), claude_token_file(name), vm_env_file(name),
             ssh_host_key_file(name), ssh_host_key_public_file(name), vm_ssh_file(name),
-            seen_file(name), wakes_file(name), domain_file(name),
+            ssh_pending_file(name), seen_file(name), wakes_file(name), domain_file(name),
             *unit_files(rec), *socket_pending_files(rec))
 
 
@@ -359,7 +365,7 @@ def _files(rec, say):
     if any(gone):
         say(f"{name}: Claude token, VM variables, SSH host key, Allowlist entries and Observer removed")
     # stale markers and import archives, not named in the message above
-    for path in socket_pending_files(rec):
+    for path in (*socket_pending_files(rec), ssh_pending_file(name)):
         state_files.remove(path)
     for path in transfer_files(name):
         sweep_transfer(path)

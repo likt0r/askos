@@ -103,6 +103,8 @@ else `500 action_failed`, with the message in `detail`:
 | 409 | `ssh_key_duplicate` | an SSH key with this SHA256 fingerprint is entered for the VM already |
 | 409 | `ssh_keys_too_many` | the VM has 16 SSH keys already |
 | 409 | `ssh_keys_too_large` | with this key, the lines of the VM's SSH keys would take more than 64512 bytes together, more than the file the VM reads holds (64 KiB with the host key) |
+| 404 | `ssh_key_not_found` | the VM has no SSH key with this SHA256 fingerprint |
+| 409 | `ssh_missing` | the change of SSH access is saved, but the VM runs on a Build without the wrapper that applies it in a running VM (`agentbox-ssh`): the VM keeps the SSH keys it started with until a Reset onto a newer Build |
 | 503 | `guest_agent_unavailable` | the VM's guest agent does not answer |
 | 504 | `vm_query_timeout` | a query inside the VM took too long |
 | 502 | `vm_journal_failed` | journalctl failed inside the VM |

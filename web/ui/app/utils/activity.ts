@@ -180,6 +180,9 @@ export const SENTENCES: Record<string, Sentence> = {
   'ssh.key-added': (p, tr) => (!has(p, 'fingerprint') ? say(tr, 'sshKeyAddedAny')
     : has(p, 'name') ? say(tr, 'sshKeyAddedNamed', { fingerprint: p.fingerprint, name: p.name })
       : say(tr, 'sshKeyAdded', { fingerprint: p.fingerprint })),
+  'ssh.key-removed': (p, tr) => (!has(p, 'fingerprint') ? say(tr, 'sshKeyRemovedAny')
+    : has(p, 'name') ? say(tr, 'sshKeyRemovedNamed', { fingerprint: p.fingerprint, name: p.name })
+      : say(tr, 'sshKeyRemoved', { fingerprint: p.fingerprint })),
   'allow': listed('allow', 'for'),
   'disallow': listed('disallow'),
   'extend': listed('extend', 'by'),

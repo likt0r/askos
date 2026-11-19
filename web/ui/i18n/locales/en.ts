@@ -126,6 +126,8 @@ export default {
     ssh_key_duplicate: 'This SSH key is entered for this VM already.',
     ssh_keys_too_many: 'A VM has at most 16 SSH keys.',
     ssh_keys_too_large: 'The SSH keys of a VM take at most 64512 bytes together; with this one they would take more.',
+    ssh_key_not_found: 'This VM has no such SSH key.',
+    ssh_missing: 'The change is saved, but the VM\'s Build cannot apply SSH access while it runs: the VM keeps the SSH keys it started with. Build its Image and reset the VM.',
     guest_agent_unavailable: 'The VM\'s guest agent does not answer.',
     vm_query_timeout: 'A query inside the VM took too long.',
     vm_journal_failed: 'Reading the VM\'s journal failed.',

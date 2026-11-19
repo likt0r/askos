@@ -48,7 +48,12 @@ scenario.json:
               var/home/agent/code there), with the disk attached with the serial
               agentbox-inbox as its device; guest-exec of agentbox-container-images runs
               the real wrapper there too, with the agent's Podman a fake one
-              (fake_guest_podman.py, its Container images in podman.json of that root).
+              (fake_guest_podman.py, its Container images in podman.json of that root), and
+              guest-exec of agentbox-ssh runs the real wrapper there with guest-exec's
+              input-data on its stdin and the real fwcfg-ssh: its key files land in
+              run/agentbox/ssh of that root, and a fake systemctl there records each call in
+              systemctl.log; it says guest-setup is not active while the file starting
+              exists there, and fails while sshd-fails exists.
   still_running  guest-exec-status never says the program ended (default false)
   missing_wrappers  paths guest-exec cannot run: the guest agent fails as qemu-ga does
               for a program the Image lacks
@@ -99,6 +104,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 INBOX = "/usr/libexec/qemu-ga/fsfreeze-hook.d/agentbox-inbox"
 INBOX_DEVICE = "/dev/disk/by-id/virtio-agentbox-inbox"
 CONTAINER_IMAGES = "/usr/libexec/qemu-ga/fsfreeze-hook.d/agentbox-container-images"
+SSH = "/usr/libexec/qemu-ga/fsfreeze-hook.d/agentbox-ssh"
 
 
 def process_started(domain):
@@ -605,6 +611,32 @@ def run_container_images(domain, argv):
     return {"stdout": r.stdout, "stderr": r.stderr, "exitcode": r.returncode}
 
 
+def run_ssh(domain, argv, stdin):
+    """The real agentbox-ssh in the VM's own root, with the real fwcfg-ssh and a fake systemctl."""
+    import subprocess
+    root = guest_root(domain)
+    lib, bin_ = os.path.join(root, "usr", "lib", "agentbox"), os.path.join(root, "usr", "bin")
+    os.makedirs(lib, exist_ok=True)
+    os.makedirs(bin_, exist_ok=True)
+    fwcfg = os.path.join(lib, "fwcfg-ssh")
+    if not os.path.lexists(fwcfg):
+        os.symlink(os.path.join(REPO, "vm", "files", "usr", "lib", "agentbox", "fwcfg-ssh"), fwcfg)
+    fakes = {"systemctl": f'echo "$*" >> "{root}/systemctl.log"\n'
+                          f'case "$1" in is-active) [ ! -e "{root}/starting" ];; '
+                          f'*) [ ! -e "{root}/sshd-fails" ] || {{ echo "Job failed." >&2; exit 1; }};; esac\n',
+             "selinuxenabled": "exit 1\n", "chcon": "exit 0\n"}
+    for name, body in fakes.items():
+        with open(os.path.join(bin_, name), "w") as f:
+            f.write("#!/bin/sh\n" + body)
+        os.chmod(os.path.join(bin_, name), 0o755)
+    r = subprocess.run([sys.executable, "-I", os.path.join(REPO, "vm", "files", SSH.lstrip("/")), *argv],
+                       input=stdin, capture_output=True,
+                       env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "AGENTBOX_SSH_ROOT": root,
+                            "AGENTBOX_SSH_SETUP_WAIT": "0.5"})
+    return {"stdout": r.stdout.decode("utf-8", "replace"), "stderr": r.stderr.decode("utf-8", "replace"),
+            "exitcode": r.returncode}
+
+
 def guest_agent(scenario, rest):
     request = json.loads(rest[1])
     if request["execute"] == "guest-ping":
@@ -618,9 +650,12 @@ def guest_agent(scenario, rest):
         print(json.dumps({"return": {}}))
         return 0
     if request["execute"] == "guest-exec":
+        import base64
         calls = [c for c in load_calls() if c["cmd"] == "guest-exec"]
         path, argv = request["arguments"]["path"], request["arguments"]["arg"]
-        record({"cmd": "guest-exec", "path": path, "arg": argv})
+        given = request["arguments"].get("input-data")
+        record({"cmd": "guest-exec", "path": path, "arg": argv,
+                **({"input": base64.b64decode(given).decode("utf-8", "replace")} if given is not None else {})})
         if path in (scenario.get("missing_wrappers") or ()):
             print("error: internal error: unable to execute QEMU agent command 'guest-exec': Failed to execute "
                   f"child process \u201c{path}\u201d (No such file or directory)", file=sys.stderr)
@@ -632,6 +667,9 @@ def guest_agent(scenario, rest):
         if path == CONTAINER_IMAGES and not scenario.get("responses") and not scenario.get("still_running"):
             with open(os.path.join(DIR, f"exec-{pid}.json"), "w") as f:
                 json.dump(run_container_images(rest[0], argv), f)
+        if path == SSH and not scenario.get("responses") and not scenario.get("still_running"):
+            with open(os.path.join(DIR, f"exec-{pid}.json"), "w") as f:
+                json.dump(run_ssh(rest[0], argv, base64.b64decode(given or "")), f)
         print(json.dumps({"return": {"pid": pid}}))
         return 0
     if request["execute"] == "guest-exec-status":

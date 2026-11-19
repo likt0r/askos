@@ -16,7 +16,8 @@ import sys
 import time
 import xml.etree.ElementTree as ET
 
-from . import activity, footprint, guest, images, paths, programs, registry, responding, settings, state_files, states, virsh
+from . import activity, footprint, guest, images, paths, programs, registry, responding, settings, ssh_access
+from . import state_files, states, virsh
 from .commands import declare
 from .registry import check, dom
 from .errors import Fail, die
@@ -166,12 +167,14 @@ class OrcaSilent(Fail):
         self.started, self.entry = started, entry
 
 
-# the actor of a wake from a connection to the VM's Orca port (generate.units)
+# the actor of a wake from a connection to the VM's Orca port, and to its SSH port (generate.units)
 ORCA_ACTOR = re.compile(r"Orca \((.{1,64})\)")
+SSH_ACTOR = re.compile(r"SSH \((.{1,64})\)")
 
 
 def wake(ctx):
-    """Start the VM if needed and wait until its Orca accepts connections.
+    """Start the VM if needed and wait until its Orca accepts connections, then hand it a
+    pending change of its SSH access (_ssh_pending), before the connection is forwarded.
     True when the VM had to be started. While a Reset, Restart, Pause or delete runs,
     wait for it; then act on the state it left. The lock is not held while waiting
     for Orca. The outcome goes to the VM's wakes file (responding.py)."""
@@ -191,9 +194,27 @@ def wake(ctx):
             time.sleep(1)
             continue
         _bookkeeping(responding.wake_reached, ctx, start)
+        _ssh_pending(ctx)
         return started
     entry = _bookkeeping(_gave_up, ctx, start, waiting)
     raise OrcaSilent(f"{ctx}: Orca in the VM does not answer", started, entry, ctx)
+
+
+def _ssh_pending(ctx):
+    """A change of the VM's SSH access it has not taken yet (a key removed while it was paused)
+    goes into it now, under its lifecycle lock; Orca answering means guest-setup has finished.
+    When that fails, a connection to the SSH port is refused, so that no removed key logs in;
+    others go on with a message. A Build without the wrapper never takes it: it keeps the keys
+    it started with until its next start (ssh_access.apply_pending)."""
+    if not ssh_access.pending(ctx):
+        return
+    with state_files.vm_lock(ctx):
+        try:
+            ssh_access.apply_pending(ctx)
+        except Fail as f:
+            if f.error != "ssh_missing" and SSH_ACTOR.fullmatch(activity.actor()):
+                raise
+            print(f"agentbox: {f.message}", file=sys.stderr, flush=True)
 
 
 def _bookkeeping(step, ctx, *args):
@@ -244,6 +265,7 @@ def stop(ctx):
         if states.running(ctx):
             must("destroy", dom(ctx))
     responding.clear(ctx)
+    ssh_access.drop_pending(ctx)         # its next start reads its SSH access from fw_cfg
 
 
 def _running_backing(ctx):
@@ -399,12 +421,22 @@ def status(args):
 
 
 def start_cmd(args):
-    """agentbox start <vm> [--json]: start without waiting for Orca."""
+    """agentbox start <vm> [--json]: start without waiting for Orca. A VM resumed from its
+    Pause (or one that runs) gets a pending change of its SSH access at once; one that starts
+    anew reads it from fw_cfg. When the VM does not take it, a message says so and the marker
+    stays for the next connection (wake)."""
     ctx, flags = _flags(args)
     with state_files.vm_lock(ctx):
         if not states.running(ctx):
+            resumed = states.has_pause(ctx)
             responding.clear(ctx)
             must("start", dom(ctx))
+            if not resumed:
+                ssh_access.drop_pending(ctx)
+        try:
+            ssh_access.apply_pending(ctx)
+        except Fail as f:
+            print(f"agentbox: {f.message}", file=sys.stderr, flush=True)
     say, lines = reporter("--json" in flags)
     say(f"{ctx} is running")
     _result(ctx, "--json" in flags, lines)
