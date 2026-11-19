@@ -68,7 +68,7 @@ describe('settings (units)', () => {
   const listed = [...section.slice(0, section.indexOf('The password')).matchAll(/`([a-z_]+)`/g)].map(m => m[1]!)
 
   it('knows the keys of docs/control-room-api.md, no more and no fewer', () => {
-    expect(listed.length).toBe(19)
+    expect(listed.length).toBe(20)
     expect([...listed].sort()).toEqual(Object.keys(SETTING_SPECS).sort())
     expect(Object.keys(SETTING_SPECS).sort()).toEqual(Object.keys(DEFAULTS).sort())
   })
@@ -158,12 +158,12 @@ describe('settings (units)', () => {
 describe('Settings page', () => {
   useFreshApp()
 
-  it('shows all 19 settings with label, current value and default, and when a change applies', async () => {
+  it('shows all 20 settings with label, current value and default, and when a change applies', async () => {
     const { wrapper } = await openPage('/settings', {
       'GET /settings': ok(settingsBody({ reset_age_days: 14, rebuild_day: 'fri', temporary_entry_default: '8h', young_domain_days: 28, default_language: 'en' })),
     })
     const rows = wrapper.findAll('[data-testid="setting"]')
-    expect(rows).toHaveLength(19)
+    expect(rows).toHaveLength(20)
     expect(new Set(rows.map(r => r.attributes('data-key')))).toEqual(new Set(Object.keys(DEFAULTS)))
     expect(wrapper.find('[data-testid="settings-load-error"]').exists()).toBe(false)
 
