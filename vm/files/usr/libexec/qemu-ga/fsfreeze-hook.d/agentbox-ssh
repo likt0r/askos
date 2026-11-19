@@ -1,0 +1,105 @@
+#!/usr/bin/python3 -I
+"""SSH access in a running VM (ADR 0020): run by the Host through the guest agent, as root,
+when an SSH key is added or removed or SSH access is turned on or off (agentbox add-ssh-key,
+remove-ssh-key, set-ssh), and when a VM resumes with such a change pending. Lies in this
+directory for the same reason as agentbox-journal (SELinux, see there). No fsfreeze hook:
+freeze and thaw are ignored.
+
+  apply
+      Reads on stdin what the fw_cfg entry carries at boot (agentbox/sshkeys.py: "none"
+      without SSH access, else the host key and one line per SSH key, at most 64 KiB) and
+      checks it again as untrusted input with the checks of /usr/lib/agentbox/fwcfg-ssh, which
+      writes the same entry at boot: its parse() and install() write the host key and the keys
+      into /run/agentbox/ssh, each replacing the file before whole, or remove both without
+      SSH access. Then sshd is started (SSH access on, a host key and at least one key) or
+      stopped. Prints only {"keys": N, "sshd": true|false}: the keys now in the key file
+      (0 without SSH access) and whether sshd runs. sshd reads the key file at each login, so
+      a removed key no longer logs in from here on; the Host ends the open sessions itself.
+
+At a start guest-setup writes the same files from fw_cfg, which QEMU read when the VM started:
+the wrapper waits up to 30 s for it to finish, so that it never writes before it.
+
+Exit codes: 2 invalid arguments; 75 the VM is still starting (guest-setup has not finished);
+1 anything else (the directory, systemctl failing).
+
+Without root (tests) AGENTBOX_SSH_ROOT puts fwcfg-ssh, the directory and the programs it
+runs (systemctl, selinuxenabled, chcon) under that directory, and AGENTBOX_SSH_SETUP_WAIT
+shortens the wait for guest-setup.
+"""
+import importlib.machinery
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+import time
+
+FWCFG_SSH = "/usr/lib/agentbox/fwcfg-ssh"
+DIRECTORY = "/run/agentbox/ssh"
+SYSTEMCTL = "/usr/bin/systemctl"
+GUEST_SETUP = "agentbox-guest-setup.service"
+SSHD = "sshd.service"
+STARTING = 75                    # exit code: the VM is still starting, nothing was done
+SETUP_WAIT = 30                  # seconds to wait for guest-setup
+SYSTEMCTL_LIMIT = 30             # one systemctl call
+
+
+def home_ready(systemctl):
+    """Whether guest-setup has finished at this start."""
+    try:
+        return subprocess.run([systemctl, "is-active", "--quiet", GUEST_SETUP], stdin=subprocess.DEVNULL,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def fwcfg_ssh(path):
+    """fwcfg-ssh as a module: its checks and the files it writes."""
+    sys.dont_write_bytecode = True               # nothing written next to it in /usr
+    loader = importlib.machinery.SourceFileLoader("fwcfg_ssh", path)
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+    loader.exec_module(module)
+    return module
+
+
+def apply(seam):
+    systemctl = seam + SYSTEMCTL
+    wait = float(os.environ.get("AGENTBOX_SSH_SETUP_WAIT", SETUP_WAIT)) if seam else SETUP_WAIT
+    deadline = time.monotonic() + wait
+    while not home_ready(systemctl):
+        if time.monotonic() > deadline:
+            print("agentbox-ssh: the VM is still starting (guest-setup has not finished)", file=sys.stderr)
+            return STARTING
+        time.sleep(0.5)
+    fw = fwcfg_ssh(seam + FWCFG_SSH)
+    host, keys = fw.parse(sys.stdin.buffer.read(fw.MAX_ENTRY + 1))
+    if not fw.install(seam + DIRECTORY, host, keys):
+        return 1
+    run = host is not None and bool(keys)
+    r = subprocess.run([systemctl, "start" if run else "stop", SSHD], stdin=subprocess.DEVNULL,
+                       capture_output=True, text=True, errors="replace", timeout=SYSTEMCTL_LIMIT)
+    if r.returncode != 0:
+        print(f"agentbox-ssh: {'starting' if run else 'stopping'} sshd failed: {r.stderr.strip()[:200]}",
+              file=sys.stderr)
+        return 1
+    print(json.dumps({"keys": len(keys) if host is not None else 0, "sshd": run}))
+    return 0
+
+
+def main(argv):
+    if argv[:1] in (["freeze"], ["thaw"]):
+        return 0
+    if argv != ["apply"]:
+        print("agentbox-ssh: apply (the entry on stdin)", file=sys.stderr)
+        return 2
+    seam = os.environ.get("AGENTBOX_SSH_ROOT", "") if os.geteuid() != 0 else ""
+    os.environ["PATH"] = ":".join([seam + "/usr/sbin", seam + "/usr/bin"] + (["/usr/bin", "/bin"] if seam else []))
+    try:
+        return apply(seam)
+    except (OSError, ValueError, subprocess.TimeoutExpired) as e:
+        print(f"agentbox-ssh: {e}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

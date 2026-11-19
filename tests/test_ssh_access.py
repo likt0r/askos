@@ -44,6 +44,9 @@ SOCKET = "etc/systemd/system/agentbox-ssh-{}.socket"
 SERVICE = "etc/systemd/system/agentbox-ssh-{}@.service"
 FWCFG_SSH = os.path.join(REPO, "vm", "files", "usr", "lib", "agentbox", "fwcfg-ssh")
 GUEST_SETUP = os.path.join(REPO, "vm", "files", "usr", "lib", "agentbox", "guest-setup")
+# the guest-agent wrapper that hands a change to a running VM, as the VM has it and in the repo
+WRAPPER = "/usr/libexec/qemu-ga/fsfreeze-hook.d/agentbox-ssh"
+AGENTBOX_SSH = os.path.join(REPO, "vm", "files", WRAPPER.lstrip("/"))
 DONE = "guest-setup: context work, Orca port 6801, the Host at 10.77.1.1\n"     # its last line
 # a key and its fingerprint as `ssh-keygen -lf` gives it
 LAPTOP = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f laptop"
@@ -1158,8 +1161,9 @@ class GuestTest(unittest.TestCase):
     def test_selinux_labels_where_selinux_is_on(self):
         self.selinux(True)
         self.run_guest(self.entry_lines(key()))
-        self.assertEqual(self.calls(), [f"chcon -t sshd_key_t {self.out}/host_key",
-                                        f"chcon -t ssh_home_t {self.out}/authorized_keys",
+        # each file gets its type before it is renamed into place, so sshd never meets it without
+        self.assertEqual(self.calls(), [f"chcon -t sshd_key_t {self.out}/host_key.new",
+                                        f"chcon -t ssh_home_t {self.out}/authorized_keys.new",
                                         "systemctl start --no-block sshd.service"])
 
     def run_guest_setup(self, lines):
@@ -1244,6 +1248,144 @@ class GuestTest(unittest.TestCase):
         # after the home is set up and everything else; only the closing message follows
         self.assertEqual([line.split()[0] for line in code[call + 1:]], ["echo"])
         self.assertNotIn("sshd", "\n".join(code[:call]))
+
+
+class WrapperTest(unittest.TestCase):
+    """agentbox-ssh run directly, as the guest agent runs it in a running VM: the entry on stdin,
+    checked again with fwcfg-ssh's own checks, the key files replaced whole, sshd started or
+    stopped, and only a small JSON answer. AGENTBOX_SSH_ROOT moves its paths into a temporary
+    root with a fake systemctl."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = tmp.name
+        lib, self.bin = os.path.join(self.root, "usr/lib/agentbox"), os.path.join(self.root, "usr/bin")
+        os.makedirs(lib)
+        os.makedirs(self.bin)
+        os.symlink(FWCFG_SSH, os.path.join(lib, "fwcfg-ssh"))
+        self.fake("systemctl", 'echo "$*" >> "$ROOT/calls"\ncase "$1" in is-active) [ ! -e "$ROOT/starting" ];; '
+                               '*) [ ! -e "$ROOT/fails" ] || { echo "Job failed." >&2; exit 1; };; esac\n')
+        self.fake("selinuxenabled", "exit 1\n")
+        self.out = os.path.join(self.root, "run/agentbox/ssh")
+        self.host_key = sshkeys.host_key_file(bytes(32), bytes(range(32)), "work.agentbox")
+
+    def fake(self, name, body):
+        path = os.path.join(self.bin, name)
+        with open(path, "w") as f:
+            f.write(f'#!/bin/sh\nROOT="{self.root}"\n' + body)
+        os.chmod(path, 0o755)
+
+    def run_wrapper(self, data, *args, wait="1"):
+        r = subprocess.run([AGENTBOX_SSH, *(args or ("apply",))], input=data, capture_output=True, timeout=60,
+                           env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "AGENTBOX_SSH_ROOT": self.root,
+                                "AGENTBOX_SSH_SETUP_WAIT": wait})
+        return r.returncode, r.stdout.decode(), r.stderr.decode()
+
+    def entry(self, *keys):
+        return sshkeys.fw_cfg(True, [{"key": k} for k in keys], self.host_key)
+
+    def calls(self):
+        try:
+            with open(os.path.join(self.root, "calls")) as f:
+                return f.read().splitlines()
+        except FileNotFoundError:
+            return []
+
+    def files(self):
+        return sorted(os.listdir(self.out)) if os.path.isdir(self.out) else []
+
+    def authorized(self):
+        with open(os.path.join(self.out, "authorized_keys")) as f:
+            return f.read()
+
+    def test_keys_go_in_whole_and_sshd_starts(self):
+        code, out, err = self.run_wrapper(self.entry(key(seed=1), key("ssh-rsa", seed=2)))
+        self.assertEqual((code, json.loads(out)), (0, {"keys": 2, "sshd": True}), err)
+        self.assertEqual(self.authorized(), f"{key(seed=1)}\n{key('ssh-rsa', seed=2)}\n")
+        with open(os.path.join(self.out, "host_key"), "rb") as f:
+            self.assertEqual(f.read(), self.host_key)
+        modes = {n: os.stat(os.path.join(self.out, n)).st_mode & 0o7777 for n in self.files()}
+        self.assertEqual(modes, {"host_key": 0o600, "authorized_keys": 0o644})
+        # it waited for guest-setup, then started sshd and waited for it
+        self.assertEqual(self.calls(), ["is-active --quiet agentbox-guest-setup.service", "start sshd.service"])
+        # a key removed: the file is replaced, with nothing left beside it
+        inode = os.stat(os.path.join(self.out, "authorized_keys")).st_ino
+        code, out, _ = self.run_wrapper(self.entry(key("ssh-rsa", seed=2)))
+        self.assertEqual(json.loads(out), {"keys": 1, "sshd": True})
+        self.assertEqual(self.authorized(), f"{key('ssh-rsa', seed=2)}\n")
+        self.assertNotEqual(os.stat(os.path.join(self.out, "authorized_keys")).st_ino, inode)
+        self.assertEqual(self.files(), ["authorized_keys", "host_key"])
+
+    def test_without_keys_or_without_ssh_access_sshd_stops(self):
+        self.run_wrapper(self.entry(key()))
+        code, out, _ = self.run_wrapper(self.entry())
+        self.assertEqual((code, json.loads(out)), (0, {"keys": 0, "sshd": False}))
+        self.assertEqual(self.authorized(), "")
+        self.assertEqual(self.calls()[-1], "stop sshd.service")
+        code, out, _ = self.run_wrapper(b"none\n")
+        self.assertEqual((code, json.loads(out)), (0, {"keys": 0, "sshd": False}))
+        self.assertEqual(self.files(), [])
+        self.assertEqual(self.calls()[-1], "stop sshd.service")
+
+    def test_it_checks_the_keys_again_as_fwcfg_ssh_does(self):
+        ed = key().split()[1]
+        data = self.entry(key(seed=3)) + "".join(
+            f"key {line}\n" for line in (f'command="x" ssh-ed25519 {ed}', f"ssh-dss {ed}", f"ssh-rsa {ed}",
+                                         "ssh-ed25519 !!!", key(seed=3))).encode()
+        code, out, err = self.run_wrapper(data)
+        self.assertEqual(json.loads(out), {"keys": 1, "sshd": True})
+        self.assertEqual(self.authorized(), f"{key(seed=3)}\n")
+        self.assertEqual(err.count("left out"), 5, err)
+        # at most 16 keys
+        code, out, _ = self.run_wrapper(self.entry(*(key(seed=i) for i in range(20))))
+        self.assertEqual(json.loads(out), {"keys": 16, "sshd": True})
+        # no host key, or more than the entry may hold: no SSH access
+        for data in (f"key {key()}\n".encode(), self.entry(key()) + b"#" * sshkeys.MAX_ENTRY):
+            with self.subTest(size=len(data)):
+                code, out, _ = self.run_wrapper(data)
+                self.assertEqual((code, json.loads(out)), (0, {"keys": 0, "sshd": False}))
+                self.assertEqual(self.files(), [])
+
+    def test_it_never_writes_before_guest_setup(self):
+        open(os.path.join(self.root, "starting"), "w").close()
+        code, out, err = self.run_wrapper(self.entry(key()), wait="0.5")
+        self.assertEqual((code, out), (75, ""))
+        self.assertIn("the VM is still starting", err)
+        self.assertEqual(self.files(), [])
+        self.assertNotIn("start sshd.service", self.calls())
+
+    def test_failures_print_no_answer(self):
+        open(os.path.join(self.root, "fails"), "w").close()
+        code, out, err = self.run_wrapper(self.entry(key()))
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("starting sshd failed: Job failed.", err)
+        os.remove(os.path.join(self.root, "fails"))
+        shutil.rmtree(self.out)
+        os.symlink(self.root, self.out)                     # no directory it writes into
+        code, out, err = self.run_wrapper(self.entry(key()))
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("is no directory", err)
+        self.assertEqual(self.calls()[-1], "is-active --quiet agentbox-guest-setup.service")
+
+    def test_arguments(self):
+        for args in (("apply", "x"), ("prune",), ("--help",)):
+            with self.subTest(args=args):
+                code, out, err = self.run_wrapper(b"", *args)
+                self.assertEqual((code, out), (2, ""))
+                self.assertIn("agentbox-ssh: apply", err)
+        for hook in ("freeze", "thaw"):
+            self.assertEqual(self.run_wrapper(b"", hook)[:2], (0, ""))
+        self.assertEqual(self.calls(), [])
+
+    def test_it_is_a_fixed_wrapper_beside_the_others(self):
+        self.assertTrue(os.access(AGENTBOX_SSH, os.X_OK))
+        with open(AGENTBOX_SSH) as f:
+            text = f.read()
+        self.assertTrue(text.startswith("#!/usr/bin/python3 -I\n"))
+        # its checks are fwcfg-ssh's, loaded from the Image's fixed path, not a copy
+        self.assertIn('FWCFG_SSH = "/usr/lib/agentbox/fwcfg-ssh"', text)
+        self.assertNotIn("TYPES", text)
 
 
 if __name__ == "__main__":
