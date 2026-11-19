@@ -482,6 +482,7 @@ class StrongSignalsTest(ProxyTest):
         self.assertTrue(self.alive(tb) and self.alive(tc) and self.alive(free))
         log = self.log()
         self.assertIn("[work] ALERT a.example [threat]\n[work] CLOSED a.example (suspicious: threat)\n", log)
+        self.assertEqual(log.count("ALERT a.example"), 1)     # one Alert for the host, two tunnels closed
         # a new Watchlist entry, above the host
         write(os.path.join(self.conf, "watchlist.json"), watch_record(("b.example", "exfil")))
         self.assertTrue(self.closed(tb, timeout=10 * CHECK))

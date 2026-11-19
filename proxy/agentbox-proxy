@@ -472,7 +472,7 @@ def recheck(ctx):
     host once."""
     unreadable = refusal([])
     key = None if unreadable else signals_key()
-    fresh = {}
+    fresh, alerted = {}, set()
     for t in list(tunnels):
         if not unreadable and t.key != key:
             if t.host not in fresh:
@@ -482,7 +482,8 @@ def recheck(ctx):
         if not why:
             continue
         alert = fresh.get(t.host, ((), ()))[1]
-        if alert:
+        if alert and t.host not in alerted:         # one Alert per host, however many tunnels close
+            alerted.add(t.host)
             log(lines.alert(ctx, t.host, alert))
         log(lines.closed(ctx, t.host, why))
         tunnels.discard(t)
@@ -497,10 +498,13 @@ async def watch(ctx, lists):
     was_open = bool(open_until(ctx))
     while True:
         await asyncio.sleep(CHECK_SECONDS)
+        if tunnels:
+            try:
+                recheck(ctx)
+            except Exception as e:  # the comparison below still runs, so revocations close tunnels
+                log(lines.message(ctx, f"ERROR check of the open tunnels' Signals failed ({type(e).__name__}: {e})"))
         try:
             now = time.time()
-            if tunnels:
-                recheck(ctx)
             entries = lists.current()
             revoked = {k for k, expires in known.items() if k not in entries and (expires is None or expires > now)}
             is_open = bool(open_until(ctx))
@@ -508,7 +512,7 @@ async def watch(ctx, lists):
             known, was_open = dict(entries), is_open
             if revoked or ended:
                 withdraw(ctx, lists, now, revoked, ended, is_open)
-        except Exception as e:      # der Waechter darf nie stehen bleiben
+        except Exception as e:      # the watcher must never stop
             log(lines.message(ctx, f"ERROR check of open tunnels failed ({type(e).__name__}: {e})"))
 
 
