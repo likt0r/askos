@@ -54,7 +54,7 @@ RUN export HOME=/tmp npm_config_cache=/tmp/npm-cache \
 # (npm --before), and its Chromium (with the headless shell) and Firefox, no WebKit, in
 # /usr/lib/ms-playwright: readable for the agent, read-only. PLAYWRIGHT_BROWSERS_PATH and
 # PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD are set for every service (system.conf.d) and login
-# (profile.d); a project uses this version of @playwright/test, since the proxy blocks
+# (/etc/environment, below); a project uses this version of @playwright/test, since the proxy blocks
 # Playwright's CDN. playwright install checks its downloads itself (HTTPS, size);
 # playwright-check then starts each browser headless and fails the Build if one does not,
 # after Playwright's own check of the libraries it needs.
@@ -116,6 +116,15 @@ COPY vm/files/ /
 # package-safeguards schreibt mit dem Mindestalter (ARG oben) die Konfiguration von
 # npm (auch ohne Install-Skripte), pnpm, Bun und uv.
 RUN /usr/lib/agentbox/package-safeguards "$PACKAGE_MIN_AGE_DAYS"
+
+# The image-wide variables (RUSTUP_HOME, JAVA_HOME, PLAYWRIGHT_*, the package minimum age, ...)
+# live in one place, systemd's DefaultEnvironment (system.conf.d: agentbox.conf and what
+# package-safeguards wrote), which every service has. login-environment writes it into
+# /etc/environment, which PAM (pam_env) reads for every login, so SSH sessions and
+# `ssh <vm> 'cmd'` (bash reads no profile there) get the same variables; a value pam_env would
+# read differently fails the Build.
+COPY vm/build/login-environment /tmp/login-environment
+RUN python3 -I /tmp/login-environment && rm -f /tmp/login-environment
 
 # sshd starts in no VM by itself (#127): fedora-bootc enables sshd.service by its preset;
 # 10-agentbox.preset (vm/files) keeps it off at first boot too, and 10-agentbox.conf fixes its

@@ -17,6 +17,7 @@ import fcntl
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import stat
@@ -598,6 +599,12 @@ class SafeguardTest(ImagesTest):
         self.image("weak", DERIVED + "COPY agentbox.sh /etc/profile.d/agentbox.sh\n", **{"agentbox.sh": changed})
         self.rejected("weak", "Claude Code: /etc/profile.d/agentbox.sh does not export ENABLE_CLAUDEAI_MCP_SERVERS=false",
                       "/etc/profile.d/agentbox.sh differs from the Base image")
+
+    def test_a_derived_image_without_the_login_environment_is_rejected(self):
+        """/etc/environment gives logins the Base image's variables, ENABLE_CLAUDEAI_MCP_SERVERS
+        among them (#164): a derived Image keeps it as the Base has it, and does not remove it."""
+        self.image("weak", DERIVED + "RUN rm -f /etc/environment\n")
+        self.rejected("weak", "/etc/environment differs from the Base image")
 
     def test_git_hooks_from_repositories_are_rejected(self):
         self.image("weak", DERIVED + "COPY gitconfig /etc/gitconfig\n",
@@ -2089,21 +2096,145 @@ class PlaywrightTest(ImagesTest):
 
     def test_every_service_and_login_takes_the_browsers_of_the_image(self):
         """systemd's DefaultEnvironment reaches orca serve, the agents and terminals it starts;
-        the profile reaches logins (SSH), whose environment sshd builds anew."""
+        /etc/environment (pam_env) reaches logins (SSH), whose environment sshd builds anew."""
         self.built()
         root = self.rootfs("base")
         env = safeguards.systemd_environment(root)
         self.assertEqual((env["PLAYWRIGHT_BROWSERS_PATH"], env["PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD"]),
                          (self.BROWSERS, "1"))
-        r = subprocess.run(["sh", "-c", '. "$1"; echo "$PLAYWRIGHT_BROWSERS_PATH $PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD"',
-                            "sh", os.path.join(root, "etc/profile.d/agentbox.sh")],
-                           env={"PATH": "/usr/bin:/bin"}, capture_output=True, text=True, check=True)
-        self.assertEqual(r.stdout.strip(), f"{self.BROWSERS} 1")
+        login = pam_environment(os.path.join(root, "etc/environment"))
+        self.assertEqual((login["PLAYWRIGHT_BROWSERS_PATH"], login["PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD"]),
+                         (self.BROWSERS, "1"))
         # under /usr: part of the Image, read-only in the VM
         self.assertTrue(self.BROWSERS.startswith("/usr/"))
         # the Build records its version, so a project can pin @playwright/test to it
         self.assertEqual(self.newest()["tools"]["playwright"], "1.65.1")
         self.assertEqual(self.newest()["problems"], [])
+
+
+def pam_environment(path):
+    """The variables pam_env sets from an /etc/environment file, read as pam_env reads it: a
+    line NAME=VALUE (a leading "export " skipped), the value up to a `#`, quotes dropped."""
+    env = {}
+    with open(path) as f:
+        for line in f.read().splitlines():
+            line = line.lstrip(" \t")
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):]
+            name, eq, value = line.split("#", 1)[0].partition("=")
+            if not eq or not re.fullmatch(r"[A-Za-z0-9_]+", name):
+                continue
+            if value[:1] in ("'", '"'):
+                value = value.replace('"', "").replace("'", "")
+            env[name] = value
+    return env
+
+
+class LoginEnvironmentTest(ImagesTest):
+    """#164: every image-wide variable has one source, systemd's DefaultEnvironment, which every
+    service of the VM gets; the Build writes it into /etc/environment, which PAM (pam_env) gives
+    every login, SSH sessions and `ssh <vm> 'cmd'` included. Only a real VM runs sshd and PAM;
+    this checks what the Base image carries and what writes it."""
+
+    SCRIPT = os.path.join(REPO, "vm", "build", "login-environment")
+
+    def put(self, root, rel, content):
+        path = os.path.join(root, rel.lstrip("/"))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(content)
+
+    def run_script(self, root):
+        return subprocess.run([sys.executable, "-I", self.SCRIPT, root], capture_output=True, text=True)
+
+    def test_every_login_gets_exactly_the_variables_every_service_gets(self):
+        self.built()
+        root = self.rootfs("base")
+        services = safeguards.systemd_environment(root)
+        logins = pam_environment(os.path.join(root, safeguards.LOGIN_ENV.lstrip("/")))
+        # set for services but not for logins (or with another value), or the other way round
+        self.assertEqual({n: logins.get(n) for n in services if logins.get(n) != services[n]}, {})
+        self.assertEqual(set(logins) - set(services), set())
+        # those of the issue, the package minimum age package-safeguards writes, the Safeguard
+        for name, value in (("RUSTUP_HOME", "/usr/lib/rustup"), ("JAVA_HOME", "/usr/lib/jvm/temurin-21"),
+                            ("PLAYWRIGHT_BROWSERS_PATH", "/usr/lib/ms-playwright"), ("UV_EXCLUDE_NEWER", "2 days"),
+                            ("pnpm_config_minimum_release_age", "2880"), ("ENABLE_CLAUDEAI_MCP_SERVERS", "false")):
+            self.assertEqual(logins.get(name), value, name)
+        self.assertEqual(os.stat(os.path.join(root, "etc/environment")).st_mode & 0o777, 0o644)
+        self.assertFalse(os.path.exists(os.path.join(root, "tmp/login-environment")))
+        self.assertEqual(self.newest()["problems"], [])
+
+    def test_the_build_writes_it_after_every_default_environment(self):
+        with open(os.path.join(REPO, "vm", "Containerfile")) as f:
+            lines = f.read().replace("\\\n", " ").splitlines()
+        copy = lines.index("COPY vm/build/login-environment /tmp/login-environment")
+        run = lines.index("RUN python3 -I /tmp/login-environment && rm -f /tmp/login-environment")
+        files = lines.index("COPY vm/files/ /")
+        package = next(i for i, line in enumerate(lines) if line.startswith("RUN /usr/lib/agentbox/package-safeguards"))
+        self.assertLess(files, package)
+        self.assertLess(package, run)
+        self.assertLess(copy, run)
+        # nothing after it adds a variable for services
+        self.assertEqual([line for line in lines[run + 1:] if "DefaultEnvironment" in line or "system.conf" in line
+                          or line.startswith(("COPY", "ADD"))], [])
+
+    def test_the_profile_sets_no_image_wide_variable_of_its_own(self):
+        """Only the two that differ by shell: DOCKER_HOST (the agent's socket only for the agent)
+        and ENABLE_CLAUDEAI_MCP_SERVERS again for shells whose environment was rebuilt; every
+        other image-wide variable belongs in systemd's DefaultEnvironment."""
+        with open(os.path.join(REPO, "vm/files/etc/profile.d/agentbox.sh")) as f:
+            profile = f.read()
+        exported = set(re.findall(r"\bexport\s+([A-Za-z_][A-Za-z0-9_]*)=", profile))
+        self.assertEqual(exported, {"DOCKER_HOST", "ENABLE_CLAUDEAI_MCP_SERVERS"})
+
+    def test_it_reads_the_default_environment_as_systemd_does(self):
+        """The main configuration, drop-ins in name order, one in /etc replacing its namesake,
+        an empty DefaultEnvironment= clearing what came before, continuation lines: the same
+        variables the safeguard check reads. What /etc/environment had before goes."""
+        with tempfile.TemporaryDirectory() as root:
+            self.put(root, "/usr/lib/systemd/system.conf", '[Manager]\nDefaultEnvironment="OLD=1"\n#DefaultEnvironment=X=1\n')
+            self.put(root, "/usr/lib/systemd/system.conf.d/10-a.conf",
+                     '[Manager]\nDefaultEnvironment=\nDefaultEnvironment="A=1" \\\n  "B=two words"\n')
+            self.put(root, "/usr/lib/systemd/system.conf.d/20-b.conf", '[Manager]\nDefaultEnvironment="B=lost"\n')
+            self.put(root, "/etc/systemd/system.conf.d/20-b.conf",
+                     '[Manager]\nDefaultEnvironment="C=/usr/lib:/usr/bin"\n[Other]\nDefaultEnvironment="D=1"\n')
+            self.put(root, "/etc/environment", "OLD=1\nKEPT=no\n")
+            r = self.run_script(root)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            logins = pam_environment(os.path.join(root, "etc/environment"))
+            self.assertEqual(logins, {"A": "1", "B": "two words", "C": "/usr/lib:/usr/bin"})
+            self.assertEqual(logins, safeguards.systemd_environment(root))
+
+    def test_a_value_pam_env_would_read_differently_fails(self):
+        for value in ("", "a#b", "'quoted'", '"x"', "a\\b", "$HOME/bin", " lead", "trail ", "tab\tx"):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as root:
+                self.put(root, "/usr/lib/systemd/system.conf.d/agentbox.conf",
+                         f'[Manager]\nDefaultEnvironment="OK=1" {shlex.quote("BAD=" + value)}\n')
+                r = self.run_script(root)
+                self.assertEqual(r.returncode, 1, (r.stdout, r.stderr))
+                self.assertIn("login-environment: the value of BAD cannot go into /etc/environment", r.stderr)
+                self.assertFalse(os.path.exists(os.path.join(root, "etc/environment")))
+        for conf, message in (('DefaultEnvironment="NOEQUALS"', "is no NAME=VALUE"),
+                              ('DefaultEnvironment="1A=x"', "is no NAME=VALUE"),
+                              ('DefaultEnvironment="A=open', "No closing quotation"),
+                              ("DefaultEnvironment=", "DefaultEnvironment is empty")):
+            with self.subTest(conf=conf), tempfile.TemporaryDirectory() as root:
+                self.put(root, "/usr/lib/systemd/system.conf.d/agentbox.conf", f"[Manager]\n{conf}\n")
+                r = self.run_script(root)
+                self.assertEqual(r.returncode, 1, (r.stdout, r.stderr))
+                self.assertIn(message, r.stderr)
+                self.assertFalse(os.path.exists(os.path.join(root, "etc/environment")))
+
+    def test_a_base_build_whose_login_environment_fails_is_discarded(self):
+        with open(os.path.join(self.source, "vm/files/usr/lib/systemd/system.conf.d/agentbox.conf"), "a") as f:
+            f.write('DefaultEnvironment="GREETING=a # b"\n')
+        code, out = self.build()
+        self.assertEqual(code, 1, out)
+        self.assertIn("login-environment: the value of GREETING cannot go into /etc/environment", out)
+        self.assertEqual(self.current(), f"base-{OLD}.qcow2")
+        self.assertEqual(self.podman("run"), [])          # no disk made
 
 
 if __name__ == "__main__":

@@ -14,7 +14,8 @@ Environment:
                                directory ending in /, a single file to a path)
         RUN ...                lines of the Containerfile joined; a RUN naming package-safeguards
                                runs that script of the rootfs against the rootfs with the value
-                               of --build-arg PACKAGE_MIN_AGE_DAYS; `rm -f|-rf <path>...` is
+                               of --build-arg PACKAGE_MIN_AGE_DAYS, and one running
+                               /tmp/login-environment runs it against the rootfs; `rm -f|-rf <path>...` is
                                applied, and so are `systemctl disable <unit>...` (its links in
                                /etc/systemd/system/*.wants and *.requires go), `systemctl mask
                                <unit>...` and `ln -s /dev/null <path>` (links to /dev/null); every
@@ -224,6 +225,11 @@ def build(argv, call):
             m = re.search(r"(/usr/lib/agentbox/package-safeguards)\s", rest + " ")
             if m:
                 r = subprocess.run(["sh", inside(rootfs, m.group(1)), args.get("PACKAGE_MIN_AGE_DAYS", "2"), rootfs])
+                if r.returncode != 0:
+                    return r.returncode
+            m = re.search(r"python3 -I (/tmp/login-environment)\b", rest)
+            if m:
+                r = subprocess.run([sys.executable, "-I", inside(rootfs, m.group(1)), rootfs])
                 if r.returncode != 0:
                     return r.returncode
             for m in re.finditer(r"\brm -r?f ((?:/\S+ ?)+)", rest):
