@@ -117,9 +117,10 @@ flowchart LR
 - **SSH access** to a VM ([ADR 0020](docs/adr/0020-ssh-into-a-vm-through-its-own-host-port.md)) is
   off for a new VM and changed only on the Host: `agentbox set-ssh <vm> on|off` turns it on or
   off, `agentbox add-ssh-key <vm> [--name N] [FILE]` adds an SSH key (one line of a `.pub` file,
-  from stdin without a file; its comment is its name unless `--name` gives one), and `agentbox
+  from stdin without a file; its comment is its name unless `--name` gives one), `agentbox
+  remove-ssh-key <vm> <fingerprint>` removes one by its SHA256 fingerprint, and `agentbox
   ssh <vm>` shows it: on or off, the SSH port, the fingerprint of the host key with a
-  `known_hosts` line, and the keys. While SSH access is on, the VM's SSH port, 2200 + its
+  `known_hosts` line, the keys, and whether the VM has yet to take a change. While SSH access is on, the VM's SSH port, 2200 + its
   network number (2201–2454), listens where its Orca port does: on `127.0.0.1` in Local-only, on
   every address behind the rules of the home network in Network mode; each connection runs
   `wake` with the Actor `SSH (<address>)` and then forwards to port 22 of the VM, as the Orca
@@ -129,10 +130,14 @@ flowchart LR
   decode to a key of the same type that OpenSSH takes (an ECDSA point on its curve, the
   numbers of an RSA key in their shortest form); no options before the key (`command=`,
   `from=`: only the VM would enforce them); at most 16 per VM, together within the 64 KiB the
-  VM reads, and none twice, by the SHA256 fingerprint the Host computes itself. The VM gets its SSH access and keys at its next start, so a running or
-  paused VM at its next Restart or Reset ([VMs](#vms)). Each change is recorded in Activity
-  (`ssh.enabled`, `ssh.disabled`, `ssh.key-added` with the key's fingerprint and name), each
-  connection is not.
+  VM reads, and none twice, by the SHA256 fingerprint the Host computes itself. A change
+  applies at once: a running VM takes it through a guest-agent wrapper, a paused VM when it
+  resumes, a VM that is off at its next start ([VMs](#vms)). Removing a key and turning SSH
+  access off end every open SSH session of the VM: the Host cannot tell which session used
+  which key, so every running connection unit of the SSH port stops, before any step that
+  can fail (turning it off closes the port first). Each change is recorded in Activity
+  (`ssh.enabled`, `ssh.disabled`, `ssh.key-added` and `ssh.key-removed` with the key's
+  fingerprint and name), each connection is not.
 - **Names for SSH**: `agentbox ssh-config [<vm>...]` prints a `~/.ssh/config` block per VM with
   SSH access (of those named, else of all): `Host <vm>.agentbox`, `HostName` `127.0.0.1` in
   Local-only and the Pairing address in Network mode, `Port`, `User agent`, `HostKeyAlias
@@ -290,7 +295,7 @@ flowchart LR
   `/etc/agentbox/secrets/ssh-host-key-<vm>` (`root:qemu`, 0640), with its public half in
   `/etc/agentbox/ssh-host-keys/<vm>.pub` (0644, for `ssh-config`), which `regenerate` writes
   again when it is missing; a Reset leaves both, so `ssh` sees the same host key after every
-  Reset. `set-ssh` and `add-ssh-key` define a domain from
+  Reset. `set-ssh`, `add-ssh-key` and `remove-ssh-key` define a domain from
   before the entry again, as `set-env` does; without the entry a VM has no SSH access, and so
   does a VM whose Build has no `fwcfg-ssh` until a Reset onto a newer Build.
 - The Host never mounts a VM's disks. It reads a VM's journal (`agentbox logs`, and the
@@ -367,6 +372,25 @@ flowchart LR
   something is recorded in Activity (`container-image-cleanup.removed`, with the number, the
   bytes and the days), a failed one with its error code (`container-image-cleanup.failed`), a
   run that removed nothing or a VM that was skipped not at all.
+- A change of SSH access reaches a running VM through a fifth fixed wrapper in the Image
+  (`agentbox-ssh apply`), which `set-ssh`, `add-ssh-key` and `remove-ssh-key` run through the
+  guest agent while they hold the VM's lifecycle lock, whenever what the VM holds changes. It
+  takes the same content as the fw_cfg entry on stdin, never in an argument, checks it again
+  with the checks of `fwcfg-ssh` (it loads that file, so both check alike, ADR 0019), replaces
+  the host key and `authorized_keys` in `/run/agentbox/ssh` whole (or removes both without SSH
+  access) and starts sshd (SSH access on and at least one key) or stops it. sshd reads the key
+  file at every login, so a removed key logs in no more. It waits up to 30 s for `guest-setup`,
+  which writes the same files at a start from what QEMU read then. Only `{"keys": N, "sshd":
+  true|false}` comes back, and it must be exactly what the Host sent; anything else, a failure
+  or a VM that does not answer fails the command with the change saved. A VM that is not
+  running and not off (paused) gets a pending marker instead
+  (`/var/lib/agentbox/pending/ssh-<vm>`), written before any step that can fail and also left
+  by a running VM that did not take the change: `start` (resuming a Pause) and `wake` (once
+  Orca answers, before the connection is forwarded) hand the change over under the lifecycle
+  lock, and while that fails a connection to the SSH port is refused (Orca connections go on).
+  A VM that starts anew reads the fw_cfg file, so a stop drops the marker. A VM whose Build
+  lacks the wrapper keeps the saved change for its next start and the command fails with
+  `ssh_missing`: until a Reset onto a newer Build that VM keeps the keys it started with.
 - VMs are reset automatically once their System disk is seven days old, and with automatic
   updates (`auto_update`) once their Image has a newer current Build than the one their
   System disk came from (not when pinned to a Build), but only when no Orca client is
@@ -384,8 +408,10 @@ flowchart LR
   automatic one, which holds it from its checks on, and the one in `create`), Restart,
   Pause and the stop and undefine of `delete`. `agentbox import` holds it from the attach of
   its disk to the deletion of its tar file, so no Reset or Pause comes in between; the
-  Container image cleanup holds it while its wrapper runs in the VM. What starts a VM (`start`, `wake` from a
-  connection to its Orca port, `pair`) holds it only around "check the state, start"; `wake`
+  Container image cleanup holds it while its wrapper runs in the VM, and so do the SSH commands while
+  they change the VM's SSH access. What starts a VM (`start`, `wake` from a
+  connection to its Orca or SSH port, `pair`) holds it only around "check the state, start"
+  and around handing over a pending change of SSH access; `wake`
   does not hold it while it waits for Orca. So a connection during a Reset waits and then
   finds the VM running on its new System disk (or off after `--no-start`, and starts it).
   Without it, a wake on 2026-11-04 started `priv` on its old System disk while the Reset
@@ -841,8 +867,8 @@ Host after every Build
   later), the minimum age for uv (`uv.toml` and `UV_EXCLUDE_NEWER`), pnpm and Bun, the Git
   hooks path and `pre-push` hook, the resolver (`guest-setup`'s nameserver line, `dns=none`,
   no `DNS=` or `FallbackDNS=` for systemd-resolved), no proxy variable or option in systemd's
-  `DefaultEnvironment`, the four guest-agent
-  wrappers (`agentbox-inbox` must drop to the agent and unpack with the `data` filter,
+  `DefaultEnvironment`, four of the guest-agent
+  wrappers (`agentbox-journal`, `agentbox-devices`; `agentbox-inbox` must drop to the agent and unpack with the `data` filter,
   `agentbox-container-images` must drop to the agent and remove only with `podman rmi`, never by
   force and never a container or volume), that Claude Code fetches no claude.ai connectors (`ENABLE_CLAUDEAI_MCP_SERVERS=false`
   in systemd's `DefaultEnvironment`, which reaches `orca serve`, the agents and terminals it
@@ -1638,8 +1664,13 @@ laptops.
   ([ADR 0020](docs/adr/0020-ssh-into-a-vm-through-its-own-host-port.md)). Every local process
   on the Host reaches port 22 of a VM directly, past its SSH port (the nftables rules of the VM
   networks limit only traffic from a VM); it still needs a key. Any connection to the SSH port
-  wakes the VM before sshd checks a key. Mitigation: SSH access is off until the owner turns it
-  on for one VM, and only the keys in its record reach it.
+  wakes the VM before sshd checks a key. Removing a key ends the sessions that came through the
+  SSH port, not one a local process opened to port 22 directly, and it is the VM's own
+  `agentbox-ssh` that takes the key out of the key file: code with root in the VM can keep a
+  removed key valid, or a Build without the wrapper (`ssh_missing`) keeps the keys it started
+  with until its next start. Mitigation: SSH access is off until the owner turns it
+  on for one VM, and only the keys in its record reach it; turning SSH access off closes the
+  SSH port on the Host, which no code in the VM can reopen.
 - **Hypervisor, KVM and the CPU.** A VM's own kernel keeps a kernel exploit inside it
   ([VMs](#vms), [ADR 0002](docs/adr/0002-vms-instead-of-containers.md)); a bug in KVM, in QEMU
   and its virtual devices, or in the CPU (side channels such as Spectre) can cross that
