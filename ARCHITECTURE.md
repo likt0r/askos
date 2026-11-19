@@ -133,6 +133,18 @@ flowchart LR
   paused VM at its next Restart or Reset ([VMs](#vms)). Each change is recorded in Activity
   (`ssh.enabled`, `ssh.disabled`, `ssh.key-added` with the key's fingerprint and name), each
   connection is not.
+- **Names for SSH**: `agentbox ssh-config [<vm>...]` prints a `~/.ssh/config` block per VM with
+  SSH access (of those named, else of all): `Host <vm>.agentbox`, `HostName` `127.0.0.1` in
+  Local-only and the Pairing address in Network mode, `Port`, `User agent`, `HostKeyAlias
+  <vm>.agentbox`, `ForwardAgent no`, `ForwardX11 no`, `StrictHostKeyChecking yes` and
+  `UserKnownHostsFile ~/.ssh/known_hosts.agentbox`; with `--known-hosts` the `known_hosts`
+  lines of their host keys instead, under the alias, which `agentbox ssh` shows as well.
+  `known_hosts` names the alias, not the address and port, so switching the Host between
+  Local-only and Network mode changes `HostName` only and needs no new `known_hosts` line.
+  Agent Box never writes into a home: the owner redirects the output into files and includes
+  the block. Root and the members of `libvirt` may run it, like `pair` and `sign-in-link`; it
+  reads only what everyone may read, the records, the Host setup and the public halves of the
+  host keys.
 - The Host applies security updates daily (dnf5-automatic, set up by the owner, not by Agent
   Box) and never reboots on its own.
   Agent Box itself is updated only by the owner, with `dnf upgrade` of a Release
@@ -275,8 +287,10 @@ flowchart LR
   key>` and a line `key <type> <base64>` per SSH key. The host key is an Ed25519 key the Host
   makes once, when SSH access is first turned on or a first key is added (its secret from
   `openssl`, written in OpenSSH's own format), and keeps beside the Claude token,
-  `/etc/agentbox/secrets/ssh-host-key-<vm>` (`root:qemu`, 0640); a Reset leaves it, so `ssh`
-  sees the same host key after every Reset. `set-ssh` and `add-ssh-key` define a domain from
+  `/etc/agentbox/secrets/ssh-host-key-<vm>` (`root:qemu`, 0640), with its public half in
+  `/etc/agentbox/ssh-host-keys/<vm>.pub` (0644, for `ssh-config`), which `regenerate` writes
+  again when it is missing; a Reset leaves both, so `ssh` sees the same host key after every
+  Reset. `set-ssh` and `add-ssh-key` define a domain from
   before the entry again, as `set-env` does; without the entry a VM has no SSH access, and so
   does a VM whose Build has no `fwcfg-ssh` until a Reset onto a newer Build.
 - The Host never mounts a VM's disks. It reads a VM's journal (`agentbox logs`, and the

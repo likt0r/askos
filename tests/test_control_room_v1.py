@@ -943,7 +943,8 @@ class PackageTest(unittest.TestCase):
               "agentbox.commands", "agentbox.durations", "agentbox.ids",
               "agentbox.hostsetup", "agentbox.settings", "agentbox.version", "agentbox.registry",
               "agentbox.vmenv", "agentbox.safeguards", "agentbox.journal", "agentbox.times",
-              "agentbox.list_records", "agentbox.footprint", "agentbox.sshkeys", "agentbox.sign_in_links"}
+              "agentbox.list_records", "agentbox.footprint", "agentbox.sshkeys", "agentbox.sign_in_links",
+              "agentbox.callers"}
 
     def test_it_imports_only_leaf_modules(self):
         code = ("import importlib.machinery, importlib.util, sys\n"

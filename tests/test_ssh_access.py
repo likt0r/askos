@@ -38,6 +38,7 @@ sys.path.insert(0, REPO)
 from agentbox import sshkeys  # noqa: E402
 
 HOST_KEY = "etc/agentbox/secrets/ssh-host-key-{}"
+PUBLIC_KEY = "etc/agentbox/ssh-host-keys/{}.pub"
 SSH_FILE = "var/lib/agentbox/vm-ssh/{}.ssh"
 SOCKET = "etc/systemd/system/agentbox-ssh-{}.socket"
 SERVICE = "etc/systemd/system/agentbox-ssh-{}@.service"
@@ -468,7 +469,7 @@ class SetSshTest(SshTest):
         data = self.read(HOST_KEY.format("work")).encode()
         public = sshkeys.public_line(sshkeys.host_public(data))
         self.assertTrue(public.startswith("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI"), public)
-        self.assertEqual(shown["known_hosts"], f"[127.0.0.1]:2201 {public}")
+        self.assertEqual(shown["known_hosts"], f"work.agentbox {public}")
         self.assertEqual(shown["host_key_fingerprint"], fingerprint(public))
         if shutil.which("ssh-keygen"):
             with tempfile.TemporaryDirectory() as tmp:
@@ -818,6 +819,170 @@ class ShowTest(SshTest):
         self.assertEqual(self.refused("ssh"), "agentbox: ssh <vm> [--json]\n")
 
 
+class SshConfigTest(SshTest):
+    """agentbox ssh-config (#134): a ~/.ssh/config block per VM with SSH access, named
+    <vm>.agentbox, and the known_hosts lines of the host keys under that HostKeyAlias. Root and
+    the members of libvirt may run it; this user is in libvirt unless a test says otherwise."""
+
+    def setUp(self):
+        super().setUp()
+        self.in_libvirt(True)
+
+    def in_libvirt(self, yes):
+        gid = os.getegid() if yes else max(os.getgroups() + [os.getegid()]) + 4711
+        os.makedirs(self.path("etc"), exist_ok=True)
+        with open(self.path("etc/group"), "w") as f:
+            f.write(f"wheel:x:10:\nlibvirt:x:{gid}:\n")
+
+    def public(self, vm="work"):
+        """The host key's public line, from the secret the Host keeps."""
+        return sshkeys.public_line(sshkeys.host_public(self.read(HOST_KEY.format(vm)).encode()))
+
+    @staticmethod
+    def block(vm, hostname, port):
+        return (f"Host {vm}.agentbox\n    HostName {hostname}\n    Port {port}\n    User agent\n"
+                f"    HostKeyAlias {vm}.agentbox\n    ForwardAgent no\n    ForwardX11 no\n"
+                "    StrictHostKeyChecking yes\n    UserKnownHostsFile ~/.ssh/known_hosts.agentbox\n")
+
+    def test_local_only_a_block_per_vm_with_ssh_access_and_its_line_under_the_alias(self):
+        self.ok("set-ssh", "work", "on")
+        self.ok("create", "lab")
+        self.add("lab")
+        self.ok("set-ssh", "lab", "on")
+        # priv has no SSH access: left out
+        self.assertEqual(self.ok("ssh-config"), self.block("work", "127.0.0.1", 2201) + "\n"
+                         + self.block("lab", "127.0.0.1", 2203))
+        self.assertEqual(self.ok("ssh-config", "--known-hosts"),
+                         f"work.agentbox {self.public('work')}\nlab.agentbox {self.public('lab')}\n")
+        result = self.json("ssh-config")
+        self.assertEqual(result["mode"], "local")
+        self.assertEqual([h["vm"] for h in result["hosts"]], ["work", "lab"])
+        work = result["hosts"][0]
+        self.assertEqual(work, {"vm": "work", "host": "work.agentbox",
+                                "options": {"HostName": "127.0.0.1", "Port": 2201, "User": "agent",
+                                            "HostKeyAlias": "work.agentbox", "ForwardAgent": "no",
+                                            "ForwardX11": "no", "StrictHostKeyChecking": "yes",
+                                            "UserKnownHostsFile": "~/.ssh/known_hosts.agentbox"},
+                                "config": self.block("work", "127.0.0.1", 2201),
+                                "known_hosts": f"work.agentbox {self.public('work')}"})
+        # agentbox ssh gives the same line, under the alias as well
+        self.assertEqual(self.json("ssh", "work")["known_hosts"], work["known_hosts"])
+        self.assertIn(f"known_hosts: {work['known_hosts']}\n", self.ok("ssh", "work"))
+        # read-only: no Activity entry of its own
+        self.assertEqual(self.activity()[-1][0], "ssh.enabled")
+
+    def test_network_mode_names_the_pairing_address_and_keeps_the_known_hosts_line(self):
+        self.ok("set-ssh", "work", "on")
+        local = self.json("ssh-config")["hosts"][0]
+        vm_records.write_host_setup(self.root)
+        self.ok("regenerate")
+        self.assertEqual(self.ok("ssh-config"), self.block("work", "192.0.2.8", 2201))
+        network = self.json("ssh-config")
+        self.assertEqual(network["mode"], "network")
+        # the switch changes HostName only: the known_hosts line stays as it was
+        self.assertEqual(network["hosts"][0]["known_hosts"], local["known_hosts"])
+        self.assertEqual({k: v for k, v in network["hosts"][0]["options"].items() if k != "HostName"},
+                         {k: v for k, v in local["options"].items() if k != "HostName"})
+
+    def test_ssh_takes_the_block_and_finds_the_line_under_the_alias(self):
+        if not (shutil.which("ssh") and shutil.which("ssh-keygen")):
+            self.skipTest("no OpenSSH client")
+        self.ok("set-ssh", "work", "on")
+        with tempfile.TemporaryDirectory() as tmp:
+            config, known = os.path.join(tmp, "agentbox.conf"), os.path.join(tmp, "known_hosts.agentbox")
+            with open(config, "w") as f:
+                f.write(self.ok("ssh-config"))
+            with open(known, "w") as f:
+                f.write(self.ok("ssh-config", "--known-hosts"))
+            r = subprocess.run(["ssh", "-G", "-F", config, "work.agentbox"], capture_output=True, text=True,
+                               timeout=30)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            got = dict(line.split(" ", 1) for line in r.stdout.splitlines() if " " in line)
+            self.assertEqual({k: got[k] for k in ("hostname", "port", "user", "hostkeyalias", "forwardagent",
+                                                  "forwardx11", "stricthostkeychecking")},
+                             {"hostname": "127.0.0.1", "port": "2201", "user": "agent",
+                              "hostkeyalias": "work.agentbox", "forwardagent": "no", "forwardx11": "no",
+                              "stricthostkeychecking": "true"})
+            r = subprocess.run(["ssh-keygen", "-F", "work.agentbox", "-f", known], capture_output=True, text=True,
+                               timeout=30)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn(self.public(), r.stdout)
+
+    def test_named_vms_only_and_one_without_ssh_access_left_out(self):
+        self.ok("set-ssh", "work", "on")
+        self.ok("create", "lab")
+        self.ok("set-ssh", "lab", "on")
+        self.assertEqual(self.ok("ssh-config", "lab"), self.block("lab", "127.0.0.1", 2203))
+        code, out, err = self.run_agentbox("ssh-config", "priv")
+        self.assertEqual((code, out), (0, ""))
+        self.assertEqual(err, "agentbox: priv has no SSH access (sudo agentbox set-ssh priv on)\n")
+        self.assertEqual([h["vm"] for h in self.json("ssh-config", "priv", "work")["hosts"]], ["work"])
+        code, out, err = self.run_agentbox("ssh-config", "nope", "--json")
+        self.assertEqual((code, out, json.loads(err)["error"]), (1, "", "vm_not_found"))
+
+    def test_without_any_ssh_access_it_says_so(self):
+        code, out, err = self.run_agentbox("ssh-config")
+        self.assertEqual((code, out), (0, ""))
+        self.assertEqual(err, "agentbox: no VM has SSH access (sudo agentbox set-ssh <vm> on)\n")
+        self.assertEqual(self.json("ssh-config")["hosts"], [])
+
+    def test_it_reads_only_what_everyone_may_read(self):
+        """A member of libvirt cannot read the host key: its public half beside it is enough."""
+        self.ok("set-ssh", "work", "on")
+        self.assertEqual(self.read(PUBLIC_KEY.format("work")), self.public() + "\n")
+        self.assertEqual((self.mode(PUBLIC_KEY.format("work")), self.mode("etc/agentbox/ssh-host-keys")),
+                         (0o644, 0o755))
+        line = f"work.agentbox {self.public()}"
+        os.chmod(self.path("etc/agentbox/secrets"), 0o000)
+        try:
+            self.assertEqual(self.ok("ssh-config", "--known-hosts"), line + "\n")
+        finally:
+            os.chmod(self.path("etc/agentbox/secrets"), 0o750)
+        # a host key made before its public half was kept: regenerate writes it
+        os.remove(self.path(PUBLIC_KEY.format("work")))
+        code, out, err = self.run_agentbox("ssh-config", "--known-hosts")
+        self.assertEqual((code, out), (0, ""))
+        self.assertIn("work has no host key yet (sudo agentbox regenerate)", err)
+        self.ok("regenerate")
+        self.assertEqual(self.ok("ssh-config", "--known-hosts"), line + "\n")
+
+    def test_no_public_host_key_yet_leaves_known_hosts_empty_and_a_garbled_one_fails(self):
+        self.ok("set-ssh", "work", "on")
+        pub = self.path(PUBLIC_KEY.format("work"))
+        os.remove(pub)
+        code, out, err = self.run_agentbox("ssh-config")
+        self.assertEqual((code, out), (0, self.block("work", "127.0.0.1", 2201)))
+        self.assertIn("work has no host key yet (sudo agentbox regenerate)", err)
+        result = self.json("ssh-config")
+        self.assertIsNone(result["hosts"][0]["known_hosts"])
+        self.assertEqual(result["hosts"][0]["config"], self.block("work", "127.0.0.1", 2201))
+        with open(pub, "w") as f:
+            f.write("this is not a key\n")
+        for args in (("ssh-config",), ("ssh-config", "--json"), ("ssh-config", "--known-hosts")):
+            code, out, err = self.run_agentbox(*args)
+            self.assertEqual(code, 1, args)
+            self.assertIn("not an SSH public key; agentbox regenerate writes it again", out + err)
+
+    def test_only_root_and_the_members_of_libvirt(self):
+        self.ok("set-ssh", "work", "on")
+        self.in_libvirt(False)
+        for args in (("ssh-config",), ("ssh-config", "--json")):
+            code, out, err = self.run_agentbox(*args)
+            self.assertEqual((code, out), (1, ""), err)
+            self.assertIn("ssh-config is for root and the members of libvirt, who control every VM anyway: "
+                          "sudo agentbox ssh-config", err)
+        self.assertEqual(json.loads(err)["error"], "sudo_failed")
+        os.remove(self.path("etc/group"))
+        self.assertEqual(self.run_agentbox("ssh-config")[0], 1)
+        self.in_libvirt(True)
+        self.assertTrue(self.ok("ssh-config").startswith("Host work.agentbox\n"))
+
+    def test_usage(self):
+        code, out, err = self.run_agentbox("ssh-config", "--bogus")
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("unknown option: --bogus", err)
+
+
 class ActivityTest(SshTest):
     def test_changes_are_recorded_with_fingerprint_and_name(self):
         self.ok("--actor", "Firefox (192.0.2.4)", "set-ssh", "work", "on")
@@ -864,12 +1029,12 @@ class CreateDeleteTest(SshTest):
         self.ok("create", "lab")
         self.add("lab")
         self.ok("set-ssh", "lab", "on")
-        for rel in (HOST_KEY, SSH_FILE, SOCKET, SERVICE):
+        for rel in (HOST_KEY, PUBLIC_KEY, SSH_FILE, SOCKET, SERVICE):
             self.assertTrue(self.exists(rel.format("lab")), rel)
         self.forget_calls()
         self.ok("delete", "lab", "--confirm", "lab")
         self.assertEqual(len(self.archive()), 1)
-        for rel in (HOST_KEY, SSH_FILE, SOCKET, SERVICE):
+        for rel in (HOST_KEY, PUBLIC_KEY, SSH_FILE, SOCKET, SERVICE):
             self.assertFalse(self.exists(rel.format("lab")), rel)
         self.assertFalse(self.exists("etc/agentbox/vms/lab.json"))
         self.assertIn(["stop", "agentbox-gui-lab@*.service", "agentbox-ssh-lab@*.service",
@@ -877,7 +1042,8 @@ class CreateDeleteTest(SshTest):
         self.assertIn("agentbox-ssh-lab.socket", self.systemctl()[0])
 
     def test_create_refuses_what_an_earlier_vm_left(self):
-        for rel, what in ((HOST_KEY, "SSH host key"), (SSH_FILE, "SSH access"), (SOCKET, "units")):
+        for rel, what in ((HOST_KEY, "SSH host key"), (PUBLIC_KEY, "SSH host key"), (SSH_FILE, "SSH access"),
+                          (SOCKET, "units")):
             with self.subTest(what):
                 path = self.path(rel.format("lab"))
                 os.makedirs(os.path.dirname(path), exist_ok=True)

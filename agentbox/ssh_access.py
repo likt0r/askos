@@ -193,7 +193,7 @@ def ssh(args):
     rec = registry.load(name)
     port, on = registry.ssh_port(rec), registry.ssh_access(rec)
     host = sshkeys.host_public(generate.host_key(name) or b"")
-    known = f"[{hostsetup.LOOPBACK}]:{port} {sshkeys.public_line(host)}" if host else None
+    known = sshkeys.known_hosts_line(name, host) if host else None     # under its alias, as ssh-config gives it
     keys = [{"name": k["name"], "type": sshkeys.key_type(k["key"]), "fingerprint": k["fingerprint"],
              "added": k["added"], "added_by": k["added_by"]} for k in registry.ssh_keys(rec)]
     if "json" in opts:

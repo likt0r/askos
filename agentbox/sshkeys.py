@@ -303,6 +303,17 @@ def host_public(data):
     return got[0]
 
 
+def alias(name):
+    """The name a VM goes by over SSH: its Host in the ~/.ssh/config block, its HostKeyAlias and
+    so its name in known_hosts, the same in Local-only and in Network mode (ADR 0020)."""
+    return f"{name}.agentbox"
+
+
+def known_hosts_line(name, blob):
+    """The known_hosts line of the VM's host key, under its alias."""
+    return f"{alias(name)} {public_line(blob)}"
+
+
 def public_line(blob):
     """A key blob as "<type> <base64>"."""
     return f"{_strings(blob)[0].decode()} {base64.b64encode(blob).decode()}"
