@@ -191,7 +191,7 @@ class SetSecretTest(SecretTest):
         self.assertEqual(said["message"], "set-secret <vm> NAME [--no-prompt] [--json]  (the value on stdin)")
         cases = {(): "agentbox: set-secret <vm> NAME [--no-prompt] [--json]  (the value on stdin)\n",
                  ("work",): "agentbox: set-secret <vm> NAME [--no-prompt] [--json]  (the value on stdin)\n",
-                 ("work", "A", "--value"): "agentbox: unknown option: --value\n",
+                 ("work", "A", "--value"): "agentbox: unknown option: ?\n",       # not repeated: it could be a value
                  ("nope", "A"): "agentbox: No such VM: nope\n"}
         for args, message in cases.items():
             with self.subTest(args=args):
