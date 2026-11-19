@@ -112,6 +112,12 @@ def wakes_file(name):
     return os.path.join(host_paths.STATE, f"wakes-{name}.json")
 
 
+def container_image_cleanup_file(name):
+    """The error code of the VM's last Container image cleanup run, while it failed
+    (container_images.py); gone after a run that succeeded."""
+    return os.path.join(host_paths.STATE, f"container-image-cleanup-{name}.json")
+
+
 def domain_file(name):
     """The last domain XML generated for the VM."""
     return os.path.join(host_paths.STATE, "domains", f"{name}.xml")
@@ -218,7 +224,8 @@ def paths(rec):
             legacy_owners_file(name), legacy_allowlist_file(name), legacy_allowlist_migrated_file(name),
             observer_dir(name), open_web_file(name), claude_token_file(name), vm_env_file(name),
             ssh_host_key_file(name), ssh_host_key_public_file(name), vm_ssh_file(name),
-            ssh_pending_file(name), seen_file(name), wakes_file(name), domain_file(name),
+            ssh_pending_file(name), seen_file(name), wakes_file(name), container_image_cleanup_file(name),
+            domain_file(name),
             *unit_files(rec), *socket_pending_files(rec))
 
 
@@ -354,7 +361,8 @@ def _files(rec, say):
     gone = [state_files.remove(f) for f in (claude_token_file(name), vm_env_file(name),
                                             ssh_host_key_file(name), ssh_host_key_public_file(name),
                                             vm_ssh_file(name), open_web_file(name), legacy_owners_file(name),
-                                            seen_file(name), domain_file(name))]
+                                            seen_file(name), container_image_cleanup_file(name),
+                                            domain_file(name))]
     gone.append(allowlist.drop_vm(name))
     observer = observer_dir(name)
     if os.path.isdir(observer):

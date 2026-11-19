@@ -516,6 +516,13 @@ class DeleteTest(VmsTest):
         self.ok("delete", "lab", "--confirm", "lab")
         self.assertFalse(self.exists("var/lib/agentbox/wakes-lab.json"))
 
+    def test_the_last_container_image_cleanup_outcome_goes_with_the_vm(self):
+        self.write("var/lib/agentbox/container-image-cleanup-lab.json", '{"error": "guest_agent_unavailable"}\n')
+        self.write("var/lib/agentbox/container-image-cleanup-priv.json", '{"error": "guest_agent_unavailable"}\n')
+        self.ok("delete", "lab", "--confirm", "lab")
+        self.assertFalse(self.exists("var/lib/agentbox/container-image-cleanup-lab.json"))
+        self.assertTrue(self.exists("var/lib/agentbox/container-image-cleanup-priv.json"))
+
     def test_refused_without_the_matching_name(self):
         for extra in ((), ("--confirm", "priv"), ("--confirm", "LAB"), ("--confirm=lab2",), ("--confirm", "")):
             with self.subTest(args=extra):

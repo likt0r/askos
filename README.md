@@ -628,8 +628,10 @@ Every hour the Host runs the **Container image cleanup** in each running VM that
 days by default): it removes the Container images no container uses, running or stopped, that
 were not pulled, built or used to create or start a container for more than that many
 calendar days. A Container image the cleanup has not seen used counts as used when it first
-sees it. It never removes containers or volumes. Runs that removed something or failed are in
-Activity.
+sees it, and one a container uses counts as used at every run, so it stays for that many days
+after its last container is removed. It never removes containers or volumes. Runs that
+removed something or failed are in Activity; a VM that keeps failing the same way is recorded
+once, not every hour.
 
 ### Browser tests in a VM
 

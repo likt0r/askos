@@ -81,7 +81,7 @@ An image a VM pulls or builds with Podman (`docker` in the VM) to run containers
 _Avoid_: docker image, podman image, image (on its own)
 
 **Container image cleanup**:
-The removal of a VM's Container images that no container uses and that were neither pulled, built nor used to create or start a container for a number of days set per VM; it can be turned off per VM and never removes containers or volumes (German UI: Container-Images aufräumen).
+The removal of a VM's Container images that no container uses and that were not used for a number of days set per VM; a Container image counts as used when it is pulled or built, when a container is created or started from it, and at every cleanup run that finds a container (running or stopped) using it. It can be turned off per VM and never removes containers or volumes (German UI: Container-Images aufräumen).
 _Avoid_: prune, garbage collection, image cache
 
 ## Delivery

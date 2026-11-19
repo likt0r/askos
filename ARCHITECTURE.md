@@ -386,7 +386,10 @@ flowchart LR
   wrapper drops to the user `agent` before it does anything and removes, through the agent's
   rootless Podman, only Container images that no container uses, running or stopped, and whose
   last use is more than that many calendar days ago; a Container image without a recorded use
-  counts as used when the wrapper first sees it. It never removes a container or a volume, and
+  counts as used when the wrapper first sees it. Every run also sets the last use of each
+  Container image a container uses, running or stopped, to the time of the run, in the same
+  file the usage recorder writes, so a Container image stays for that many days after the last
+  run that saw its last container. It never removes a container or a volume, and
   removes only with `podman rmi`, never by force, so Podman itself refuses a Container image a
   container took meanwhile. Only a JSON result with two whole numbers (Container images
   removed, bytes freed) comes back; anything else from the VM, its error output included, is
@@ -395,7 +398,13 @@ flowchart LR
   with `vm_query_timeout`, and one VM failing never stops the others. A run that removed
   something is recorded in Activity (`container-image-cleanup.removed`, with the number, the
   bytes and the days), a failed one with its error code (`container-image-cleanup.failed`), a
-  run that removed nothing or a VM that was skipped not at all.
+  run that removed nothing or a VM that was skipped not at all. A failure is recorded only when
+  it differs from the VM's previous run: the first one, one with another error code than the
+  last, or one after a run that succeeded (removed something or nothing); the same failure in
+  consecutive runs is recorded once, and a VM skipped in between does not end the series. The
+  `--json` output still reports every run. While a VM's runs fail, the Host keeps the last
+  error code in `/var/lib/agentbox/container-image-cleanup-<vm>.json`; a run that succeeds
+  removes it, and so does deleting the VM.
 - A change of SSH access reaches a running VM through a fifth fixed wrapper in the Image
   (`agentbox-ssh apply`), which `set-ssh`, `add-ssh-key` and `remove-ssh-key` run through the
   guest agent while they hold the VM's lifecycle lock, whenever what the VM holds changes. It
@@ -1375,7 +1384,8 @@ One timeline of what happened on the Host and who caused it, kept in journald
   runs that check on its own, except as the old Reset timer's call before `regenerate`, see
   Maintenance window), the start of an automatic
   update (`build.automatic`) by `check-versions`, the Container image cleanup of a VM that
-  removed something or failed by `cleanup-container-images` (actor `timer`), the outcome of
+  removed something or failed (the same failure in consecutive runs once) by
+  `cleanup-container-images` (actor `timer`), the outcome of
   each Build and the Resets of
   an Update (`reset.update`, with the actor who asked) by the Build's unit,
   expired Temporary allowlist

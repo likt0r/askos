@@ -116,6 +116,23 @@ class CleanupTest(ActivityTest):
     def cleaned(self):
         return [e for e in self.entries() if e.get("AGENTBOX_ACTION", "").startswith("container-image-cleanup")]
 
+    def outcome_file(self, vm="work"):
+        return self.path(f"var/lib/agentbox/container-image-cleanup-{vm}.json")
+
+    def outcome(self, vm="work"):
+        """What the Host keeps of the VM's last run (#69): the JSON of its file, or None."""
+        try:
+            with open(self.outcome_file(vm)) as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return None
+
+    def forget_outcomes(self):
+        """So that the next run's failure is news again."""
+        for vm in ("work", "priv"):
+            if os.path.exists(self.outcome_file(vm)):
+                os.remove(self.outcome_file(vm))
+
 
 class WhatIsRemovedTest(CleanupTest):
     def test_only_container_images_no_container_uses_and_not_used_for_more_than_the_days_go(self):
@@ -164,6 +181,33 @@ class WhatIsRemovedTest(CleanupTest):
         results, _ = self.cleanup()
         self.assertEqual(results["work"]["outcome"], "nothing")
         self.assertEqual(self.work.images(), [iid(1)])
+
+    def test_a_container_image_a_container_uses_counts_as_used_at_every_run(self):
+        """#68: so it stays for the days after the last run that saw its last container."""
+        images = [image(1), image(2), image(3), image(4)]
+        self.work.podman(images=images, containers=[container(1, 1, "exited"), container(2, 2, "running")],
+                         external=[container(3, 3, "running")])
+        self.work.usage({iid(1): at(30), iid(2): at(30), iid(3): at(30), iid(4): at(3)})
+        before = int(time.time())
+        results, _ = self.cleanup()
+        self.assertEqual(results["work"]["outcome"], "nothing")
+        usage = self.work.usage()
+        for n in (1, 2, 3):
+            self.assertTrue(before <= usage[iid(n)] <= time.time(), n)
+        self.assertEqual(usage[iid(4)], at(3))          # no container uses it: its last use stays
+        # the containers go (docker compose down): the next run keeps their Container images
+        self.work.podman(images=images)
+        results, _ = self.cleanup()
+        self.assertEqual(results["work"]["outcome"], "nothing")
+        self.assertEqual(self.work.images(), [iid(1), iid(2), iid(3), iid(4)])
+        # and only once that many days have passed since the last run that saw the container
+        self.work.usage({iid(1): at(8), iid(2): at(7), iid(3): at(7), iid(4): at(3)})
+        results, _ = self.cleanup()
+        self.assertEqual(results["work"]["removed"], 1)
+        self.assertEqual(self.work.images(), [iid(2), iid(3), iid(4)])
+        # containers and volumes were never touched
+        self.assertEqual({c["argv"][0] for c in self.work.calls()}, {"images", "ps", "rmi"})
+        self.assertEqual(self.work.state()["volumes"], ["pgdata"])
 
     def test_a_usage_file_that_cannot_be_read_removes_nothing(self):
         for raw in ("not json", '{"images": []}', json.dumps({"images": {iid(1): "old"}})):
@@ -347,6 +391,7 @@ class FailureTest(CleanupTest):
                          ("skipped", "not_running", None))
         self.assertEqual(results["priv"]["outcome"], "failed")
         self.assertEqual([e["AGENTBOX_VM"] for e in self.cleaned()], ["priv"])
+        self.assertIsNone(self.outcome("work"))
 
     def test_a_failure_outside_the_wrapper_run_does_not_stop_the_others(self):
         self.priv.podman(images=[image(1)])
@@ -381,6 +426,7 @@ class FailureTest(CleanupTest):
         for response in ({"exitcode": 124}, {"signal": 9}):
             with self.subTest(response=response):
                 self.journald.datagrams.clear()
+                self.forget_outcomes()
                 self.scenario(responses=[response])
                 self.failed("vm_query_timeout")
 
@@ -391,6 +437,7 @@ class FailureTest(CleanupTest):
                        '{"removed": 1, "freed_bytes": 2, "x": "' + "y" * 2000 + '"}'):
             with self.subTest(answer=answer[:60]):
                 self.journald.datagrams.clear()
+                self.forget_outcomes()
                 self.scenario(responses=[{"stdout": answer}])
                 self.failed("container_image_cleanup_failed")
 
@@ -400,6 +447,68 @@ class FailureTest(CleanupTest):
         self.assertEqual(entry["AGENTBOX_DESCRIPTION"],
                          "Container image cleanup failed: work: the Container image cleanup in the VM failed (exit 1)")
         self.assertNotIn("evil", json.dumps(self.entries()) + err)
+
+
+class RepeatedFailureTest(CleanupTest):
+    """#69: a VM that fails the same way every hour gets one Activity entry for the series."""
+
+    def failures(self, vm="work"):
+        return [e["AGENTBOX_ERROR"] for e in self.cleaned()
+                if e["AGENTBOX_VM"] == vm and e["AGENTBOX_ACTION"] == "container-image-cleanup.failed"]
+
+    def run_once(self, **scenario):
+        """One run in this scenario: the outcome and error of work in the JSON output."""
+        self.scenario(**scenario)
+        results, _ = self.cleanup()
+        return results["work"]["outcome"], results["work"]["error"]
+
+    def test_the_same_failure_in_consecutive_runs_is_recorded_once(self):
+        self.scenario(agent_down=True)
+        for _ in range(3):
+            results, err = self.cleanup()
+            # the JSON output and the error output still report every run
+            for vm in ("work", "priv"):
+                self.assertEqual((results[vm]["outcome"], results[vm]["error"]), ("failed", "guest_agent_unavailable"))
+            self.assertIn("work:", err)
+        self.assertEqual((self.failures("work"), self.failures("priv")),
+                         (["guest_agent_unavailable"], ["guest_agent_unavailable"]))
+
+    def test_another_error_code_or_a_failure_after_a_success_is_recorded(self):
+        missing, down = "container_image_cleanup_missing", "guest_agent_unavailable"
+        self.assertEqual(self.run_once(missing_wrappers=[WRAPPER_PATH]), ("failed", missing))
+        self.assertEqual(self.run_once(missing_wrappers=[WRAPPER_PATH]), ("failed", missing))
+        self.assertEqual(self.run_once(agent_down=True), ("failed", down))
+        self.assertEqual(self.run_once(agent_down=True), ("failed", down))
+        self.assertEqual(self.failures(), [missing, down])
+        # a run that removed something ends the series, and so does one that removed nothing
+        self.work.podman(images=[image(1)])
+        self.work.usage({iid(1): at(30)})
+        self.assertEqual(self.run_once(), ("removed", None))
+        self.assertEqual(self.run_once(agent_down=True), ("failed", down))
+        self.assertEqual(self.run_once(), ("nothing", None))
+        self.assertEqual(self.run_once(agent_down=True), ("failed", down))
+        self.assertEqual(self.failures(), [missing, down, down, down])
+
+    def test_a_skipped_vm_leaves_the_series_as_it_is(self):
+        self.assertEqual(self.run_once(agent_down=True), ("failed", "guest_agent_unavailable"))
+        self.assertEqual(self.run_once(agent_down=True, vms={"work": {"state": "shut off"}}),
+                         ("skipped", None))
+        self.assertEqual(self.run_once(agent_down=True), ("failed", "guest_agent_unavailable"))
+        self.assertEqual(self.failures(), ["guest_agent_unavailable"])
+
+    def test_the_last_outcome_is_kept_on_the_host_until_a_run_succeeds(self):
+        self.assertIsNone(self.outcome())
+        self.run_once(agent_down=True)
+        self.assertEqual(self.outcome(), {"error": "guest_agent_unavailable"})
+        self.assertEqual(os.stat(self.outcome_file()).st_mode & 0o777, 0o600)
+        self.run_once()
+        self.assertIsNone(self.outcome())
+
+    def test_a_last_outcome_that_cannot_be_read_counts_as_none(self):
+        with open(self.outcome_file(), "w") as f:
+            f.write("not json")
+        self.run_once(agent_down=True)
+        self.assertEqual(self.failures(), ["guest_agent_unavailable"])
 
 
 class ActivityEntryTest(CleanupTest):
