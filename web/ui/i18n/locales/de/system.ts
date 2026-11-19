@@ -138,6 +138,7 @@ export default {
       packageUpdates: 'keine Updates verfügbar | ein Update verfügbar | {n} Updates verfügbar',
       checked: 'Verfügbare Versionen geprüft {when}: jeweils die neueste mindestens {days} Tage alte, wie ein Build sie installiert (npm-Werkzeuge aus der npm-Registry, Orca aus seinem GitHub-Release).',
       orcaPinned: 'Orca ist in den Einstellungen auf {version} festgelegt.',
+      playwrightPinned: 'Playwright ist in den Einstellungen auf {version} festgelegt.',
       notChecked: 'Verfügbare Versionen noch nicht geprüft; der Host prüft einmal am Tag.',
     },
     update: {

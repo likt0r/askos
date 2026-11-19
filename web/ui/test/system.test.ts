@@ -184,14 +184,14 @@ describe('System page: tool versions (#104)', () => {
 
   const AVAILABLE = {
     checked: '2026-11-08T04:00:00Z', package_min_age_days: 2, orca_version: null,
-    tools: { 'orca': '1.4.251', 'claude-code': '2.1.7', 'codex': '0.80.0', 'opencode': '1.2.3', 'fedora': null },
+    tools: { 'orca': '1.4.251', 'claude-code': '2.1.7', 'codex': '0.80.0', 'opencode': '1.2.3', 'playwright': '1.65.1', 'fedora': null },
   }
   const VERSIONED = overview([image('base', {
     base: true, current: '20261107-0300', vms: ['work'], package_updates: 37, updates: ['orca', 'claude-code', 'packages'],
     update: true,
     builds: [build('20261107-0300', {
       current: true, updates: ['orca', 'claude-code'],
-      tools: { 'orca': '1.4.241', 'claude-code': '2.1.5', 'codex': '0.80.0', 'opencode': '1.2.3', 'fedora': '44' },
+      tools: { 'orca': '1.4.241', 'claude-code': '2.1.5', 'codex': '0.80.0', 'opencode': '1.2.3', 'playwright': '1.65.1', 'fedora': '44' },
     })],
   })], { available: AVAILABLE })
   const cells = (c: ReturnType<typeof card>, id: string) => c.findAll('[data-testid="tool-row"]').map(r => r.find(`[data-testid="${id}"]`).text())
@@ -203,15 +203,16 @@ describe('System page: tool versions (#104)', () => {
     const versions = base.find('[data-testid="image-versions"]')
     expect(versions.text()).toContain('In Build 20261107-0300')
     expect(versions.findAll('[data-testid="tool-row"]').map(r => [r.attributes('data-tool'), r.attributes('data-update')])).toEqual([
-      ['orca', 'true'], ['claude-code', 'true'], ['codex', 'false'], ['opencode', 'false'], ['fedora', 'false'],
+      ['orca', 'true'], ['claude-code', 'true'], ['codex', 'false'], ['opencode', 'false'], ['playwright', 'false'],
+      ['fedora', 'false'],
     ])
-    expect(cells(base, 'tool-installed')).toEqual(['1.4.241', '2.1.5', '0.80.0', '1.2.3', '44'])
+    expect(cells(base, 'tool-installed')).toEqual(['1.4.241', '2.1.5', '0.80.0', '1.2.3', '1.65.1', '44'])
     const available = cells(base, 'tool-available')
     expect(available[0]).toContain('1.4.251')
     expect(available[0]).not.toContain('pinned')
     expect(available[0]).toContain('a new Build brings it')
     expect(available[1]).toContain('2.1.7')
-    expect(available.slice(2)).toEqual(['0.80.0', '1.2.3', '—'])
+    expect(available.slice(2)).toEqual(['0.80.0', '1.2.3', '1.65.1', '—'])
     expect(versions.find('[data-testid="tool-packages"]').text()).toContain('37 updates available')
     const checked = wrapper.find('[data-testid="images-available"]').text()
     expect(checked).toContain('the newest at least 2 days old')
@@ -230,6 +231,24 @@ describe('System page: tool versions (#104)', () => {
     expect(base.find('[data-testid="orca-pinned"]').text()).toBe('pinned')
     expect(base.findAll('[data-testid="orca-pinned"]')).toHaveLength(1)
     expect(wrapper.find('[data-testid="images-available"]').text()).toContain('Orca is pinned to 1.4.250 in the Settings.')
+    expect(base.find('[data-testid="playwright-pinned"]').exists()).toBe(false)
+  })
+
+  it('marks Playwright when the Settings pin its version (#162)', async () => {
+    const pinned = overview([image('base', {
+      base: true, current: '20261107-0300', updates: [], update: false,
+      builds: [build('20261107-0300', { current: true, updates: [], tools: { ...AVAILABLE.tools, fedora: '44' } })],
+    })], { available: { ...AVAILABLE, playwright_version: '1.65.1' } })
+    const { wrapper } = await openSystem({ 'GET /images': ok(pinned) })
+    const base = card(wrapper)
+    const rows = base.findAll('[data-testid="tool-row"]')
+    const playwright = rows.find(r => r.attributes('data-tool') === 'playwright')!
+    expect(playwright.attributes('data-update')).toBe('false')
+    expect(playwright.find('[data-testid="tool-available"]').text()).toContain('1.65.1')
+    expect(playwright.find('[data-testid="playwright-pinned"]').text()).toBe('pinned')
+    expect(base.findAll('[data-testid="playwright-pinned"]')).toHaveLength(1)
+    expect(base.find('[data-testid="orca-pinned"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="images-available"]').text()).toContain('Playwright is pinned to 1.65.1 in the Settings.')
   })
 
   it('says unknown where nothing was recorded or checked, and marks nothing', async () => {
@@ -237,8 +256,8 @@ describe('System page: tool versions (#104)', () => {
     const { wrapper } = await openSystem({ 'GET /images': ok(overview([old])) })
     const base = card(wrapper)
     expect(base.find('[data-testid="image-update"]').exists()).toBe(false)
-    expect(cells(base, 'tool-installed')).toEqual(['unknown', 'unknown', 'unknown', 'unknown', 'unknown'])
-    expect(cells(base, 'tool-available').slice(0, 4)).toEqual(['unknown', 'unknown', 'unknown', 'unknown'])
+    expect(cells(base, 'tool-installed')).toEqual(Array(6).fill('unknown'))
+    expect(cells(base, 'tool-available').slice(0, 5)).toEqual(Array(5).fill('unknown'))
     expect(base.find('[data-testid="tool-packages"]').text()).toContain('unknown')
     expect(base.find('[data-testid="orca-pinned"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="images-available"]').text()).toContain('not checked yet')

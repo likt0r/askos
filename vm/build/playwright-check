@@ -1,0 +1,38 @@
+#!/usr/bin/env node
+// Starts each browser of the Base image once, headless, in the Build container (vm/Containerfile,
+// #162), with the Playwright installed globally there and PLAYWRIGHT_BROWSERS_PATH set: the
+// Chromium headless shell (chromium.launch's default), Chromium itself (channel "chromium") and
+// Firefox. Each opens a page and must read back its text. Playwright checks first that the
+// browser finds every library it needs. Any failure ends with exit 1 and with it the Build.
+//
+//   node playwright-check
+"use strict";
+const { chromium, firefox } = require("/usr/lib/node_modules/playwright");
+
+const BROWSERS = [
+  ["Chromium headless shell", chromium, {}],
+  ["Chromium", chromium, { channel: "chromium" }],
+  ["Firefox", firefox, {}],
+];
+
+async function check(name, type, options) {
+  const browser = await type.launch({ ...options, headless: true, timeout: 120000 });
+  try {
+    const page = await browser.newPage();
+    await page.setContent("<p id=check>Agent Box</p>");
+    const text = await page.textContent("#check");
+    if (text !== "Agent Box")
+      throw new Error(`${name} shows ${JSON.stringify(text)} instead of "Agent Box"`);
+    console.log(`${name} ${browser.version()} starts`);
+  } finally {
+    await browser.close();
+  }
+}
+
+(async () => {
+  for (const [name, type, options] of BROWSERS)
+    await check(name, type, options);
+})().catch((error) => {
+  console.error(`playwright-check: ${error && error.stack || error}`);
+  process.exit(1);
+});

@@ -12,10 +12,10 @@ builds the Base image, then every other Image), whose journal is its log
 
   1. the Containerfiles and guest files of the installed Release are copied, so every
      Image of one run is built from the same files even if an update replaces them;
-  2. podman builds the container image: the Base image with package_min_age_days and
-     orca_version of the Settings (its Containerfile downloads Orca from its GitHub release,
-     vm/build/orca-release; nothing of Orca comes from the Host), a derived Image on the
-     Base image's current Build;
+  2. podman builds the container image: the Base image with package_min_age_days,
+     orca_version and playwright_version of the Settings (its Containerfile downloads Orca
+     from its GitHub release, vm/build/orca-release; nothing of Orca comes from the Host), a
+     derived Image on the Base image's current Build;
   3. safeguards.check reads the built filesystem (podman image mount) and discards the
      Build if a safeguard is missing or weakened; then the versions of its tools are read
      from the same files (versions.py);
@@ -453,7 +453,7 @@ def _stamp():
     return time.strftime("%Y%m%d-%H%M%S")
 
 
-def _new_build(image, release, days, orca, actor, unit_name, recipe_sha256=None):
+def _new_build(image, release, days, orca, playwright, actor, unit_name, recipe_sha256=None):
     """A new Build id and its first, running record."""
     build = _stamp()
     while os.path.exists(record_file(image, build)) or os.path.exists(build_file(image, build)):
@@ -461,20 +461,23 @@ def _new_build(image, release, days, orca, actor, unit_name, recipe_sha256=None)
         build = _stamp()
     rec = {"image": image, "build": build, "status": "running", "step": "build", "started": int(time.time()),
            "finished": None, "release": release, "base_build": None, "recipe_sha256": recipe_sha256,
-           "package_min_age_days": days, "orca_version": orca or None, "unit": unit_name,
+           "package_min_age_days": days, "orca_version": orca or None,
+           "playwright_version": playwright or None, "unit": unit_name,
            "actor": actor, "agents": None, "tools": None, "problems": [], "error": None, "safeguards": None,
            "container": False}
     _save(rec)
     return build, rec
 
 
-def _build_container(image, src, release, days, orca, rec, tag, say, recipe_data=None):
+def _build_container(image, src, release, days, orca, playwright, rec, tag, say, recipe_data=None):
     """Build the Image's container image and return its Base Build record, or None for the Base image."""
     if image == BASE:
         say(f"== {image}: building the container image (package minimum age: {days} days; Orca: "
-            + (f"{orca}, pinned in orca_version)" if orca else "the newest release at least that old)"))
+            + (f"{orca}, pinned in orca_version" if orca else "the newest release at least that old")
+            + "; Playwright: " + (f"{playwright}, pinned in playwright_version)" if playwright
+                                  else "the newest version at least that old)"))
         _podman("build", "--pull=newer", "--no-cache", "--build-arg", f"PACKAGE_MIN_AGE_DAYS={days}",
-                "--build-arg", f"ORCA_VERSION={orca}",
+                "--build-arg", f"ORCA_VERSION={orca}", "--build-arg", f"PLAYWRIGHT_VERSION={playwright}",
                 "-t", tag, "-f", os.path.join(src, "vm", "Containerfile"), src,
                 timeout=4 * 3600, what="podman build")
         return None
@@ -484,9 +487,11 @@ def _build_container(image, src, release, days, orca, rec, tag, say, recipe_data
     if recipe_data is None and not os.path.isfile(os.path.join(context, "Containerfile")):
         raise _Failed(f"Image {image} does not exist in Release {release} (vm/images/{image}/Containerfile)")
     base_build, base = _base_for_derived()
-    # a derived Image keeps the Base Build's safeguards, its package age included, and its Orca
+    # a derived Image keeps the Base Build's safeguards, its package age included, its Orca and
+    # its Playwright
     days = base["package_min_age_days"]
-    rec.update(base_build=base_build, package_min_age_days=days, orca_version=base.get("orca_version"))
+    rec.update(base_build=base_build, package_min_age_days=days, orca_version=base.get("orca_version"),
+               playwright_version=base.get("playwright_version"))
     _save(rec)
     say(f"== {image}: building the container image on the Base Build {base_build}")
     if recipe_data is not None:
@@ -582,20 +587,21 @@ def _done(image, build, rec, tag, release, what, actor, reason, say):
     return build
 
 
-def _build_one(image, src, release, days, orca, actor, unit_name, say, reason=None, recipe_data=None,
+def _build_one(image, src, release, days, orca, playwright, actor, unit_name, say, reason=None, recipe_data=None,
                recipe_sha256=None):
     """Build one Image from the Release's files or its Recipe in the unit unit_name, the Base image with
-    the package minimum age `days` and Orca's release `orca` (orca_version, "" for the
-    newest old enough); the Build's id when it became the current Build, else False. The
-    Activity entries of an update's Builds have the reason "update"."""
+    the package minimum age `days`, Orca's release `orca` (orca_version, "" for the newest old
+    enough) and Playwright's version `playwright` (playwright_version, likewise); the Build's
+    id when it became the current Build, else False. The Activity entries of an update's
+    Builds have the reason "update"."""
     what = "Update: " if reason == "update" else ""
-    build, rec = _new_build(image, release, days, orca, actor, unit_name, recipe_sha256)
+    build, rec = _new_build(image, release, days, orca, playwright, actor, unit_name, recipe_sha256)
     tag = CONTAINER.format(image, build)
     out = os.path.join(paths.IMAGES, f".build-{image}-{build}")
     os.makedirs(out)
     try:
         try:
-            base = _build_container(image, src, release, days, orca, rec, tag, say, recipe_data)
+            base = _build_container(image, src, release, days, orca, playwright, rec, tag, say, recipe_data)
             rec.update(step="check", container=True)
             _save(rec)
             say(f"== {image}: checking the Safeguards")
@@ -837,6 +843,7 @@ def _run(target, actor, say):
             try:
                 values = settings.load()
                 days, orca = values["package_min_age_days"], values["orca_version"]
+                playwright = values["playwright_version"]
                 src, release = take_source(work, say)
             except Fail as f:
                 # nothing to build from: one failed Build of the Image (the Base image for all)
@@ -844,7 +851,8 @@ def _run(target, actor, say):
                 build = _stamp()
                 _save({"image": image, "build": build, "status": "failed", "step": "source", "started": started,
                        "finished": int(time.time()), "release": None, "base_build": None, "recipe_sha256": None,
-                       "package_min_age_days": None, "orca_version": None, "unit": unit(target), "actor": actor,
+                       "package_min_age_days": None, "orca_version": None, "playwright_version": None,
+                       "unit": unit(target), "actor": actor,
                        "agents": None,
                        "tools": None, "problems": [], "error": f.message, "safeguards": None, "container": False})
                 say(f"== No sources: {f.message}")
@@ -863,7 +871,7 @@ def _run(target, actor, say):
                 build_images = wanted or [target]
             snapshots = {name: _recipe_snapshot(name) for name in build_images
                          if name != BASE and name not in released and name in recipes.names()}
-            return [(image, _build_one(image, src, release, days, orca, actor, unit(target), say, reason,
+            return [(image, _build_one(image, src, release, days, orca, playwright, actor, unit(target), say, reason,
                                        recipe_data=snapshots.get(image, (None, None))[0],
                                        recipe_sha256=snapshots.get(image, (None, None))[1]))
                     for image in build_images]
@@ -1087,8 +1095,8 @@ def _public(info, cur, used, pins, offered):
             "release": info.get("release"), "commit": info.get("commit"), "base_build": info.get("base_build"),
             "recipe_sha256": info.get("recipe_sha256"),
             "package_min_age_days": info.get("package_min_age_days"), "orca_version": info.get("orca_version"),
-            "agents": info.get("agents"),
-            "tools": tools, "updates": versions.updates(tools, offered["tools"]) if info["status"] in USABLE else [],
+            "playwright_version": info.get("playwright_version"), "agents": info.get("agents"),
+            "tools": tools, "updates": versions.updates(tools, offered) if info["status"] in USABLE else [],
             "error": info.get("error"), "problems": info.get("problems") or [], "actor": info.get("actor"),
             "current": info["build"] == cur, "file": file, "size": info.get("size"),
             "used_by": sorted(used.get(file, [])) if file and used is not None else ([] if used is not None else None),
@@ -1126,7 +1134,7 @@ def overview():
     pins, users = pinned()
     values = settings.load()
     checked = versions.load()
-    offered = versions.available(checked or {}, values["orca_version"] or None)
+    offered = versions.available(checked or {}, values["orca_version"] or None, values["playwright_version"] or None)
     names = set(found) | set(users) | set(available()) | set(defined or []) | active_recipes
     names = sorted((n for n in names if NAME.fullmatch(n)), key=lambda n: (n != BASE, n))
     images = []
@@ -1226,7 +1234,9 @@ def images_cmd(args):
     parts = [f"{versions.NAMES[t]} {tools[t] or '?'}" for t in ("orca", *versions.NPM)]
     if offered["checked"]:
         when = times.local(times.epoch(offered["checked"]))
-        pin = f"; Orca pinned to {offered['orca_version']} (orca_version)" if offered["orca_version"] else ""
+        pin = (f"; Orca pinned to {offered['orca_version']} (orca_version)" if offered["orca_version"] else "") \
+            + (f"; Playwright pinned to {offered['playwright_version']} (playwright_version)"
+               if offered["playwright_version"] else "")
         print(f"Available (checked {when}, at least {offered['package_min_age_days']} days old{pin}): "
               + ", ".join(parts))
     else:

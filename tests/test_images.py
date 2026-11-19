@@ -83,6 +83,9 @@ RUN_EFFECTS = {
         "/usr/lib/node_modules/opencode-ai/package.json": '{"version": "1.2.3"}',
         "/usr/lib/node_modules/pnpm/package.json": '{"version": "10.20.0"}',
         "/usr/lib/node_modules/bun/package.json": '{"version": "1.3.1"}'},
+    # Playwright with its Chromium and Firefox (#162)
+    "playwright install chromium firefox": {
+        "/usr/lib/node_modules/playwright/package.json": '{"version": "1.65.1"}'},
 }
 DERIVED = "ARG BASE\nFROM ${BASE}\n"
 
@@ -185,7 +188,7 @@ class BaseBuildTest(ImagesTest):
         new = self.newest()["build"]
         self.assertEqual(build[build.index("-t") + 1], f"localhost/agentbox/base:{new}")
         self.assertEqual([build[i + 1] for i, a in enumerate(build) if a == "--build-arg"],
-                         ["PACKAGE_MIN_AGE_DAYS=5", "ORCA_VERSION="])
+                         ["PACKAGE_MIN_AGE_DAYS=5", "ORCA_VERSION=", "PLAYWRIGHT_VERSION="])
         self.assertIn("--no-cache", build)
         src = build[-1]
         self.assertEqual(build[build.index("-f") + 1], os.path.join(src, "vm", "Containerfile"))
@@ -204,7 +207,7 @@ class BaseBuildTest(ImagesTest):
         out = self.built()
         build = self.podman("build")[0]["argv"]
         self.assertEqual([build[i + 1] for i, a in enumerate(build) if a == "--build-arg"],
-                         ["PACKAGE_MIN_AGE_DAYS=2", "ORCA_VERSION=1.4.250"])
+                         ["PACKAGE_MIN_AGE_DAYS=2", "ORCA_VERSION=1.4.250", "PLAYWRIGHT_VERSION="])
         self.assertNotIn("-v", build)
         self.assertNotIn("--volume", build)
         self.assertIn("Orca: 1.4.250, pinned in orca_version", out)
@@ -1948,6 +1951,159 @@ class ContainersTest(ImagesTest):
     def read_repo(self, rel):
         with open(os.path.join(REPO, rel)) as f:
             return f.read()
+
+
+class PlaywrightTest(ImagesTest):
+    """#162: Playwright with its Chromium and Firefox in the Base image, read-only under
+    /usr/lib/ms-playwright, for every service and login of the VM. Only a real Build can
+    download and start the browsers; this checks what the Containerfile asks for and what
+    the Base image carries."""
+
+    BROWSERS = "/usr/lib/ms-playwright"
+    # Playwright's own lists of what its Chromium and Firefox need (nativeDeps in playwright-core,
+    # ubuntu24.04-x64) and the Fedora package for each; None: deliberately left out
+    NATIVE_DEPS = {
+        "libasound2t64": "alsa-lib", "libatk-bridge2.0-0t64": "at-spi2-atk", "libatk1.0-0t64": "atk",
+        "libatspi2.0-0t64": "at-spi2-core", "libcairo2": "cairo", "libcairo-gobject2": "cairo-gobject",
+        "libcups2t64": "cups-libs", "libdbus-1-3": "dbus-libs", "libdrm2": "libdrm", "libgbm1": "mesa-libgbm",
+        "libglib2.0-0t64": "glib2", "libnspr4": "nspr", "libnss3": "nss", "libpango-1.0-0": "pango",
+        "libpangocairo-1.0-0": "pango", "libx11-6": "libX11", "libx11-xcb1": "libX11-xcb", "libxcb1": "libxcb",
+        "libxcb-shm0": "libxcb", "libxcomposite1": "libXcomposite", "libxcursor1": "libXcursor",
+        "libxdamage1": "libXdamage", "libxext6": "libXext", "libxfixes3": "libXfixes", "libxi6": "libXi",
+        "libxkbcommon0": "libxkbcommon", "libxrandr2": "libXrandr", "libxrender1": "libXrender",
+        "libfontconfig1": "fontconfig", "libfreetype6": "freetype", "libgdk-pixbuf-2.0-0": "gdk-pixbuf2",
+        "libgtk-3-0t64": "gtk3",
+        # Firefox loads it only to play media; Fedora's pulls in some forty codec libraries
+        "libavcodec60": None,
+    }
+    FONTS = ("liberation-sans-fonts", "liberation-serif-fonts", "liberation-mono-fonts",
+             "google-noto-color-emoji-fonts")
+
+    def setUp(self):
+        super().setUp()
+        with open(os.path.join(REPO, "vm", "Containerfile")) as f:
+            self.lines = f.read().replace("\\\n", " ").splitlines()
+
+    def playwright_run(self):
+        [run] = [i for i, line in enumerate(self.lines) if line.startswith("RUN") and "playwright install" in line]
+        return run, [c.strip() for c in self.lines[run][len("RUN"):].split("&&")]
+
+    def test_the_build_installs_playwright_by_the_minimum_age_with_chromium_and_firefox(self):
+        run, commands = self.playwright_run()
+        line = self.lines[run]
+        self.assertEqual(commands[0], "export HOME=/tmp npm_config_cache=/tmp/npm-cache "
+                                      f"PLAYWRIGHT_BROWSERS_PATH={self.BROWSERS}")
+        # one version, the newest at least package_min_age_days old, as the agents
+        self.assertEqual(commands[1], 'before="$(date -u -d "-${PACKAGE_MIN_AGE_DAYS} days" +%Y-%m-%dT%H:%M:%SZ)"')
+        # or exactly playwright_version, which npm --before takes only when it is that old too
+        self.assertEqual(commands[2], 'npm install -g --prefix /usr --before "$before" '
+                                      '"playwright${PLAYWRIGHT_VERSION:+@$PLAYWRIGHT_VERSION}"')
+        declared = next(i for i, line in enumerate(self.lines) if line == "ARG PLAYWRIGHT_VERSION=")
+        self.assertLess(declared, run)
+        for pin, spec in (("", "playwright"), ("1.64.1", "playwright@1.64.1")):
+            r = subprocess.run(["sh", "-c", 'echo "playwright${PLAYWRIGHT_VERSION:+@$PLAYWRIGHT_VERSION}"'],
+                               env={"PATH": "/usr/bin:/bin", "PLAYWRIGHT_VERSION": pin},
+                               capture_output=True, text=True, check=True)
+            self.assertEqual(r.stdout.strip(), spec)
+        # Chromium (with its headless shell) and Firefox, no WebKit, from Playwright's own
+        # download and its checks; the libraries come from dnf (install-deps knows only apt)
+        self.assertEqual(commands[3], "playwright install chromium firefox")
+        self.assertNotIn("webkit", line.lower())
+        self.assertNotIn("deps", line)
+        # each browser has to start, else the Build fails
+        [copy] = [i for i, line in enumerate(self.lines)
+                  if line == "COPY vm/build/playwright-check /tmp/playwright-check"]
+        self.assertLess(copy, run)
+        # readable for the agent, who runs the browsers in the VM
+        self.assertEqual(commands[4], f"chmod -R a+rX,go-w {self.BROWSERS}")
+        self.assertEqual(commands[5], "node /tmp/playwright-check")
+        self.assertTrue(commands[-1].startswith("rm -rf /tmp/npm-cache "), commands[-1])
+        self.assertEqual(len(commands), 7)
+        # one chain: any step that fails fails the Build
+        self.assertNotIn(";", line)
+        self.assertNotIn("||", line)
+        # after the agents' npm, before package-safeguards
+        agents = next(i for i, line in enumerate(self.lines) if "npm install" in line and "@anthropic-ai/claude-code" in line)
+        safeguards_run = next(i for i, line in enumerate(self.lines) if "/usr/lib/agentbox/package-safeguards" in line)
+        self.assertLess(agents, run)
+        self.assertLess(run, safeguards_run)
+
+    def test_playwright_version_pins_the_version_of_a_base_build(self):
+        """playwright_version goes to the Base Build as PLAYWRIGHT_VERSION, which installs
+        exactly that version; the Build records the pin, and a derived Image keeps the Base
+        Build's Playwright and its pin."""
+        self.ok("set-settings", "playwright_version=1.64.1")
+        out = self.built()
+        build = self.podman("build")[0]["argv"]
+        self.assertEqual([build[i + 1] for i, a in enumerate(build) if a == "--build-arg"],
+                         ["PACKAGE_MIN_AGE_DAYS=2", "ORCA_VERSION=", "PLAYWRIGHT_VERSION=1.64.1"])
+        self.assertIn("Playwright: 1.64.1, pinned in playwright_version", out)
+        self.assertEqual(self.newest()["playwright_version"], "1.64.1")
+        self.image("rust", DERIVED)
+        self.ok("set-settings", "playwright_version=1.65.1")         # takes effect at the next Base Build
+        self.built("rust")
+        self.assertEqual(self.newest("rust")["playwright_version"], "1.64.1")
+        self.assertFalse([a for c in self.podman("build")[1:] for a in c["argv"] if a.startswith("PLAYWRIGHT_VERSION")])
+        # back to automatic
+        self.ok("set-settings", "playwright_version=")
+        time.sleep(1.1)
+        out = self.built()
+        self.assertIn("PLAYWRIGHT_VERSION=", self.podman("build")[-1]["argv"])
+        self.assertIn("Playwright: the newest version at least that old", out)
+        self.assertEqual(self.newest()["playwright_version"], None)
+
+    def test_the_browsers_come_from_playwrights_own_download(self):
+        """Nothing under vm/ points Playwright at another download host or skips its checks of
+        the host's libraries."""
+        for top, dirs, files in os.walk(os.path.join(REPO, "vm")):
+            for name in files:
+                path = os.path.join(top, name)
+                with open(path, errors="replace") as f:
+                    content = f.read()
+                for setting in ("PLAYWRIGHT_DOWNLOAD_HOST", "_DOWNLOAD_HOST", "PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS"):
+                    self.assertNotIn(setting, content, os.path.relpath(path, REPO))
+
+    def test_the_check_starts_every_browser_headless(self):
+        path = os.path.join(REPO, "vm", "build", "playwright-check")
+        self.assertTrue(os.stat(path).st_mode & 0o111)
+        with open(path) as f:
+            check = f.read()
+        self.assertIn('require("/usr/lib/node_modules/playwright")', check)
+        for browser in ('["Chromium headless shell", chromium, {}]', '["Chromium", chromium, { channel: "chromium" }]',
+                        '["Firefox", firefox, {}]'):
+            self.assertIn(browser, check)
+        self.assertIn("headless: true", check)
+        self.assertIn("process.exit(1)", check)
+
+    def test_the_libraries_of_playwrights_lists_come_from_fedora(self):
+        install = re.search(r"dnf -y install [^&]*", "\n".join(self.lines)).group(0).split()
+        self.assertIn("--setopt=install_weak_deps=False", install)
+        for ubuntu, fedora in self.NATIVE_DEPS.items():
+            with self.subTest(ubuntu=ubuntu):
+                if fedora is None:
+                    self.assertNotIn("libavcodec-free", install)
+                else:
+                    self.assertIn(fedora, install)
+        for font in self.FONTS:
+            self.assertIn(font, install)
+
+    def test_every_service_and_login_takes_the_browsers_of_the_image(self):
+        """systemd's DefaultEnvironment reaches orca serve, the agents and terminals it starts;
+        the profile reaches logins (SSH), whose environment sshd builds anew."""
+        self.built()
+        root = self.rootfs("base")
+        env = safeguards.systemd_environment(root)
+        self.assertEqual((env["PLAYWRIGHT_BROWSERS_PATH"], env["PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD"]),
+                         (self.BROWSERS, "1"))
+        r = subprocess.run(["sh", "-c", '. "$1"; echo "$PLAYWRIGHT_BROWSERS_PATH $PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD"',
+                            "sh", os.path.join(root, "etc/profile.d/agentbox.sh")],
+                           env={"PATH": "/usr/bin:/bin"}, capture_output=True, text=True, check=True)
+        self.assertEqual(r.stdout.strip(), f"{self.BROWSERS} 1")
+        # under /usr: part of the Image, read-only in the VM
+        self.assertTrue(self.BROWSERS.startswith("/usr/"))
+        # the Build records its version, so a project can pin @playwright/test to it
+        self.assertEqual(self.newest()["tools"]["playwright"], "1.65.1")
+        self.assertEqual(self.newest()["problems"], [])
 
 
 if __name__ == "__main__":

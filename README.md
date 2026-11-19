@@ -629,6 +629,34 @@ calendar days. A Container image the cleanup has not seen used counts as used wh
 sees it. It never removes containers or volumes. Runs that removed something or failed are in
 Activity.
 
+### Browser tests in a VM
+
+The Base image carries [Playwright](https://playwright.dev/) with its Chromium (and Chromium's
+headless shell) and Firefox, read-only under `/usr/lib/ms-playwright`; WebKit is not included.
+Every service and login of the VM has `PLAYWRIGHT_BROWSERS_PATH=/usr/lib/ms-playwright`, so
+Playwright finds those browsers, and `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`, so a project's
+`npm install` does not try to download others. The browsers' system libraries come from
+Fedora, with Liberation and Noto Color Emoji fonts; Firefox has no FFmpeg, so it plays no
+H.264 or AAC media.
+
+The image has one Playwright version: the one `playwright_version` pins (see
+[Settings](#settings)), else the newest at least `package_min_age_days` old when it was built,
+as the agents. A project pins `@playwright/test` to exactly that version: another version wants
+other browser builds, and Playwright's download CDN stays off the Allowlist, so `npx playwright
+install` fails in a VM. `agentbox images` and the Control Room show the version in each Build
+(Playwright, next to the agents). Without a pin an Update brings a newer one into the VMs like
+the agents, and the project's pin has to follow it; with `playwright_version` set, the version
+changes only when you change the Setting.
+
+```sh
+# on the Host, optional: keep Playwright at this version from the next Build on
+sudo agentbox set-settings playwright_version=1.65.1
+# in the project, in the VM: the version agentbox images shows
+npm install --save-dev --save-exact @playwright/test@1.65.1
+# assumes projects named chromium and firefox in the project's playwright.config
+npx playwright test --project=chromium --project=firefox
+```
+
 ### Images and Builds
 
 An **Image** is defined in this repository, ships with each Release and is built on the Host
@@ -637,9 +665,9 @@ reviewed commits, never in the Control Room; a change reaches a Host with the ne
 installs, and its VMs with their next Reset after a Build. The owner can also define Images on
 their own Host, without a Release, as **Recipes** (below).
 
-- `vm/Containerfile` is the **Base image**: Fedora bootc with the agents, Orca and every
-  **Safeguard** (`vm/files/`, and `package-safeguards`, which writes the package minimum age
-  for npm, pnpm, Bun and uv).
+- `vm/Containerfile` is the **Base image**: Fedora bootc with the agents, Orca, Playwright with
+  Chromium and Firefox, and every **Safeguard** (`vm/files/`, and `package-safeguards`, which
+  writes the package minimum age for npm, pnpm, Bun and uv).
 - `vm/images/<name>/Containerfile` is another Image (name: `a-z`, `0-9`, `-`, at most 32
   characters). Its directory is the build context, and it starts from the Base image's
   current Build:
@@ -671,7 +699,8 @@ A **Build** runs as the systemd unit `agentbox-build@<image>.service`; its journ
 log (`agentbox build-log <image>`, or `journalctl -u agentbox-build@<image>`). It takes
 the installed Release's Containerfiles and guest files, records which Release they came
 from (`agentbox images` and the Control Room show it), builds the container image with
-podman (`package_min_age_days` and `orca_version` of the Settings go into the Base image), checks every
+podman (`package_min_age_days`, `orca_version` and `playwright_version` of the Settings go
+into the Base image), checks every
 Safeguard in the built filesystem, makes the disk with bootc-image-builder and only then
 makes it the Image's current Build. A Build that fails or whose check finds a Safeguard
 missing or weakened is discarded: the previous Build stays in use, and the failure is in
@@ -717,20 +746,22 @@ comes as `build` and `build-log` events on `GET /api/v1/events`; the log endpoin
 
 #### Tool versions
 
-Every Build records the versions of Orca, Claude Code, codex, opencode and the Fedora release
-it contains, read from its files after the Safeguard check (unknown when they cannot be
-read, and for Builds made before). Where they come from: Orca is the RPM of its GitHub
+Every Build records the versions of Orca, Claude Code, codex, opencode, Playwright and the
+Fedora release it contains, read from its files after the Safeguard check (unknown when they
+cannot be read, and for Builds made before). Where they come from: Orca is the RPM of its GitHub
 release (`stablyai/orca`), the newest that is no draft or prerelease and was published at least
 `package_min_age_days` ago, or the one `orca_version` pins; the Build container downloads it
 over HTTPS only and installs it only when its SHA-256 matches the one GitHub lists for it, and
 does the same for the Node runtime of Orca's server, checked against the checksums that Orca
 release pins (`vm/build/orca-release`). Any mismatch fails the Build. The npm tools are the
 newest versions published at least `package_min_age_days` ago (npm `--before` in
-`vm/Containerfile`); the packages are Fedora's at the time of the Build.
+`vm/Containerfile`), Playwright exactly the version `playwright_version` pins when it is set
+(which has to be that old too); the packages are Fedora's at the time of the Build.
 
 Once a day, in the Maintenance window (below; at once: `sudo systemctl start
 agentbox-versions`) the Host checks what a new Build would
-bring: for the npm tools the version the Build would pick now, from the npm registry; for Orca the release the Build would take now, from GitHub
+bring: for the npm tools the version the Build would pick now, from the npm registry (for
+Playwright the pinned one, if set); for Orca the release the Build would take now, from GitHub
 (by the same rule, or the pinned one); for the Base image the number of Fedora package updates for its
 current Build, counted with `dnf check-update` in a container from it. The questions to the
 npm registry and GitHub run as the unprivileged service user `agentbox-feeds`
@@ -751,7 +782,7 @@ VM: the next Reset would undo it, and it would skip the Safeguard check of a Bui
 Maintenance window finds an update for an Image (a tool a new Build would change, or package
 updates), it starts the Build at once instead of waiting for the weekly rebuild, in the unit
 `agentbox-build@update`; when the Base image has one, every Image is built on the new Base
-Build. The minimum age and the Orca pin still decide what is installed. Changing `orca_version` or `package_min_age_days` re-runs the version check (via `regenerate`), which with `auto_update` on can start a Build at that time of day; Resets still happen only in the Maintenance window. A Build that runs already (the run lock is held) or
+Build. The minimum age and the pins of Orca and Playwright still decide what is installed; a pinned version is no update unless the Build has another one. Changing `orca_version`, `playwright_version` or `package_min_age_days` re-runs the version check (via `regenerate`), which with `auto_update` on can start a Build at that time of day; Resets still happen only in the Maintenance window. A Build that runs already (the run lock is held) or
 an update that runs keeps it from starting; the next day's check tries again. The window waits
 until those Builds have finished; its Reset check then also resets every VM whose Image has a
 newer current Build than its System disk,
@@ -829,7 +860,8 @@ default value, so a later change of the built-in default applies). Saving a chan
 regenerates what depends on it, so no restart by hand is needed: the timer of the Maintenance
 window (`maintenance_time`; a new time waits for its next turn instead of starting a window at
 once) and of the Feeds (`feed_interval_hours`), the Feeds service (`young_domain_days`), the
-version check (`package_min_age_days`, `orca_version`; a change checks at once) and the
+version check (`package_min_age_days`, `orca_version`, `playwright_version`; a change checks
+at once) and the
 retention of Activity. Without `/etc/agentbox/settings.json`
 every setting has its default; a broken file is an error naming the file and the value. A
 file from before the Maintenance window that still holds `reset_time` gives a
@@ -851,6 +883,7 @@ no longer counts; the next change writes the file without both.
 | `feed_interval_hours` | 12 | 1–168 |
 | `package_min_age_days` | 2 | 1–30 (applies at the next Build), also for the Orca release a Build takes |
 | `orca_version` | empty | empty: every Build takes the newest Orca release at least `package_min_age_days` old; a version such as `1.4.250` pins that release, for when a newer one causes trouble (`orca_version=` or `orca_version=default` goes back; applies at the next Build) |
+| `playwright_version` | empty | empty: every Base Build takes the newest version of the npm package `playwright` at least `package_min_age_days` old; a version such as `1.65.1` pins that version, which has to be that old as well, so the `@playwright/test` a project pins does not move with an update (see [Browser tests in a VM](#browser-tests-in-a-vm); `playwright_version=` or `playwright_version=default` goes back; applies at the next Build) |
 | `activity_retention_days` | 90 | 1–3650 |
 | `session_hours` | 12 | 1–168 (next sign-in) |
 | `default_language` | browser | browser, en, de: the Control Room's language after sign-in in a browser whose language switch is on Automatic (at once in the browser that saves it, elsewhere at the next sign-in or page load); `browser` is the browser's language, English if it offers neither. It does not apply on the sign-in page |

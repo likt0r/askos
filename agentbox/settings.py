@@ -37,6 +37,8 @@ IMAGE = re.compile(r"[a-z0-9][a-z0-9-]{0,31}")
 BUILD_ID = re.compile(r"[0-9]{8}(?:-[0-9]{4}(?:[0-9]{2})?)?")
 # a release of Orca as its tags name it without the v (vm/build/orca-release takes the same)
 ORCA_VERSION = re.compile(r"(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})")
+# a release of the npm package playwright, the same form (no prerelease)
+PLAYWRIGHT_VERSION = ORCA_VERSION
 MAX_MEMORY_MIB = 1048576       # as vms.py: when the Host's memory is unknown; create checks the real one
 MAX_DATA_DISK_GIB = 16384
 RESET = "default"              # as a value in set-settings: back to the built-in default
@@ -134,6 +136,13 @@ SPEC = {
     "orca_version": Setting("", _optional(ORCA_VERSION, "empty (automatic: the newest release at least "
                                                         "package_min_age_days old) or a version like 1.4.250"),
                             BUILD),
+    # the version of the npm package playwright every Base Build installs, with its browsers
+    # (#162); empty: the newest at least package_min_age_days old, as npm --before picks it. A
+    # pin must be that old too: npm in the VM refuses a younger @playwright/test
+    "playwright_version": Setting("", _optional(PLAYWRIGHT_VERSION, "empty (automatic: the newest version at "
+                                                                    "least package_min_age_days old) or a version "
+                                                                    "like 1.65.1"),
+                                  BUILD),
     "activity_retention_days": Setting(90, _int(1, 3650)),
     "session_hours": Setting(12, _int(1, 168), "at the next sign-in"),
     # en or de wins over the browser's language after sign-in; a language chosen in the
@@ -246,8 +255,8 @@ def save(changes):
 # --- commands ----------------------------------------------------------------
 
 def _shown(value):
-    """A value for people; an empty one (orca_version: automatic) as "", a boolean as true or
-    false."""
+    """A value for people; an empty one (orca_version, playwright_version: automatic) as "", a
+    boolean as true or false."""
     if isinstance(value, bool):
         return "true" if value else "false"
     return '""' if value == "" else value

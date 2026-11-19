@@ -14,8 +14,17 @@ FROM quay.io/fedora/fedora-bootc:44
 # Docker Compose (docker-compose, the CLI plugin; compose_providers in
 # etc/containers/containers.conf.d) against the agent's Podman socket;
 # /etc/containers/nodocker (vm/files) silences its notice.
+# nspr to the fonts, with the libraries of the first line: what Playwright's Chromium and
+# Firefox (below) need, by Playwright's own lists (nativeDeps in playwright-core, for Ubuntu)
+# under their Fedora names, and fonts to render text with (Liberation, metric-compatible with
+# Arial, Times and Courier, and colour emoji). Left out: Firefox's libavcodec (ffmpeg), which
+# it loads only to play media.
 RUN dnf -y install --setopt=install_weak_deps=False \
       gtk3 nss alsa-lib cups-libs mesa-libgbm libxkbcommon \
+      nspr atk at-spi2-atk at-spi2-core cairo cairo-gobject dbus-libs gdk-pixbuf2 glib2 pango libdrm \
+      libX11 libX11-xcb libxcb libXcomposite libXcursor libXdamage libXext libXfixes libXi libXrandr \
+      libXrender fontconfig freetype \
+      liberation-sans-fonts liberation-serif-fonts liberation-mono-fonts google-noto-color-emoji-fonts \
       git gh nodejs nodejs-full-i18n npm python3 uv rustup libxkbcommon-devel \
       podman podman-docker docker-compose \
       ripgrep jq less nano procps-ng which findutils diffutils patch \
@@ -38,6 +47,26 @@ RUN export HOME=/tmp npm_config_cache=/tmp/npm-cache \
     && npm install -g --prefix /usr --before "$before" pnpm bun @anthropic-ai/claude-code @openai/codex opencode-ai \
     && npm install -g --prefix /usr --force --before "$before" npm@12 \
     && rm -rf /tmp/npm-cache
+
+# Playwright (#162): the npm package at the newest version at least PACKAGE_MIN_AGE_DAYS old,
+# as the agents, or exactly PLAYWRIGHT_VERSION (playwright_version of the Settings, empty:
+# automatic; agentbox check-versions works it out the same way), which must be that old too
+# (npm --before), and its Chromium (with the headless shell) and Firefox, no WebKit, in
+# /usr/lib/ms-playwright: readable for the agent, read-only. PLAYWRIGHT_BROWSERS_PATH and
+# PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD are set for every service (system.conf.d) and login
+# (profile.d); a project uses this version of @playwright/test, since the proxy blocks
+# Playwright's CDN. playwright install checks its downloads itself (HTTPS, size);
+# playwright-check then starts each browser headless and fails the Build if one does not,
+# after Playwright's own check of the libraries it needs.
+ARG PLAYWRIGHT_VERSION=
+COPY vm/build/playwright-check /tmp/playwright-check
+RUN export HOME=/tmp npm_config_cache=/tmp/npm-cache PLAYWRIGHT_BROWSERS_PATH=/usr/lib/ms-playwright \
+    && before="$(date -u -d "-${PACKAGE_MIN_AGE_DAYS} days" +%Y-%m-%dT%H:%M:%SZ)" \
+    && npm install -g --prefix /usr --before "$before" "playwright${PLAYWRIGHT_VERSION:+@$PLAYWRIGHT_VERSION}" \
+    && playwright install chromium firefox \
+    && chmod -R a+rX,go-w /usr/lib/ms-playwright \
+    && node /tmp/playwright-check \
+    && rm -rf /tmp/npm-cache /tmp/.cache /tmp/playwright* /tmp/.org.chromium.*
 
 # Rust ueber rustup statt Fedoras rust: nur so gibt es die Android-Targets.
 # Fest im Image (RUSTUP_HOME setzt system.conf.d), Agenten laden keine

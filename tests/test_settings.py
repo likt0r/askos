@@ -21,7 +21,7 @@ DEFAULTS = {"reset_age_days": 7, "maintenance_time": "02:00", "rebuild_day": "su
             "default_container_image_cleanup": True, "default_container_image_cleanup_days": 7,
             "open_web_max_minutes": 240, "temporary_entry_default": "1h", "young_domain_days": 14,
             "feed_interval_hours": 12, "package_min_age_days": 2, "auto_update": True, "orca_version": "",
-            "activity_retention_days": 90, "session_hours": 12, "default_language": "browser"}
+            "playwright_version": "", "activity_retention_days": 90, "session_hours": 12, "default_language": "browser"}
 INVALID = {
     "reset_age_days": ["0", "366", "abc", "1.5", "-1", ""], "maintenance_time": ["24:00", "4:00", "04:60", "x"],
     "rebuild_day": ["monday", "", "7"], "builds_kept": ["0", "21"],
@@ -33,6 +33,8 @@ INVALID = {
     "auto_update": ["", "on", "True", "1", "yes", "false "],
     "orca_version": ["1.4", "v1.4.250", "1.4.250-rc.0", "01.4.250", "1.4.250 ", " ", "latest", "1.4.250;true",
                      "1.4.1234567890"],
+    "playwright_version": ["1.65", "v1.65.1", "1.66.0-alpha-2026-11-18", "01.65.1", "1.65.1 ", " ", "latest",
+                           "1.65.1;true", "1.65.1 && true", "^1.65.1", "1.65.x", "1.1234567890.1"],
     "activity_retention_days": ["0", "3651"], "session_hours": ["0", "169"],
     "default_language": ["fr", "EN", "Browser", "auto", ""],
 }
@@ -111,6 +113,47 @@ class OrcaVersionTest(SettingsTest):
         self.assertIn(["start", "--no-block", "agentbox-versions.service"], self.systemctl())
 
 
+class PlaywrightVersionTest(SettingsTest):
+    """playwright_version (#162): empty, the default, lets every Base Build take the newest
+    version of playwright at least package_min_age_days old; a version pins it, so the
+    @playwright/test a project pins does not move with an update."""
+
+    def test_a_version_pins_playwright_and_empty_or_default_goes_back_to_automatic(self):
+        out = self.ok("set-settings", "playwright_version=1.65.1")
+        self.assertIn('playwright_version: "" -> 1.65.1 (applies from the next Build)', out)
+        self.assertEqual(self.stored(), {"playwright_version": "1.65.1"})
+        self.assertRegex(self.ok("settings"), r'(?m)^playwright_version +1\.65\.1 +\(changed, default: ""; applies '
+                                              r'from the next Build\)$')
+        self.assertIn('playwright_version: 1.65.1 -> ""', self.ok("set-settings", "playwright_version="))
+        self.assertEqual(self.stored(), {"playwright_version": ""})
+        self.ok("set-settings", "playwright_version=0.10.3")
+        self.ok("set-settings", "playwright_version=default")
+        self.assertEqual(self.stored(), {})
+        self.assertRegex(self.ok("settings"), r'(?m)^playwright_version +"" +\(default; applies from the next Build\)$')
+
+    def test_the_file_holds_text(self):
+        for content, ok in (('{"playwright_version": "1.65.1"}', True), ('{"playwright_version": ""}', True),
+                            ('{"playwright_version": 1}', False), ('{"playwright_version": null}', False),
+                            ('{"playwright_version": "1.65"}', False)):
+            with self.subTest(content=content):
+                self.write(self.SETTINGS, content)
+                if ok:
+                    self.assertEqual(self.settings()["playwright_version"], json.loads(content)["playwright_version"])
+                else:
+                    self.assertIn("playwright_version: invalid value", self.refused("settings"))
+
+    def test_the_fetch_of_the_version_check_gets_it_from_its_unit(self):
+        self.ok("regenerate")
+        unit = self.unit("agentbox-versions-fetch.service")
+        self.assertIn("Environment=AGENTBOX_VERSIONS_PLAYWRIGHT_VERSION=\n", unit)
+        self.forget_calls()
+        self.ok("set-settings", "playwright_version=1.65.1")
+        self.assertIn("Environment=AGENTBOX_VERSIONS_PLAYWRIGHT_VERSION=1.65.1\n",
+                      self.unit("agentbox-versions-fetch.service"))
+        # a changed pin checks at once
+        self.assertIn(["start", "--no-block", "agentbox-versions.service"], self.systemctl())
+
+
 class AutoUpdateTest(SettingsTest):
     """auto_update (#114): on by default; true or false, in the file a JSON boolean."""
 
@@ -168,7 +211,8 @@ class SetTest(SettingsTest):
                  "default_image": "rust-2", "default_container_image_cleanup": "false",
                  "default_container_image_cleanup_days": "365", "open_web_max_minutes": "1440", "temporary_entry_default": "7d",
                  "young_domain_days": "35", "feed_interval_hours": "168", "package_min_age_days": "30",
-                 "auto_update": "false", "orca_version": "1.4.250", "activity_retention_days": "3650",
+                 "auto_update": "false", "orca_version": "1.4.250", "playwright_version": "1.65.1",
+                 "activity_retention_days": "3650",
                  "session_hours": "168", "default_language": "de"}
         self.ok("set-settings", *[f"{k}={v}" for k, v in valid.items()])
         typed = {k: (v == "true" if isinstance(DEFAULTS[k], bool) else int(v) if isinstance(DEFAULTS[k], int) else v)

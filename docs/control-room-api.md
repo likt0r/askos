@@ -590,7 +590,7 @@ reason and an error by its `message`.
 
 | Method and path | Body / query | agentbox call, response |
 |---|---|---|
-| `GET /images` | | `images`: `{"images": [{"name", "base", "recipe", "in_release", "problem", "current", "vms", "running", "package_updates", "updates", "update", "containerfile", "containerfile_url", "builds": [{"build", "status", "step", "started", "finished", "release", "commit", "base_build", "recipe_sha256", "package_min_age_days", "orca_version", "agents", "tools", "updates", "error", "problems", "actor", "current", "file", "size", "used_by", "pinned_by"}]}], "builds_kept", "release", "repository", "repository_url", "disks_readable", "available", "updating"}`: every Image with its Builds, which VMs use and pin them, the running Build. A Build's `orca_version` is the Orca version the Settings pinned when it was made (`null`: the newest release old enough; a derived Image has its Base Build's). `release`: the installed Release the next Build takes (`null` when its `VERSION` cannot be read); a Build's `release` is the Release it came from, and Builds from before ADR 0010 have `release: null` and the commit of `main` they came from in `commit` (`null` for every newer one). `recipe`: a Recipe the owner stored on the Host defines the Image (`false` for a Release Image, and when a later Release takes a Recipe's name); `in_release`: the installed Release defines the Image (`false` for a Recipe or when only its Builds are left; `null`: the Release's files are not there). `problem` names a same-name Recipe the Release now shadows (the Release wins and that Recipe is not built), else `null`. A Recipe Build's `recipe_sha256` is its tar's SHA-256 (`null` for a Release Image's Build), while its `release` stays the installed Release. `containerfile`: the path of the Containerfile that defines a Release Image, in the repository and in the Release (`vm/Containerfile` for the Base image, `vm/images/<name>/Containerfile` for the others), or `Recipe <name>: Containerfile (current recipe.tar)` for a Recipe; `containerfile_url`: that file on GitHub at what the Image's current Build came from, the tag `v<release>` of its Release or, for a Build from before ADR 0010, its commit in the repository its record names (`null` for every Recipe, without a current Build, for a checkout's Release `0.0.0`, or when neither is recorded). `repository`: the repository the Releases come from (`owner/name`), `repository_url` its page on GitHub. Links only: nothing is fetched from GitHub and no token is involved. `updating`: an update of every Image runs (Update now or the automatic one, unit `agentbox-build@update.service`, also while it still checks the versions or its unit stops; the `services` event says it too, `updating`). Tool versions (below) |
+| `GET /images` | | `images`: `{"images": [{"name", "base", "recipe", "in_release", "problem", "current", "vms", "running", "package_updates", "updates", "update", "containerfile", "containerfile_url", "builds": [{"build", "status", "step", "started", "finished", "release", "commit", "base_build", "recipe_sha256", "package_min_age_days", "orca_version", "playwright_version", "agents", "tools", "updates", "error", "problems", "actor", "current", "file", "size", "used_by", "pinned_by"}]}], "builds_kept", "release", "repository", "repository_url", "disks_readable", "available", "updating"}`: every Image with its Builds, which VMs use and pin them, the running Build. A Build's `orca_version` is the Orca version the Settings pinned when it was made (`null`: the newest release old enough; a derived Image has its Base Build's), `playwright_version` likewise Playwright's (`null`: the newest version old enough). `release`: the installed Release the next Build takes (`null` when its `VERSION` cannot be read); a Build's `release` is the Release it came from, and Builds from before ADR 0010 have `release: null` and the commit of `main` they came from in `commit` (`null` for every newer one). `recipe`: a Recipe the owner stored on the Host defines the Image (`false` for a Release Image, and when a later Release takes a Recipe's name); `in_release`: the installed Release defines the Image (`false` for a Recipe or when only its Builds are left; `null`: the Release's files are not there). `problem` names a same-name Recipe the Release now shadows (the Release wins and that Recipe is not built), else `null`. A Recipe Build's `recipe_sha256` is its tar's SHA-256 (`null` for a Release Image's Build), while its `release` stays the installed Release. `containerfile`: the path of the Containerfile that defines a Release Image, in the repository and in the Release (`vm/Containerfile` for the Base image, `vm/images/<name>/Containerfile` for the others), or `Recipe <name>: Containerfile (current recipe.tar)` for a Recipe; `containerfile_url`: that file on GitHub at what the Image's current Build came from, the tag `v<release>` of its Release or, for a Build from before ADR 0010, its commit in the repository its record names (`null` for every Recipe, without a current Build, for a checkout's Release `0.0.0`, or when neither is recorded). `repository`: the repository the Releases come from (`owner/name`), `repository_url` its page on GitHub. Links only: nothing is fetched from GitHub and no token is involved. `updating`: an update of every Image runs (Update now or the automatic one, unit `agentbox-build@update.service`, also while it still checks the versions or its unit stops; the `services` event says it too, `updating`). Tool versions (below) |
 | `POST /builds` | `{"image": "<image>"\|"all", "reset"?: ["<vm>", ...]}` | `build`: `202 {"image", "unit", "started": true, "reset", "message"}`. With `reset` (one Image only) an Update: when the Build becomes the Image's current one, its unit resets these VMs onto it (each must use the Image without a Build pin) and starts those that ran; a failed Build resets nothing. Each Reset, done or not, is an Activity entry of kind `reset`, action `reset.update` |
 | `POST /updates` | `{"reset"?: ["<vm>", ...]}` | `update-now`: `202 {"unit", "started": true, "reset", "message"}`. Update now (#114), in the unit `agentbox-build@update.service`: the version check at once (the fetch as `agentbox-feeds`, then the root part), a Build of every Image a new Build would update (every Image when the Base image has an update; none when nothing is new), then, when every Build succeeded, a Reset of the VMs in `reset` onto the newest Build of their Image, started again if they ran. Each VM must have no Build pin; any Image. A failed Build resets nothing. The Builds are Activity entries with `reason` `update` (and `build.unneeded` when none was needed), each Reset `reset.update` as for `POST /builds`. `409 update_running` while one runs |
 | `GET /images/<image>/log` | `?build&after_cursor&lines` | `build-log`: `{"image", "build", "status", "step", "error", "problems", "entries", "cursor", "truncated"}`; without `build` the running Build, else the newest |
@@ -603,18 +603,20 @@ same 64 KiB display cap, sanitizing and `release` field apply. `recipe-show --fi
 any one UTF-8 Recipe member up to 256 KiB on the Host.
 
 Tool versions (#104), every version a string or `null` (unknown):
-- a Build's `tools`: `{"orca", "claude-code", "codex", "opencode", "fedora"}`, what the Build
-  contains (Builds made before have only the npm tools); `updates`: the tools a new Build would
+- a Build's `tools`: `{"orca", "claude-code", "codex", "opencode", "playwright", "fedora"}`, what
+  the Build contains (Builds made before have only the agents); `updates`: the tools a new Build would
   change, by `available` (an npm tool with a newer version, `orca` with another version, which
-  a pinned `orca_version` may make an older one); `[]` for a Build that cannot be used.
+  a pinned `orca_version` may make an older one, and `playwright` with another version while
+  `playwright_version` pins it, so nothing beyond the pin); `[]` for a Build that cannot be used.
 - `available`: `{"checked": "<time>"|null, "package_min_age_days", "tools": {...},
-  "orca_version"}`, what the daily check (`agentbox fetch-versions` as `agentbox-feeds`, then
-  `agentbox check-versions`) found: in `tools` the npm tools and Orca as a Build would install
-  them now, each the newest version at least `package_min_age_days` old (Orca: from its GitHub
-  releases), or for Orca the release `orca_version` of the Settings pins (`fedora` is always
-  `null`); `orca_version` that pin, `null` when there is none. Orca is `null` while the last
-  check took it with another pin than the Settings have now (changing the pin starts a check).
-  All `null` before the first check.
+  "orca_version", "playwright_version"}`, what the daily check (`agentbox fetch-versions` as
+  `agentbox-feeds`, then `agentbox check-versions`) found: in `tools` the npm tools and Orca as
+  a Build would install them now, each the newest version at least `package_min_age_days` old
+  (Orca: from its GitHub releases), or for Orca the release `orca_version` of the Settings pins
+  and for Playwright the version `playwright_version` pins (`fedora` is always `null`);
+  `orca_version` and `playwright_version` those pins, `null` when there is none. Orca or
+  Playwright is `null` while the last check took it with another pin than the Settings have
+  now (changing a pin starts a check). All `null` before the first check.
 - an Image's `package_updates`: how many Fedora package updates are available for its current
   Build (`null`: not counted, which is the case for every Image but the Base image); `updates`:
   the current Build's `updates` and `"packages"` when there are package updates; `update`:
@@ -637,7 +639,7 @@ Settings keys the Control Room may change: `reset_age_days`, `maintenance_time`,
 `builds_kept`, `default_memory_mib`, `default_data_disk_gib`,
 `default_image`, `default_container_image_cleanup`, `default_container_image_cleanup_days`,
 `open_web_max_minutes`, `temporary_entry_default`, `young_domain_days`,
-`feed_interval_hours`, `package_min_age_days`, `orca_version`, `activity_retention_days`,
+`feed_interval_hours`, `package_min_age_days`, `orca_version`, `playwright_version`, `activity_retention_days`,
 `session_hours`, `default_language`, `auto_update`. The password, home network and ports are
 not among them.
 `maintenance_time` (`HH:MM`, default `"02:00"`) is when the daily **Maintenance window** starts:
@@ -652,6 +654,10 @@ Image with an update at once, and its Reset check also moves idle VMs onto a new
 their Image once those Builds have finished.
 `orca_version` is text: `""` (the default) lets every Build take the newest Orca release at
 least `package_min_age_days` old, a version such as `"1.4.250"` pins that release.
+`playwright_version` is text too: `""` (the default) lets every Base Build take the newest
+version of the npm package `playwright` at least `package_min_age_days` old, a version such as
+`"1.65.1"` pins that version, which has to be that old as well; a project pins
+`@playwright/test` to the same version.
 
 ## Live events
 

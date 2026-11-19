@@ -154,8 +154,8 @@ Controls the agent VMs on this Host.
                                                      image cleanup on, remove the Container images no
                                                      container uses that were not used for its days
   agentbox images [--json]                           Images and their Builds, which VM uses which, the versions
-                                                     of Orca, Claude Code, codex, opencode and Fedora in them
-                                                     and what a new Build would bring
+                                                     of Orca, Claude Code, codex, opencode, Playwright and
+                                                     Fedora in them and what a new Build would bring
   agentbox containerfile <image> [--json]            the Image's Containerfile in the installed Release (what
                                                      its next Build takes), as text
   agentbox build <image>|--all [--reset <vm>]... [--json]

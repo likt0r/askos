@@ -6,11 +6,12 @@ from the same mounted filesystem, by reading files; nothing from the Image runs 
   orca                          /usr/lib/orca/resources/app.asar, the version in Orca's
                                 package.json (the Build installs the RPM of Orca's GitHub
                                 release there, vm/build/orca-release)
-  claude-code, codex, opencode  /usr/lib/node_modules/<package>/package.json
+  claude-code, codex, opencode, /usr/lib/node_modules/<package>/package.json; for playwright
+  playwright                    the npm package whose Chromium and Firefox the Build installs
   fedora                        VERSION_ID of /usr/lib/os-release
 
-Builds made before have only the versions of the npm tools (their `agents`); the others
-are unknown.
+Builds made before have only the versions of the agents (their `agents`); the others are
+unknown.
 
 What is available is determined once a day on the Host, in the Maintenance window
 (maintenance.py, which starts agentbox-versions.service, written by `agentbox regenerate`), in
@@ -26,7 +27,9 @@ two parts, so that nothing from the internet is parsed as root:
   npm tools  the version a Build would install now: from the registry's metadata
              (registry.npmjs.org), the newest version published at least
              package_min_age_days ago, the `latest` tag when it is old enough, as npm
-             picks it with --before (vm/Containerfile)
+             picks it with --before (vm/Containerfile); for playwright exactly
+             playwright_version of the Settings when it is set, if the registry has it and it
+             is that old too (npm --before refuses it otherwise)
   orca       the release a Build would install now (#113): from GitHub's list of Orca's
              releases (api.github.com, stablyai/orca), the highest version that is no draft and
              no prerelease and was published at least package_min_age_days ago, or exactly
@@ -65,10 +68,11 @@ from .commands import declare
 from .errors import Fail, die
 from .sanitize import clean
 
-TOOLS = ("orca", "claude-code", "codex", "opencode", "fedora")
+TOOLS = ("orca", "claude-code", "codex", "opencode", "playwright", "fedora")
 NAMES = {"orca": "Orca", "claude-code": "Claude Code", "codex": "codex", "opencode": "opencode",
-         "fedora": "Fedora"}
-NPM = {"claude-code": "@anthropic-ai/claude-code", "codex": "@openai/codex", "opencode": "opencode-ai"}
+         "playwright": "Playwright", "fedora": "Fedora"}
+NPM = {"claude-code": "@anthropic-ai/claude-code", "codex": "@openai/codex", "opencode": "opencode-ai",
+       "playwright": "playwright"}
 VERSION = safeguards.VERSION
 SEMVER = re.compile(r"v?(\d{1,9})\.(\d{1,9})\.(\d{1,9})(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?")
 IMAGE_ORCA = "/usr/lib/orca"                     # where vm/Containerfile installs it
@@ -81,12 +85,15 @@ MAX_AVAILABLE = 64 << 10            # the fetch's file is a few hundred bytes
 STALE = 3 * 86400                   # a fetch older than this counts as none
 MIN_AGE_DAYS = os.environ.get("AGENTBOX_VERSIONS_MIN_AGE_DAYS")    # set by the fetch's unit
 ORCA_PIN = os.environ.get("AGENTBOX_VERSIONS_ORCA_VERSION")         # likewise; empty: none
+PLAYWRIGHT_PIN = os.environ.get("AGENTBOX_VERSIONS_PLAYWRIGHT_VERSION")     # likewise
 # the errors the fetch reports (FETCHED takes no other text from its file)
 FETCH_ERROR = re.compile(r"npm registry not reachable|npm registry answered [1-5][0-9][0-9]|"
                          r"no matching version found|GitHub not reachable|GitHub answered "
                          r"[1-5][0-9][0-9]|no release of the version in orca_version|"
                          r"no x86_64 RPM with a SHA-256 in the release|"
-                         r"RPM of the version in orca_version replaced only recently")
+                         r"RPM of the version in orca_version replaced only recently|"
+                         r"no release of the version in playwright_version|"
+                         r"version in playwright_version younger than package_min_age_days")
 REGISTRY = "https://registry.npmjs.org/"
 GITHUB_API = "https://api.github.com/repos/"
 MAX_ASAR_HEADER = 64 << 20          # Orca 1.4: 1.1 MiB
@@ -170,13 +177,14 @@ def in_image(root):
             found["fedora"] = _version(release.get("VERSION_ID"))
     except (OSError, ValueError):
         pass
-    agents = safeguards.agents(root)
-    return {tool: found[tool] if tool in found else agents.get(tool) for tool in TOOLS}
+    for tool, package in NPM.items():
+        found[tool] = safeguards.npm_version(root, package)
+    return {tool: found[tool] for tool in TOOLS}
 
 
 def of_build(rec):
     """{tool: version or None} of a Build's record: what it recorded, and for a Build from
-    before, the npm tools from its `agents`."""
+    before, the agents from its `agents`."""
     tools = rec.get("tools")
     if not isinstance(tools, dict):
         agents = rec.get("agents") if isinstance(rec.get("agents"), dict) else {}
@@ -268,13 +276,29 @@ def pick(metadata, cutoff):
     return _version(max(releases, key=lambda v: (not deprecated(v), _key(v))))
 
 
-def npm_newest(package, cutoff):
-    """(version, error) of an npm package as a Build would install it now."""
+def pinned(metadata, pin, cutoff):
+    """(version, error) of the exact version `pin` (playwright_version) as npm installs it
+    with --before cutoff: only when the registry has it and it is old enough (one without a
+    publish time counts as old enough, as for npm)."""
+    versions, published_at = metadata.get("versions"), metadata.get("time")
+    if not isinstance(versions, dict) or pin not in versions:
+        return None, "no release of the version in playwright_version"
+    published = times.epoch(published_at.get(pin)) if isinstance(published_at, dict) else None
+    if published is not None and published > cutoff:
+        return None, "version in playwright_version younger than package_min_age_days"
+    return pin, None
+
+
+def npm_newest(package, cutoff, pin=None):
+    """(version, error) of an npm package as a Build would install it now: the newest old
+    enough, or exactly `pin` (playwright_version)."""
     status, metadata = _get(REGISTRY + package.replace("/", "%2f"), "application/json")
     if status == 0:
         return None, "npm registry not reachable"
     if status != 200 or not isinstance(metadata, dict):
         return None, f"npm registry answered {status}"
+    if pin is not None:
+        return pinned(metadata, pin, cutoff)
     version = pick(metadata, cutoff)
     return (version, None) if version else (None, "no matching version found")
 
@@ -282,6 +306,11 @@ def npm_newest(package, cutoff):
 def _orca_version(v):
     """A version as Orca's releases are named and orca_version takes it (X.Y.Z), else None."""
     return v if isinstance(v, str) and settings.ORCA_VERSION.fullmatch(v) else None
+
+
+def _playwright_version(v):
+    """A version as playwright_version takes it (X.Y.Z), else None."""
+    return v if isinstance(v, str) and settings.PLAYWRIGHT_VERSION.fullmatch(v) else None
 
 
 def orca_rules():
@@ -384,31 +413,40 @@ def _part(rec, *keys):
     return rec
 
 
-def available(rec=None, pin=None):
+def available(rec=None, pin=None, playwright_pin=None):
     """What the Control Room shows as available, from the record: the versions a new Build
     would bring ({tool: version or None}), when it was checked, with which package minimum
-    age, and the Orca version pinned in the Settings (orca_version, `pin`; None: automatic).
-    Orca is unknown when the check took it with another pin than the Settings have now (the
-    next check, which a changed pin starts at once, takes the new one) and in a record from
-    before #113."""
+    age, and the versions pinned in the Settings: Orca's (orca_version, `pin`) and
+    Playwright's (playwright_version, `playwright_pin`); None: automatic. Orca and Playwright
+    are unknown when the check took them with another pin than the Settings have now (the
+    next check, which a changed pin starts at once, takes the new one); Orca also in a record
+    from before #113."""
     rec = load() if rec is None else rec
     tools = {t: None for t in TOOLS}
     for t in NPM:
         tools[t] = _version(_part(rec, "npm", t, "version"))
+    if _playwright_version(_part(rec, "npm", "playwright", "pin")) != playwright_pin:
+        tools["playwright"] = None
     if _orca_version(_part(rec, "orca", "pin")) == pin:
         tools["orca"] = _orca_version(_part(rec, "orca", "version"))
     checked = _part(rec, "checked")
     days = _part(rec, "package_min_age_days")
     return {"checked": times.iso(checked), "package_min_age_days": days if isinstance(days, int) else None,
-            "tools": tools, "orca_version": pin}
+            "tools": tools, "orca_version": pin, "playwright_version": playwright_pin}
 
 
 def updates(tools, offered):
     """The tools of a Build ({tool: version}) a new Build would change, by what is offered
-    (available()["tools"]): an npm tool with a newer version, Orca with another one (a
-    pinned orca_version may be older)."""
-    out = [t for t in NPM if newer(offered.get(t), tools.get(t))]
-    if offered.get("orca") and tools.get("orca") and offered["orca"] != tools["orca"]:
+    (available()): an npm tool with a newer version, Orca with another one (a pinned
+    orca_version may be older), and Playwright with another one when playwright_version pins
+    it (the pin may be older), else a newer one."""
+    found = offered["tools"]
+
+    def other(t):
+        return bool(found.get(t) and tools.get(t) and found[t] != tools[t])
+    out = [t for t in NPM if (other(t) if t == "playwright" and offered.get("playwright_version")
+                              else newer(found.get(t), tools.get(t)))]
+    if other("orca"):
         out.insert(0, "orca")
     return out
 
@@ -449,6 +487,22 @@ def _orca_pin():
         return None
 
 
+def _playwright_pin():
+    """playwright_version (None: automatic), as _orca_pin takes orca_version."""
+    if PLAYWRIGHT_PIN is not None and (PLAYWRIGHT_PIN == "" or _playwright_version(PLAYWRIGHT_PIN)):
+        return PLAYWRIGHT_PIN or None
+    try:
+        return settings.load()["playwright_version"] or None
+    except Fail:
+        return None
+
+
+def _npm_line(tool, got, days):
+    return (f"{NAMES[tool]}: {got['version'] or 'unknown'}" + (f" ({got['error']})" if got["error"] else "")
+            + (f", pinned in playwright_version ({got['pin']})" if got.get("pin") else
+               f", the newest version at least {days} days old" if days else ""))
+
+
 def _orca_line(got, days):
     return (f"Orca: {got['version'] or 'unknown'}" + (f" ({got['error']})" if got["error"] else "")
             + (f", pinned in orca_version ({got['pin']})" if got["pin"] else
@@ -459,14 +513,14 @@ def fetch(say):
     """Ask the npm registry and GitHub (as agentbox-feeds) and write AVAILABLE; returns it."""
     days = _min_age_days()
     pin = _orca_pin()
+    pins = {"playwright": _playwright_pin()}
     orca_rules()                # without the rule nothing is fetched, not even npm's versions
     now = time.time()
     rec = {"fetched": int(now), "package_min_age_days": days, "npm": {}, "orca": {}}
     for tool, package in NPM.items():
-        version, error = npm_newest(package, now - days * 86400)
-        rec["npm"][tool] = {"version": version, "error": error}
-        say(f"{NAMES[tool]}: {version or 'unknown'}" + (f" ({error})" if error else "")
-            + f", the newest version at least {days} days old")
+        version, error = npm_newest(package, now - days * 86400, pins.get(tool))
+        rec["npm"][tool] = {"version": version, "error": error, **({"pin": pins[tool]} if tool in pins else {})}
+        say(_npm_line(tool, rec["npm"][tool], days))
     version, error = orca_newest(now - days * 86400, pin)
     rec["orca"] = {"version": version, "error": error, "pin": pin}
     say(_orca_line(rec["orca"], days))
@@ -513,9 +567,11 @@ def _error(v):
 def fetched(now):
     """What agentbox-feeds' fetch found (AVAILABLE), checked as untrusted input: the shape,
     every version against VERSION (Orca's and the pin it was taken with against
-    settings.ORCA_VERSION), errors against FETCH_ERROR, the time; anything else is unknown.
+    settings.ORCA_VERSION, Playwright's pin against settings.PLAYWRIGHT_VERSION), errors
+    against FETCH_ERROR, the time; anything else is unknown.
     A missing, unreadable or stale file makes everything unknown."""
     npm = {t: {"version": None, "error": "not fetched (agentbox-versions-fetch.service)"} for t in NPM}
+    npm["playwright"]["pin"] = None
     orca = {"version": None, "error": "not fetched (agentbox-versions-fetch.service)", "pin": None}
     out = {"fetched": None, "package_min_age_days": None, "npm": npm, "orca": orca}
     data = _read_untrusted(AVAILABLE)
@@ -537,7 +593,9 @@ def fetched(now):
         found = _part(rec, "npm", tool)
         found = found if isinstance(found, dict) else {}
         version = _version(found.get("version"))
-        npm[tool] = {"version": version, "error": None if version else _error(found.get("error"))}
+        npm[tool].update(version=version, error=None if version else _error(found.get("error")))
+        if tool == "playwright":
+            npm[tool]["pin"] = _playwright_version(found.get("pin"))
     found = rec.get("orca") if isinstance(rec.get("orca"), dict) else {}
     version = _orca_version(found.get("version"))
     orca.update(version=version, error=None if version else _error(found.get("error")),
@@ -560,8 +618,7 @@ def _check(say):
     rec = {"checked": int(now), "fetched": found["fetched"], "package_min_age_days": days, "npm": found["npm"],
            "orca": found["orca"], "packages": {}}
     for tool, got in rec["npm"].items():
-        say(f"{NAMES[tool]}: {got['version'] or 'unknown'}" + (f" ({got['error']})" if got["error"] else "")
-            + (f", the newest version at least {days} days old" if days else ""))
+        say(_npm_line(tool, got, days))
     say(_orca_line(rec["orca"], days))
     for image in images.available():
         build = images.current(image)

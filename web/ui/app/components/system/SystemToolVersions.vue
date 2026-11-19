@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // The versions of the tools in a Build next to what is available (#104): one row per tool,
-// marked where a new Build would change it, Orca marked when the Settings pin its version
-// (#113); and the Fedora package updates when they were counted for this Build.
+// marked where a new Build would change it, Orca and Playwright marked when the Settings pin
+// their version (#113, #162); and the Fedora package updates when they were counted for this
+// Build.
 import type { Available, ToolRow } from '~/utils/images'
 
 const props = defineProps<{
@@ -15,6 +16,7 @@ const props = defineProps<{
 const { t } = useI18n()
 
 const orcaPinned = computed(() => props.available?.orca_version ?? null)
+const playwrightPinned = computed(() => props.available?.playwright_version ?? null)
 </script>
 
 <template>
@@ -53,6 +55,7 @@ const orcaPinned = computed(() => props.available?.orca_version ?? null)
                 <span v-if="r.tool === 'fedora'" class="text-dimmed">—</span>
                 <span v-else class="font-mono">{{ r.available ?? t('system.versions.unknown') }}</span>
                 <span v-if="r.tool === 'orca' && orcaPinned" class="text-muted" data-testid="orca-pinned">{{ t('system.versions.pinned') }}</span>
+                <span v-if="r.tool === 'playwright' && playwrightPinned" class="text-muted" data-testid="playwright-pinned">{{ t('system.versions.pinned') }}</span>
                 <UBadge v-if="r.update" color="warning" variant="subtle" size="sm" :label="t('system.versions.update')" />
               </span>
             </td>
