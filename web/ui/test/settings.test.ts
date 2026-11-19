@@ -18,6 +18,7 @@ const LATER = {
   builds_kept: 'ab dem naechsten Build',
   package_min_age_days: 'ab dem naechsten Build',
   orca_version: 'ab dem naechsten Build',
+  playwright_version: 'ab dem naechsten Build',
   default_memory_mib: 'fuer neue VMs',
   default_data_disk_gib: 'fuer neue VMs',
   default_image: 'fuer neue VMs',
@@ -33,7 +34,7 @@ const DEFAULTS: Record<string, string | number | boolean> = {
   maintenance_time: '02:00', reset_age_days: 7, auto_update: true, rebuild_day: 'sun', builds_kept: 3,
   default_memory_mib: 26624, default_data_disk_gib: 300, default_image: 'base', default_container_image_cleanup: true, default_container_image_cleanup_days: 7, open_web_max_minutes: 240,
   temporary_entry_default: '1h', young_domain_days: 14, feed_interval_hours: 12, package_min_age_days: 2,
-  orca_version: '', activity_retention_days: 90, session_hours: 12, default_language: 'browser',
+  orca_version: '', playwright_version: '', activity_retention_days: 90, session_hours: 12, default_language: 'browser',
 }
 
 function settingsBody(values: Record<string, string | number | boolean> = {}) {
@@ -113,6 +114,11 @@ describe('settings (units)', () => {
     for (const bad of ['1.4', 'v1.4.250', '1.4.250-rc.0', '01.4.250', 'latest', '1.4.250;true']) {
       expect(settingProblem('orca_version', bad), bad).toEqual({ code: 'version' })
     }
+    // playwright_version: the same
+    for (const ok of ['', ' ', '1.65.1', ' 1.65.1 ']) expect(settingProblem('playwright_version', ok), ok).toBeNull()
+    for (const bad of ['1.65', 'v1.65.1', '1.66.0-alpha-2026-11-18', '^1.65.1', 'latest', '1.65.1;true']) {
+      expect(settingProblem('playwright_version', bad), bad).toEqual({ code: 'version' })
+    }
   })
 
   it('sends numbers as numbers, text as text, and `default` for the default', () => {
@@ -130,6 +136,8 @@ describe('settings (units)', () => {
     expect(toSend('default_language', 'en', info('browser'))).toBe('en')
     expect(toSend('orca_version', '1.4.250', info(''))).toBe('1.4.250')
     expect(toSend('orca_version', ' ', info('', '1.4.250'))).toBe('default')
+    expect(toSend('playwright_version', '1.65.1', info(''))).toBe('1.65.1')
+    expect(toSend('playwright_version', '', info('', '1.65.1'))).toBe('default')
     // auto_update: true and false as booleans
     expect(settingValue('auto_update', 'false')).toBe(false)
     expect(toSend('auto_update', 'false', { ...info('x'), value: true, default: true })).toBe(false)
@@ -200,6 +208,11 @@ describe('Settings page', () => {
     expect(input(wrapper, 'orca_version').attributes('placeholder')).toBe('automatic')
     expect(field(wrapper, 'orca_version').find('[data-testid="setting-default"]').text()).toBe('Default: automatic')
     expect(field(wrapper, 'orca_version').text()).toContain('Orca version')
+    // playwright_version: likewise
+    expect((input(wrapper, 'playwright_version').element as HTMLInputElement).value).toBe('')
+    expect(input(wrapper, 'playwright_version').attributes('placeholder')).toBe('automatic')
+    expect(field(wrapper, 'playwright_version').find('[data-testid="setting-default"]').text()).toBe('Default: automatic')
+    expect(field(wrapper, 'playwright_version').text()).toContain('Playwright version')
 
     // exactly the settings the backend says apply later show the note, in English
     const later = Object.fromEntries(rows.map(r => [r.attributes('data-key')!, r.find('[data-testid="setting-later"]')]))

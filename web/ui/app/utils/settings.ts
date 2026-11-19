@@ -43,13 +43,14 @@ export const SETTING_SPECS: Record<string, Spec> = {
   feed_interval_hours: { type: 'int', min: 1, max: 168 },
   package_min_age_days: { type: 'int', min: 1, max: 30 },
   orca_version: { type: 'version' },
+  playwright_version: { type: 'version' },
   activity_retention_days: { type: 'int', min: 1, max: 3650 },
   session_hours: { type: 'int', min: 1, max: 168 },
   default_language: { type: 'choice', options: ['browser', 'en', 'de'] },
 }
 
 export const SETTING_GROUPS: { id: string, keys: string[] }[] = [
-  { id: 'schedule', keys: ['maintenance_time', 'reset_age_days', 'auto_update', 'rebuild_day', 'builds_kept', 'package_min_age_days', 'orca_version'] },
+  { id: 'schedule', keys: ['maintenance_time', 'reset_age_days', 'auto_update', 'rebuild_day', 'builds_kept', 'package_min_age_days', 'orca_version', 'playwright_version'] },
   { id: 'newVms', keys: ['default_memory_mib', 'default_data_disk_gib', 'default_image', 'default_container_image_cleanup', 'default_container_image_cleanup_days'] },
   { id: 'access', keys: ['open_web_max_minutes', 'temporary_entry_default', 'young_domain_days', 'feed_interval_hours'] },
   { id: 'controlRoom', keys: ['activity_retention_days', 'session_hours', 'default_language'] },
@@ -57,7 +58,7 @@ export const SETTING_GROUPS: { id: string, keys: string[] }[] = [
 
 const TIME = /^([01][0-9]|2[0-3]):[0-5][0-9]$/
 const NAME = /^[a-z0-9][a-z0-9-]{0,31}$/
-// as agentbox/settings.py ORCA_VERSION
+// as agentbox/settings.py ORCA_VERSION and PLAYWRIGHT_VERSION
 const VERSION = /^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$/
 
 export type Problem = { code: 'empty' } | { code: 'int', min: number, max: number } | { code: 'time' } | { code: 'choice', options: string } | { code: 'name' } | { code: 'version' }

@@ -214,7 +214,7 @@ class CheckTest(VersionsTest):
         self.assertEqual(npm["claude-code"], {"version": "2.1.7", "error": None})
         self.assertEqual(npm["codex"], {"version": "0.80.0", "error": None})
         self.assertEqual(npm["opencode"], {"version": "1.2.3", "error": None})
-        self.assertEqual(npm["playwright"], {"version": "1.65.1", "error": None})
+        self.assertEqual(npm["playwright"], {"version": "1.65.1", "error": None, "pin": None})
         self.assertEqual(self.record()["package_min_age_days"], 2)
         self.assertIn("https://registry.npmjs.org/@anthropic-ai%2fclaude-code", self.curl())
         self.assertIn("https://registry.npmjs.org/@openai%2fcodex", self.curl())
@@ -252,6 +252,35 @@ class CheckTest(VersionsTest):
         self.assertEqual(self.record()["orca"], {"version": "1.4.253", "error": None, "pin": "1.4.253"})
         self.assertEqual(self.curl()[-1], f"{ORCA_API}/tags/v1.4.253")
         self.assertIn("Orca: 1.4.253, pinned in orca_version (1.4.253)", out)
+
+    def test_a_pinned_playwright_version(self):
+        """#162: playwright_version, exactly as npm --before installs it in the Build."""
+        self.ok("set-settings", "playwright_version=1.64.1")
+        out, _ = self.check()
+        self.assertEqual(self.record()["npm"]["playwright"], {"version": "1.64.1", "error": None, "pin": "1.64.1"})
+        self.assertIn("Playwright: 1.64.1, pinned in playwright_version (1.64.1)", out)
+        # the other npm tools are not pinned
+        self.assertEqual(self.record()["npm"]["claude-code"], {"version": "2.1.7", "error": None})
+
+    def test_playwright_a_build_could_not_install_is_unknown(self):
+        """A pin the registry does not have, or one younger than package_min_age_days, which
+        npm --before refuses in the Build (and npm in the VM for @playwright/test)."""
+        young = {**REGISTRY, "npm": {**REGISTRY["npm"], "playwright": npm("1.66.0", ("1.65.1", 6), ("1.66.0", 1))}}
+        for pin, registry, error in (
+                ("1.99.0", REGISTRY, "no release of the version in playwright_version"),
+                ("1.66.0", young, "version in playwright_version younger than package_min_age_days"),
+                ("1.65.1", {**REGISTRY, "npm": {**REGISTRY["npm"], "playwright": {"status": 404}}},
+                 "npm registry answered 404")):
+            with self.subTest(pin=pin, error=error):
+                self.ok("set-settings", f"playwright_version={pin}")
+                self.registry(registry)
+                self.check()
+                self.assertEqual(self.record()["npm"]["playwright"], {"version": None, "error": error, "pin": pin})
+        # old enough by a smaller minimum age
+        self.registry(young)
+        self.ok("set-settings", "playwright_version=1.66.0", "package_min_age_days=1")
+        self.check()
+        self.assertEqual(self.record()["npm"]["playwright"], {"version": "1.66.0", "error": None, "pin": "1.66.0"})
 
     def test_orca_a_build_could_not_install_is_unknown(self):
         for pin, releases, error in (
@@ -439,6 +468,18 @@ class FetchTest(VersionsTest):
                 self.assertEqual(r.returncode, 0, r.stderr)
                 self.assertEqual(self.fetched()["orca"], {"version": version, "error": None, "pin": pin or None})
 
+    def test_the_playwright_version_comes_from_its_unit_without_reading_the_settings(self):
+        self.write("etc/agentbox/settings.json", "{broken")
+        for pin, version in (("1.64.1", "1.64.1"), ("", "1.65.1")):
+            with self.subTest(pin=pin):
+                r = subprocess.run([AGENTBOX, "fetch-versions"],
+                                   env=self.env(AGENTBOX_VERSIONS_MIN_AGE_DAYS="2", AGENTBOX_VERSIONS_ORCA_VERSION="",
+                                                AGENTBOX_VERSIONS_PLAYWRIGHT_VERSION=pin),
+                                   capture_output=True, text=True, timeout=60)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertEqual(self.fetched()["npm"]["playwright"], {"version": version, "error": None,
+                                                                       "pin": pin or None})
+
     def test_curl_reads_no_configuration_of_its_user(self):
         self.run_agentbox("fetch-versions")
         for c in self.calls("curl"):
@@ -473,7 +514,7 @@ class UntrustedFetchTest(VersionsTest):
                 "npm": {"claude-code": {"version": "2.1.7", "error": None},
                         "codex": {"version": "0.80.0", "error": None},
                         "opencode": {"version": "1.2.3", "error": None},
-                        "playwright": {"version": "1.65.1", "error": None}},
+                        "playwright": {"version": "1.65.1", "error": None, "pin": None}},
                 "orca": {"version": "1.4.251", "error": None, "pin": None}, **changes}
 
     def unknown(self, rec):
@@ -487,6 +528,9 @@ class UntrustedFetchTest(VersionsTest):
                          ("0.80.0", {"version": "1.4.251", "error": None, "pin": None}, 2))
         rec = self.hostile(self.good(orca={"version": "1.4.250", "error": None, "pin": "1.4.250"}))
         self.assertEqual(rec["orca"], {"version": "1.4.250", "error": None, "pin": "1.4.250"})
+        rec = self.hostile(self.good(npm={**self.good()["npm"],
+                                          "playwright": {"version": "1.64.1", "error": None, "pin": "1.64.1"}}))
+        self.assertEqual(rec["npm"]["playwright"], {"version": "1.64.1", "error": None, "pin": "1.64.1"})
 
     def test_every_string_is_checked_again(self):
         rec = self.hostile(self.good(
@@ -504,6 +548,9 @@ class UntrustedFetchTest(VersionsTest):
             with self.subTest(version=version):
                 rec = self.hostile(self.good(orca={"version": version, "error": None, "pin": version}))
                 self.assertEqual(rec["orca"], {"version": None, "error": "unknown error", "pin": None})
+                rec = self.hostile(self.good(npm={**self.good()["npm"],
+                                                  "playwright": {"version": "1.65.1", "error": None, "pin": version}}))
+                self.assertEqual(rec["npm"]["playwright"], {"version": "1.65.1", "error": None, "pin": None})
 
     def test_a_fetch_from_before_names_no_orca(self):
         """Before #113 the fetch named the newest release of the repository Orca's
@@ -549,7 +596,7 @@ class OverviewTest(VersionsTest):
         self.assertEqual(result["available"], {"checked": None, "package_min_age_days": None,
                                                "tools": dict.fromkeys(("orca", "claude-code", "codex", "opencode",
                                                                        "playwright", "fedora")),
-                                               "orca_version": None})
+                                               "orca_version": None, "playwright_version": None})
         base = result["images"][0]
         self.assertEqual((base["update"], base["updates"], base["package_updates"]), (None, [], None))
         self.assertIn("Update: unknown (checked daily; now: systemctl start agentbox-versions)",
@@ -615,6 +662,44 @@ class OverviewTest(VersionsTest):
                          ("1.4.240", "1.4.240"))
         self.assertEqual(result["images"][0]["updates"], ["orca", "claude-code"])
 
+    def test_a_pinned_playwright_offers_nothing_beyond_the_pin(self):
+        """#162: with playwright_version set, a newer Playwright is no update; another pin,
+        an older one too, is."""
+        newer = {**REGISTRY, "npm": {**REGISTRY["npm"], "@anthropic-ai/claude-code": npm("2.1.5", ("2.1.5", 30)),
+                                     "playwright": npm("1.66.1", ("1.64.1", 40), ("1.65.1", 6), ("1.66.0", 3),
+                                                       ("1.66.1", 1))}}
+        self.registry(newer)
+        self.built()
+        self.ok("set-settings", "playwright_version=1.65.1")
+        self.check()
+        result = self.json("images")
+        self.assertEqual((result["available"]["tools"]["playwright"], result["available"]["playwright_version"]),
+                         ("1.65.1", "1.65.1"))
+        self.assertEqual(result["images"][0]["updates"], ["orca"])
+        self.ok("set-settings", "playwright_version=1.64.1")
+        self.check()
+        result = self.json("images")
+        self.assertEqual(result["available"]["tools"]["playwright"], "1.64.1")
+        self.assertEqual(result["images"][0]["updates"], ["orca", "playwright"])
+        # automatic again: the newest old enough
+        self.ok("set-settings", "playwright_version=")
+        self.check()
+        self.assertEqual(self.json("images")["images"][0]["updates"], ["orca", "playwright"])
+        self.assertEqual(self.json("images")["available"]["tools"]["playwright"], "1.66.0")
+
+    def test_playwright_checked_with_another_pin_than_the_settings_have_now_is_unknown(self):
+        self.built()
+        self.check()
+        self.ok("set-settings", "playwright_version=1.64.1")
+        available = self.json("images")["available"]
+        self.assertEqual((available["tools"]["playwright"], available["tools"]["codex"],
+                          available["playwright_version"]), (None, "0.80.0", "1.64.1"))
+        self.assertEqual(self.json("images")["images"][0]["updates"], ["orca", "claude-code"])
+        self.check()
+        self.assertEqual(self.json("images")["available"]["tools"]["playwright"], "1.64.1")
+        self.ok("set-settings", "playwright_version=default")
+        self.assertIsNone(self.json("images")["available"]["tools"]["playwright"])
+
     def test_orca_checked_with_another_pin_than_the_settings_have_now_is_unknown(self):
         """Until the check a changed orca_version starts has run, Orca's version is not
         known: the one checked is not what the next Build takes."""
@@ -665,6 +750,11 @@ class OverviewTest(VersionsTest):
         self.check()
         self.assertRegex(self.ok("images"), r"Available \(checked [^)]*, at least 2 days old; Orca pinned to "
                                             r"1\.4\.250 \(orca_version\)\): Orca 1\.4\.250, Claude Code 2\.1\.7")
+        self.ok("set-settings", "playwright_version=1.64.1")
+        self.check()
+        self.assertRegex(self.ok("images"), r"Available \(checked [^)]*, at least 2 days old; Orca pinned to "
+                                            r"1\.4\.250 \(orca_version\); Playwright pinned to 1\.64\.1 "
+                                            r"\(playwright_version\)\): Orca 1\.4\.250, .*, Playwright 1\.64\.1\n")
 
 
 class ContainerfileTest(unittest.TestCase):
@@ -1052,7 +1142,7 @@ class TimerTest(VersionsTest):
         fetch = self.unit("agentbox-versions-fetch.service")
         for line in ("User=agentbox-feeds", "ExecStart=/usr/bin/agentbox fetch-versions",
                      "Environment=AGENTBOX_VERSIONS_MIN_AGE_DAYS=2", "Environment=AGENTBOX_VERSIONS_ORCA_VERSION=",
-                     "StateDirectory=agentbox/available",
+                     "Environment=AGENTBOX_VERSIONS_PLAYWRIGHT_VERSION=", "StateDirectory=agentbox/available",
                      "NoNewPrivileges=yes", "CapabilityBoundingSet=", "ProtectSystem=strict", "ProtectHome=yes",
                      "PrivateTmp=yes", "PrivateDevices=yes", "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK"):
             self.assertIn(line + "\n", fetch)

@@ -822,10 +822,11 @@ argument. Error messages never repeat input, and the Control Room removes
 whatever it was sent as a secret from anything it answers or logs, should agentbox ever echo it.
 
 ### Packages
-The Build installs the agents (Claude Code, codex, opencode), Playwright and the package managers
-with npm `--before`, so it takes the newest versions published at least `package_min_age_days` of the
-Settings ago (two days by default), and Orca from the newest GitHub release at least that old
-unless `orca_version` pins one (Images, below).
+The Build installs the agents (Claude Code, codex, opencode), Playwright and the package
+managers with npm `--before`, so it takes the newest versions published at least
+`package_min_age_days` of the Settings ago (two days by default), Playwright exactly the version
+`playwright_version` pins when it is set (which has to be that old too), and Orca from the
+newest GitHub release at least that old unless `orca_version` pins one (Images, below).
 Inside the Image: npm ignores install scripts, npm, pnpm, Bun and uv refuse versions younger
 than that (written into the Base image at each Build by `package-safeguards`), and Git
 ignores hooks from repositories in favour of a
@@ -868,8 +869,8 @@ Host after every Build
   `build --all` cannot mix two Releases, and names the installed Release (`VERSION`) in each
   Build's record. `agentbox` fetches nothing and no GitHub token is involved. Then podman
   builds the container image (`--no-cache`, so agents and packages are fresh; the Base image
-  with the build arguments `PACKAGE_MIN_AGE_DAYS` and `ORCA_VERSION` of the Settings, nothing
-  mounted from the Host). The run also takes each Recipe's checked tar once, as one snapshot
+  with the build arguments `PACKAGE_MIN_AGE_DAYS`, `ORCA_VERSION` and `PLAYWRIGHT_VERSION` of
+  the Settings, nothing mounted from the Host). The run also takes each Recipe's checked tar once, as one snapshot
   for all its Builds. For a Recipe, `agentbox` checks that tar again and passes it to podman
   with `--pull=missing --no-cache --build-arg BASE=<Base Build> -t <tag> -` on stdin, never as
   a path and never unpacked on the Host. `agentbox` then checks the Safeguards unchanged, including
@@ -877,7 +878,8 @@ Host after every Build
   and records the Recipe's SHA-256 in the Build. bootc-image-builder makes the qcow2, and the link
   `images/<image>.qcow2` moves to `images/<image>-<build>.qcow2` in one rename. Each step is
   recorded in the Build's record under `/var/lib/agentbox/builds`, with the package minimum
-  age and the Orca pin it was built with (a derived Image has its Base Build's).
+  age and the pins of Orca and Playwright it was built with (a derived Image has its Base
+  Build's).
 - What the Base image downloads, it downloads inside the Build container, where Fedora's
   packages, the npm tools and Orca are chosen, fetched and checked; no root process on the
   Host parses what the internet answers (#113). Orca comes from its GitHub release
@@ -902,7 +904,9 @@ Host after every Build
   fails the Build. A Host from before keeps its `/etc/agentbox/build.conf` (Orca's Node
   runtime from the owner's home, `ORCA_RUNTIMES`); nothing reads it any more.
 - Playwright comes the same way (#162): the npm package `playwright` at the newest version at
-  least `package_min_age_days` old (npm `--before`), then `playwright install chromium firefox`
+  least `package_min_age_days` old (npm `--before`), or exactly `playwright_version` of the
+  Settings when that is set (npm `--before` takes it only when it is that old too, as npm in
+  the VM would for the project's `@playwright/test`), then `playwright install chromium firefox`
   downloads Chromium, its headless shell, Firefox and Playwright's FFmpeg into
   `/usr/lib/ms-playwright`, checked as Playwright checks them (HTTPS from Playwright's CDN, the
   size the server announces); WebKit is not included. Their libraries are Fedora packages,
@@ -1004,13 +1008,15 @@ Host after every Build
     `package_min_age_days` old, else the newest such release, deprecated ones last. For Orca
     it asks GitHub's API for Orca's releases (`api.github.com`) and picks by the rule of
     `vm/build/orca-release` (the tests hold the two to the same choice), only a release whose
-    x86_64 RPM GitHub lists with a SHA-256; nothing is downloaded. Like the minimum age it
-    gets `orca_version` from its unit; it records the pin it used.
+    x86_64 RPM GitHub lists with a SHA-256; nothing is downloaded. For Playwright with
+    `playwright_version` set it takes exactly that version, if the registry has it and it is
+    at least `package_min_age_days` old. Like the minimum age it gets `orca_version` and
+    `playwright_version` from its unit; it records the pins it used.
   - The root part, `agentbox check-versions`, reads that file as untrusted input: never
     through a link, a regular file of at most 64 KiB, JSON of the expected shape, written in
-    the last three days; every version and Orca's pin are checked again against the patterns
-    the Builds use and an error must be one the fetch reports. Anything else is unknown (so is
-    Orca in a file or `versions.json` from before #113, which named the Host's `/opt/Orca` and
+    the last three days; every version and the pins of Orca and Playwright are checked again
+    against the patterns the Builds use and an error must be one the fetch reports. Anything
+    else is unknown (so is Orca in a file or `versions.json` from before #113, which named the Host's `/opt/Orca` and
     the newest release instead). It adds, for each Image
     whose current Build's container image is kept (the Base image), the Fedora package updates
     counted with `dnf check-update` in a container from that Build (podman, out to the Fedora
@@ -1051,7 +1057,7 @@ Host after every Build
     file of a Build (actor `timer`, nothing to reset), and records `build.automatic` with the
     reason `update` and what would change. It never waits: while the run lock is held (a
     Build runs) or the update's unit runs, it does not start one and the next check tries
-    again (recorded as `build.skipped`, reason `update`; an active `agentbox-build@` unit counts as busy, even before it holds the lock), so Builds never run two at once and the check is never held up. Changing `orca_version` or `package_min_age_days` re-runs the check via `regenerate`, so with `auto_update` an update can start at that time of day (Resets still only in the Maintenance window). The Reset
+    again (recorded as `build.skipped`, reason `update`; an active `agentbox-build@` unit counts as busy, even before it holds the lock), so Builds never run two at once and the check is never held up. Changing `orca_version`, `playwright_version` or `package_min_age_days` re-runs the check via `regenerate`, so with `auto_update` an update can start at that time of day (Resets still only in the Maintenance window). The Reset
     check of the Maintenance window, which begins only once those Builds have finished, then also resets each VM whose Image has a newer current Build than the Build its
     System disk came from (`images.behind`; read from the disk's backing file under the VM's
     lifecycle lock; a VM pinned to a Build, or whose disk came from another Image, is left
@@ -1076,12 +1082,13 @@ Host after every Build
   ends. An Image cannot be named `all` or `update`.
 - `agentbox images` and `GET /api/v1/images` show both: each Build's `tools` and the tools a new
   Build would change (`updates`: an npm tool with a newer version, Orca with another one,
-  which a pinned `orca_version` may make an older one), per Image the package updates of its
-  current Build and whether a new Build would bring anything (`update`), and what the check
-  found (`available`, with the pin of the Settings; Orca there is unknown while the last check
-  took it with another pin, until the check a changed pin starts). The Control Room shows
-  them on the System page for each Image's current Build, and on a VM's page for the Build
-  its System disk came from.
+  which a pinned `orca_version` may make an older one, Playwright with another one while
+  `playwright_version` pins it, so never one beyond the pin), per Image the package updates of
+  its current Build and whether a new Build would bring anything (`update`), and what the
+  check found (`available`, with the pins of the Settings; Orca or Playwright there is unknown
+  while the last check took it with another pin, until the check a changed pin starts). The
+  Control Room shows them on the System page for each Image's current Build, and on a VM's
+  page for the Build its System disk came from.
 - The Control Room reads `GET /api/v1/images` and a Build's log with `GET
   /api/v1/images/<image>/log?after_cursor=`. It shows the installed Release the next Build takes
   and, for each Build, the Release it came from; Builds made before ADR 0010 have no Release in
@@ -1304,7 +1311,8 @@ Regenerate writes from the Settings the Activity journald retention
 `maintenance_time`; a changed time waits for its next turn instead of catching up a missed
 run: the timer is stopped, its stamp set to now and started again) with its service, the
 unit of the Builds, the version check's units, whose fetch
-gets `package_min_age_days` and `orca_version` as environment variables (a change starts a
+gets `package_min_age_days`, `orca_version` and `playwright_version` as environment variables
+(a change starts a
 check at once, which with `auto_update` may start an update), and `agentbox-feeds.timer` (`feed_interval_hours`) with the two services; the Feeds service
 gets `young_domain_days` as an environment variable, because `agentbox-feeds` runs as an
 unprivileged user and fetches only as many newly-registered bands. A changed unit is
@@ -1317,7 +1325,8 @@ other readers take the file at the moment they need it: `create` (defaults for n
 applies it before a page shows, likewise `browser`; a file agentbox refuses stops the Control
 Room instead of giving it the defaults, which can be wider than what the owner set, see
 Control Room), the Builds
-(`package_min_age_days`, `orca_version`, `builds_kept`) and temporary Allowlist entries
+(`package_min_age_days`, `orca_version`, `playwright_version`, `builds_kept`) and temporary
+Allowlist entries
 (`temporary_entry_default`). The Control Room API (`GET`/`PATCH /api/v1/settings`) passes every change to `agentbox set-settings`, accepts
 only the known keys, and so cannot change the password, the home network or the ports, which
 are not Settings. Changing Settings is recorded in Activity as kind `settings`. A

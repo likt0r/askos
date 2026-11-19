@@ -188,7 +188,7 @@ class BaseBuildTest(ImagesTest):
         new = self.newest()["build"]
         self.assertEqual(build[build.index("-t") + 1], f"localhost/agentbox/base:{new}")
         self.assertEqual([build[i + 1] for i, a in enumerate(build) if a == "--build-arg"],
-                         ["PACKAGE_MIN_AGE_DAYS=5", "ORCA_VERSION="])
+                         ["PACKAGE_MIN_AGE_DAYS=5", "ORCA_VERSION=", "PLAYWRIGHT_VERSION="])
         self.assertIn("--no-cache", build)
         src = build[-1]
         self.assertEqual(build[build.index("-f") + 1], os.path.join(src, "vm", "Containerfile"))
@@ -207,7 +207,7 @@ class BaseBuildTest(ImagesTest):
         out = self.built()
         build = self.podman("build")[0]["argv"]
         self.assertEqual([build[i + 1] for i, a in enumerate(build) if a == "--build-arg"],
-                         ["PACKAGE_MIN_AGE_DAYS=2", "ORCA_VERSION=1.4.250"])
+                         ["PACKAGE_MIN_AGE_DAYS=2", "ORCA_VERSION=1.4.250", "PLAYWRIGHT_VERSION="])
         self.assertNotIn("-v", build)
         self.assertNotIn("--volume", build)
         self.assertIn("Orca: 1.4.250, pinned in orca_version", out)
@@ -1995,7 +1995,16 @@ class PlaywrightTest(ImagesTest):
                                       f"PLAYWRIGHT_BROWSERS_PATH={self.BROWSERS}")
         # one version, the newest at least package_min_age_days old, as the agents
         self.assertEqual(commands[1], 'before="$(date -u -d "-${PACKAGE_MIN_AGE_DAYS} days" +%Y-%m-%dT%H:%M:%SZ)"')
-        self.assertEqual(commands[2], 'npm install -g --prefix /usr --before "$before" playwright')
+        # or exactly playwright_version, which npm --before takes only when it is that old too
+        self.assertEqual(commands[2], 'npm install -g --prefix /usr --before "$before" '
+                                      '"playwright${PLAYWRIGHT_VERSION:+@$PLAYWRIGHT_VERSION}"')
+        declared = next(i for i, line in enumerate(self.lines) if line == "ARG PLAYWRIGHT_VERSION=")
+        self.assertLess(declared, run)
+        for pin, spec in (("", "playwright"), ("1.64.1", "playwright@1.64.1")):
+            r = subprocess.run(["sh", "-c", 'echo "playwright${PLAYWRIGHT_VERSION:+@$PLAYWRIGHT_VERSION}"'],
+                               env={"PATH": "/usr/bin:/bin", "PLAYWRIGHT_VERSION": pin},
+                               capture_output=True, text=True, check=True)
+            self.assertEqual(r.stdout.strip(), spec)
         # Chromium (with its headless shell) and Firefox, no WebKit, from Playwright's own
         # download and its checks; the libraries come from dnf (install-deps knows only apt)
         self.assertEqual(commands[3], "playwright install chromium firefox")
@@ -2018,6 +2027,30 @@ class PlaywrightTest(ImagesTest):
         safeguards_run = next(i for i, line in enumerate(self.lines) if "/usr/lib/agentbox/package-safeguards" in line)
         self.assertLess(agents, run)
         self.assertLess(run, safeguards_run)
+
+    def test_playwright_version_pins_the_version_of_a_base_build(self):
+        """playwright_version goes to the Base Build as PLAYWRIGHT_VERSION, which installs
+        exactly that version; the Build records the pin, and a derived Image keeps the Base
+        Build's Playwright and its pin."""
+        self.ok("set-settings", "playwright_version=1.64.1")
+        out = self.built()
+        build = self.podman("build")[0]["argv"]
+        self.assertEqual([build[i + 1] for i, a in enumerate(build) if a == "--build-arg"],
+                         ["PACKAGE_MIN_AGE_DAYS=2", "ORCA_VERSION=", "PLAYWRIGHT_VERSION=1.64.1"])
+        self.assertIn("Playwright: 1.64.1, pinned in playwright_version", out)
+        self.assertEqual(self.newest()["playwright_version"], "1.64.1")
+        self.image("rust", DERIVED)
+        self.ok("set-settings", "playwright_version=1.65.1")         # takes effect at the next Base Build
+        self.built("rust")
+        self.assertEqual(self.newest("rust")["playwright_version"], "1.64.1")
+        self.assertFalse([a for c in self.podman("build")[1:] for a in c["argv"] if a.startswith("PLAYWRIGHT_VERSION")])
+        # back to automatic
+        self.ok("set-settings", "playwright_version=")
+        time.sleep(1.1)
+        out = self.built()
+        self.assertIn("PLAYWRIGHT_VERSION=", self.podman("build")[-1]["argv"])
+        self.assertIn("Playwright: the newest version at least that old", out)
+        self.assertEqual(self.newest()["playwright_version"], None)
 
     def test_the_browsers_come_from_playwrights_own_download(self):
         """Nothing under vm/ points Playwright at another download host or skips its checks of

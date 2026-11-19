@@ -231,6 +231,24 @@ describe('System page: tool versions (#104)', () => {
     expect(base.find('[data-testid="orca-pinned"]').text()).toBe('pinned')
     expect(base.findAll('[data-testid="orca-pinned"]')).toHaveLength(1)
     expect(wrapper.find('[data-testid="images-available"]').text()).toContain('Orca is pinned to 1.4.250 in the Settings.')
+    expect(base.find('[data-testid="playwright-pinned"]').exists()).toBe(false)
+  })
+
+  it('marks Playwright when the Settings pin its version (#162)', async () => {
+    const pinned = overview([image('base', {
+      base: true, current: '20261107-0300', updates: [], update: false,
+      builds: [build('20261107-0300', { current: true, updates: [], tools: { ...AVAILABLE.tools, fedora: '44' } })],
+    })], { available: { ...AVAILABLE, playwright_version: '1.65.1' } })
+    const { wrapper } = await openSystem({ 'GET /images': ok(pinned) })
+    const base = card(wrapper)
+    const rows = base.findAll('[data-testid="tool-row"]')
+    const playwright = rows.find(r => r.attributes('data-tool') === 'playwright')!
+    expect(playwright.attributes('data-update')).toBe('false')
+    expect(playwright.find('[data-testid="tool-available"]').text()).toContain('1.65.1')
+    expect(playwright.find('[data-testid="playwright-pinned"]').text()).toBe('pinned')
+    expect(base.findAll('[data-testid="playwright-pinned"]')).toHaveLength(1)
+    expect(base.find('[data-testid="orca-pinned"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="images-available"]').text()).toContain('Playwright is pinned to 1.65.1 in the Settings.')
   })
 
   it('says unknown where nothing was recorded or checked, and marks nothing', async () => {

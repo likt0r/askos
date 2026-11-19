@@ -49,16 +49,20 @@ RUN export HOME=/tmp npm_config_cache=/tmp/npm-cache \
     && rm -rf /tmp/npm-cache
 
 # Playwright (#162): the npm package at the newest version at least PACKAGE_MIN_AGE_DAYS old,
-# as the agents, and its Chromium (with the headless shell) and Firefox, no WebKit, in
-# /usr/lib/ms-playwright: readable for the agent, read-only. PLAYWRIGHT_BROWSERS_PATH and PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD are
-# set for every service (system.conf.d) and login (profile.d); a project uses this version
-# of @playwright/test, since the proxy blocks Playwright's CDN. playwright install checks its
-# downloads itself (HTTPS, size); playwright-check then starts each browser headless and
-# fails the Build if one does not, after Playwright's own check of the libraries it needs.
+# as the agents, or exactly PLAYWRIGHT_VERSION (playwright_version of the Settings, empty:
+# automatic; agentbox check-versions works it out the same way), which must be that old too
+# (npm --before), and its Chromium (with the headless shell) and Firefox, no WebKit, in
+# /usr/lib/ms-playwright: readable for the agent, read-only. PLAYWRIGHT_BROWSERS_PATH and
+# PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD are set for every service (system.conf.d) and login
+# (profile.d); a project uses this version of @playwright/test, since the proxy blocks
+# Playwright's CDN. playwright install checks its downloads itself (HTTPS, size);
+# playwright-check then starts each browser headless and fails the Build if one does not,
+# after Playwright's own check of the libraries it needs.
+ARG PLAYWRIGHT_VERSION=
 COPY vm/build/playwright-check /tmp/playwright-check
 RUN export HOME=/tmp npm_config_cache=/tmp/npm-cache PLAYWRIGHT_BROWSERS_PATH=/usr/lib/ms-playwright \
     && before="$(date -u -d "-${PACKAGE_MIN_AGE_DAYS} days" +%Y-%m-%dT%H:%M:%SZ)" \
-    && npm install -g --prefix /usr --before "$before" playwright \
+    && npm install -g --prefix /usr --before "$before" "playwright${PLAYWRIGHT_VERSION:+@$PLAYWRIGHT_VERSION}" \
     && playwright install chromium firefox \
     && chmod -R a+rX,go-w /usr/lib/ms-playwright \
     && node /tmp/playwright-check \

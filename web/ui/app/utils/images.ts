@@ -18,10 +18,12 @@ export interface Available {
   checked: string | null
   package_min_age_days: number | null
   /** what a new Build would bring: the npm tools from the registry, Orca from its GitHub
-   * release (#113), each the newest at least package_min_age_days old */
+   * release (#113), each the newest at least package_min_age_days old or the pinned one */
   tools: ToolVersions
   /** the Orca version pinned in the Settings (orca_version); null: the newest old enough */
   orca_version?: string | null
+  /** the Playwright version pinned in the Settings (playwright_version); null: the newest old enough */
+  playwright_version?: string | null
 }
 
 export type BuildStatus = 'running' | 'ok' | 'failed' | 'rejected' | 'migrated' | 'missing' | string
@@ -42,6 +44,8 @@ export interface Build {
   package_min_age_days?: number | null
   /** the Orca version pinned when the Build was made; null: the newest old enough */
   orca_version?: string | null
+  /** the Playwright version pinned when the Build was made; null: the newest old enough */
+  playwright_version?: string | null
   agents?: Record<string, string | null> | null
   /** versions of the tools in this Build */
   tools?: ToolVersions

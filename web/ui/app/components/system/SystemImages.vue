@@ -165,6 +165,9 @@ async function update(vms: string[]) {
           <template v-if="available.orca_version">
             {{ t('system.versions.orcaPinned', { version: available.orca_version }) }}
           </template>
+          <template v-if="available.playwright_version">
+            {{ t('system.versions.playwrightPinned', { version: available.playwright_version }) }}
+          </template>
         </template>
         <template v-else>
           {{ t('system.versions.notChecked') }}
