@@ -15,8 +15,10 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from agentbox import guest  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from agentbox import guest, virsh  # noqa: E402
 from agentbox.errors import Fail  # noqa: E402
+from fake_virsh import words  # noqa: E402
 
 WRAPPER = "/usr/libexec/qemu-ga/fsfreeze-hook.d/agentbox-x"
 MISSING = ("error: internal error: unable to execute QEMU agent command 'guest-exec': Failed to execute child "
@@ -126,6 +128,69 @@ class ExecuteTest(unittest.TestCase):
             with self.subTest(status=status):
                 self.statuses = [status]
                 self.assertIsNone(self.run_it(answer=16)[1])
+
+
+class UnseenTest(unittest.TestCase):
+    """A guest-agent command that carries data for the VM reaches virsh on its stdin, which virsh
+    reads as its interactive shell does (virsh.run_unseen); every other one stays an argument.
+    subprocess is mocked with what virsh 12 gives on a dumb terminal."""
+
+    def setUp(self):
+        self.ran = []
+        self.answer = ("virsh # \n<AAAA\"]}}' --timeout 10\n" + json.dumps({"return": {"pid": 7}}) + "\nvirsh # \n", "")
+
+        def run(argv, **kw):
+            self.ran.append((argv, kw))
+            self.cache = kw["env"].get("XDG_CACHE_HOME")
+            self.assertTrue(self.cache is None or os.path.isdir(self.cache))
+            return subprocess.CompletedProcess(argv, 0, *self.answer)
+
+        for patch in (mock.patch.object(virsh.subprocess, "run", run),
+                      mock.patch.object(guest, "agent", lambda ctx, cmd: {"exited": True, "exitcode": 0})):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def test_input_data_goes_to_stdin_as_virsh_parses_it(self):
+        secret = b"host_key it's a \"secret\" \\ ;#\n"
+        args = ["it's", 'a "b"', "c\\d", "e;f", "#g", " "]
+        self.assertEqual(guest.execute("work", WRAPPER, args, 10, stdin=secret)[0], 0)
+        [(argv, kw)] = self.ran
+        self.assertEqual(argv, ["virsh", "-q", "-c", "qemu:///system"])
+        self.assertEqual(kw["input"].count("\n"), 1)
+        said = words(kw["input"].rstrip("\n"))
+        self.assertEqual(said[:2] + said[3:], ["qemu-agent-command", "agentbox-work", "--timeout", "10"])
+        sent = json.loads(said[2])
+        self.assertEqual(sent["arguments"]["arg"], args)
+        self.assertEqual(base64.b64decode(sent["arguments"]["input-data"]), secret)
+        # no readline settings of the user, no history that could keep the line
+        self.assertEqual({k: kw["env"][k] for k in ("TERM", "INPUTRC", "VIRSH_HISTSIZE", "LC_ALL")},
+                         {"TERM": "dumb", "INPUTRC": "/dev/null", "VIRSH_HISTSIZE": "0", "LC_ALL": "C"})
+        self.assertFalse(os.path.exists(self.cache))
+
+    def test_without_input_data_it_stays_an_argument(self):
+        self.answer = (json.dumps({"return": {"pid": 7}}) + "\n", "")
+        guest.execute("work", WRAPPER, ["a"], 10)
+        [(argv, kw)] = self.ran
+        self.assertEqual(argv[:5], ["virsh", "-q", "-c", "qemu:///system", "qemu-agent-command"])
+        self.assertNotIn("input", kw)
+
+    def test_the_answer_is_the_line_before_the_last_prompt_and_a_failure_its_error(self):
+        r = virsh.run_unseen("qemu-agent-command", "agentbox-work", "{}")
+        self.assertEqual((r.returncode, r.stdout), (0, '{"return": {"pid": 7}}\n'))
+        # virsh ends with 0 after a failed command too
+        self.answer = ("virsh # qemu-agent-command 'agentbox-work' '{}'\nvirsh # \n",
+                       "error: Guest agent is not responding: QEMU guest agent is not connected\n")
+        r = virsh.run_unseen("qemu-agent-command", "agentbox-work", "{}")
+        self.assertEqual((r.returncode, r.stdout), (1, ""))
+        self.assertTrue(r.stderr.startswith("error: Guest agent is not responding"))
+        self.answer = ("virsh # \n", "")
+        self.assertEqual(virsh.run_unseen("qemu-agent-command", "agentbox-work", "{}").returncode, 1)
+
+    def test_a_command_is_one_line_of_printable_characters(self):
+        for word in ("a\nb", "a\tb", "a\x7fb", "a\x1bb"):
+            with self.subTest(word=word), self.assertRaises(ValueError):
+                virsh.run_unseen("qemu-agent-command", word)
+        self.assertEqual(self.ran, [])
 
 
 class NumbersTest(unittest.TestCase):

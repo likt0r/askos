@@ -1141,6 +1141,27 @@ class LiveTest(SshTest):
         self.assertFalse(self.exists(PENDING.format("work")))
         self.assertIs(self.json("ssh", "work")["pending"], False)
 
+    def test_the_host_key_is_in_no_argument_of_virsh(self):
+        """What agentbox-ssh reads holds the VM's private host key, and every local user can read
+        the arguments of a process: it reaches virsh on its stdin."""
+        self.ok("set-ssh", "work", "on")
+        self.forget_calls()
+        argv = os.path.join(self.dir, "argv.jsonl")
+        os.remove(argv)
+        self.add()
+        entry = self.read(SSH_FILE.format("work"))
+        self.assertEqual(self.applied(), [(["apply"], entry)])
+        secrets = [base64.b64encode(entry.encode()).decode()[:60], entry.split("\n")[0].split()[1][:60]]
+        secrets += [line for line in self.read(HOST_KEY.format("work")).splitlines() if not line.startswith("-")]
+        with open(argv) as f:
+            calls = [json.loads(line) for line in f]
+        self.assertIn([], [[a for a in c if a not in ("-q", "-c", "qemu:///system")] for c in calls])
+        for call in calls:
+            with self.subTest(call=call[:4]):
+                self.assertNotIn("input-data", " ".join(call))
+                for secret in secrets:
+                    self.assertNotIn(secret, " ".join(call))
+
     def test_removing_a_key_takes_it_out_of_the_vm_and_ends_every_session(self):
         self.on_with_two_keys()
         result = self.json("remove-ssh-key", "work", LAPTOP_FP)

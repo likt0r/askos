@@ -776,8 +776,10 @@ Replacing a credential never breaks a working one:
   The token service logs one English line per request, never the token; a refusal names a
   stable reason (`owner-not-allowed`, `not-installed`, ...) that the Control Room words.
 
-Keys reach openssl through a pipe and JWTs and tokens reach curl on stdin, so no secret is
-ever a process argument. Error messages never repeat input, and the Control Room removes
+Keys reach openssl through a pipe and JWTs and tokens reach curl on stdin, and a guest-agent
+command that carries data for a wrapper in a VM (the VM's SSH host key for `agentbox-ssh`)
+reaches virsh on stdin, as a command of its interactive shell, so no secret is ever a process
+argument. Error messages never repeat input, and the Control Room removes
 whatever it was sent as a secret from anything it answers or logs, should agentbox ever echo it.
 
 ### Packages

@@ -77,6 +77,12 @@ changes the VMs, networks and pools (changing), and their files are replaced who
 (save), so no call reads half a file or undoes another's change. A test that changes
 them while virsh may be called does the same (with changing(dir) and save(name, data, dir)).
 
+virsh without a command reads its commands from stdin, one per line, as its interactive shell
+does (words split as virsh's own parser does): the prompt, the line and the command's output
+on stdout, a failure's error on stderr, and always exit code 0.
+
+The arguments of every call go to FAKE_VIRSH_DIR/argv.jsonl, one JSON list per call.
+
 Recorded: guest-exec, guest-ping (with the time it was asked; a held one when it goes on),
 attach-disk, detach-disk and the commands that change a VM (start, shutdown, destroy, managedsave,
 managedsave-remove), each with the domain; define,
@@ -480,6 +486,8 @@ def meeting(scenario, cmd, domain):
 def main(args):
     while args and args[0] in ("-q", "-c"):
         args = args[2:] if args[0] == "-c" else args[1:]
+    if not args:
+        return interactive()
     cmd, rest = args[0], args[1:]
     scenario = load("scenario.json", {})
     hold(cmd)
@@ -489,6 +497,67 @@ def main(args):
         return meeting(scenario, cmd, rest[0])
     with changing():
         return libvirt(scenario, cmd, rest)
+
+
+def words(line):
+    """One command line split into its words as virsh's own parser does (vshCommandStringGetArg):
+    blanks between words, single quotes keep everything, double quotes all but a backslash, a
+    backslash outside single quotes takes the next character as it is. Only one command: ;, a #
+    that starts a word, a missing closing quote or a lone backslash at the end fail here."""
+    found, i = [], 0
+    while True:
+        while i < len(line) and line[i] in " \t":
+            i += 1
+        if i == len(line):
+            return found
+        if line[i] in ";#":
+            raise ValueError("one command only")
+        word, single, double = [], False, False
+        while i < len(line) and (single or double or line[i] not in " \t;"):
+            c = line[i]
+            if c == "\\" and not single:
+                i += 1
+                if i == len(line):
+                    raise ValueError("dangling \\")
+                word.append(line[i])
+            elif c == "'" and not double:
+                single = not single
+            elif c == '"' and not single:
+                double = not double
+            else:
+                word.append(c)
+            i += 1
+        if single or double:
+            raise ValueError("missing closing quote")
+        found.append("".join(word))
+
+
+def interactive():
+    """virsh without a command: each line of stdin is a command, run as virsh's interactive shell
+    runs it, through readline on a dumb terminal. The prompt and the line are shown on stdout
+    (a long line scrolled, so only its end, as readline does), then the command's output; a last
+    prompt and a line break at the end of stdin. A failure is its error on stderr, and virsh ends
+    with 0 either way."""
+    import io
+    for line in sys.stdin.read().split("\n"):
+        shown = line if len(line) < 70 else "\n<" + line[-47:]
+        sys.stdout.write("virsh # " + shown)
+        if not line:
+            break
+        sys.stdout.write("\n")
+        out = io.StringIO()
+        try:
+            args = words(line)
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            continue
+        with contextlib.redirect_stdout(out):
+            code = main(args)
+        sys.stdout.write(out.getvalue())
+        if code:
+            print("error: command failed", file=sys.stderr)
+    sys.stdout.write("\n")
+    return 0
 
 
 def libvirt(scenario, cmd, rest):
@@ -706,4 +775,6 @@ def load_calls():
 
 
 if __name__ == "__main__":
+    with open(os.path.join(DIR, "argv.jsonl"), "a") as f:
+        f.write(json.dumps(sys.argv[1:]) + "\n")
     sys.exit(main(sys.argv[1:]))
