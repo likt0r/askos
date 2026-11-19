@@ -511,6 +511,25 @@ class RepeatedFailureTest(CleanupTest):
         self.assertEqual(self.failures(), ["guest_agent_unavailable"])
 
 
+    def test_a_delete_that_begins_while_the_outcome_is_written_removes_it_again(self):
+        """Delete does not take the lifecycle lock: the run checks again after writing the file."""
+        script = (
+            "import os, sys\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "from agentbox import container_images, footprint, state_files\n"
+            "write = state_files.write_json\n"
+            "def write_then_delete(*args, **kwargs):\n"
+            "    write(*args, **kwargs)\n"
+            "    os.makedirs(os.path.dirname(footprint.delete_marker('work')), exist_ok=True)\n"
+            "    open(footprint.delete_marker('work'), 'w').close()\n"
+            "state_files.write_json = write_then_delete\n"
+            "print(container_images._failure_is_news('work', 'guest_agent_unavailable'))\n")
+        run = subprocess.run([sys.executable, "-I", "-c", script, REPO], capture_output=True, text=True,
+                             env={"AGENTBOX_ROOT": self.root, "PATH": os.environ["PATH"]})
+        self.assertEqual((run.returncode, run.stdout), (0, "True\n"), run.stderr)
+        self.assertFalse(os.path.exists(self.outcome_file()))
+
+
 class ActivityEntryTest(CleanupTest):
     def test_a_run_that_removed_something_is_recorded_one_that_removed_nothing_is_not(self):
         self.work.podman(images=[image(1, 1500), image(2, 2500), image(3)])
