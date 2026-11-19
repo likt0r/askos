@@ -1535,6 +1535,23 @@ class LiveTest(SshTest):
         self.ok("start", "work")
         self.assertEqual(self.applied(), [])
 
+    def test_pair_that_starts_a_vm_anew_drops_the_marker(self):
+        self.on_with_two_keys()
+        self.scenario(agent_down=True)
+        self.failed("remove-ssh-key", "work", LAPTOP_FP)
+        self.assertTrue(self.exists(PENDING.format("work")))
+        self.turned_off("work")
+        self.forget_calls()
+        self.scenario(vms={"work": {"state": "shut off"}}, responses=[{"entries": [{
+            "MESSAGE": "Pairing: orca://pair?code=Ab3_x-9", "__REALTIME_TIMESTAMP": "1761732000123456",
+            "__CURSOR": "s=1a;i=7;b=b1", "_BOOT_ID": "b1", "PRIORITY": "6", "SYSLOG_IDENTIFIER": "orca",
+            "_SYSTEMD_UNIT": "agentbox-orca.service", "_HOSTNAME": "work", "_PID": "42"}]}])
+        code, out, err = self.run_agentbox("pair", "work")
+        self.assertEqual(code, 0, err)
+        self.assertEqual([c["cmd"] for c in self.virsh("start")], ["start"])
+        self.assertFalse(self.exists(PENDING.format("work")))
+        self.assertNotIn(LAPTOP.rsplit(" ", 1)[0], self.read(SSH_FILE.format("work")))
+
     def test_a_vm_that_went_off_by_itself_reads_it_from_fw_cfg_when_a_connection_starts_it(self):
         """Shut down from inside, crashed or forced off without agentbox: the wake that starts it
         anew drops the marker, as start does, and does not ask the VM."""

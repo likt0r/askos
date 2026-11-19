@@ -266,9 +266,11 @@ def find_code(ctx, exclude=()):
     from . import responding, ssh_access     # both import this module
     with state_files.vm_lock(ctx):       # not in the middle of a Reset (#52)
         if not states.running(ctx):
+            resumed = states.has_pause(ctx)
             ssh_access.before_start(ctx)     # never with a file that holds a removed SSH key
             responding.clear(ctx)        # the failed wakes of its last start are over
-            virsh.start(ctx)
+            if virsh.start(ctx) and not resumed:
+                ssh_access.drop_pending(ctx)     # it started anew with the file written from the record
             budget += 120                # boot, guest agent and Orca need time
     deadline = time.time() + budget
     err = ""

@@ -417,7 +417,7 @@ flowchart LR
   write the fw_cfg file from the record, under the lifecycle lock, and while that fails the VM
   does not start and the change is not handed over: no VM boots with a removed key that a
   failed write left in the file. A VM that starts anew reads the fw_cfg file, so `start`,
-  `wake`, a Restart, a Reset and `import` drop the marker once they started it anew (also one
+  `wake`, a Restart, a Reset, `import` and `pair` drop the marker once they started it anew (also one
   shut down from inside or forced off without `stop`). A VM whose Build lacks the wrapper
   keeps the saved change for its next start and the command fails with `ssh_missing`: until a
   Reset onto a newer Build that VM keeps the keys it started with.
