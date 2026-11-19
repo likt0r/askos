@@ -120,27 +120,27 @@ flowchart LR
   from stdin without a file; its comment is its name unless `--name` gives one), `agentbox
   remove-ssh-key <vm> <fingerprint>` removes one by its SHA256 fingerprint, and `agentbox
   ssh <vm>` shows it: on or off, the SSH port, the fingerprint of the host key with a
-  `known_hosts` line, the keys, and whether the VM has yet to take a change. While SSH access is on, the VM's SSH port, 2200 + its
-  network number (2201–2454), listens where its Orca port does: on `127.0.0.1` in Local-only, on
-  every address behind the rules of the home network in Network mode; each connection runs
-  `wake` with the Actor `SSH (<address>)` and then forwards to port 22 of the VM, as the Orca
-  port does, so `ssh -p 2201 agent@127.0.0.1` wakes a VM that is off. Turning SSH access off
-  removes the port at once and keeps the keys. The Host checks every key before it stores it: Ed25519, ECDSA (P-256, P-384,
-  P-521), their security-key forms (`sk-…`) or RSA of 3072 to 16384 bits; its base64 must
-  decode to a key of the same type that OpenSSH takes (an ECDSA point on its curve, the
-  numbers of an RSA key in their shortest form); no options before the key (`command=`,
-  `from=`: only the VM would enforce them); at most 16 per VM, together within the 64 KiB the
-  VM reads, and none twice, by the SHA256 fingerprint the Host computes itself. A change
-  applies at once: a running VM takes it through a guest-agent wrapper, a paused VM when it
-  resumes, a VM that is off at its next start ([VMs](#vms)). Removing a key and turning SSH
-  access off end every open SSH session of the VM: the Host cannot tell which session used
-  which key, so every running connection unit of the SSH port stops, before any step that
-  can fail (turning it off closes the port first). The same call again ends them also when the
-  record no longer changes, as after a call that failed halfway: `set-ssh <vm> off` always, and
-  `remove-ssh-key` of a key no longer in the record while the VM has a pending change, which it
-  then hands over. Each change is recorded in Activity
-  (`ssh.enabled`, `ssh.disabled`, `ssh.key-added` and `ssh.key-removed` with the key's
-  fingerprint and name), each connection is not.
+  `known_hosts` line, the keys, and whether the VM has yet to take a change. While SSH access
+  is on, the VM's SSH port, 2200 + its network number (2201–2454), listens where its Orca port
+  does: on `127.0.0.1` in Local-only, on every address behind the rules of the home network in
+  Network mode; each connection runs `wake` with the Actor `SSH (<address>)` and then forwards
+  to port 22 of the VM, as the Orca port does, so `ssh -p 2201 agent@127.0.0.1` wakes a VM
+  that is off. Turning SSH access off removes the port at once and keeps the keys. The Host
+  checks every key before it stores it: Ed25519, ECDSA (P-256, P-384, P-521), their
+  security-key forms (`sk-…`) or RSA of 3072 to 16384 bits; its base64 must decode to a key of
+  the same type that OpenSSH takes (an ECDSA point on its curve, the numbers of an RSA key in
+  their shortest form); no options before the key (`command=`, `from=`: only the VM would
+  enforce them); at most 16 per VM, together within the 64 KiB the VM reads, and none twice,
+  by the SHA256 fingerprint the Host computes itself. A change applies at once: a running VM
+  takes it through a guest-agent wrapper, a paused VM when it resumes, a VM that is off at its
+  next start ([VMs](#vms)). Removing a key and turning SSH access off end every open SSH
+  session of the VM: the Host cannot tell which session used which key, so every running
+  connection unit of the SSH port stops, before any step that can fail (turning it off closes
+  the port first). The same call again ends them also when the record no longer changes, as
+  after a call that failed halfway: `set-ssh <vm> off` always, and `remove-ssh-key` of a key
+  no longer in the record while the VM has a pending change, which it then hands over. Each
+  change is recorded in Activity (`ssh.enabled`, `ssh.disabled`, `ssh.key-added` and
+  `ssh.key-removed` with the key's fingerprint and name), each connection is not.
 - **Names for SSH**: `agentbox ssh-config [<vm>...]` prints a `~/.ssh/config` block per VM with
   SSH access (of those named, else of all): `Host <vm>.agentbox`, `HostName` `127.0.0.1` in
   Local-only and the Pairing address in Network mode, `Port`, `User agent`, `HostKeyAlias
@@ -397,9 +397,9 @@ flowchart LR
   that fails a connection to the SSH port is refused. A connection to the Orca port leaves the
   change alone and goes on, without waiting for the guest agent. A VM that starts anew reads the fw_cfg
   file, so a stop drops the marker, and so do `start` and `wake` when they start a VM anew
-  (one shut down from inside or forced off without `stop`). A VM whose Build lacks the wrapper keeps the saved change
-  for its next start and the command fails with `ssh_missing`: until a Reset onto a newer
-  Build that VM keeps the keys it started with.
+  (one shut down from inside or forced off without `stop`). A VM whose Build lacks the wrapper
+  keeps the saved change for its next start and the command fails with `ssh_missing`: until a
+  Reset onto a newer Build that VM keeps the keys it started with.
 - VMs are reset automatically once their System disk is seven days old, and with automatic
   updates (`auto_update`) once their Image has a newer current Build than the one their
   System disk came from (not when pinned to a Build), but only when no Orca client is
@@ -878,10 +878,11 @@ Host after every Build
   later), the minimum age for uv (`uv.toml` and `UV_EXCLUDE_NEWER`), pnpm and Bun, the Git
   hooks path and `pre-push` hook, the resolver (`guest-setup`'s nameserver line, `dns=none`,
   no `DNS=` or `FallbackDNS=` for systemd-resolved), no proxy variable or option in systemd's
-  `DefaultEnvironment`, four of the guest-agent
-  wrappers (`agentbox-journal`, `agentbox-devices`; `agentbox-inbox` must drop to the agent and unpack with the `data` filter,
-  `agentbox-container-images` must drop to the agent and remove only with `podman rmi`, never by
-  force and never a container or volume), that Claude Code fetches no claude.ai connectors (`ENABLE_CLAUDEAI_MCP_SERVERS=false`
+  `DefaultEnvironment`, four of the guest-agent wrappers (`agentbox-journal`,
+  `agentbox-devices`; `agentbox-inbox` must drop to the agent and unpack with the `data`
+  filter, `agentbox-container-images` must drop to the agent and remove only with
+  `podman rmi`, never by force and never a container or volume), that Claude Code fetches no
+  claude.ai connectors (`ENABLE_CLAUDEAI_MCP_SERVERS=false`
   in systemd's `DefaultEnvironment`, which reaches `orca serve`, the agents and terminals it
   starts, and exported last by `/etc/profile.d/agentbox.sh` for shells; see Credentials for
   why), and that the merged `DefaultEnvironment` sets no variable that switches a Safeguard

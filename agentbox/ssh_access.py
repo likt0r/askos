@@ -51,6 +51,7 @@ from .sanitize import clean
 WRAPPER = "/usr/libexec/qemu-ga/fsfreeze-hook.d/agentbox-ssh"
 LIMIT = 75                # seconds for the wrapper: it waits up to 30 s for guest-setup, then for systemctl
 STARTING = 75             # the wrapper's exit code: guest-setup has not finished
+SETUP_FAILED = 76         # the wrapper's exit code: guest-setup has failed
 MAX_ANSWER = 200          # characters of the wrapper's answer taken at all
 FINGERPRINT = re.compile(r"SHA256:[A-Za-z0-9+/]{43}")
 
@@ -101,6 +102,10 @@ def _apply(name, rec):
                                     answer=MAX_ANSWER, stdin=data)
     if code == STARTING:
         die(f"{name}: the VM is still starting", error="action_failed", vm=name)
+    if code == SETUP_FAILED:
+        die(f"{name}: guest-setup failed in the VM, so SSH access cannot be applied; a Reset onto the Build "
+            f"(agentbox build <image> --reset {name}) or a look at agentbox logs {name} helps",
+            error="action_failed", vm=name)
     if code == 124:
         die(f"{name}: agentbox-ssh in the VM did not end within {limit} s", error="vm_query_timeout", vm=name,
             seconds=limit)
@@ -190,13 +195,20 @@ def _change(name, change, ends_sessions=False, again=None, pending_only=False):
                         "so the VM's SSH port could not open; stop that service first", error="action_failed", vm=name)
                 state = states.status(name)
                 if after != before:
+                    marked = False
                     if _in_vm(after) != _in_vm(before) and not states.starts_anew(state):
+                        marked = not pending(name)
                         try:
                             _mark(name)
                         except OSError as e:
                             die(f"{name}: nothing changed: the VM's pending marker could not be written "
                                 f"({e.filename}: {e.strerror})", error="action_failed", vm=name)
-                    registry.save(after)
+                    try:
+                        registry.save(after)
+                    except BaseException:
+                        if marked:
+                            drop_pending(name)     # nothing changed: nothing is pending
+                        raise
                 on = registry.ssh_access(after)
                 closed = []
                 try:

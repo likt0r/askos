@@ -38,7 +38,8 @@ import sys
 import tarfile
 import time
 
-from . import activity, footprint, guest, lifecycle, paths, programs, responding, state_files, states, times, virsh
+from . import activity, footprint, guest, lifecycle, paths, programs, responding, ssh_access, state_files, states, times
+from . import virsh
 from .commands import declare
 from .errors import Fail, die
 from .registry import check, dom
@@ -345,6 +346,7 @@ def _ready(ctx):
         return
     responding.clear(ctx)                     # the failed wakes of its last start are over
     lifecycle.must("start", dom(ctx))
+    ssh_access.drop_pending(ctx)              # it started anew: it reads its SSH access from fw_cfg
     deadline = time.monotonic() + paths.tunable("AGENTBOX_BOOT_SECONDS", 180)
     while not guest.ping(ctx):
         if time.monotonic() > deadline:

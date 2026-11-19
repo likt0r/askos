@@ -1318,6 +1318,29 @@ class LiveTest(SshTest):
         # nothing pending any more: the same call is refused again
         self.assertEqual(self.failed("remove-ssh-key", "work", LAPTOP_FP)["error"], "ssh_key_not_found")
 
+    def test_a_failed_guest_setup_is_named_and_its_marker_stays(self):
+        self.on_with_two_keys()
+        os.makedirs(self.guest(""), exist_ok=True)
+        open(self.guest("starting"), "w").close()
+        open(self.guest("setup-failed"), "w").close()
+        said = self.failed("remove-ssh-key", "work", LAPTOP_FP)
+        self.assertEqual(said["error"], "ssh_pending")
+        self.assertIn("guest-setup failed in the VM", said["message"])
+        self.assertIn("agentbox logs work", said["message"])
+        self.assertNotIn("still starting", said["message"])
+        self.assertTrue(self.exists(PENDING.format("work")))
+
+    def test_a_save_that_fails_leaves_no_marker(self):
+        self.on_with_two_keys()
+        folder = self.path("etc/agentbox/vms")
+        os.chmod(folder, 0o555)                          # the record cannot be replaced
+        try:
+            self.failed("remove-ssh-key", "work", LAPTOP_FP)
+        finally:
+            os.chmod(folder, 0o755)
+        self.assertFalse(self.exists(PENDING.format("work")))
+        self.assertEqual(len(self.json("ssh", "work")["keys"]), 2)
+
     def test_a_vm_that_does_not_take_it_refuses_ssh_connections_until_it_does(self):
         self.on_with_two_keys()
         os.makedirs(self.guest(""), exist_ok=True)
@@ -1776,6 +1799,7 @@ class WrapperTest(unittest.TestCase):
         os.makedirs(self.bin)
         os.symlink(FWCFG_SSH, os.path.join(lib, "fwcfg-ssh"))
         self.fake("systemctl", 'echo "$*" >> "$ROOT/calls"\ncase "$1" in is-active) [ ! -e "$ROOT/starting" ];; '
+                               'is-failed) [ -e "$ROOT/setup-failed" ];; '
                                '*) [ ! -e "$ROOT/fails" ] || { echo "Job failed." >&2; exit 1; };; esac\n')
         self.fake("selinuxenabled", "exit 1\n")
         self.out = os.path.join(self.root, "run/agentbox/ssh")
@@ -1863,6 +1887,17 @@ class WrapperTest(unittest.TestCase):
         code, out, err = self.run_wrapper(self.entry(key()), wait="0.5")
         self.assertEqual((code, out), (75, ""))
         self.assertIn("the VM is still starting", err)
+        self.assertEqual(self.files(), [])
+        self.assertNotIn("start sshd.service", self.calls())
+
+    def test_a_failed_guest_setup_is_named_at_once(self):
+        open(os.path.join(self.root, "starting"), "w").close()
+        open(os.path.join(self.root, "setup-failed"), "w").close()
+        t = time.monotonic()
+        code, out, err = self.run_wrapper(self.entry(key()), wait="20")
+        self.assertLess(time.monotonic() - t, 10)
+        self.assertEqual((code, out), (76, ""))
+        self.assertIn("guest-setup has failed", err)
         self.assertEqual(self.files(), [])
         self.assertNotIn("start sshd.service", self.calls())
 

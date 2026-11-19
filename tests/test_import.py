@@ -474,6 +474,14 @@ class LifecycleTest(ImportTest):
         cmds = [c["cmd"] for c in self.calls() if c["cmd"] in ("start", "attach-disk", "detach-disk")]
         self.assertEqual(cmds, ["start", "attach-disk", "detach-disk"])
 
+    def test_a_vm_started_for_it_reads_its_ssh_access_from_fw_cfg(self):
+        pending = self.path("var/lib/agentbox/pending/ssh-work")
+        os.makedirs(os.path.dirname(pending), exist_ok=True)
+        open(pending, "w").close()
+        self.scenario(state="shut off")
+        self.imported("work", self.src)
+        self.assertFalse(os.path.exists(pending))
+
     def test_a_paused_vm_is_refused(self):
         self.scenario(vms={"work": {"state": "shut off", "managed_save": True}})
         said = self.failure("work", self.src)

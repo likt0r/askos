@@ -330,6 +330,7 @@ def reset_as_found(ctx, say):
         except (Fail, KeyboardInterrupt) as e:
             safe = "disk" not in progress or (isinstance(e, KeyboardInterrupt) and "fresh" in progress)
             if ran and safe and not states.running(ctx) and virsh.run("start", dom(ctx)).returncode == 0:
+                ssh_access.drop_pending(ctx)
                 say(f"{ctx} started again" + ("" if "fresh" in progress else " (System disk unchanged)"))
             raise
     return ran, os.path.basename(base)
@@ -365,6 +366,7 @@ def _reset(ctx, start, say, progress=None):
     if start:
         r = virsh.run("start", dom(ctx))
         if r.returncode == 0:
+            ssh_access.drop_pending(ctx)         # it started anew: it reads its SSH access from fw_cfg
             say(f"{ctx} started")
         _check_chain(ctx, base)
         if r.returncode != 0:

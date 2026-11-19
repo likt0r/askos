@@ -53,7 +53,8 @@ scenario.json:
               input-data on its stdin and the real fwcfg-ssh: its key files land in
               run/agentbox/ssh of that root, and a fake systemctl there records each call in
               systemctl.log; it says guest-setup is not active while the file starting
-              exists there, and fails while sshd-fails exists.
+              exists there and failed while the file setup-failed exists, and fails while sshd-fails
+              exists.
   still_running  guest-exec-status never says the program ended (default false)
   missing_wrappers  paths guest-exec cannot run: the guest agent fails as qemu-ga does
               for a program the Image lacks
@@ -691,7 +692,7 @@ def run_ssh(domain, argv, stdin):
     if not os.path.lexists(fwcfg):
         os.symlink(os.path.join(REPO, "vm", "files", "usr", "lib", "agentbox", "fwcfg-ssh"), fwcfg)
     fakes = {"systemctl": f'echo "$*" >> "{root}/systemctl.log"\n'
-                          f'case "$1" in is-active) [ ! -e "{root}/starting" ];; '
+                          f'case "$1" in is-active) [ ! -e "{root}/starting" ];; is-failed) [ -e "{root}/setup-failed" ];; '
                           f'*) [ ! -e "{root}/sshd-fails" ] || {{ echo "Job failed." >&2; exit 1; }};; esac\n',
              "selinuxenabled": "exit 1\n", "chcon": "exit 0\n"}
     for name, body in fakes.items():

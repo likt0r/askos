@@ -19,7 +19,7 @@ freeze and thaw are ignored.
 At a start guest-setup writes the same files from fw_cfg, which QEMU read when the VM started:
 the wrapper waits up to 30 s for it to finish, so that it never writes before it.
 
-Exit codes: 2 invalid arguments; 75 the VM is still starting (guest-setup has not finished);
+Exit codes: 2 invalid arguments; 75 the VM is still starting (guest-setup has not finished); 76 guest-setup has failed;
 1 anything else (the directory, systemctl failing).
 
 Without root (tests) AGENTBOX_SSH_ROOT puts fwcfg-ssh, the directory and the programs it
@@ -40,6 +40,7 @@ SYSTEMCTL = "/usr/bin/systemctl"
 GUEST_SETUP = "agentbox-guest-setup.service"
 SSHD = "sshd.service"
 STARTING = 75                    # exit code: the VM is still starting, nothing was done
+SETUP_FAILED = 76                # exit code: guest-setup has failed, nothing was done
 SETUP_WAIT = 30                  # seconds to wait for guest-setup
 SYSTEMCTL_LIMIT = 30             # one systemctl call
 
@@ -48,6 +49,15 @@ def home_ready(systemctl):
     """Whether guest-setup has finished at this start."""
     try:
         return subprocess.run([systemctl, "is-active", "--quiet", GUEST_SETUP], stdin=subprocess.DEVNULL,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def home_failed(systemctl):
+    """Whether guest-setup has failed at this start."""
+    try:
+        return subprocess.run([systemctl, "is-failed", "--quiet", GUEST_SETUP], stdin=subprocess.DEVNULL,
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10).returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False
@@ -67,6 +77,9 @@ def apply(seam):
     wait = float(os.environ.get("AGENTBOX_SSH_SETUP_WAIT", SETUP_WAIT)) if seam else SETUP_WAIT
     deadline = time.monotonic() + wait
     while not home_ready(systemctl):
+        if home_failed(systemctl):
+            print("agentbox-ssh: guest-setup has failed in the VM", file=sys.stderr)
+            return SETUP_FAILED
         if time.monotonic() > deadline:
             print("agentbox-ssh: the VM is still starting (guest-setup has not finished)", file=sys.stderr)
             return STARTING
