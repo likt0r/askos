@@ -404,16 +404,21 @@ flowchart LR
   or a VM that does not answer fails the command with the change saved. Such a change, and one
   whose step on the Host failed, is recorded in Activity as the change made, with the key,
   failed with `ssh_pending` (the VM has not taken it yet) or `ssh_not_applied` (with the
-  command that finishes it), as `set-env` records `env_not_applied`. A VM that is not
-  running and not off (paused) gets a pending marker instead
-  (`/var/lib/agentbox/pending/ssh-<vm>`), written before the change is saved (when it cannot
-  be written, nothing changes) and also left by a running VM that did not take the change:
-  `start` (resuming a Pause) and the `wake` of a connection to the SSH port (once Orca answers,
-  before the connection is forwarded) hand the change over under the lifecycle lock, and while
-  that fails a connection to the SSH port is refused. A connection to the Orca port leaves the
-  change alone and goes on, without waiting for the guest agent. A VM that starts anew reads the fw_cfg
-  file, so a stop drops the marker, and so do `start` and `wake` when they start a VM anew
-  (one shut down from inside or forced off without `stop`). A VM whose Build lacks the wrapper
+  command that finishes it), as `set-env` records `env_not_applied`. Every such change,
+  whatever the VM's state, first writes a pending marker (`/var/lib/agentbox/pending/ssh-<vm>`),
+  before the change is saved (when it cannot be written, nothing changes); it goes once the
+  fw_cfg file is written and a VM that is not off has taken the change. A paused VM, and a
+  running VM that did not take the change, keep it: `start` (resuming a Pause) and the `wake`
+  of a connection to the SSH port (once Orca answers, before the connection is forwarded) hand
+  the change over under the lifecycle lock, and while that fails a connection to the SSH port
+  is refused. A connection to the Orca port leaves the change alone and goes on, without
+  waiting for the guest agent. While the marker is there, every start of the VM (`start`,
+  `wake` for any connection, a Restart, a Reset, `import` and `pair`) and every handover first
+  write the fw_cfg file from the record, under the lifecycle lock, and while that fails the VM
+  does not start and the change is not handed over: no VM boots with a removed key that a
+  failed write left in the file. A VM that starts anew reads the fw_cfg file, so `start`,
+  `wake`, a Restart, a Reset, `import` and `pair` drop the marker once they started it anew (also one
+  shut down from inside or forced off without `stop`). A VM whose Build lacks the wrapper
   keeps the saved change for its next start and the command fails with `ssh_missing`: until a
   Reset onto a newer Build that VM keeps the keys it started with.
 - VMs are reset automatically once their System disk is seven days old, and with automatic

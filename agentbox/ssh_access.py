@@ -11,15 +11,19 @@ What reaches the VM (SSH access and the keys) applies at once. A running VM gets
 fifth fixed guest-agent wrapper of the Image, agentbox-ssh, which checks the keys again,
 replaces the key file whole and starts or stops sshd; only its small JSON answer comes back and
 must be exactly what the Host sent. A VM that is off reads the fw_cfg file at its next start.
-Any other VM (paused, or running but not taking the change) has a pending marker
-(footprint.ssh_pending_file), set before the change is saved, so that a marker that cannot be
-written leaves the change unsaved: `start` and the `wake` of a connection to the SSH port hand
-the change over before that connection is forwarded (apply_pending), and such a connection is
-refused while that fails; a connection to the Orca port leaves it alone. A Build without the
-wrapper keeps the saved change for its next start, and the command fails with ssh_missing. A
-change that is saved but not applied yet is recorded in Activity as that change, failed with
-ssh_pending (the running VM did not take it) or ssh_not_applied (a step on the Host failed),
-as set-env records env_not_applied.
+Whatever its state, the VM has a pending marker (footprint.ssh_pending_file) from before the
+change is saved, so that a marker that cannot be written leaves the change unsaved, until the
+file is written and the VM, if it is not off, has taken the change. Every start of the VM
+writes the file from the record first while the marker is there and does not start the VM
+when that fails (before_start), so no VM boots with a key its file still holds after a write
+that failed. A VM that is paused, or running but did not take the change, keeps the marker:
+`start` and the `wake` of a connection to the SSH port hand the change over before that
+connection is forwarded (apply_pending), and such a connection is refused while that fails; a
+connection to the Orca port leaves it alone. A Build without the wrapper keeps the saved
+change for its next start, and the command fails with ssh_missing. A change that is saved but
+not applied yet is recorded in Activity as that change, failed with ssh_pending (the running VM
+did not take it) or ssh_not_applied (a step on the Host failed), as set-env records
+env_not_applied.
 
 Removing a key and turning SSH access off end every open SSH session of the VM: the Host cannot
 tell which session used which key, so every running connection unit of its SSH port stops.
@@ -88,8 +92,9 @@ def _mark(name):
 
 
 def drop_pending(name):
-    """Nothing is pending: the VM took the change, or reads it from fw_cfg at its next start.
-    The caller holds the VM's lifecycle lock."""
+    """Nothing is pending: the file the VM reads at a start is written from the record, and the
+    VM took the change, is off or has just started anew. The caller holds the VM's lifecycle
+    lock."""
     state_files.remove(footprint.ssh_pending_file(name))
 
 
@@ -135,14 +140,39 @@ def _apply(name, rec):
             error="action_failed", vm=name)
 
 
+def _written(name, rec, refused):
+    """The file the VM reads at a start (generate.vm_ssh), written from the record. Dies with
+    refused, what does not happen, when it cannot be written."""
+    try:
+        generate.vm_ssh(rec)
+    except (Fail, OSError) as e:
+        why = e.message.strip() if isinstance(e, Fail) else f"{e.filename}: {e.strerror}"
+        die(f"{name}: {refused}: the file it reads its SSH access from at a start could not be written ({why}); "
+            "agentbox regenerate writes it", error="action_failed", vm=name)
+
+
+def before_start(name):
+    """Before every `virsh start` of the VM (also one that resumes a Pause), the caller holding
+    its lifecycle lock: while it has a pending marker, the file it reads at a start may still
+    hold what the record no longer has (its write failed), so it is written from the record
+    first. Dies when that fails: the VM does not start. The marker stays: a VM that starts anew
+    has its marker dropped once it runs, one that resumes takes the change (apply_pending)."""
+    if pending(name):
+        _written(name, registry.load(name), "the VM does not start")
+
+
 def apply_pending(name):
     """A change the VM has not taken yet, handed to it now (start, wake); the caller holds the
-    VM's lifecycle lock, and the VM runs. Whether there was one. Dies when the VM does not take
-    it; the marker stays, except without the wrapper (ssh_missing), which never takes it."""
+    VM's lifecycle lock, and the VM runs. The file it reads at a start is written first, so that
+    the marker never goes while that file still holds what the record no longer has. Whether
+    there was one. Dies when the file cannot be written or the VM does not take the change; the
+    marker stays, except without the wrapper (ssh_missing), which never takes it."""
     if not pending(name):
         return False
+    rec = registry.load(name)
+    _written(name, rec, "the VM's pending SSH change is not handed over")
     try:
-        _apply(name, registry.load(name))
+        _apply(name, rec)
     except Fail as f:
         if f.error == "ssh_missing":
             drop_pending(name)
@@ -182,14 +212,16 @@ def _each(*steps):
 
 
 def _change(name, change, ends_sessions=False, again=None, pending_only=False):
-    """Apply change(record) -> record. When what reaches the VM changes and the VM is not off,
-    the pending marker is set first: a VM without its marker could resume with a removed key, so
-    when the marker cannot be written nothing changes. Then the record is saved when it differs;
-    then, each also when the one before failed, the port closed without SSH access and every SSH
-    session of the VM ended with ends_sessions (also when the record did not change, so that the
-    same call again ends what an earlier one could not); then the host key made (with SSH access
-    or a key), the file the VM reads written, the VM defined again if its definition changed,
-    the SSH port set up, and a running VM given the change. So the port is closed and the
+    """Apply change(record) -> record. When what reaches the VM changes, the pending marker is
+    set first, whatever the VM's state: a VM without its marker could resume, or start with a
+    file a failed write left, with a removed key, so when the marker cannot be written nothing
+    changes. It goes once the file is written and a VM that is not off has taken the change.
+    Then the record is saved when it differs; then, each also when the one before failed, the
+    port closed without SSH access and every SSH session of the VM ended with ends_sessions
+    (also when the record did not change, so that the same call again ends what an earlier one
+    could not); then the host key made (with SSH access or a key), the file the VM reads
+    written, the VM defined again if its definition changed, the SSH port set up, and a running
+    VM given the change. So the port is closed and the
     sessions have ended whatever fails later. A failure after the save is ssh_not_applied with
     what finishes it (its parameter finish): again, the same call as the user gives it (with
     pending_only only while the VM has its marker), otherwise agentbox regenerate; a running VM
@@ -209,7 +241,7 @@ def _change(name, change, ends_sessions=False, again=None, pending_only=False):
                 state = states.status(name)
                 if after != before:
                     marked = False
-                    if _in_vm(after) != _in_vm(before) and not states.starts_anew(state):
+                    if _in_vm(after) != _in_vm(before):
                         marked = not pending(name)
                         try:
                             _mark(name)
