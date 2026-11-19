@@ -3,9 +3,10 @@
 One object per VM, shared with `agentbox watch` (watch.py), which sends the same
 objects whenever one changes: the registry record, the state, agents, whether the VM
 answers and its failed wakes, the System disk's age and the Build it was created from,
-the Image with its pin and current Build, Open web, the Claude token's age and the
-devices connected to the VM's Orca port. Memory in use is not part of it; the Control
-Room reads it without privileges from the VM's QEMU process (host readings).
+the Image with its pin and current Build, Open web, the Claude token's age, its SSH access,
+and the devices connected to the VM's Orca port or with an SSH session through its SSH port.
+Memory in use is not part of it; the Control Room reads it without privileges from the VM's
+QEMU process (host readings).
 
 A VM libvirt reports as running is `starting`, `running` or `not_responding`
 (responding.py, #54): describe asks its Orca once, with short time limits, and takes what
@@ -20,13 +21,16 @@ import sys
 import time
 
 from . import footprint, images, lifecycle, paths, programs, registry, responding, settings, state_files, states, times
-from . import virsh, vmenv
+from . import ssh_access, virsh, vmenv
 from .commands import declare
 from .errors import Fail, die
 
-# A connection to a VM's Orca port is an instance of agentbox-gui-<vm>@.service, named by
-# systemd after the socket: <n>-[<cookie>-]<local address>:<port>-<remote address>:<port>
-GUI_INSTANCE = re.compile(r"agentbox-gui-(" + registry.NAME.pattern + r")@(.+)\.service")
+# A connection to a VM's Orca port is an instance of agentbox-gui-<vm>@.service, one to its SSH
+# port of agentbox-ssh-<vm>@.service, named by systemd after the socket:
+# <n>-[<cookie>-]<local address>:<port>-<remote address>:<port>
+CONNECTION = re.compile(r"agentbox-(gui|ssh)-(" + registry.NAME.pattern + r")@(.+)\.service")
+KINDS = {"gui": "orca", "ssh": "ssh"}
+CONNECTION_UNITS = ("agentbox-gui-*@*.service", "agentbox-ssh-*@*.service")
 
 
 def iso(epoch):
@@ -51,23 +55,26 @@ def list_units(patterns):
 
 
 def devices(units):
-    """{vm: [{"address", "connections"}]} of the open connections to each VM's Orca port,
-    from the running agentbox-gui-<vm>@ instances; the remote address of each."""
+    """{vm: [{"address", "kind", "connections"}]} of the open connections to each VM's Orca
+    port (kind "orca") and SSH port (kind "ssh"), from the running agentbox-gui-<vm>@ and
+    agentbox-ssh-<vm>@ instances; counted per remote address and kind."""
     out = {}
     for unit, _, active, _, _ in units:
-        m = GUI_INSTANCE.fullmatch(unit)
+        m = CONNECTION.fullmatch(unit)
         if not m or not states.connection_open(active):
             continue
         # IPv4 and IPv6 addresses contain no "-": the last two parts are local and remote
-        parts = m.group(2).split("-")
+        parts = m.group(3).split("-")
         if len(parts) < 3:
             continue
         address = parts[-1].rpartition(":")[0]
         if not address:
             continue
-        per_vm = out.setdefault(m.group(1), {})
-        per_vm[address] = per_vm.get(address, 0) + 1
-    return {vm: [{"address": a, "connections": n} for a, n in sorted(found.items())] for vm, found in out.items()}
+        per_vm = out.setdefault(m.group(2), {})
+        key = (address, KINDS[m.group(1)])
+        per_vm[key] = per_vm.get(key, 0) + 1
+    return {vm: [{"address": a, "kind": k, "connections": n} for (a, k), n in sorted(found.items())]
+            for vm, found in out.items()}
 
 
 def triggered_by(names):
@@ -106,7 +113,7 @@ def services(units, triggers=triggered_by):
     `triggered_by`, the timers and sockets that start it (triggers(names), None: unknown)."""
     rows = []
     for unit, load, active, sub, description in units:
-        if GUI_INSTANCE.fullmatch(unit) or re.fullmatch(r"agentbox-ghvm-.+@.+\.service", unit):
+        if CONNECTION.fullmatch(unit) or re.fullmatch(r"agentbox-ghvm-.+@.+\.service", unit):
             continue
         rows.append({"unit": unit, "load": load, "active": active, "sub": sub, "description": description,
                      "state": states.unit_state(load, active), "text": states.unit_text(active, sub)})
@@ -222,6 +229,7 @@ def vm(rec, units, observed, backing, now=None, current=None, starts=None):
         "failed_wakes": {"count": wakes["count"], "last": iso(wakes["last"]), "address": wakes["address"]},
         "open_web_until": iso(open_until),
         "claude_token_since": iso(token_since),
+        "ssh": ssh_access.described(rec),
         "devices": found,
     }
 
@@ -254,7 +262,7 @@ def describe(args):
         records, problems = [registry.load(registry.check(rest[0]))], []
     else:
         records, problems = registry.scan()
-    units = list_units(["agentbox-gui-*@*.service"])
+    units = list_units(CONNECTION_UNITS)
     result = snapshot(records, problems, units, look, Backing())
     if as_json:
         print(json.dumps(result if not rest else result["vms"][0], ensure_ascii=False))
@@ -262,8 +270,9 @@ def describe(args):
     for v in result["vms"]:
         disk = v["system_disk"]
         agents = "?" if v["agents"] is None else " ".join(f"{k}={n}" for k, n in sorted(v["agents"].items()))
-        devs = "?" if v["devices"] is None else ", ".join(f"{d['address']} ({d['connections']})"
-                                                          for d in v["devices"])
+        devs = "?" if v["devices"] is None else ", ".join(
+            f"{d['address']}{' SSH' if d['kind'] == 'ssh' else ''} ({d['connections']})" for d in v["devices"])
+        ssh = v["ssh"]
         answers, wakes = v["responding"], v["failed_wakes"]
         print(f"{v['name']}: {v['state']}")
         if answers and v["state"] != "running":
@@ -285,6 +294,9 @@ def describe(args):
         if v["env"]:
             print(f"  VM variables: {', '.join(v['env'])} (agentbox env {v['name']})"
                   + (f"; {', '.join(v['env_refused'])} not passed on" if v["env_refused"] else ""))
+        if ssh["enabled"] or ssh["keys"]:
+            print(f"  SSH access:   {'on' if ssh['enabled'] else 'off'}, port {ssh['port']}, "
+                  f"{len(ssh['keys'])} SSH key(s)" + (", a change pending" if ssh["pending"] else ""))
         print(f"  Agents:       {agents or 'none'}")
         print(f"  Devices:      {devs or 'none'}")
     for p in result["problems"]:

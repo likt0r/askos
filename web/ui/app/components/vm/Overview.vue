@@ -130,7 +130,7 @@ const postponedText = computed(() => {
         <span v-if="props.vm.devices == null" class="text-muted">{{ t('vms.unknown') }}</span>
         <span v-else-if="!props.vm.devices.length" class="text-muted">{{ t('vm.overview.noDevices') }}</span>
         <ul v-else class="space-y-0.5">
-          <li v-for="d in props.vm.devices" :key="d.address" class="flex flex-wrap items-baseline gap-x-2">
+          <li v-for="d in props.vm.devices" :key="`${d.address} ${d.kind}`" class="flex flex-wrap items-baseline gap-x-2">
             <span class="font-mono text-xs">{{ d.address }}</span>
             <span class="text-xs text-muted">{{ t('vm.overview.connections', d.connections) }}</span>
           </li>

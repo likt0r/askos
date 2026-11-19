@@ -7,7 +7,8 @@ Environment:
 
 scenario.json:
   connections   {"<ip>:<port>": count} of established connections per destination
-  ss_fails      ss exits 1 with an error (default false)
+  ss_fails      ss exits 1 with an error (default false); a list of "<ip>:<port>": only for
+                those destinations
 
   ss -Htn state established "( dst <ip>:<port> )"   one line per connection
 """
@@ -27,7 +28,8 @@ def main(args):
             scenario = json.load(f)
     except FileNotFoundError:
         scenario = {}
-    if scenario.get("ss_fails"):
+    fails = scenario.get("ss_fails")
+    if fails is True:
         print("ss (fake): Cannot open netlink socket", file=sys.stderr)
         return 1
     m = re.fullmatch(r"\( dst (\S+) \)", args[-1]) if args[:3] == ["-Htn", "state", "established"] else None
@@ -35,6 +37,9 @@ def main(args):
         print("ss (fake): unexpected arguments", file=sys.stderr)
         return 1
     dst = m.group(1)
+    if fails and dst in fails:
+        print("ss (fake): Cannot open netlink socket", file=sys.stderr)
+        return 1
     for i in range((scenario.get("connections") or {}).get(dst, 0)):
         print(f"0      0      192.0.2.{20 + i}:{50000 + i}      {dst}")
     return 0

@@ -594,6 +594,16 @@ class WeeklyCheckTest(ActivityTest):
              "AGENTBOX_DESCRIPTION": "Automatic Reset postponed (a device is connected)",
              "AGENTBOX_PARAM_REASON": "gui-connected"}])
 
+    def test_an_open_ssh_session_is_its_own_reason(self):
+        self.scenario(connections={"10.77.2.2:22": 1})
+        self.disk("priv", 8)
+        self.assertEqual(self.run_agentbox("--actor=timer", "weekly-check")[0], 0)
+        self.assertEqual([{k: v for k, v in e.items() if k.startswith("AGENTBOX_")} for e in self.entries()], [
+            {"AGENTBOX_KIND": "reset", "AGENTBOX_ACTION": "reset.postponed", "AGENTBOX_CODE": "reset.postponed",
+             "AGENTBOX_VM": "priv", "AGENTBOX_ACTOR": "timer", "AGENTBOX_OUTCOME": "ok",
+             "AGENTBOX_DESCRIPTION": "Automatic Reset postponed (an SSH session is open)",
+             "AGENTBOX_PARAM_REASON": "ssh-connected"}])
+
     def test_resets_onto_a_newer_build_have_the_reason_update(self):
         """auto_update (#114): a VM whose Image has a newer Build is reset by the same rules; a
         postponed one keeps why it was postponed, both name the Build."""

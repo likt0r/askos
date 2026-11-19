@@ -250,7 +250,14 @@ the Actor); without it no link is made.
   "failed_wakes": {"count": 0, "last": null, "address": null},
   "open_web_until": null,
   "claude_token_since": "2026-10-01T08:00:00Z",
-  "devices": [{"address": "192.0.2.36", "connections": 2}]
+  "ssh": {"enabled": true, "port": 2201,
+          "host_key_fingerprint": "SHA256:Hn0s7Kd1pqVpQq1yH9p4b2N0q3hZ2yWm5o8XxQyGk2c",
+          "keys": [{"name": "laptop", "type": "ssh-ed25519",
+                    "fingerprint": "SHA256:ZkAslGjFiUHdGf/WUL8rQvkib4PTvQatUV0OUQSncCA",
+                    "added": "2026-11-02T08:00:00Z"}],
+          "pending": false},
+  "devices": [{"address": "192.0.2.36", "kind": "orca", "connections": 2},
+              {"address": "192.0.2.36", "kind": "ssh", "connections": 1}]
 }
 ```
 
@@ -302,7 +309,13 @@ the Actor); without it no link is made.
 - `agents`: agent states from Orca with counts (`working`, `waiting`, `done`, ...); `{}`
   when no agent runs or the VM is not running; `null` when unknown (Orca not answering, no
   Observer).
-- `devices`: open connections to the VM's Orca port by remote address; `null` when unknown.
+- `ssh`: the VM's SSH access, named as in `agentbox ssh <vm> --json`: `enabled` (on or off),
+  `port` (its SSH port, also while off), `host_key_fingerprint` (`null` before the Host made a
+  host key), `keys` (name, type, fingerprint and when added; never the key itself) and
+  `pending` (the VM has not taken the last change yet).
+- `devices`: open connections by remote address and `kind`: `orca` to the VM's Orca port,
+  `ssh` to its SSH port (an SSH session); one entry per address and kind, so an address with
+  both has two. `null` when unknown.
 - `memory_mib`: the memory limit in the registry record; after a change a running VM uses
   it from its next Restart or Reset (`PUT /vms/<vm>/memory`).
 - `container_image_cleanup`, `container_image_cleanup_days`: the VM's Container image
@@ -518,7 +531,7 @@ first:
 
 `reason` (also in `params`) is a stable code where one was
 recorded, e.g. why an automatic Reset was postponed (`reset.postponed`: `gui-connected`,
-`gui-unknown`, `agents-working`, `agents-unknown`), `update` for an automatic Reset onto a
+`ssh-connected`, `gui-unknown`, `agents-working`, `agents-unknown`), `update` for an automatic Reset onto a
 newer Build of the VM's Image (`reset.automatic`) and for the start and the Builds of an
 update (`build.automatic`, `build.ok`, `build.failed`, `build.rejected`, `build.unneeded`),
 or what does not answer when a VM stopped responding (`wake.not-responding`, kind `action`,

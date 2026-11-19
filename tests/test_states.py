@@ -167,7 +167,7 @@ class UnitStateTest(unittest.TestCase):
             with self.subTest(word=word):
                 self.assertTrue(states.connection_open(word))
                 self.assertEqual(describe.devices([(CONNECTION, "loaded", word, "running", "")]),
-                                 {"work": [{"address": "192.168.1.20", "connections": 1}]})
+                                 {"work": [{"address": "192.168.1.20", "kind": "orca", "connections": 1}]})
         for word in ("deactivating", "inactive", "failed"):
             with self.subTest(word=word):
                 self.assertFalse(states.connection_open(word))

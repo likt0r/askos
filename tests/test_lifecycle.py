@@ -636,6 +636,28 @@ class WeeklyCheckTest(LifecycleTest):
         self.assertEqual(self.run_agentbox("weekly-check"), (0, "work: Reset postponed (GUI connected)\n", ""))
         self.assertEqual(self.vm_calls(), [])
 
+    def test_an_open_ssh_session_postpones(self):
+        """An established connection to port 22 of the VM counts like one to its Orca port (ADR
+        0020), with its own reason."""
+        self.scenario(connections={"10.77.1.2:22": 1}, orca={"work": {"worktrees": []}})
+        self.disk("work", days=8)
+        self.observer("work")
+        self.assertEqual(self.run_agentbox("weekly-check"), (0, "work: Reset postponed (SSH session open)\n", ""))
+        self.assertEqual(self.vm_calls(), [])
+        self.assertEqual([c["argv"][-1] for c in self.calls("ss")], ["( dst 10.77.1.2:6801 )", "( dst 10.77.1.2:22 )"])
+        _, out, _ = self.run_agentbox("weekly-check", "--json")
+        self.assertEqual([(r["vm"], r["action"], r["reason"]) for r in json.loads(out)],
+                         [("work", "postponed", "ssh-connected"), ("priv", "skipped", "no-system-disk")])
+
+    def test_unknown_ssh_sessions_postpone(self):
+        self.scenario(ss_fails=["10.77.1.2:22"], orca={"work": {"worktrees": []}})
+        self.disk("work", days=8)
+        self.observer("work")
+        code, out, _ = self.run_agentbox("weekly-check", "--json")
+        self.assertEqual((code, json.loads(out)[0]["reason"], json.loads(out)[0]["message"]),
+                         (0, "gui-unknown", "work: Reset postponed (SSH sessions unknown)"))
+        self.assertEqual(self.vm_calls(), [])
+
     def test_working_agents_postpone(self):
         self.scenario(orca={"work": {"worktrees": BUSY}, "priv": {"worktrees": []}})
         self.disk("work", days=10)
@@ -746,6 +768,8 @@ class WeeklyUpdateTest(LifecycleTest):
         for scenario, reason, said in (
                 ({"connections": {"10.77.1.2:6801": 1}, "orca": {"work": {"worktrees": []}}}, "gui-connected",
                  "GUI connected"),
+                ({"connections": {"10.77.1.2:22": 2}, "orca": {"work": {"worktrees": []}}}, "ssh-connected",
+                 "SSH session open"),
                 ({"orca": {"work": {"worktrees": BUSY}}}, "agents-working", "agents: waiting=1 working=2"),
                 ({"orca": {"work": {"exit": 1}}}, "agents-unknown", "agents: ?"),
                 ({"ss_fails": True}, "gui-unknown", "GUI connections unknown")):
