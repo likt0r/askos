@@ -15,8 +15,8 @@ orca_rules, ORCA_RULES); main does not run then, and loading must do nothing els
   orca-release runtime ORCA ZIEL
       die Node-Laufzeit von Orcas Server, die Orca beim ersten Start sonst selbst laedt, auf
       demselben Weg: das Archiv von nodejs.org, das das installierte Orca unter ORCA
-      festlegt (resources/app.asar.unpacked/out/shared/node-runtime-pin.js), geprueft
-      gegen den SHA-256 dort, daraus bin/node, geprueft gegen den SHA-256 dort und in
+      festlegt (resources/app.asar.unpacked/out/shared/node-runtime/node-runtime-pin.js),
+      geprueft gegen den SHA-256 dort, daraus bin/node, geprueft gegen den SHA-256 dort und in
       Orcas Vorlage (orcad-template/targets/linux-x64-glibc/.runtime-node). Legt es nach
       ZIEL/node-<SHA-256>/bin/node, wo guest-setup es fuer den Agenten abholt.
 
@@ -45,7 +45,8 @@ MAX_API = 64 << 20                    # eine Seite mit 100 Releases: etwa 6 MiB
 MAX_RPM = 1 << 30                     # orca-ide 1.4: 160 MB
 MAX_NODE_ARCHIVE = 200 << 20          # wie Orca (maxArchiveBytes)
 TARGET = "linux-x64-glibc"
-PIN_FILE = "resources/app.asar.unpacked/out/shared/node-runtime-pin.js"
+# tsc's output of Orca's src/shared/node-runtime/node-runtime-pin.ts, beside app.asar
+PIN_FILE = "resources/app.asar.unpacked/out/shared/node-runtime/node-runtime-pin.js"
 MARKER = f"resources/orcad-template/targets/{TARGET}/.runtime-node"
 MAX_PIN_FILE = 1 << 20
 PIN_VERSION = re.compile(r"\bNODE_RUNTIME_PIN\s*=\s*\{\s*version:\s*['\"]([0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4})['\"]")
@@ -321,6 +322,8 @@ def _read(path, cap):
 def pin_of(orca):
     """Was das installierte Orca fuer seinen Server festlegt: (Node-Version, Archiv,
     SHA-256 des Archivs, SHA-256 und Groesse von bin/node)."""
+    if not os.path.lexists(os.path.join(orca, PIN_FILE)):
+        raise Failed(f"{orca}: no {PIN_FILE}, where Orca keeps its Node runtime pin (moved in a new Orca?)")
     text = _read(os.path.join(orca, PIN_FILE), MAX_PIN_FILE)
     versions, assets = PIN_VERSION.findall(text), PIN_ASSET.findall(text)
     if len(versions) != 1 or len(assets) != 1:

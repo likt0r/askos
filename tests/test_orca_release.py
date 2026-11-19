@@ -97,8 +97,11 @@ RELEASES = [
 ]
 
 
+PIN = "resources/app.asar.unpacked/out/shared/node-runtime/node-runtime-pin.js"     # as Orca 1.4.261 has it
+
+
 def pin_file(archive_sha, executable_sha, size, source="official", archive=NODE_ARCHIVE, version=NODE, extra=""):
-    """resources/app.asar.unpacked/out/shared/node-runtime-pin.js as Orca 1.4 ships it (tsc's output)."""
+    """PIN as Orca 1.4 ships it (tsc's output)."""
     return f"""\"use strict";
 /** Pinned external Node runtime (docs/reference/node-runtime-design.html D1). */
 Object.defineProperty(exports, "__esModule", {{ value: true }});
@@ -461,11 +464,11 @@ class RuntimeTest(ScriptTest):
         with open(self.archive, "rb") as f:
             archive_sha = archive_sha or self.sha(f.read())
         executable_sha = executable_sha or self.sha(self.node)
-        shared = os.path.join(self.orca, "resources/app.asar.unpacked/out/shared")
+        path = os.path.join(self.orca, PIN)
         target = os.path.join(self.orca, "resources/orcad-template/targets/linux-x64-glibc")
-        os.makedirs(shared, exist_ok=True)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         os.makedirs(target, exist_ok=True)
-        with open(os.path.join(shared, "node-runtime-pin.js"), "w") as f:
+        with open(path, "w") as f:
             f.write(pin_file(archive_sha, executable_sha, len(self.node) if size is None else size, **kwargs))
         with open(os.path.join(target, ".runtime-node"), "w") as f:
             f.write((marker or executable_sha) + "\n")
@@ -525,8 +528,8 @@ class RuntimeTest(ScriptTest):
                 r = self.runtime()
                 self.assertEqual(r.returncode, 1, r.stdout)
                 self.assertIn("node-runtime-pin.js", r.stderr)
-        os.remove(os.path.join(self.orca, "resources/app.asar.unpacked/out/shared/node-runtime-pin.js"))
-        self.failed(self.runtime(), "node-runtime-pin.js")
+        os.remove(os.path.join(self.orca, PIN))
+        self.failed(self.runtime(), f"no {PIN}, where Orca keeps its Node runtime pin")
         self.assertEqual(self.calls(), [])
 
     def test_an_archive_without_node_fails(self):
