@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.8.1](https://github.com/likt0r/askos/compare/v0.8.0...v0.8.1) (2026-11-19)
+
+### Bug Fixes
+
+* the Base Build finds Orca's Node runtime pin of 1.4.261 ([#168](https://github.com/likt0r/askos/issues/168)) ([dbfaa24](https://github.com/likt0r/askos/commit/dbfaa24c3bf8995e30b390e19821d5aae877a6a8))
+
 ## [0.8.0](https://github.com/likt0r/askos/compare/v0.7.0...v0.8.0) (2026-11-19)
 
 ### Features
