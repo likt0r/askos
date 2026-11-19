@@ -1,25 +1,22 @@
 #!/usr/bin/python3 -I
-"""Dashboard der Agent-Box: Steuerung der VMs per Browser aus dem Heimnetz.
+"""Control Room dashboard of Agent Box: controls the VMs from a browser on the home network.
 
-Laeuft als System-User agentbox-web (nicht root). Jede Aktion ist genau ein
-Aufruf von `sudo -n agentbox <befehl> ...` mit festen Argumenten, der Befehl
-zuerst: die sudoers-Regel laesst dort nur die Befehle dieses Dienstes zu, und
-agentbox fuehrt fuer agentbox-web selbst nur sie aus (agentbox/cli.py declarations,
-tests/test_control_room_sudo.py haelt Regel, Deklarationen und Aufrufe
-gleich), nie mit --force; Kontext und Werte prueft agentbox ebenfalls. Jeder
-Aufruf nennt direkt nach dem Befehl mit --actor das Geraet (aus dem
-User-Agent) und die Adresse des Browsers; agentbox vermerkt damit jede Aktion
-in der Aktivitaet. Anmeldungen vermerkt dieser Dienst selbst
-dort (Journal-Namensraum agentbox, Kennung agentbox-activity), nie mit Passwort.
+Runs as the system user agentbox-web (not root). Every action is exactly one call of
+`sudo -n agentbox <command> ...` with fixed arguments, the command first: the sudoers rule
+allows only this service's commands there, and agentbox runs only those for agentbox-web
+(agentbox/cli.py declarations, tests/test_control_room_sudo.py keeps rule, declarations and
+calls equal), never with --force; agentbox checks context and values as well. Every call names,
+right after the command, the device (from the User-Agent) and the browser's address with
+--actor; agentbox records every action in the Activity with it. This service records sign-ins
+itself there (journal namespace agentbox, identifier agentbox-activity), never with a password.
 
-Die API /api/v1/... (docs/control-room-api.md) dient der Oberflaeche (Nuxt, als
-statische Dateien unter AGENTBOX_WEB_UI installiert). Live-Ereignisse (GET
-/api/v1/events) kommen aus den Messwerten des Hosts und aus einem einzigen
-`sudo -n agentbox watch`, das dieser Dienst startet (und neu startet, wenn es endet)
-und dessen Ereignisse er an alle Verbindungen verteilt.
+The API /api/v1/... (docs/control-room-api.md) serves the UI (Nuxt, installed as static files
+under AGENTBOX_WEB_UI). Live events (GET /api/v1/events) come from the Host's readings and from
+a single `sudo -n agentbox watch` that this service starts (and restarts when it ends) and whose
+events it distributes to all connections.
 
-  agentbox-web                     Server starten (HTTPS)
-  agentbox-web --hash-password     Passwort von stdin lesen, Hash ausgeben
+  agentbox-web                     start the server (HTTPS)
+  agentbox-web --hash-password     read a password from stdin, print its hash
 """
 import base64
 import collections
@@ -58,7 +55,7 @@ from agentbox import hostsetup, ids, journal, paths, registry, settings, sign_in
 from agentbox.errors import Fail  # noqa: E402
 
 CONF = os.environ.get("AGENTBOX_WEB_CONF", "/etc/agentbox/web")
-# Die Oberflaeche (Nuxt, statisch erzeugt): index.html, _nuxt/, Schriften, ...
+# The UI (Nuxt, statically generated): index.html, _nuxt/, fonts, ...
 UI = os.environ.get("AGENTBOX_WEB_UI", paths.WEB_UI)
 
 
@@ -98,9 +95,9 @@ def check_settings():
         refused_config(f"Settings {f.message}")
 
 
-# der Starter unter dem Pfad, den die sudoers-Regel nennt (paths.CLI)
+# the launcher at the path the sudoers rule names (paths.CLI)
 AGENTBOX = os.environ.get("AGENTBOX_WEB_COMMAND", f"sudo -n {paths.CLI}").split()
-# Journal-Sockets fuer die Aktivitaet: der Namensraum agentbox, sonst das Vorgabe-Journal
+# Journal sockets for the Activity: the agentbox namespace, else the default journal
 JOURNAL = os.environ.get("AGENTBOX_WEB_JOURNAL",
                          "/run/systemd/journal.agentbox/socket:/run/systemd/journal/socket").split(":")
 
@@ -108,27 +105,27 @@ JOURNAL = os.environ.get("AGENTBOX_WEB_JOURNAL",
 VM_NAME = registry.NAME
 MAX_FAILS, LOCK_SECONDS = 5, 15 * 60
 MAX_BODY = 8 * 1024
-DRAIN_BODY = 1024 * 1024    # so viel eines abgelehnten Bodys wird noch abgenommen
+DRAIN_BODY = 1024 * 1024    # this much of a rejected body is still drained
 
-# Content-Security-Policy der API; die Seiten der Oberflaeche bekommen zusaetzlich die
-# Hashes der Inline-Skripte ihrer index.html (UiBuild)
+# Content-Security-Policy of the API; the UI's pages also get the hashes of the inline
+# scripts of their index.html (UiBuild)
 CSP = ("default-src 'self'; style-src 'self'; script-src 'self'; "
        "img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
 
-sessions = {}           # token -> Ablaufzeit
-fails = {}              # ip -> (anzahl, erster Fehlversuch)
+sessions = {}           # token -> expiry time
+fails = {}              # ip -> (count, first failed attempt)
 lock = threading.Lock()
-request = threading.local()     # Ausloeser der laufenden Anfrage (request.actor), fuer --actor
+request = threading.local()     # trigger of the current request (request.actor), for --actor
 
 
 def log(msg):
     print(msg, file=sys.stderr, flush=True)
 
 
-# --- Aktivitaet ---------------------------------------------------------------
+# --- Activity -----------------------------------------------------------------
 
-# Teilstueck im User-Agent -> Name; die erste Fundstelle gilt (Edge nennt auch
-# Chrome und Safari, Android auch Linux)
+# Part of the User-Agent -> name; the first match counts (Edge names Chrome and Safari too,
+# Android names Linux too)
 BROWSERS = (("Edg/", "Edge"), ("OPR/", "Opera"), ("FxiOS/", "Firefox"), ("Firefox/", "Firefox"),
             ("CriOS/", "Chrome"), ("Chrome/", "Chrome"), ("Safari/", "Safari"), ("curl/", "curl"))
 SYSTEMS = (("Android", "Android"), ("iPhone", "iPhone"), ("iPad", "iPad"), ("Windows", "Windows"),
@@ -136,8 +133,8 @@ SYSTEMS = (("Android", "Android"), ("iPhone", "iPhone"), ("iPad", "iPad"), ("Win
 
 
 def device(user_agent):
-    """Kurzbeschreibung des Geraets aus dem User-Agent, z. B. Firefox/Linux. Nur
-    feste Namen, nie Text aus der Anfrage."""
+    """Short description of the device from the User-Agent, e.g. Firefox/Linux. Only fixed
+    names, never text from the request."""
     browser = next((name for key, name in BROWSERS if key in user_agent), None)
     system = next((name for key, name in SYSTEMS if key in user_agent), None)
     return "/".join(n for n in (browser, system) if n) or "unknown device"
@@ -213,19 +210,19 @@ def check_password(password):
     return hmac.compare_digest(got.hex(), digest)
 
 
-# --- Werte fuer agentbox -------------------------------------------------------
-# Was aus einer Anfrage zu einer Option von agentbox wird. Werte gehen immer als
-# --option=wert hinaus, damit keiner zur eigenen Option wird; agentbox prueft sie.
+# --- Values for agentbox -------------------------------------------------------
+# What a request becomes as an option of agentbox. Values always go out as
+# --option=value, so none becomes an option of its own; agentbox checks them.
 
-# Filter fuer das Journal einer VM -> Option von `agentbox logs`
+# Filters for a VM's journal -> option of `agentbox logs`
 LOG_FILTERS = {"unit": "--unit", "priority": "--priority", "since": "--since", "until": "--until",
                "boot": "--boot", "grep": "--grep", "lines": "--lines", "after_cursor": "--after-cursor"}
 
-# Neue VM: Feld -> Option von `agentbox create`; Netz und Orca-Port vergibt agentbox selbst
+# New VM: field -> option of `agentbox create`; agentbox assigns network and Orca port itself
 CREATE_FIELDS = {"image": "--image", "memory_mib": "--memory-mib", "data_disk_gib": "--data-disk-gib",
                  "copy_allowlist_from": "--copy-allowlist-from", "copy_ssh_keys_from": "--copy-ssh-keys-from"}
 
-# Filter der Aktivitaet (Query-Parameter) -> Option von `agentbox activity`
+# Filters of the Activity (query parameters) -> option of `agentbox activity`
 ACTIVITY_FILTERS = {"kind": "--kind", "vm": "--vm", "since": "--since", "until": "--until",
                     "search": "--search", "lines": "--lines"}
 
@@ -260,13 +257,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
     timeout = 30
 
     def log_message(self, fmt, *args):
-        pass  # eigenes Logging: nur Anmeldungen und Aktionen
+        pass  # own logging: only sign-ins and actions
 
     def ip(self):
         return self.client_address[0]
 
     def actor(self):
-        """Wer die Anfrage stellt, fuer die Aktivitaet: Geraet (Adresse)."""
+        """Who makes the request, for the Activity: device (address)."""
         return f"{device(self.headers.get('User-Agent', ''))} ({self.ip()})"
 
     def send(self, code, body, ctype="application/json", extra=(), cache="no-store", csp=None):
@@ -300,8 +297,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return None
 
     def drain(self):
-        """Den Body einer Anfrage ungelesen verwerfen (hoechstens MAX_BODY), sonst die
-        Verbindung danach schliessen."""
+        """Discard a request's body unread (at most MAX_BODY), else close the connection
+        afterwards."""
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
@@ -325,7 +322,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             raise ValueError("JSON object expected")
         return obj
 
-    # Unter /api/ nur die API (v1), sonst die Oberflaeche
+    # Under /api/ only the API (v1), else the UI
     def do_GET(self):
         request.actor = self.actor()
         url = urlparse(self.path)
@@ -352,7 +349,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.other("DELETE")
 
     def other(self, method):
-        """POST, PUT, PATCH, DELETE: nur die API kennt sie."""
+        """POST, PUT, PATCH, DELETE: only the API knows them."""
         request.actor = self.actor()
         url = urlparse(self.path)
         if url.path.startswith("/api/"):
@@ -360,10 +357,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return self.send_error(501)
 
     def attempt_login(self, password=None, link=None):
-        """Anmeldung mit Bremse, mit dem Passwort oder dem Token eines Anmeldelinks (agentbox
-        sign-in-link, einmal gueltig): ("ok", Cookie), ("locked", Sekunden bis zum naechsten
-        Versuch) oder ("wrong", None). Ein benutzter, abgelaufener oder unbekannter Link
-        zaehlt wie ein falsches Passwort."""
+        """Sign-in with a brake, with the password or the token of a Sign-in link (agentbox
+        sign-in-link, valid once): ("ok", cookie), ("locked", seconds until the next attempt)
+        or ("wrong", None). A used, expired or unknown link counts like a wrong password."""
         ip = self.ip()
         now = time.time()
         with lock:
@@ -418,7 +414,7 @@ class Server(http.server.ThreadingHTTPServer):
             self.settings_refused = True
             self.shutdown()
 
-    # TLS-Handshake im Thread der Verbindung, nicht beim Annehmen
+    # TLS handshake in the connection's thread, not when accepting
     def finish_request(self, request, client_address):
         request.settimeout(30)
         try:
@@ -428,25 +424,25 @@ class Server(http.server.ThreadingHTTPServer):
         super().finish_request(request, client_address)
 
 
-# --- Messwerte des Hosts und Live-Ereignisse ----------------------------------
-# Die Messwerte (CPU, GPU, Speicher, NVMe, Speicher je VM) liest agentbox-readings
-# ohne Rechte aus /proc, /sys und nvidia-smi; die Wurzeln sind fuer Tests
-# einstellbar, ebenso die Takte.
+# --- Readings of the Host and live events -------------------------------------
+# agentbox-readings reads the readings (CPU, GPU, memory, NVMe, memory per VM) without
+# privileges from /proc, /sys and nvidia-smi; the roots are adjustable for tests, as are
+# the clocks.
 PROC = os.environ.get("AGENTBOX_WEB_PROC", "/proc")
 SYS = os.environ.get("AGENTBOX_WEB_SYS", "/sys")
 SAMPLE_SECONDS = max(0.1, float(os.environ.get("AGENTBOX_WEB_SAMPLE_SECONDS", "5")))
 HISTORY_SECONDS = float(os.environ.get("AGENTBOX_WEB_HISTORY_SECONDS", "1800"))
 HEARTBEAT_SECONDS = max(0.1, float(os.environ.get("AGENTBOX_WEB_HEARTBEAT_SECONDS", "15")))
-MAX_STREAMS = 8         # gleichzeitige Live-Verbindungen (je eine bindet einen Thread)
-REPLAY_EVENTS = 256     # so viele Ereignisse werden nach einem Abbruch nachgereicht
-# Reihenfolge der Zustands-Ereignisse fuer eine neue Verbindung (nach hello)
+MAX_STREAMS = 8         # concurrent live connections (each binds one thread)
+REPLAY_EVENTS = 256     # this many events are replayed after a disconnect
+# Order of the state events for a new connection (after hello)
 LATEST_ORDER = ("host", "version", "watch", "state", "host-reboot", "services")
-RETRY_MS = 3000         # Wartezeit des Browsers vor dem Neuverbinden
-STREAM_ID = secrets.token_hex(4)   # neu bei jedem Start: alte Last-Event-IDs gelten nicht
+RETRY_MS = 3000         # the browser's wait before reconnecting
+STREAM_ID = secrets.token_hex(4)   # new at every start: old Last-Event-IDs do not count
 
 
 def _load_readings():
-    """agentbox-readings, liegt neben agentbox-web (im Checkout und installiert)."""
+    """agentbox-readings, which sits next to agentbox-web (in the checkout and installed)."""
     path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "agentbox-readings")
     if not os.path.exists(path):
         return None
@@ -458,30 +454,29 @@ def _load_readings():
 
 
 readings = _load_readings()
-sampler = None          # startet mit dem Server (main)
+sampler = None          # starts with the server (main)
 
 
 class Events:
-    """Ein Ereignisstrom fuer alle Live-Verbindungen (GET /api/v1/events).
+    """One event stream for all live connections (GET /api/v1/events).
 
-    Jedes Ereignis bekommt eine fortlaufende ID `<STREAM_ID>-<n>` und wird einmal
-    als SSE-Text gebaut. Die letzten REPLAY_EVENTS liegen in einem Ringpuffer, aus
-    dem jede Verbindung ab ihrer Position liest; wer zu weit zurueckfaellt, wird
-    getrennt und verbindet sich neu. Zustands-Ereignisse (state=True, z.B. host)
-    bekommt eine neue Verbindung sofort mit ihrem letzten Stand.
+    Every event gets a running ID `<STREAM_ID>-<n>` and is built once as SSE text. The last
+    REPLAY_EVENTS sit in a ring buffer from which each connection reads from its position; one
+    that falls too far behind is disconnected and reconnects. State events (state=True, e.g.
+    host) go to a new connection at once with their latest value.
     """
 
     def __init__(self):
         self.cond = threading.Condition()
         self.seq = 0
-        self.recent = collections.deque(maxlen=REPLAY_EVENTS)   # (n, Text)
-        self.latest = {}                                        # Name -> Text
+        self.recent = collections.deque(maxlen=REPLAY_EVENTS)   # (n, text)
+        self.latest = {}                                        # name -> text
         self.streams = 0
 
     def publish(self, name, data, state=False, latest=None):
-        """Ein Ereignis an alle. state: neue Verbindungen bekommen es als letzten Stand;
-        latest=(Name, Daten): ein Stand, der mit diesem Ereignis neu gilt, ohne eigenes
-        Ereignis (der VM-Stand `state` mit jedem `vm`-Ereignis)."""
+        """One event to all. state: new connections get it as their latest value;
+        latest=(name, data): a value that holds anew with this event, without an event of its
+        own (the VM value `state` with every `vm` event)."""
         with self.cond:
             self.seq += 1
             text = self._text(name, data)
@@ -496,7 +491,7 @@ class Events:
         return f"id: {STREAM_ID}-{self.seq}\nevent: {name}\ndata: {json.dumps(data)}\n\n"
 
     def resume(self, last_id):
-        """(Position, nachgereicht?, erste Texte) fuer eine neue Verbindung."""
+        """(position, replayed?, first texts) for a new connection."""
         stream, _, n = last_id.strip().partition("-")
         with self.cond:
             oldest = self.recent[0][0] if self.recent else self.seq + 1
@@ -506,7 +501,7 @@ class Events:
             return self.seq, False, [self.latest[k] for k in order]
 
     def wait(self, pos, timeout):
-        """(Texte nach pos, neue Position); Texte None, wenn sie nicht mehr im Puffer sind."""
+        """(texts after pos, new position); texts None when they are no longer in the buffer."""
         with self.cond:
             if self.seq == pos:
                 self.cond.wait(timeout)
@@ -529,12 +524,12 @@ def start_readings():
 
 
 TEMPERATURES = {"cpu_temp": "CPU", "gpu_temp": "GPU", "nvme_temp": "NVMe"}
-hot = set()             # Temperaturen ueber ihrer Schwelle (id)
+hot = set()             # temperatures over their threshold (id)
 
 
 def publish_sample(sample):
-    """Messwerte an alle; eine Temperatur, die ihre Schwelle erreicht, als Benachrichtigung
-    (einmal, bis sie wieder darunter liegt)."""
+    """Readings to all; a temperature that reaches its threshold as a notification (once,
+    until it is below again)."""
     events.publish("host", sample, state=True)
     for r in sample.get("readings", []):
         if r.get("kind") not in TEMPERATURES:
@@ -555,7 +550,7 @@ def session_alive(token):
 
 
 def serve_events(handler):
-    """GET /api/v1/events: Server-Sent Events, bis der Browser geht oder die Sitzung endet."""
+    """GET /api/v1/events: Server-Sent Events, until the browser leaves or the session ends."""
     token = handler.session()
     with events.cond:
         full = events.streams >= MAX_STREAMS
@@ -575,22 +570,22 @@ def serve_events(handler):
         hello = json.dumps({"stream": STREAM_ID, "resumed": resumed})
         out = [f"retry: {RETRY_MS}\nevent: hello\ndata: {hello}\n\n", *first]
         while True:
-            # Nur schreiben, nie lesen: das timeout des Handlers greift dann nur,
-            # wenn ein Browser 30 s lang nichts abnimmt, und trennt ihn.
+            # Only write, never read: the handler's timeout then fires only when a browser
+            # takes nothing for 30 s, and disconnects it.
             handler.wfile.write("".join(out).encode() if out else b": ping\n\n")
             out, pos = events.wait(pos, HEARTBEAT_SECONDS)
             if out is None or not session_alive(token):
                 return
     except OSError:
-        return          # Browser weg (Reset, TLS-Fehler, Zeitueberschreitung)
+        return          # browser gone (reset, TLS error, timeout)
     finally:
         with events.cond:
             events.streams -= 1
 
 
-# --- Benachrichtigungen ---------------------------------------------------------
-# Was der Browser als Benachrichtigung zeigen kann (#21): Art, VM, kurzer englischer
-# Text, Schwere. Welche Arten er zeigt, waehlt jeder Browser selbst.
+# --- Notifications --------------------------------------------------------------
+# What the browser can show as a notification (#21): kind, VM, short English text,
+# severity. Each browser chooses itself which kinds it shows.
 
 def iso(epoch=None):
     """A time (seconds since the epoch, now without one) as the API gives it: UTC to the second,
@@ -606,15 +601,13 @@ def notify(kind, severity, text, vm=None, **ref):
 
 
 # --- agentbox watch -------------------------------------------------------------
-# Ein einziger root-Helfer fuer alle Verbindungen: `sudo -n agentbox watch` schreibt
-# Ereignisse als JSON-Zeilen; endet er, startet dieser Dienst ihn neu (mit wachsender
-# Pause, 1 s bis 60 s). Seine stdin bleibt offen, solange dieser Dienst laeuft: endet
-# der Dienst, endet auch watch.
+# A single root helper for all connections: `sudo -n agentbox watch` writes events as JSON
+# lines; when it ends, this service restarts it (with a growing pause, 1 s to 60 s). Its
+# stdin stays open as long as this service runs: when the service ends, watch ends too.
 WATCH_RETRY_SECONDS = max(0.05, float(os.environ.get("AGENTBOX_WEB_WATCH_RETRY_SECONDS", "1")))
 WATCH_RETRY_MAX = 60
-WATCH_STABLE = 60       # so lange gelaufen: die Pause beginnt wieder von vorn
-# Ereignisse von watch, die unveraendert weitergehen (als Zustand: neue Verbindungen
-# bekommen den letzten)
+WATCH_STABLE = 60       # ran this long: the pause starts over
+# Events of watch that go on unchanged (as state: new connections get the latest)
 WATCH_FORWARD = {"activity": False, "alert": False, "github-token": False, "build": False, "build-log": False,
                  "services": True, "host-reboot": True}
 
@@ -622,13 +615,13 @@ WATCH_FORWARD = {"activity": False, "alert": False, "github-token": False, "buil
 class Watch:
     def __init__(self):
         self.lock = threading.Lock()
-        self.vms = {}               # Name -> VM (Reihenfolge der Registry)
+        self.vms = {}               # name -> VM (order of the registry)
         self.problems = []
-        self.known = False          # ein vms-Ereignis kam schon
+        self.known = False          # a vms event has come already
         self.status = {"running": False, "since": None, "restarts": 0, "last_exit": None}
         self.reboot = None
         self.services = None
-        self.warnings = None        # was der Host fuer seine Wartung braucht (services-Ereignis)
+        self.warnings = None        # what the Host needs for its maintenance (services event)
 
     def start(self):
         self.set_status(running=False)
@@ -660,7 +653,7 @@ class Watch:
                 for line in p.stdout:
                     try:
                         self.handle(line)
-                    except Exception as e:      # eine seltsame Zeile beendet nichts
+                    except Exception as e:      # an odd line ends nothing
                         log(f"agentbox watch: line skipped ({type(e).__name__})")
                 code = p.wait()
                 with self.lock:
@@ -674,7 +667,7 @@ class Watch:
 
     @staticmethod
     def errors(stream):
-        # watch schreibt nur eigene Meldungen nach stderr, nie Inhalte aus dem Journal
+        # watch writes only its own messages to stderr, never contents from the journal
         for line in stream:
             log("agentbox watch: " + line.decode("utf-8", "replace").strip()[:300])
 
@@ -703,7 +696,7 @@ class Watch:
         return {"vms": snap["vms"], "problems": snap["problems"]}
 
     def notice(self, name, data):
-        """Zustand fuer GET /api/v1/system merken, Benachrichtigungen ausloesen."""
+        """Remember state for GET /api/v1/system, trigger notifications."""
         vm = data.get("vm") if isinstance(data.get("vm"), str) else None
         if name == "host-reboot":
             with self.lock:
@@ -734,17 +727,16 @@ class Watch:
 watcher = Watch()
 
 
-# --- Oberflaeche ----------------------------------------------------------------
-# Die Oberflaeche ist ein statischer Nuxt-Build (ssr: false): index.html, die
-# gehashten Dateien unter /_nuxt/ (und /_fonts/), sonst ein paar feste Dateien. Jeder
-# Pfad, der keine API und keine Datei ist, bekommt index.html (die Oberflaeche waehlt
-# die Seite selbst). Die CSP bleibt bei 'self'; erlaubt sind zusaetzlich genau die
-# Inline-Skripte (und -Styles) dieser index.html, ueber ihre sha256-Hashes, die beim
-# Laden der Datei berechnet werden. Ohne installierten Build antwortet jede Seite 503,
-# die API bleibt erreichbar.
+# --- UI -------------------------------------------------------------------------
+# The UI is a static Nuxt build (ssr: false): index.html, the hashed files under /_nuxt/
+# (and /_fonts/), else a few fixed files. Every path that is neither an API nor a file gets
+# index.html (the UI chooses the page itself). The CSP stays at 'self'; additionally allowed
+# are exactly the inline scripts (and styles) of this index.html, by their sha256 hashes,
+# which are computed when the file is loaded. Without an installed build every page answers
+# 503, the API stays reachable.
 
 UI_CHECK_SECONDS = max(0.05, float(os.environ.get("AGENTBOX_WEB_UI_CHECK_SECONDS", "2")))
-IMMUTABLE = ("/_nuxt/", "/_fonts/")     # Dateinamen mit Inhalts-Hash
+IMMUTABLE = ("/_nuxt/", "/_fonts/")     # file names with a content hash
 TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
          ".mjs": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
          ".json": "application/json", ".map": "application/json", ".svg": "image/svg+xml",
@@ -755,13 +747,13 @@ TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=u
 INLINE = re.compile(r"<(script|style)\b([^>]*)>(.*?)</\1\s*>", re.S | re.I)
 SRC = re.compile(r"""\ssrc\s*=""", re.I)
 TYPE = re.compile(r"""\stype\s*=\s*["']?([^"'\s>]+)""", re.I)
-# Skript-Typen, die der Browser ausfuehrt (Daten wie application/json nicht)
+# Script types the browser executes (data such as application/json does not count)
 SCRIPT_TYPES = {"", "text/javascript", "application/javascript", "module", "importmap"}
 
 
 def inline_hashes(html):
-    """('sha256-...' der Inline-Skripte, ... der Inline-Styles) einer HTML-Seite, ueber
-    genau den Text zwischen den Tags, wie ihn der Browser hasht."""
+    """('sha256-...' of the inline scripts, ... of the inline styles) of an HTML page, over
+    exactly the text between the tags, as the browser hashes it."""
     scripts, styles = [], []
     for tag, attrs, body in INLINE.findall(html):
         if tag.lower() == "script":
@@ -783,9 +775,9 @@ def page_csp(scripts, styles):
 
 
 class UiBuild:
-    """Die installierte Oberflaeche: ihre Version (Hash der index.html) und die CSP ihrer
-    Seite, None ohne Build. Wird alle UI_CHECK_SECONDS neu geprueft; eine neue Version geht
-    als version-Ereignis an alle offenen Seiten."""
+    """The installed UI: its version (hash of index.html) and the CSP of its page, None
+    without a build. Rechecked every UI_CHECK_SECONDS; a new version goes to all open pages
+    as a version event."""
 
     def __init__(self):
         self.lock = threading.Lock()
@@ -801,7 +793,7 @@ class UiBuild:
         return os.path.realpath(UI), st.st_mtime_ns, st.st_size, st.st_ino
 
     def refresh(self):
-        """True, wenn sich die installierte Oberflaeche geaendert hat (auch: kam oder ging)."""
+        """True when the installed UI has changed (also: appeared or went)."""
         key = self._key()
         with self.lock:
             if key == self.key:
@@ -848,7 +840,7 @@ class UiBuild:
                 if self.refresh():
                     events.publish("version", self.public(), state=True)
                     self.announce()
-            except Exception as e:      # eine halb kopierte Oberflaeche: beim naechsten Mal
+            except Exception as e:      # a half-copied UI: next time
                 log(f"UI unreadable: {type(e).__name__}")
             time.sleep(UI_CHECK_SECONDS)
 
@@ -868,7 +860,7 @@ NO_UI = "The Control Room UI is not installed on this Host.\n"
 
 
 def serve_page(handler, path):
-    """GET (und HEAD) ausserhalb von /api/: die Oberflaeche."""
+    """GET (and HEAD) outside /api/: the UI."""
     info = ui.current()
     if info is None:
         return handler.send(503, NO_UI, "text/plain; charset=utf-8")
@@ -880,7 +872,7 @@ def serve_page(handler, path):
         full = os.path.realpath(os.path.join(info["root"], rel.lstrip("/")))
         if full.startswith(info["root"] + os.sep) and os.path.isfile(full):
             return serve_file(handler, rel, full, info["csp"])
-        # fehlende Dateien bleiben 404, statt HTML zu bekommen
+        # missing files stay 404 instead of getting HTML
         if rel.startswith(IMMUTABLE) or os.path.splitext(parts[-1])[1].lower() in TYPES:
             return handler.send_json(404, api_error("not_found", "Not found"))
     if handler.headers.get("If-None-Match") == info["etag"]:
@@ -1179,10 +1171,10 @@ def hide(text, values):
     return text
 
 
-# --- Werte aus Anfragen ---
+# --- Values from requests ---
 
 def value(body, key, required=False):
-    """Text oder ganze Zahl als getrimmter Text; None, wenn er fehlt (oder leer ist)."""
+    """Text or whole number as trimmed text; None when it is missing (or empty)."""
     v = body.get(key)
     if v is None or v == "":
         if required:
@@ -1197,7 +1189,7 @@ def value(body, key, required=False):
 
 
 def word(body, key, required=True):
-    """Ein Wert, der als Argument steht (Domain, Geraet, ...): nie etwas wie eine Option."""
+    """A value that stands as an argument (domain, device, ...): never anything like an option."""
     v = value(body, key, required)
     if v is not None and v.startswith("-"):
         raise invalid(key, f"invalid {key}")
@@ -1295,14 +1287,14 @@ def text_args(body, key, required=False):
 
 
 # --- Endpunkte ---
-# Jeder bekommt (handler, Pfad-Teile, url, body) und gibt (Status, Objekt) zurueck.
+# Each gets (handler, path parts, url, body) and returns (status, object).
 
 ROUTES = []
 
 
 def route(method, pattern, secret=(), public=False):
-    """secret: Felder des Bodys, die Geheimnisse tragen (nie in Antwort, Fehler oder Log);
-    public: ohne Anmeldung erreichbar."""
+    """secret: fields of the body that carry secrets (never in answer, error or log);
+    public: reachable without sign-in."""
     def add(fn):
         ROUTES.append((method, re.compile("/api/v1" + pattern), fn, secret, public))
         return fn
@@ -1377,7 +1369,7 @@ def release():
 
 @route("GET", "/version")
 def get_version(h, m, url, body):
-    # `version` ist der Stand der Oberflaeche (Neuladen anbieten), `release` die Version von Agent Box
+    # `version` is the state of the UI (offer a reload), `release` the version of Agent Box
     return 200, {"api": 1, **ui.public(), "release": release()}
 
 
@@ -1850,7 +1842,7 @@ def get_activity(h, m, url, body):
     return 200, run_json("activity", *options(url, ACTIVITY_FILTERS), "--json", timeout=120)
 
 
-# Images und Builds
+# Images and Builds
 
 @route("GET", "/images")
 def get_images(h, m, url, body):
@@ -1868,7 +1860,7 @@ def reset_args(body):
 
 @route("POST", "/builds")
 def post_builds(h, m, url, body):
-    """Ein Build; mit reset ein Update: wenn der Build gelingt, setzt seine Unit diese VMs darauf zurueck."""
+    """One Build; with reset an Update: when the Build succeeds, its unit resets these VMs onto it."""
     image, reset = body.get("image"), reset_args(body)
     if image == "all":
         if reset:
@@ -1881,8 +1873,8 @@ def post_builds(h, m, url, body):
 
 @route("POST", "/updates")
 def post_updates(h, m, url, body):
-    """Update jetzt (#114): Versionen pruefen, jedes Image mit Update bauen, danach (wenn alle
-    Builds gelingen) die VMs aus reset zuruecksetzen; laeuft als Unit, antwortet sofort."""
+    """Update now (#114): check versions, build every Image with an Update, then (when all
+    Builds succeed) reset the VMs from reset; runs as a unit, answers at once."""
     return 202, run_json("update-now", *reset_args(body), "--json", timeout=60)
 
 
@@ -1897,12 +1889,12 @@ def get_build_log(h, m, url, body):
 
 @route("GET", IMAGE + "/containerfile")
 def get_containerfile(h, m, url, body):
-    """Das Containerfile des Images aus dem installierten Release, als Text (#67); nur vom Host
-    gelesen, nie aus dem Netz geholt."""
+    """The Image's Containerfile from the installed Release, as text (#67); read only from the
+    Host, never fetched from the network."""
     return 200, run_json("containerfile", m["image"], "--json", timeout=60)
 
 
-# GitHub App und Settings
+# GitHub App and Settings
 
 @route("GET", "/github-app")
 def get_github_app(h, m, url, body):
@@ -1950,13 +1942,13 @@ def patch_settings(h, m, url, body):
 
 
 def v1(handler, method, url):
-    """Eine Anfrage unter /api/: CSRF, Route, Anmeldung, Endpunkt, Fehlerformat."""
+    """A request under /api/: CSRF, route, sign-in, endpoint, error format."""
     path = url.path
     status, result, extra, code = 500, None, [], None
     name, vm, secret, body, read = "-", None, (), {}, method == "GET"
     try:
-        # Schutz gegen Cross-Site-Requests: nur das eigene JS setzt diesen Header; ohne
-        # ihn wird der Body nicht gelesen
+        # Protection against cross-site requests: only our own JS sets this header; without
+        # it the body is not read
         if method != "GET" and handler.headers.get("X-Agentbox") != "1":
             raise ApiError(403, "csrf_header_missing", "Requests that change something need the header "
                                                        "X-Agentbox: 1")
@@ -1990,7 +1982,7 @@ def v1(handler, method, url):
             except (ValueError, json.JSONDecodeError):
                 raise ApiError(400, "invalid_body", "The body must be a JSON object of at most 8 KiB")
         answer = fn(handler, match, url, body)
-        if answer is None:              # der Endpunkt hat selbst geantwortet (events)
+        if answer is None:              # the endpoint answered itself (events)
             return
         status, result, *rest = answer
         extra = rest[0] if rest else []
@@ -1998,14 +1990,14 @@ def v1(handler, method, url):
         status, code, extra = e.status, e.code, list(e.headers)
         detail = hide(e.detail, [body.get(f) for f in secret]) if e.detail and secret else e.detail
         result = api_error(e.code, e.message, detail, e.field, e.params)
-    except Exception as e:              # ein Fehler hier darf keine Antwort ohne Format geben
+    except Exception as e:              # an error here must not give an answer without the format
         log(f"{handler.ip()}: v1 {method} {name}: internal error {type(e).__name__}")
         status, code, result = 500, "internal_error", api_error("internal_error", "Internal error")
     if not read and status != 403:
-        # eine fruehe Antwort (401, 404, ...): den Body trotzdem abnehmen, sonst sieht der
-        # Browser statt der Antwort einen Verbindungsabbruch
+        # an early answer (401, 404, ...): drain the body anyway, else the browser sees a
+        # dropped connection instead of the answer
         handler.drain()
-    # eigenes Log: Aenderungen und Fehler, nie Inhalte (Codes, Tokens, Schluessel)
+    # own log: changes and errors, never contents (codes, tokens, keys)
     if method != "GET" or status >= 500:
         log(f"{handler.ip()}: {vm or '-'} v1 {method} {name} -> {'ok' if status < 400 else 'FAILED'}"
             + (f" {code}" if code else ""))
@@ -2028,7 +2020,7 @@ def main():
     start_readings()
     ui.start()
     watcher.start()
-    # der gebundene Port: mit AGENTBOX_WEB_PORT=0 waehlt ihn der Kernel (Tests lesen ihn hier)
+    # the bound port: with AGENTBOX_WEB_PORT=0 the kernel picks it (tests read it here)
     log(f"Control Room running on https://{bind}:{httpd.server_address[1]}")
     httpd.serve_forever()
     # it returns only when a request found the Settings refused

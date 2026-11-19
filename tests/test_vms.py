@@ -235,7 +235,7 @@ class CreateTest(VmsTest):
 
     def test_copies_from_the_files_before_the_migration(self):
         self.write("etc/agentbox/allowlist-priv",
-                   "# Freigaben nur fuer priv (agentbox allow/disallow)\ndocs.rs\n\n# Notiz\npypi.org\n")
+                   "# Entries only for priv (agentbox allow/disallow)\ndocs.rs\n\n# note\npypi.org\n")
         self.assertIn("lab: 2 Allowlist entries copied from priv", self.json("create", "lab", "--copy-allowlist-from",
                                                                           "priv")["message"])
         self.assertEqual(self.entries("lab"), [("docs.rs", None, ""), ("pypi.org", None, "")])

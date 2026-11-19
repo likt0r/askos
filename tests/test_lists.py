@@ -38,7 +38,7 @@ FIREFOX = "Firefox/Linux (192.0.2.23)"
 LEGACY_WATCHLIST = ("# Testliste\nexfil.example    exfil    # Testvorfall 2026\n"
                     "jsonkeeper.example payload # Contagious Interview\nnocategory.example\n"
                     "Bad_Name.example exfil\nodd.example spam # unbekannte Kategorie\n")
-LEGACY_LEGITIMATE = "# legitim\nregistry.example   # Paketquelle\ngithub.com\n\ncdn.vendor.example\n"
+LEGACY_LEGITIMATE = "# legitimate\nregistry.example   # package source\ngithub.com\n\ncdn.vendor.example\n"
 # every line can be carried over into the record
 CLEAN_WATCHLIST = ("# Testliste\nexfil.example    exfil    # Testvorfall 2026\n"
                    "jsonkeeper.example payload # Contagious Interview\nnocategory.example\n")
@@ -361,18 +361,18 @@ class LegitimateTest(CliTest):
     def setUp(self):
         super().setUp()
         write(os.path.join(self.conf, "watchlist.json"), record(watch("exfil.example")))
-        write(os.path.join(self.conf, "legitimate.json"), record(legit("registry.example", "Paketquelle")))
+        write(os.path.join(self.conf, "legitimate.json"), record(legit("registry.example", "package source")))
 
     def test_listing_marks_the_built_in_domains(self):
         rows = self.json("legitimate")
-        self.assertIn({"domain": "registry.example", "regex": None, "note": "Paketquelle", "added": 1793700000,
+        self.assertIn({"domain": "registry.example", "regex": None, "note": "package source", "added": 1793700000,
                        "added_by": "bewr", "builtin": False, "refused": None}, rows)
         self.assertIn({"domain": "github.com", "regex": None, "note": "", "added": None, "added_by": None,
                        "builtin": True, "refused": None}, rows)
         self.assertEqual([r["domain"] for r in rows], sorted(r["domain"] for r in rows))
         text = self.ok("legitimate").splitlines()
         self.assertIn("github.com                       built-in", text)
-        self.assertIn("registry.example                 Paketquelle", text)
+        self.assertIn("registry.example                 package source", text)
 
     def test_add_takes_effect_without_restart(self):
         self.assertEqual([s["signal"] for s in self.check("www.mirror.example")["signals"]], [])
@@ -472,7 +472,7 @@ class LegitimateTest(CliTest):
         # the list a new Host starts with: that entry neither keeps Feed hits below it lifted nor
         # can switch the rule off (built in: listed once, as such, and it cannot be removed)
         write(os.path.join(self.conf, "legitimate.json"), record(
-            legit("registry.example", "Paketquelle"), legit("claudeusercontent.com", added_by="migration")))
+            legit("registry.example", "package source"), legit("claudeusercontent.com", added_by="migration")))
         write(os.path.join(self.feeds, "threat-intelligence"),
               b"".join(d.encode() + b"\n" for d in sorted(["bad.example", "evil.claudeusercontent.com"])))
         rep = self.check("evil.claudeusercontent.com")
@@ -488,7 +488,7 @@ class LegitimateTest(CliTest):
         # the record cannot be listed (the domain shows once, as built in), so remove must be able
         # to take it out, else a release that drops the domain from the built-in ones would lift again
         write(os.path.join(self.conf, "legitimate.json"), record(
-            legit("registry.example", "Paketquelle"), legit("claudeusercontent.com", added_by="migration")))
+            legit("registry.example", "package source"), legit("claudeusercontent.com", added_by="migration")))
         out = self.json("legitimate-remove", "claudeusercontent.com")
         self.assertEqual((out["removed"], out["domain"]), (True, "claudeusercontent.com"))
         with open(os.path.join(self.conf, "legitimate.json")) as f:
@@ -588,7 +588,7 @@ class MigrationTest(CliTest):
                           ("jsonkeeper.example", "payload", "Contagious Interview", "", "migration")])
         # github.com is built in and not taken over
         self.assertEqual([(e["domain"], e["note"], e["added_by"]) for e in self.stored("legitimate.json")],
-                         [("cdn.vendor.example", "", "migration"), ("registry.example", "Paketquelle", "migration")])
+                         [("cdn.vendor.example", "", "migration"), ("registry.example", "package source", "migration")])
         names = os.listdir(self.conf)
         self.assertIn("suspicious-domains.migrated", names)
         self.assertNotIn("suspicious-domains", names)
@@ -672,13 +672,13 @@ class MigrationTest(CliTest):
     def test_a_leftover_text_file_is_merged_into_the_record(self):
         # a record already, and the text file again (put back by hand): its new entries are
         # added, the record's own stay as they are
-        write(os.path.join(self.conf, "watchlist.json"), record(watch("exfil.example", "c2", "Host", "eigene Notiz")))
+        write(os.path.join(self.conf, "watchlist.json"), record(watch("exfil.example", "c2", "Host", "own note")))
         result = self.json("migrate-lists")
         self.assertEqual(result["watchlist"], {"migrated": 1, "file": "suspicious-domains",
                                                "skipped": ["Bad_Name.example exfil", "odd.example spam"]})
         self.assertEqual([(e["domain"], e["category"], e["source"], e["note"], e["added_by"])
                           for e in self.stored("watchlist.json")],
-                         [("exfil.example", "c2", "Host", "eigene Notiz", "bewr"),
+                         [("exfil.example", "c2", "Host", "own note", "bewr"),
                           ("jsonkeeper.example", "payload", "Contagious Interview", "", "migration")])
         names = os.listdir(self.conf)
         self.assertIn("suspicious-domains.migrated", names)

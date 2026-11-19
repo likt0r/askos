@@ -1,11 +1,11 @@
-# Verdaechtige Domains (gilt jeweils inkl. Subdomains): <domain> <kategorie> # Quelle
-# Nur die Erstbefuellung eines neuen Hosts: agentbox setup installiert sie, agentbox
-# migrate-lists uebernimmt sie einmalig nach /etc/agentbox/watchlist.json; danach aendert
-# sie nur noch agentbox watch-add/-remove, Aenderungen hier erreichen den Host nicht mehr.
-# Kategorien: exfil, c2, tunnel, paste, phishing, blockchain, payload (nur Warnung)
+# Suspicious domains (each including subdomains): <domain> <category> # source
+# Only the initial fill of a new Host: agentbox setup installs it, agentbox
+# migrate-lists takes it over once into /etc/agentbox/watchlist.json; after that only
+# agentbox watch-add/-remove change it, changes here no longer reach the Host.
+# Categories: exfil, c2, tunnel, paste, phishing, blockchain, payload (Alert only)
 # As of 2026-10-29. Entries with an incident as evidence; "(category)": a common service without specific evidence.
 
-# --- belegt in Vorfaellen ---
+# --- evidenced in incidents ---
 webhook.site            exfil      # Shai-Hulud 1 (09/2025), stepsecurity.io, wiz.io
 npm-cache.com           exfil      # keyv/Shai-Hulud (08/2026), CSA AD-2026-009, aikido.dev
 pypi-get.com            phishing   # keyv (08/2026), CSA AD-2026-009
@@ -29,7 +29,7 @@ llamarpc.com            blockchain # keyv (08/2026)
 solana.com              blockchain # GlassWorm (since 10/2025), netskope.com, socket.dev
 calendar.app.google     c2         # GlassWorm C2 fallback, truesec.com
 
-# --- uebliche Exfil-/Tunnel-/Paste-Dienste (Kategorie, ohne konkreten Beleg) ---
+# --- common exfil/tunnel/paste services (category, without specific evidence) ---
 pipedream.net           exfil
 requestbin.com          exfil
 requestcatcher.com      exfil

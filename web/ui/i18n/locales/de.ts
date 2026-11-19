@@ -1,4 +1,4 @@
-// Deutsche Texte der Oberflaeche. Same keys as en.ts (test/i18n.test.ts checks it).
+// German texts of the UI. Same keys as en.ts (test/i18n.test.ts checks it).
 import access from './de/access'
 import activity from './de/activity'
 import notifications from './de/notifications'

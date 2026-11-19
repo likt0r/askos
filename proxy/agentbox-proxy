@@ -79,8 +79,8 @@ CONF_DIR = os.environ.get("AGENTBOX_CONF_DIR", "/etc/agentbox")
 
 
 def _load_suspicious():
-    """Einstufung verdaechtiger Ziele (agentbox-suspicious, liegt neben dem Proxy: im Checkout und
-    installiert, agentbox/paths.py)."""
+    """The classification of suspicious destinations (agentbox-suspicious, lies next to the proxy: in a checkout and
+    installed, agentbox/paths.py)."""
     path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "agentbox-suspicious")
     if not os.path.exists(path):
         return None
@@ -99,8 +99,8 @@ def _seconds(value, default):
 
 
 def _test_upstream():
-    """Nur in Tests (AGENTBOX_CONF_DIR gesetzt): jedes erlaubte Ziel ist dieses
-    host:port statt der aufgeloesten Adresse, ohne Pruefung auf oeffentlich."""
+    """Only in tests (AGENTBOX_CONF_DIR set): every allowed destination is this
+    host:port instead of the resolved address, without the check for public."""
     if "AGENTBOX_CONF_DIR" not in os.environ:
         return None
     host, _, port = os.environ.get("AGENTBOX_PROXY_TEST_UPSTREAM", "").rpartition(":")
@@ -108,10 +108,10 @@ def _test_upstream():
 
 
 def _test_resolve():
-    """Nur in Tests (AGENTBOX_CONF_DIR gesetzt): dieser Resolver antwortet statt getaddrinfo
-    (AGENTBOX_PROXY_TEST_RESOLVE, JSON {name: [adresse, ...]}), geprueft wie jede Aufloesung
-    auf oeffentliche Adressen; ein Name, der nicht darin steht, loest zu nichts auf. Ein Name,
-    der passt, verbindet sich wie immer zum Test-Upstream."""
+    """Only in tests (AGENTBOX_CONF_DIR set): this resolver answers instead of getaddrinfo
+    (AGENTBOX_PROXY_TEST_RESOLVE, JSON {name: [address, ...]}), checked like every resolution
+    for public addresses; a name that is not in it resolves to nothing. A name
+    that matches connects to the test upstream as usual."""
     if "AGENTBOX_CONF_DIR" not in os.environ:
         return None
     try:
@@ -301,7 +301,7 @@ def _entries(text, ctx):
 
 
 def _legacy(ctx):
-    """Die alten Listen, bis agentbox sie in allowlist.json uebernommen hat."""
+    """The old lists, until agentbox has taken them over into allowlist.json."""
     out = {}
     for name, scope in zip(records.LEGACY_ALLOWLIST, ("all", ctx)):
         try:
@@ -314,7 +314,7 @@ def _legacy(ctx):
 
 
 class Allowlist:
-    """Die Eintraege fuer eine VM, neu gelesen, wenn sich allowlist.json aendert; the
+    """The entries for a VM, read again when allowlist.json changes; the
     patterns of its Regex entries compiled then, not per connection."""
 
     def __init__(self, ctx):
@@ -516,7 +516,7 @@ async def watch(ctx, lists):
             log(lines.message(ctx, f"ERROR check of open tunnels failed ({type(e).__name__}: {e})"))
 
 
-# --- Verbindungen ---------------------------------------------------------------
+# --- Connections ---------------------------------------------------------------
 
 def _address(a):
     """The address getaddrinfo gave, or None for one ipaddress cannot read (which counts as
@@ -539,8 +539,8 @@ def _public(addrs):
 async def resolve_public(host):
     """The addresses of host, IPv4 first, or None unless every one of them is public."""
     if TEST_RESOLVE is not None:
-        # nur in Tests: die Adressen des Namens stehen in AGENTBOX_PROXY_TEST_RESOLVE,
-        # geprueft wie jede Aufloesung; erlaubt geht die Verbindung zum Test-Upstream
+        # only in tests: the name's addresses are in AGENTBOX_PROXY_TEST_RESOLVE,
+        # checked like every resolution; if allowed, the connection goes to the test upstream
         addrs = _public(TEST_RESOLVE.get(host, ()))
         return [TEST_UPSTREAM[0]] if addrs and TEST_UPSTREAM else addrs
     if TEST_UPSTREAM:
@@ -683,13 +683,13 @@ async def main():
     lists = Allowlist(ctx)
     if os.environ.get("LISTEN_FDS") == "1":
         sock = socket.socket(fileno=3)
-    else:  # zum Testen ohne systemd: agentbox-proxy <vm> <socket-pfad>
+    else:  # for testing without systemd: agentbox-proxy <vm> <socket-path>
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.bind(sys.argv[2])
         sock.listen(64)
     start = asyncio.start_unix_server if sock.family == socket.AF_UNIX else asyncio.start_server
     server = await start(lambda r, w: handle(ctx, lists, r, w), sock=sock)
-    watcher = asyncio.create_task(watch(ctx, lists))   # Referenz halten, sonst raeumt Python ihn ab
+    watcher = asyncio.create_task(watch(ctx, lists))   # keep a reference, or Python collects it
     log(lines.message(ctx, "ready"))
     async with server:
         await server.serve_forever()

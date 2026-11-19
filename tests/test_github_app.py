@@ -199,7 +199,7 @@ class SetGitHubAppTest(GitHubTest):
 
     def test_another_app_is_added_next_to_the_stored_one(self):
         """A different App ID with its key; app.conf names both, ascending, other lines stay."""
-        self.store((APP_ID, KEY), conf=b"APP_ID=12345\n# Kommentar\nOTHER=1\n")
+        self.store((APP_ID, KEY), conf=b"APP_ID=12345\n# comment\nOTHER=1\n")
         self.github(app_id=777, key="other", app={"id": 777, "slug": "other-app", "name": "Other",
                                                    "owner": {"login": "acme-corp"}})
         code, out, err = self.replace("777", "--no-prompt", "--json")
@@ -208,7 +208,7 @@ class SetGitHubAppTest(GitHubTest):
                                            "html_url": "https://github.com/apps/other-app",
                                            "install_url": "https://github.com/apps/other-app/installations/new",
                                            "stored": True, "added": True})
-        self.assertEqual(self.stored("app.conf"), b"APP_ID=777\nAPP_ID=12345\n# Kommentar\nOTHER=1\n")
+        self.assertEqual(self.stored("app.conf"), b"APP_ID=777\nAPP_ID=12345\n# comment\nOTHER=1\n")
         self.assertEqual(public(self.stored("app-777.pem")), public(OTHER))
         self.assertEqual(self.stored(KEY_FILE), KEY)
         self.assertEqual((self.mode("app-777.pem"), self.mode("app.conf")), (0o400, 0o640))
@@ -374,9 +374,9 @@ class RemoveGitHubAppTest(GitHubTest):
         self.assertEqual(self.calls(), [])
 
     def test_other_lines_of_app_conf_stay(self):
-        self.store(("777", OTHER), (APP_ID, KEY), conf=b"APP_ID=777\n# Kommentar\nAPP_ID=12345\n")
+        self.store(("777", OTHER), (APP_ID, KEY), conf=b"APP_ID=777\n# comment\nAPP_ID=12345\n")
         self.assertEqual(self.run_agentbox("remove-github-app", "777")[0], 0)
-        self.assertEqual(self.stored("app.conf"), b"APP_ID=12345\n# Kommentar\n")
+        self.assertEqual(self.stored("app.conf"), b"APP_ID=12345\n# comment\n")
 
     def test_a_key_app_conf_does_not_name_is_removed_too(self):
         # left behind when set-github-app ended between writing the key and app.conf

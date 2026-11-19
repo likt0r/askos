@@ -34,7 +34,7 @@ function stubNotification(permission: string = 'granted', fail = false) {
 const T = '2026-11-03T12:00:00Z'
 const events: Record<string, Record<string, unknown>> = {
   alert: { time: T, kind: 'alert', severity: 'critical', vm: 'work', text: 'work tried to reach paste.example:443 (paste, young)', domain: 'paste.example:443', signals: ['paste', 'young'] },
-  'github-refused': { time: T, kind: 'github-refused', severity: 'warning', vm: 'work', text: 'GitHub token refused', request: 'likt0r/askos', detail: 'Repository nicht erlaubt' },
+  'github-refused': { time: T, kind: 'github-refused', severity: 'warning', vm: 'work', text: 'GitHub token refused', request: 'likt0r/askos', detail: 'Repository not allowed' },
   'build-failed': { time: T, kind: 'build-failed', severity: 'warning', vm: null, text: 'Build failed', image: 'base', build: '7', detail: 'dnf failed' },
   'build-rejected': { time: T, kind: 'build-rejected', severity: 'critical', vm: null, text: 'Build rejected', image: 'base', build: '8', detail: 'safeguard missing' },
   'host-reboot': { time: T, kind: 'host-reboot', severity: 'warning', vm: null, text: 'Host reboot needed', packages: ['kernel'] },

@@ -259,7 +259,7 @@ class StatusTest(LifecycleTest):
             '"agents_unknown": false, "open_until": 0, "claude_token_since": 0, "gui_connections": 0}}\n'))
 
     def test_json_agents_unknown_when_orca_fails(self):
-        self.scenario(orca={"work": {"exit": 1}, "priv": {"stdout": "kein JSON"}})
+        self.scenario(orca={"work": {"exit": 1}, "priv": {"stdout": "no JSON"}})
         self.observer("work", "priv")
         data = self.status()
         for ctx in ("work", "priv"):

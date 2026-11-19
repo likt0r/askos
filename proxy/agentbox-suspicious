@@ -1,25 +1,25 @@
 #!/usr/bin/python3 -I
-"""Einstufung verdaechtiger Ziele fuer den Allowlist-Proxy.
+"""Classification of suspicious destinations for the Allowlist proxy.
 
-Wird vom Proxy als Modul geladen und von agentbox als Befehl genutzt:
-  agentbox-suspicious <host>                 gibt die Merkmale aus (leer = unauffaellig);
-                                             Exit 2 bei starkem Verdacht, Exit 3 (Grund auf
-                                             stderr), solange die Verdachtsliste von Hand
-                                             unlesbar ist: was stark ist, ist dann unbekannt
-  agentbox-suspicious --json <host>          Merkmale mit Begruendung (agentbox check-domain)
-  agentbox-suspicious --watchlist            Verdachtsliste von Hand und Stand der HaGeZi-Listen
-                                             als JSON (agentbox watchlist)
-  agentbox-suspicious --constants            Kategorien der Verdachtsliste (stark oder nicht) und
-                                             die eingebauten legitimen Domains als JSON
-  agentbox-suspicious --lifts <domain>       was es aufhoebe, die Domain legitim zu machen:
-                                             starke Merkmale (ohne das Blockchain-Muster,
-                                             das bleibt) und Eintraege der Threat-
-                                             Intelligence-Liste darunter, als JSON
+Loaded by the proxy as a module and used by agentbox as a command:
+  agentbox-suspicious <host>                 prints the Signals (empty = nothing suspicious);
+                                             exit 2 on a strong Signal, exit 3 (reason on
+                                             stderr) while the Watchlist cannot be read:
+                                             which Signals are strong is then unknown
+  agentbox-suspicious --json <host>          the Signals with reasons (agentbox check-domain)
+  agentbox-suspicious --watchlist            the Watchlist and the state of the HaGeZi lists
+                                             as JSON (agentbox watchlist)
+  agentbox-suspicious --constants            the Watchlist categories (strong or not) and
+                                             the built-in Legitimate domains as JSON
+  agentbox-suspicious --lifts <domain>       what making the domain legitimate would lift:
+                                             strong Signals (not the blockchain pattern,
+                                             which stays) and entries of the Threat
+                                             Intelligence list below it, as JSON
   agentbox-suspicious --signals <host>...    the Signals of each host and whether one is strong,
                                              and why the Watchlist cannot be read, as JSON (the
                                              preview of a regex Allowlist entry)
-  agentbox-suspicious --self-test            Selbsttest der Erkennung (agentbox setup): startet den
-                                             Proxy neben dieser Datei mit Testlisten
+  agentbox-suspicious --self-test            self-test of the detection (agentbox setup): starts
+                                             the proxy next to this file with test lists
 
 Regex entries (ADR 0013): every list can hold a regular expression instead of a domain,
 matched with re.fullmatch against the lowercased host without its trailing dot, and
@@ -28,41 +28,40 @@ in agentbox's list records (agentbox/list_records.py, pattern_problem), which th
 program, the proxy and agentbox import alike. A regex Legitimate domain lifts only weak Signals: which strong
 ones it would lift cannot be checked for a pattern (ADR 0009, ADR 0013).
 
-Grundlage: Auswertung von Supply-Chain-Vorfaellen 2024-2026 (Shai-Hulud,
-s1ngularity, chalk/debug, axios, TanStack, keyv, GlassWorm). Feste Domains
-stehen in der Verdachtsliste; die Muster hier fangen auch Domains, die erst
-nach einem Vorfall bekannt werden. False positives are accepted: a weak Signal only raises an
+Basis: an analysis of supply-chain incidents 2024-2026 (Shai-Hulud,
+s1ngularity, chalk/debug, axios, TanStack, keyv, GlassWorm). Fixed domains
+are on the Watchlist; the patterns here also catch domains that only become known
+after an incident. False positives are accepted: a weak Signal only raises an
 Alert. Strong Signals always block in the proxy, whatever would allow the destination: an
 Allowlist entry, also a domain entry, or Open web (ADR 0021).
 
-Listen (jeweils inkl. Subdomains, bei Aenderung ohne Neustart neu gelesen; fuer die
-Merkmale bleibt bei einer kaputten Datei der letzte gute Stand, bei der Verdachtsliste
-von Hand auch, wenn sie fehlt. While that one is broken or missing altogether, the proxy lets
+Lists (each including subdomains, read again on change without a restart; for the
+Signals a broken file leaves the last good state, for the Watchlist also when it is
+missing. While that one is broken or missing altogether, the proxy lets
 nothing through, Allowlist entries included, and closes every tunnel):
-  /etc/agentbox/watchlist.json       Verdachtsliste von Hand (agentbox watch-add/-remove),
-                                     jeder Eintrag mit Kategorie und Quelle
-  /etc/agentbox/legitimate.json      bekannte legitime Domains (agentbox legitimate-add/
-                                     -remove) und die eingebauten (GENUINE): keine
-                                     Muster-Merkmale ausser dem Blockchain-Muster, Treffer der
-                                     HaGeZi-Listen fuer sie und darunter zaehlen nicht (beim
-                                     Einstufen, die Listen liegen ungefiltert); ausgenommen
-                                     Subdomains der User-Content-Domains (USER_CONTENT:
+  /etc/agentbox/watchlist.json       the Watchlist (agentbox watch-add/-remove),
+                                     each entry with a category and a source
+  /etc/agentbox/legitimate.json      known Legitimate domains (agentbox legitimate-add/
+                                     -remove) and the built-in ones (GENUINE): no
+                                     pattern Signals except the blockchain pattern, and HaGeZi
+                                     list hits for them and below do not count (when
+                                     classifying; the lists are unfiltered); except
+                                     subdomains of the user-content domains (USER_CONTENT:
                                      github.io, githubusercontent.com, claudeusercontent.com),
-                                     auf denen beliebige Nutzer veroeffentlichen: deren
-                                     Treffer zaehlen
-                                     Bis agentbox migrate-lists sie anlegt, gelten an ihrer
-                                     Stelle die Textdateien suspicious-domains und
-                                     legitimate-domains (eine Domain pro Zeile).
-  /etc/agentbox/harmless             als harmlos markiert (agentbox mark-harmless): loest
-                                     keine Alerts mehr aus, bleibt aber sonst, wie es ist
+                                     where any user can publish: their hits count
+                                     Until agentbox migrate-lists creates it, the text files
+                                     suspicious-domains and legitimate-domains (one domain
+                                     per line) apply in its place.
+  /etc/agentbox/harmless             marked harmless (agentbox mark-harmless): raises
+                                     no more Alerts, but is otherwise unchanged
                                      (strong Signals keep blocking it);
                                      a line "regex <pattern>" is a Regex entry
-  /var/lib/agentbox/feeds/           HaGeZi-Listen von agentbox-feeds (Timer):
-                                     threat-intelligence (Merkmal threat) und
-                                     newly-registered (Merkmal young)
-Die HaGeZi-Listen haben Millionen Eintraege. Sie liegen sortiert auf der Platte
-und werden per mmap mit binaerer Suche gelesen: jeder Proxy-Prozess teilt die
-Seiten mit allen anderen ueber den Page-Cache und laedt nichts in den Speicher.
+  /var/lib/agentbox/feeds/           HaGeZi lists from agentbox-feeds (timer):
+                                     threat-intelligence (Signal threat) and
+                                     newly-registered (Signal young)
+The HaGeZi lists have millions of entries. They lie sorted on disk
+and are read with binary search through mmap: every proxy process shares the
+pages with all others through the page cache and loads nothing into memory.
 """
 import ipaddress
 import json
@@ -95,28 +94,28 @@ from agentbox.list_records import (CATEGORIES, PATTERN_HOST, compile_pattern, pa
                                    pattern_problem, printable, refused_entry)
 
 CONF_DIR = os.environ.get("AGENTBOX_CONF_DIR", "/etc/agentbox")
-# Datensaetze des Hosts (schreibt nur agentbox) und die Textdateien davor
+# Host records (only agentbox writes them) and the text files from before
 WATCHLIST = os.path.join(CONF_DIR, records.WATCHLIST)
 LEGITIMATE = os.path.join(CONF_DIR, records.LEGITIMATE)
 LEGACY_WATCHLIST = os.path.join(CONF_DIR, records.LEGACY_WATCHLIST)
 LEGACY_LEGITIMATE = os.path.join(CONF_DIR, records.LEGACY_LEGITIMATE)
 HARMLESS = os.path.join(CONF_DIR, records.HARMLESS)
 FEEDS_DIR = os.environ.get("AGENTBOX_FEEDS_DIR", "/var/lib/agentbox/feeds")
-# Dateinamen der HaGeZi-Listen in FEEDS_DIR (agentbox-feeds schreibt sie)
+# File names of the HaGeZi lists in FEEDS_DIR (agentbox-feeds writes them)
 FEEDS = ("threat-intelligence", "newly-registered")
 FEED_STATUS = os.path.join(FEEDS_DIR, "status.json")
 
 # With these Signals the proxy blocks a destination, whatever would allow it (ADR 0021)
 STRONG = {"exfil", "c2", "tunnel", "paste", "phishing", "blockchain", "lookalike", "raw-ip", "metadata",
           "threat"}
-# so viele Eintraege der Threat-Intelligence-Liste nennt --lifts hoechstens
+# --lifts names at most this many entries of the Threat Intelligence list
 LIFTS_SHOWN = 5
-# Haengen nicht am Namen: gelten auch fuer legitime Domains und loesen auch fuer
-# harmlose Domains Alerts aus
+# Do not depend on the name: they also apply to Legitimate domains and also raise Alerts
+# for harmless domains
 STRUCTURAL = {"raw-ip", "metadata"}
 
-# Echte Domains der Marken, die gern nachgeahmt werden; zugleich die Vorlagen
-# fuer die Tippfehler-Pruefung (Namen ab MIN_TYPO Zeichen)
+# Genuine domains of the brands that are often imitated; also the templates
+# for the typo check (names of MIN_TYPO characters or more)
 GENUINE = {
     "npmjs.org", "npmjs.com", "pypi.org", "pythonhosted.org", "python.org", "crates.io",
     "rust-lang.org", "github.com", "githubusercontent.com", "githubassets.com", "github.io",
@@ -125,37 +124,37 @@ GENUINE = {
 }
 BRANDS = ("npm", "npmjs", "pypi", "pythonhosted", "crates", "github", "ghcr", "anthropic",
           "claude", "openai", "docker", "yarnpkg", "nodejs")
-# Von GENUINE die Domains, deren Subdomains beliebigen Nutzern gehoeren: GitHub Pages
-# (<nutzer>.github.io), die Raw-Hosts von GitHub (raw.githubusercontent.com, ...) und die
-# Artifacts von claude.ai (<id>.claudeusercontent.com). Sie bleiben fuer die Marke legitim
-# (keine Muster-Merkmale, die Domain selbst mit eingerechnet), aber Treffer der
-# HaGeZi-Listen auf ihren Subdomains zaehlen: dort kann jeder Inhalte veroeffentlichen.
-# Kein Eintrag der legitimen Domains hebt sie auf, auch keiner des Hosts darunter nicht,
-# und sei er noch so spezifisch (explain); auch nicht claudeusercontent.com, das die Liste
-# eines neuen Hosts (legitimate-domains) frueher als Eintrag des Hosts brachte. Eingebaut,
-# damit es kein Host abschalten kann.
+# Of GENUINE, the domains whose subdomains belong to arbitrary users: GitHub Pages
+# (<user>.github.io), GitHub's raw hosts (raw.githubusercontent.com, ...) and the
+# artifacts of claude.ai (<id>.claudeusercontent.com). They stay legitimate for the brand
+# (no pattern Signals, the domain itself included), but HaGeZi list hits on their
+# subdomains count: anyone can publish content there.
+# No entry of the Legitimate domains lifts them, not even one of the Host below them,
+# however specific (explain); nor claudeusercontent.com, which the list of a new
+# Host (legitimate-domains) used to bring as an entry of the Host. Built in,
+# so that no Host can switch it off.
 USER_CONTENT = frozenset({"github.io", "githubusercontent.com", "claudeusercontent.com"})
-# Kuerzere Namen sind zu oft echte Woerter oder Kuerzel (pypa): keine Tippfehler-Pruefung,
-# und kuerzere Vorlagen (bun, pypi, ghcr) machen fast jedes Wort zum Tippfehler (bunny)
+# Shorter names are too often real words or abbreviations (pypa): no typo check,
+# and shorter templates (bun, pypi, ghcr) turn almost any word into a typo (bunny)
 MIN_TYPO = 5
 TYPO_TARGETS = sorted({g.split(".")[0] for g in GENUINE if len(g.split(".")[0]) >= MIN_TYPO})
 ODD_TLDS = {"help", "lat", "top", "xyz", "click", "zip", "su", "mov", "icu", "cfd", "sbs", "rest",
             "cyou", "buzz", "monster", "quest", "loan", "gq", "tk", "ml", "cf", "ga"}
 BLOCKCHAIN = re.compile(r"(^|\.)(solana\.|mainnet|rpc\.)|llamarpc|nodereal|getblock|infura|alchemy|quicknode|quiknode|ankr\.com|tronscan|trongrid")
 METADATA = {"169.254.169.254", "metadata.google.internal", "fd00:ec2::254", "100.100.100.200"}
-# Ein Eintrag der HaGeZi-Listen: Labels aus Buchstaben, Ziffern und Bindestrichen,
-# TLD aus Buchstaben oder Punycode (keine IP-Adressen)
+# An entry of the HaGeZi lists: labels of letters, digits and hyphens,
+# TLD of letters or Punycode (no IP addresses)
 FEED_ENTRY = re.compile(rb"(?=.{4,253}\Z)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+([a-z]{2,63}|xn--[a-z0-9-]{1,59})")
 
 USAGE = ("agentbox-suspicious <host> | --json <host> | --watchlist | --constants | "
          "--lifts <domain> | --signals <host>... | --self-test")
 
 
-# --- Listen -------------------------------------------------------------------
+# --- Lists --------------------------------------------------------------------
 
-# Pfad -> (Kennung der Datei, Inhalt, warum sie nicht lesbar ist oder None); bei einer
-# kaputten Datei ist der Inhalt ihr letzter guter Stand. Das Urteil haengt an der Kennung:
-# eine kaputte Datei, weg- und zurueckbenannt, bleibt kaputt. The key holds the ctime, which a
+# Path -> (identity of the file, content, why it cannot be read or None); for a
+# broken file the content is its last good state. The verdict hangs on the identity:
+# a broken file, renamed away and back, stays broken. The key holds the ctime, which a
 # chmod changes: a file that can no longer be read counts as unreadable at once
 _cache = {}
 
@@ -170,9 +169,9 @@ class Refused(ValueError):
 
 
 def _read(path, parse, empty):
-    """(Inhalt, None) einer Liste, neu gelesen, wenn sich die Datei geaendert hat; (None,
-    None), wenn es sie nicht gibt. Ist sie nicht lesbar oder kaputt (parse wirft
-    ValueError): (der letzte gute Stand, ohne einen empty, warum); parse raising Refused:
+    """(content, None) of a list, read again when the file has changed; (None,
+    None) when it does not exist. When it cannot be read or is broken (parse raises
+    ValueError): (the last good state, or empty if there is none, why); parse raising Refused:
     (what it read without the refused entries, why)."""
     hit = _cache.get(path)
     last = hit[1] if hit else empty
@@ -235,8 +234,8 @@ def _listed(entries, value, broad=True):
 
 
 def _watchlist_record(text):
-    """watchlist.json  ->  Listed of (kategorie, quelle); ein Tippfehler in der Kategorie
-    machte einen starken Eintrag sonst schwach. Its patterns need no breadth check: a
+    """watchlist.json  ->  Listed of (category, source); a typo in the category
+    would otherwise make a strong entry weak. Its patterns need no breadth check: a
     broad one only raises false Alerts. A pattern the rules refuse raises no Signal, so what
     the proxy would have to keep blocked is unknown: the record reads without it, but counts
     as unreadable (Refused) until it is removed."""
@@ -248,7 +247,7 @@ def _watchlist_record(text):
 
 
 def _watchlist_text(text):
-    """<domain> <kategorie> # Quelle  ->  Listed of (kategorie, quelle)"""
+    """<domain> <category> # source  ->  Listed of (category, source)"""
     return Listed({records.legacy_domain(parts[0]): (parts[1], source.strip())
                    for parts, source in ((body.split(), source) for body, source in records.legacy_lines(text))
                    if len(parts) >= 2})
@@ -268,16 +267,16 @@ def _marks(text):
 
 
 def _legitimate_record(text):
-    """legitimate.json  ->  Listed; kaputt zaehlen nur die eingebauten (oder im Proxy
-    der letzte gute Stand), das fuegt nur Merkmale hinzu. A pattern the rules refuse lifts
+    """legitimate.json  ->  Listed; when broken only the built-in ones count (or in the proxy
+    the last good state), which only adds Signals. A pattern the rules refuse lifts
     nothing, which only adds Signals; the other entries count."""
     return _listed(_checked(text, records.legitimate_problem), lambda e: None)[0]
 
 
 def _hand_watchlist():
-    """(Verdachtsliste von Hand, warum sie gerade nicht lesbar ist oder None). Fehlt
-    watchlist.json und die Textdatei davor auch, bleibt ihr letzter guter Stand, wie fuer
-    eine kaputte."""
+    """(the Watchlist, why it cannot be read right now or None). If
+    watchlist.json and the text file from before are both missing, its last good state stays, as for
+    a broken one."""
     found, why = _read(WATCHLIST, _watchlist_record, EMPTY)
     if found is not None:
         return found, why and f"{WATCHLIST}: {why}"
@@ -289,14 +288,14 @@ def _hand_watchlist():
 
 
 def hand_watchlist():
-    """Die Verdachtsliste von Hand, Listed of (kategorie, quelle): watchlist.json, bis
-    es sie gibt die Textdatei davor; ist sie kaputt, ihr letzter guter Stand."""
+    """The Watchlist, Listed of (category, source): watchlist.json, until it
+    exists the text file from before; when it is broken, its last good state."""
     return _hand_watchlist()[0]
 
 
 def watchlist_unreadable():
-    """Warum die Verdachtsliste von Hand gerade nicht lesbar ist, sonst None: watchlist.json
-    ist kaputt oder nicht lesbar, oder sie fehlt und die Textdatei davor auch. The proxy then
+    """Why the Watchlist cannot be read right now, else None: watchlist.json
+    is broken or unreadable, or it is missing and the text file from before too. The proxy then
     lets nothing through, Allowlist entries included, and closes every tunnel, also with a last
     good state in memory: which Signals are strong is unknown (ADR 0021). agentbox (lists.py)
     judges alike."""
@@ -321,13 +320,13 @@ def signals_key():
 
 
 def _within(host, domains):
-    """Die Eintraege aus domains, die host selbst oder eine uebergeordnete Domain sind."""
+    """The entries of domains that are host itself or a parent domain."""
     labels = host.split(".")
     return [d for d in (".".join(labels[i:]) for i in range(len(labels))) if d in domains]
 
 
-# (die legitimen Domains des Hosts, mit den eingebauten vereinigt, and the Host's patterns):
-# neu gebildet nur, wenn sich die des Hosts aendern, nicht fuer jedes Ziel, das der Proxy einstuft
+# (the Host's Legitimate domains, merged with the built-in ones, and the Host's patterns):
+# rebuilt only when the Host's change, not for every destination the proxy classifies
 _legitimate = (None, GENUINE, ())
 
 
@@ -343,22 +342,22 @@ def _legitimate_lists():
 
 
 def legitimate_domains():
-    """Bekannte legitime Domains: die eingebauten und die des Hosts (legitimate.json, bis
-    es sie gibt die Textdatei davor). Treffer der HaGeZi-Listen fuer sie und ihre
-    Subdomains zaehlen nicht (explain), ausser auf Subdomains der User-Content-Domains
-    (USER_CONTENT); die Listen liegen ungefiltert."""
+    """Known Legitimate domains: the built-in ones and the Host's (legitimate.json, until
+    it exists the text file from before). HaGeZi list hits for them and their
+    subdomains do not count (explain), except on subdomains of the user-content domains
+    (USER_CONTENT); the lists are unfiltered."""
     return _legitimate_lists()[0]
 
 
 def legitimate(host):
-    """Der Eintrag der legitimen Domains, unter den host faellt, sonst None."""
+    """The entry of the Legitimate domains that host falls under, else None."""
     hits = _within(host, legitimate_domains())
     return hits[-1] if hits else None
 
 
 def _user_content(domain):
-    """Die User-Content-Domain (USER_CONTENT), deren Subdomain domain ist (nicht die Domain
-    selbst), sonst None."""
+    """The user-content domain (USER_CONTENT) that domain is a subdomain of (not the domain
+    itself), else None."""
     labels = domain.split(".")
     return next((d for d in (".".join(labels[i:]) for i in range(1, len(labels))) if d in USER_CONTENT),
                 None)
@@ -384,15 +383,15 @@ def harmless_hit(host):
 
 
 def harmless(host):
-    """Der Eintrag der Harmlos-Liste, unter den host faellt (a domain or a pattern), sonst None."""
+    """The entry of the Harmless list that host falls under (a domain or a pattern), else None."""
     hit = harmless_hit(host)
     return hit[0] if hit else None
 
 
 class SortedList:
-    """Eine sortierte Liste (eine Domain pro Zeile, nach Bytes sortiert), per mmap
-    gelesen. Eine Suche liest ~20 Seiten; ersetzt agentbox-feeds die Datei
-    (Umbenennen), wird beim naechsten Aufruf die neue geoeffnet."""
+    """A sorted list (one domain per line, sorted by bytes), read through
+    mmap. A lookup reads ~20 pages; if agentbox-feeds replaces the file
+    (rename), the new one is opened on the next call."""
 
     def __init__(self, path):
         self.path = path
@@ -416,7 +415,7 @@ class SortedList:
                 except (OSError, ValueError):
                     return None
                 try:
-                    # kein Vorauslesen: von jeder Suche bleiben nur ihre Seiten im Cache
+                    # no read-ahead: of each lookup only its pages stay in the cache
                     self.map.madvise(mmap.MADV_RANDOM)
                 except (OSError, ValueError, AttributeError):
                     pass
@@ -446,8 +445,8 @@ class SortedList:
         return False
 
     def below(self, domain, limit):
-        """Bis zu limit Eintraege, die domain selbst oder eine Subdomain davon sind (liest
-        die ganze Liste, nur fuer seltene Aufrufe)."""
+        """Up to limit entries that are domain itself or a subdomain of it (reads
+        the whole list, only for rare calls)."""
         m = self.current()
         if m is None:
             return []
@@ -464,7 +463,7 @@ class SortedList:
         return out
 
     def match(self, host):
-        """Der Eintrag, der host oder eine uebergeordnete Domain (ab zwei Labels) ist."""
+        """The entry that is host or a parent domain (from two labels)."""
         m = self.current()
         if m is None:
             return None
@@ -484,7 +483,7 @@ _feeds = {name: SortedList(os.path.join(FEEDS_DIR, name)) for name in FEEDS}
 
 
 def feed_status():
-    """Stand der HaGeZi-Listen, wie agentbox-feeds ihn zuletzt geschrieben hat."""
+    """State of the HaGeZi lists, as agentbox-feeds last wrote it."""
     try:
         with open(FEED_STATUS, encoding="utf-8") as f:
             status = json.load(f)
@@ -499,10 +498,10 @@ def feed_status():
     return out
 
 
-# --- Einstufung ----------------------------------------------------------------
+# --- Classification -----------------------------------------------------------
 
 def registrable(host):
-    """Grobe Naeherung der registrierbaren Domain (letzte zwei Labels)."""
+    """Rough approximation of the registrable domain (last two labels)."""
     labels = host.split(".")
     return ".".join(labels[-2:]) if len(labels) >= 2 else host
 
@@ -515,7 +514,7 @@ def entropy(s):
 
 
 def levenshtein(a, b, limit=None):
-    """Editierabstand; mit limit hoechstens limit + 1 (bricht frueh ab)."""
+    """Edit distance; with limit at most limit + 1 (stops early)."""
     prev = list(range(len(b) + 1))
     for i, ca in enumerate(a, 1):
         cur = [i]
@@ -579,11 +578,11 @@ def explain(host):
         else:
             found.append(_reason(category, "watchlist", f"Watchlist: {entry}" + (f" ({source})" if source else ""),
                                  domain=entry, **more))
-    # Bekannt legitim: keine Muster, Treffer der HaGeZi-Listen zaehlen nicht (fuer die Domain
-    # und darunter; ein Eintrag ueber ihr zaehlt weiter fuer ihre Nachbarn). Ausnahme die
-    # Subdomains einer User-Content-Domain (USER_CONTENT): deren Treffer in den HaGeZi-Listen
-    # zaehlen immer, egal welcher Legitime Eintrag darauf passt (auch einer des Hosts, auch
-    # ein spezifischerer); ihre Muster-Merkmale nicht. A regex Legitimate domain lifts only
+    # Known legitimate: no patterns, HaGeZi list hits do not count (for the domain
+    # and below; an entry above it still counts for its neighbours). Exception: the
+    # subdomains of a user-content domain (USER_CONTENT): their hits in the HaGeZi lists
+    # always count, whichever Legitimate entry matches (also one of the Host, also
+    # a more specific one); their pattern Signals do not. A regex Legitimate domain lifts only
     # the weak ones.
     if _user_content(host):
         found += _feed_signals(host)
@@ -600,9 +599,9 @@ def explain(host):
 
 
 def _feed_signals(host):
-    """Die Treffer der HaGeZi-Listen fuer host, als Liste von _reason(): der Teil der
-    Namen-Merkmale, der auch unter einer User-Content-Domain zaehlt (USER_CONTENT), egal
-    welcher Legitime Eintrag darauf passt."""
+    """The HaGeZi list hits for host, as a list of _reason(): the part of the
+    name Signals that also counts under a user-content domain (USER_CONTENT), whichever
+    Legitimate entry matches."""
     found = []
     hit = _feeds["threat-intelligence"].match(host)
     if hit:
@@ -620,12 +619,12 @@ def _name_signals(host):
     reg = registrable(host)
     name = reg.split(".")[0]
     tld = reg.rsplit(".", 1)[-1]
-    # Registry-/Anbieter-Name in fremder Domain (npm-cache.com, pypi-get.com, npmjs.help)
+    # Registry/vendor name in a foreign domain (npm-cache.com, pypi-get.com, npmjs.help)
     brand = next((b for b in BRANDS if b in re.split(r"[-_]", name) or name.startswith(b) or name.endswith(b)), None)
     if brand:
         found.append(_reason("lookalike", "brand", f"brand name {brand} in the foreign domain {reg}",
                              brand=brand, domain=reg))
-    # Tippfehler-Domains (npnjs.com), nur fuer Namen ab MIN_TYPO Zeichen
+    # Typo domains (npnjs.com), only for names of MIN_TYPO characters or more
     elif len(name) >= MIN_TYPO:
         for target in TYPO_TARGETS:
             if abs(len(target) - len(name)) <= 2:
@@ -636,7 +635,7 @@ def _name_signals(host):
                     break
     if tld in ODD_TLDS:
         found.append(_reason("tld", "tld", f"unusual TLD .{tld}", tld=tld))
-    # Zufaellig wirkende oder sehr lange Labels (DNS-Exfil, generierte Domains)
+    # Random-looking or very long labels (DNS exfil, generated domains)
     for label in host.split(".")[:-1]:
         if len(label) > 40 or (len(label) >= 20 and entropy(label) > 3.5) or re.fullmatch(r"[0-9a-f]{16,}", label):
             found.append(_reason("random-label", "random-label", f"random-looking or very long label {label[:63]}",
@@ -648,13 +647,13 @@ def _name_signals(host):
 
 
 def classify(host):
-    """Liefert eine sortierte Liste von Merkmalen; leer = unauffaellig."""
+    """Returns a sorted list of Signals; empty = nothing suspicious."""
     return sorted({r["signal"] for r in explain(host)})
 
 
 def alerting(host, tags):
-    """Die Merkmale, die einen Alert ausloesen: bei harmlosen Domains nur die, die
-    nicht am Namen haengen. Blocking still follows every Signal."""
+    """The Signals that raise an Alert: for harmless domains only those that
+    do not depend on the name. Blocking still follows every Signal."""
     return sorted(set(tags) & STRUCTURAL) if harmless(normalise(host)) else list(tags)
 
 
@@ -681,14 +680,14 @@ def report(host):
 
 
 def lifts(domain):
-    """Fuer agentbox legitimate-add: was es aufhoebe, domain (mit ihren Subdomains) legitim zu
-    machen. Die starken Merkmale aus Mustern und HaGeZi-Listen, die domain selbst hat (auch
-    ein Eintrag ueber ihr; das Blockchain-Muster nicht, das bleibt), und Eintraege der
-    Threat-Intelligence-Liste, die domain oder eine Subdomain sind, auch unter einer
-    legitimen Domain des Hosts (die kann wieder gehen, diese bliebe): die Liste liegt
-    ungefiltert. Nichts unter einer eingebauten, die bleibt (auch unter einer User-Content-
-    Domain: deren Treffer zaehlen weiter, keiner hebt sie auf). feed_present: ob es die
-    Threat-Intelligence-Liste gibt (sonst ist nicht pruefbar, was darunter steht)."""
+    """For agentbox legitimate-add: what making domain (with its subdomains) legitimate would
+    lift. The strong Signals from patterns and HaGeZi lists that domain itself has (also
+    an entry above it; not the blockchain pattern, which stays), and entries of the
+    Threat Intelligence list that are domain or a subdomain, also below a
+    Legitimate domain of the Host (that one can go again, this would stay): the list is
+    unfiltered. Nothing below a built-in one, which stays (also below a user-content
+    domain: their hits keep counting, nothing lifts them). feed_present: whether the
+    Threat Intelligence list exists (otherwise what is below cannot be checked)."""
     domain = normalise(domain)
     feed = _feeds["threat-intelligence"]
     if _within(domain, GENUINE):
@@ -700,14 +699,14 @@ def lifts(domain):
 
 
 def constants():
-    """Fuer agentbox: die Kategorien der Verdachtsliste ({kategorie: stark}) und die
-    eingebauten legitimen Domains."""
+    """For agentbox: the Watchlist categories ({category: strong}) and the
+    built-in Legitimate domains."""
     return {"categories": {c: c in STRONG for c in CATEGORIES}, "genuine": sorted(GENUINE)}
 
 
 def watchlist():
-    """Fuer agentbox watchlist: die Verdachtsliste von Hand (jeder Eintrag mit Kategorie,
-    ob sie stark ist, und Quelle) und der Stand der HaGeZi-Listen."""
+    """For agentbox watchlist: the Watchlist (each entry with category,
+    whether it is strong, and source) and the state of the HaGeZi lists."""
     entries = hand_watchlist()
     return {"entries": [{"domain": d, "regex": None, "category": c, "strong": c in STRONG, "source": src}
                         for d, (c, src) in sorted(entries.domains.items())]
@@ -727,11 +726,11 @@ def signals(hosts):
     return {"hosts": out, "watchlist_unreadable": watchlist_unreadable()}
 
 
-# --- Selbsttest ------------------------------------------------------------------
+# --- Self-test -------------------------------------------------------------------
 
-# Testeintraege, an die Listen des Hosts angehaengt: ein Treffer der Verdachtsliste, legitime
-# Domains (ihre Eintraege in den ungefilterten Testlisten zaehlen nicht, der ueber
-# cdn.vendor-selftest.example aber fuer seine anderen Subdomains)
+# Test entries appended to the Host's lists: a Watchlist hit, Legitimate
+# domains (their entries in the unfiltered test lists do not count, but the one above
+# cdn.vendor-selftest.example does for its other subdomains)
 SELFTEST_WATCHLIST = ("exfil-selftest.example", "exfil", "self-test")
 SELFTEST_LEGITIMATE = ("legit-selftest.example", "cdn.vendor-selftest.example")
 SELFTEST_FEEDS = {
@@ -741,39 +740,39 @@ SELFTEST_FEEDS = {
     "newly-registered": ["npmjs.com", "young-selftest.example", "mirror1-selftest.example"],
 }
 SELFTEST_HARMLESS = ["npm-selftest.example"]
-# (host, erwartete Merkmale, genau) - ohne offenes Web, nichts davon wird aufgeloest. Echte
-# Namen nur fuer die eingebauten legitimen Domains und Subdomains davon (github.io,
-# claudeusercontent.com: nur eine echte Subdomain ist User Content), sonst .example, das
-# die Listen des Hosts nicht nennen; deckt ein Eintrag der Verdachtsliste des Hosts einen
-# Fall doch ab, kommt seine Kategorie zu den erwarteten Merkmalen. Dazu kommt ein Eintrag
-# der Verdachtsliste des Hosts (der erste), wenn sie einen hat.
+# (host, expected Signals, exact) - without Open web, none of it is resolved. Real
+# names only for the built-in Legitimate domains and subdomains of them (github.io,
+# claudeusercontent.com: only a real subdomain is user content), otherwise .example, which
+# the Host's lists do not name; if an entry of the Host's Watchlist covers a
+# case after all, its category is added to the expected Signals. In addition comes an entry
+# of the Host's Watchlist (the first), if it has one.
 SELFTEST_CASES = [
-    ("sub.exfil-selftest.example", {"exfil"}, True),     # Verdachtsliste, per Suffix
-    ("cdn.evil-selftest.example", {"threat"}, True),     # Threat-Intelligence-Liste, per Suffix
-    ("www.young-selftest.example", {"young"}, True),     # Liste neu registrierter Domains
-    ("github.com", set(), True),                         # Listeneintrag, aber legitim (eingebaut)
-    ("evil.github.io", {"threat"}, True),                # ... ausser Subdomains von User Content:
-    ("objects.githubusercontent.com", {"threat"}, True), # deren Treffer zaehlen (eingebaut)
-    ("user.github.io", set(), True),                     # ohne Treffer keine Merkmale darunter
-    ("evil.claudeusercontent.com", {"threat"}, True),    # Artifacts von claude.ai, auch mit dem
-                                                         # Eintrag des Hosts aus der Erstbefuellung
+    ("sub.exfil-selftest.example", {"exfil"}, True),     # Watchlist, by suffix
+    ("cdn.evil-selftest.example", {"threat"}, True),     # Threat Intelligence list, by suffix
+    ("www.young-selftest.example", {"young"}, True),     # list of newly registered domains
+    ("github.com", set(), True),                         # list entry, but legitimate (built in)
+    ("evil.github.io", {"threat"}, True),                # ... except subdomains of user content:
+    ("objects.githubusercontent.com", {"threat"}, True), # their hits count (built in)
+    ("user.github.io", set(), True),                     # without a hit no Signals below it
+    ("evil.claudeusercontent.com", {"threat"}, True),    # artifacts of claude.ai, also with the
+                                                         # Host's entry from the initial fill
     ("npmjs.com", set(), True),
-    ("cdn.legit-selftest.example", set(), True),         # Listeneintrag, aber legitim (Host)
-    ("cdn.vendor-selftest.example", set(), True),        # Listeneintrag darueber, aber legitim
-    ("api.vendor-selftest.example", {"threat"}, True),   # ... der fuer ihre Nachbarn zaehlt
-    ("githbu.example", {"lookalike"}, True),             # Tippfehler, sechs Zeichen
-    ("pypx.example", set(), True),                       # vier Zeichen: keine Tippfehler-Pruefung
-    ("npm-other.example", {"lookalike"}, True),          # Markenname in fremder Domain
-    ("npm-selftest.example", set(), True),               # harmlos markiert: kein Alert
+    ("cdn.legit-selftest.example", set(), True),         # list entry, but legitimate (Host)
+    ("cdn.vendor-selftest.example", set(), True),        # list entry above it, but legitimate
+    ("api.vendor-selftest.example", {"threat"}, True),   # ... which counts for its neighbours
+    ("githbu.example", {"lookalike"}, True),             # typo, six characters
+    ("pypx.example", set(), True),                       # four characters: no typo check
+    ("npm-other.example", {"lookalike"}, True),          # brand name in a foreign domain
+    ("npm-selftest.example", set(), True),               # marked harmless: no Alert
     ("plain-selftest.example", set(), True),
 ]
-# im offenen Web: stark verdaechtige Ziele bleiben gesperrt (auch harmlos markierte), ohne
-# Aufloesung. Nur Namen unter .example: auch wenn die Erkennung kaputt ist, erreicht der
-# Selbsttest so nie ein echtes Ziel.
+# in Open web: strong destinations stay blocked (also those marked harmless), without
+# resolution. Only names under .example: even if the detection is broken, the
+# self-test never reaches a real destination this way.
 SELFTEST_OPEN = [("x.exfil-selftest.example", "exfil"), ("api.evil-selftest.example", "threat"),
                  ("www.npm-selftest.example", "lookalike"), ("c2-8-selftest.example", "c2"),
                  ("pypi-2-selftest.example", "lookalike")]
-# danach, mit kaputter Verdachtsliste: das offene Web laesst auch Unauffaelliges nicht durch
+# after that, with a broken Watchlist: Open web lets not even unremarkable ones through
 SELFTEST_UNREADABLE = ("free-selftest.example", proxy_log.WATCHLIST_UNREADABLE)
 # One Regex entry per list (ADR 0013), in lists of only the test entries, which replace the
 # Host's for the cases after the first ones (the text files from before have no patterns)
@@ -831,9 +830,9 @@ REFUSED = "alert 49"
 
 
 def _selftest_list(conf, record, legacy, add, parse):
-    """Eine Liste des Hosts (der Datensatz, bis es ihn gibt die Textdatei davor) mit
-    einem Testeintrag nach conf kopiert. add(daten, ist_datensatz) haengt ihn an; einen
-    Datensatz, den parse (wie der Proxy) kaputt nennt, gibt es als ValueError zurueck."""
+    """A list of the Host (the record, until it exists the text file from before) copied
+    to conf with a test entry. add(data, is_record) appends it; a
+    record that parse (like the proxy) calls broken is returned as a ValueError."""
     for path, is_record in ((record, True), (legacy, False)):
         try:
             with open(path, encoding="utf-8") as f:
@@ -903,15 +902,15 @@ def self_test():
         except (OSError, ValueError) as e:
             print(f"FAILED  lists of the Host: {getattr(e, 'strerror', None) or e}")
             return 1
-        # was die Verdachtsliste des Hosts dazu sagt (its patterns too), und ein echter Eintrag
-        # von ihr: seine Liste ist mit allen Eintraegen geladen
+        # what the Host's Watchlist says about them (its patterns too), and a real entry
+        # of it: its list is loaded with all entries
         listed = hand_watchlist()
         cases = [(host, want | {value[0] for _, value, _ in listed.hits(host)}, exact)
                  for host, want, exact in SELFTEST_CASES]
         own = sorted(d for d in listed.domains if d != domain)
         if own:
             cases.insert(1, (f"selftest.{own[0]}", {listed.domains[own[0]][0]}, False))
-        # nichts freigegeben, also wird nichts aufgeloest
+        # nothing is allowed, so nothing is resolved
         with open(os.path.join(conf, "allowlist.json"), "w") as f:
             f.write('{"entries": []}\n')
         with open(os.path.join(conf, "harmless"), "w") as f:
@@ -923,7 +922,7 @@ def self_test():
         log = os.path.join(tmp, "proxy.log")
         env = {"PATH": os.defpath, "LANG": "C.UTF-8", "AGENTBOX_CONF_DIR": conf, "AGENTBOX_FEEDS_DIR": feeds}
         with open(log, "wb") as err:
-            # -B: als root aus dem Repo gestartet, keine __pycache__-Dateien dort hinterlassen
+            # -B: started as root from the repo, leave no __pycache__ files there
             server = subprocess.Popen([sys.executable, "-I", "-B", proxy, "selftest", sock], env=env,
                                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err)
         deadline = time.monotonic() + 15
