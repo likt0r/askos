@@ -268,7 +268,8 @@ flowchart LR
   Create, delete and `regenerate` hold one lock, so two creates never get the same network.
 - Each VM uses one **Image** (see Images and Builds below): the **Base image**, a Fedora
   bootc image built from `vm/Containerfile` with agents, Orca, Node, Bun, uv, Rust, Podman
-  with Docker Compose and every **Safeguard**, or an Image built on it.
+  with Docker Compose, Playwright with Chromium and Firefox and every **Safeguard**, or an
+  Image built on it.
 - sshd runs only in a VM with SSH access and at least one SSH key. fedora-bootc enables
   `sshd.service` with OpenSSH's password login on; the Base image disables it, keeps it off at first boot (`10-agentbox.preset`) and fixes its
   configuration (`/etc/ssh/sshd_config.d/10-agentbox.conf`): SSH only by key and only as
@@ -821,8 +822,8 @@ argument. Error messages never repeat input, and the Control Room removes
 whatever it was sent as a secret from anything it answers or logs, should agentbox ever echo it.
 
 ### Packages
-The Build installs the agents (Claude Code, codex, opencode) and the package managers with npm
-`--before`, so it takes the newest versions published at least `package_min_age_days` of the
+The Build installs the agents (Claude Code, codex, opencode), Playwright and the package managers
+with npm `--before`, so it takes the newest versions published at least `package_min_age_days` of the
 Settings ago (two days by default), and Orca from the newest GitHub release at least that old
 unless `orca_version` pins one (Images, below).
 Inside the Image: npm ignores install scripts, npm, pnpm, Bun and uv refuse versions younger
@@ -900,6 +901,20 @@ Host after every Build
   failure, a missing asset, a checksum that does not match, an answer that cannot be read,
   fails the Build. A Host from before keeps its `/etc/agentbox/build.conf` (Orca's Node
   runtime from the owner's home, `ORCA_RUNTIMES`); nothing reads it any more.
+- Playwright comes the same way (#162): the npm package `playwright` at the newest version at
+  least `package_min_age_days` old (npm `--before`), then `playwright install chromium firefox`
+  downloads Chromium, its headless shell, Firefox and Playwright's FFmpeg into
+  `/usr/lib/ms-playwright`, checked as Playwright checks them (HTTPS from Playwright's CDN, the
+  size the server announces); WebKit is not included. Their libraries are Fedora packages,
+  mapped from Playwright's own lists (its `install-deps` knows only apt), with
+  `install_weak_deps=False`. `vm/build/playwright-check` then starts Chromium's headless shell,
+  Chromium and Firefox headless and reads a page back from each, after Playwright's own check
+  of the libraries they need; any failure fails the Build. The browsers are part of the Image
+  under `/usr`, read-only in the VM, and every service (systemd's `DefaultEnvironment`) and
+  login (`/etc/profile.d/agentbox.sh`) has `PLAYWRIGHT_BROWSERS_PATH=/usr/lib/ms-playwright`
+  and `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`. Playwright's CDN is not on the Allowlist, so a VM
+  downloads no other browser builds: a project uses the `@playwright/test` version of its
+  Build, which the Build records with the other tools' versions.
 - The safeguard check (`agentbox/safeguards.py`) mounts the built image (`podman image mount`)
   and reads files; nothing from the Image runs, and links are resolved inside the Image. It
   parses regular files only; a file it verifies that is larger than 1 MiB fails the check. It
@@ -971,9 +986,9 @@ Host after every Build
 - Every Build records the versions of its tools (`agentbox/versions.py`), read like the
   Safeguards from the mounted filesystem, never by running anything from it: Orca's from the
   `package.json` in `/usr/lib/orca/resources/app.asar` (installed from its release), Claude
-  Code's, codex's and opencode's from their `package.json` under `/usr/lib/node_modules`, and
-  the Fedora release from `os-release`. What cannot be read is unknown and fails nothing;
-  Builds made before recorded only the npm tools.
+  Code's, codex's, opencode's and Playwright's from their `package.json` under
+  `/usr/lib/node_modules`, and the Fedora release from `os-release`. What cannot be read is
+  unknown and fails nothing; Builds made before recorded only the agents.
 - What a new Build would bring is checked once a day on the Host, in two parts, so that
   nothing from the internet is parsed as root. The Maintenance window (daily, see Maintenance
   window; and `regenerate` at once when one of its services changed) starts

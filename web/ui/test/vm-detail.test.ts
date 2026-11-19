@@ -304,13 +304,13 @@ describe('Image and Build pin', () => {
 describe('tool versions in the VM (#104)', () => {
   const AVAILABLE = {
     checked: '2026-11-08T04:00:00Z', package_min_age_days: 2, orca_version: null,
-    tools: { 'orca': '1.4.245', 'claude-code': '2.1.7', 'codex': '0.80.0', 'opencode': '1.2.3', 'fedora': null },
+    tools: { 'orca': '1.4.245', 'claude-code': '2.1.7', 'codex': '0.80.0', 'opencode': '1.2.3', 'playwright': '1.65.1', 'fedora': null },
   }
   const IMAGES = OK({ available: AVAILABLE, images: [{ name: 'base', base: true, current: '20261102-1200', package_updates: 3, builds: [
     { build: '20261102-1200', status: 'ok', current: true, updates: ['orca', 'claude-code'],
       tools: { 'orca': '1.4.241', 'claude-code': '2.1.5', 'codex': '0.80.0', 'opencode': '1.2.3', 'fedora': '44' } },
     { build: '20261020', status: 'ok', updates: ['orca', 'claude-code', 'opencode'],
-      tools: { 'orca': '1.4.230', 'claude-code': '2.0.9', 'codex': null, 'opencode': '1.2.0', 'fedora': '44' } },
+      tools: { 'orca': '1.4.230', 'claude-code': '2.0.9', 'codex': null, 'opencode': '1.2.0', 'playwright': '1.65.1', 'fedora': '44' } },
   ] }] })
   const rows = () => [...byTestId('overview-versions').element.querySelectorAll('[data-testid="tool-row"]')]
 
@@ -320,8 +320,8 @@ describe('tool versions in the VM (#104)', () => {
     const versions = byTestId('overview-versions')
     expect(versions.text()).toContain('In this VM')
     expect(rows().map(r => r.querySelector('[data-testid="tool-installed"]')!.textContent!.trim()))
-      .toEqual(['1.4.230', '2.0.9', 'unknown', '1.2.0', '44'])
-    expect(rows().map(r => r.getAttribute('data-update'))).toEqual(['true', 'true', 'false', 'true', 'false'])
+      .toEqual(['1.4.230', '2.0.9', 'unknown', '1.2.0', '1.65.1', '44'])
+    expect(rows().map(r => r.getAttribute('data-update'))).toEqual(['true', 'true', 'false', 'true', 'false', 'false'])
     expect(rows()[1]!.querySelector('[data-testid="tool-available"]')!.textContent).toContain('2.1.7')
     // package updates are counted for the Image's current Build, which this VM does not run yet
     expect(versions.find('[data-testid="tool-packages"]').exists()).toBe(false)
@@ -338,7 +338,7 @@ describe('tool versions in the VM (#104)', () => {
   it('shows unknown when the Images cannot be read', async () => {
     fakeApi({ 'GET /session': SIGNED_IN })
     await openApp('/vms/work/web', [{ ...WORK, reset_due: false }])
-    expect(rows().map(r => r.querySelector('[data-testid="tool-installed"]')!.textContent!.trim())).toEqual(Array(5).fill('unknown'))
+    expect(rows().map(r => r.querySelector('[data-testid="tool-installed"]')!.textContent!.trim())).toEqual(Array(6).fill('unknown'))
     expect(exists('overview-versions-hint')).toBe(false)
   })
 })

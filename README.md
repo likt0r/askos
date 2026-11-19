@@ -629,6 +629,28 @@ calendar days. A Container image the cleanup has not seen used counts as used wh
 sees it. It never removes containers or volumes. Runs that removed something or failed are in
 Activity.
 
+### Browser tests in a VM
+
+The Base image carries [Playwright](https://playwright.dev/) with its Chromium (and Chromium's
+headless shell) and Firefox, read-only under `/usr/lib/ms-playwright`; WebKit is not included.
+Every service and login of the VM has `PLAYWRIGHT_BROWSERS_PATH=/usr/lib/ms-playwright`, so
+Playwright finds those browsers, and `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`, so a project's
+`npm install` does not try to download others. The browsers' system libraries come from
+Fedora, with Liberation and Noto Color Emoji fonts; Firefox has no FFmpeg, so it plays no
+H.264 or AAC media.
+
+The image has one Playwright version, the newest at least `package_min_age_days` old when it
+was built, as the agents. A project pins `@playwright/test` to exactly that version: another
+version wants other browser builds, and Playwright's download CDN stays off the Allowlist, so
+`npx playwright install` fails in a VM. `agentbox images` and the Control Room show the
+version in each Build (Playwright, next to the agents). An Update brings a newer one into the
+VMs like the agents, and the project's pin follows it.
+
+```sh
+npm install --save-dev --save-exact @playwright/test@1.65.1   # the version agentbox images shows
+npx playwright test --project=chromium --project=firefox
+```
+
 ### Images and Builds
 
 An **Image** is defined in this repository, ships with each Release and is built on the Host
@@ -637,8 +659,8 @@ reviewed commits, never in the Control Room; a change reaches a Host with the ne
 installs, and its VMs with their next Reset after a Build. The owner can also define Images on
 their own Host, without a Release, as **Recipes** (below).
 
-- `vm/Containerfile` is the **Base image**: Fedora bootc with the agents, Orca and every
-  **Safeguard** (`vm/files/`, and `package-safeguards`, which writes the package minimum age
+- `vm/Containerfile` is the **Base image**: Fedora bootc with the agents, Orca, Playwright with
+  Chromium and Firefox, and every **Safeguard** (`vm/files/`, and `package-safeguards`, which writes the package minimum age
   for npm, pnpm, Bun and uv).
 - `vm/images/<name>/Containerfile` is another Image (name: `a-z`, `0-9`, `-`, at most 32
   characters). Its directory is the build context, and it starts from the Base image's
@@ -717,8 +739,8 @@ comes as `build` and `build-log` events on `GET /api/v1/events`; the log endpoin
 
 #### Tool versions
 
-Every Build records the versions of Orca, Claude Code, codex, opencode and the Fedora release
-it contains, read from its files after the Safeguard check (unknown when they cannot be
+Every Build records the versions of Orca, Claude Code, codex, opencode, Playwright and the
+Fedora release it contains, read from its files after the Safeguard check (unknown when they cannot be
 read, and for Builds made before). Where they come from: Orca is the RPM of its GitHub
 release (`stablyai/orca`), the newest that is no draft or prerelease and was published at least
 `package_min_age_days` ago, or the one `orca_version` pins; the Build container downloads it

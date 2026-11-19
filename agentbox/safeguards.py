@@ -355,7 +355,8 @@ def systemd_environment(root):
     return env
 
 
-def _version(root, package):
+def npm_version(root, package):
+    """Version of the npm package installed globally in the Image (None: not found)."""
     try:
         info = json.loads(text(root, f"/usr/lib/node_modules/{package}/package.json") or "")
     except ValueError:
@@ -366,7 +367,7 @@ def _version(root, package):
 
 def agents(root):
     """Versions of the agents and package managers in the Image (None: not found)."""
-    return {name: _version(root, package) for name, package in AGENTS.items()}
+    return {name: npm_version(root, package) for name, package in AGENTS.items()}
 
 
 # --- the checks ----------------------------------------------------------------------
@@ -384,7 +385,7 @@ def _npm(root, days):
     age = values.get(("", "min-release-age"))
     if age != str(days):
         problems.append(f"npm: min-release-age is {age or 'not set'} instead of {days} ({config})")
-    version = _version(root, "npm")
+    version = npm_version(root, "npm")
     major = re.match(r"\d+", version or "")
     if not major or int(major.group(0)) < MIN_NPM:
         problems.append(f"npm: version {version or 'unknown'}, min-release-age needs npm {MIN_NPM}")

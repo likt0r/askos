@@ -95,6 +95,7 @@ REGISTRY = {
         "@anthropic-ai/claude-code": npm("2.1.9", ("2.1.5", 30), ("2.1.7", 5), ("2.1.8-beta.1", 4), ("2.1.9", 1)),
         "@openai/codex": npm("0.80.0", ("0.79.0", 40), ("0.80.0", 10), ("0.81.0-alpha.3", 3)),
         "opencode-ai": npm("1.2.3", ("1.2.3", 20)),
+        "playwright": npm("1.65.1", ("1.64.1", 40), ("1.65.0", 14), ("1.65.1", 6), ("1.66.0-alpha-2026-11-18", 1)),
     },
     "github": {"stablyai/orca": RELEASES},
 }
@@ -148,7 +149,7 @@ class BuildRecordsTest(VersionsTest):
         self.built()
         new = self.newest()
         self.assertEqual(new["tools"], {"orca": "1.4.241", "claude-code": "2.1.5", "codex": "0.80.0",
-                                        "opencode": "1.2.3", "fedora": "44"})
+                                        "opencode": "1.2.3", "playwright": "1.65.1", "fedora": "44"})
         with open(self.path(f"var/lib/agentbox/builds/base-{new['build']}.json")) as f:
             self.assertEqual(json.load(f)["tools"], new["tools"])
         # the Orca of its release passes the Safeguard check like everything else in the Image
@@ -200,8 +201,9 @@ class BuildRecordsTest(VersionsTest):
         self.write("var/lib/agentbox/images/base-20261102-0300.qcow2", "")
         builds = self.builds()
         self.assertEqual(builds["20261102-0300"]["tools"], {"orca": None, "claude-code": "2.0.1", "codex": None,
-                                                            "opencode": "1.0.0", "fedora": None})
-        self.assertEqual(builds[OLD]["tools"], dict.fromkeys(("orca", "claude-code", "codex", "opencode", "fedora")))
+                                                            "opencode": "1.0.0", "playwright": None, "fedora": None})
+        self.assertEqual(builds[OLD]["tools"], dict.fromkeys(("orca", "claude-code", "codex", "opencode", "playwright",
+                                                              "fedora")))
 
 
 class CheckTest(VersionsTest):
@@ -212,9 +214,11 @@ class CheckTest(VersionsTest):
         self.assertEqual(npm["claude-code"], {"version": "2.1.7", "error": None})
         self.assertEqual(npm["codex"], {"version": "0.80.0", "error": None})
         self.assertEqual(npm["opencode"], {"version": "1.2.3", "error": None})
+        self.assertEqual(npm["playwright"], {"version": "1.65.1", "error": None})
         self.assertEqual(self.record()["package_min_age_days"], 2)
         self.assertIn("https://registry.npmjs.org/@anthropic-ai%2fclaude-code", self.curl())
         self.assertIn("https://registry.npmjs.org/@openai%2fcodex", self.curl())
+        self.assertIn("https://registry.npmjs.org/playwright", self.curl())
         for argv in self.calls("curl"):
             self.assertEqual(argv["argv"][argv["argv"].index("--proto") + 1], "=https")
 
@@ -468,11 +472,13 @@ class UntrustedFetchTest(VersionsTest):
         return {"fetched": int(time.time()), "package_min_age_days": 2,
                 "npm": {"claude-code": {"version": "2.1.7", "error": None},
                         "codex": {"version": "0.80.0", "error": None},
-                        "opencode": {"version": "1.2.3", "error": None}},
+                        "opencode": {"version": "1.2.3", "error": None},
+                        "playwright": {"version": "1.65.1", "error": None}},
                 "orca": {"version": "1.4.251", "error": None, "pin": None}, **changes}
 
     def unknown(self, rec):
-        self.assertEqual([rec["npm"][t]["version"] for t in ("claude-code", "codex", "opencode")], [None] * 3)
+        self.assertEqual([rec["npm"][t]["version"] for t in ("claude-code", "codex", "opencode", "playwright")],
+                         [None] * 4)
         self.assertEqual(rec["orca"]["version"], None)
 
     def test_a_good_file_is_taken(self):
@@ -490,7 +496,7 @@ class UntrustedFetchTest(VersionsTest):
                  "evil": {"version": "1.0.0"}},
             orca={"version": {"v": 1}, "pin": "../../etc", "error": "npm registry answered 500", "evil": 1}))
         self.unknown(rec)
-        self.assertEqual(set(rec["npm"]), {"claude-code", "codex", "opencode"})
+        self.assertEqual(set(rec["npm"]), {"claude-code", "codex", "opencode", "playwright"})
         self.assertEqual(rec["npm"]["claude-code"]["error"], "unknown error")
         self.assertEqual(rec["orca"], {"version": None, "error": "npm registry answered 500", "pin": None})
         self.assertIsNone(rec["package_min_age_days"])
@@ -542,7 +548,7 @@ class OverviewTest(VersionsTest):
         result = self.json("images")
         self.assertEqual(result["available"], {"checked": None, "package_min_age_days": None,
                                                "tools": dict.fromkeys(("orca", "claude-code", "codex", "opencode",
-                                                                       "fedora")),
+                                                                       "playwright", "fedora")),
                                                "orca_version": None})
         base = result["images"][0]
         self.assertEqual((base["update"], base["updates"], base["package_updates"]), (None, [], None))
@@ -556,7 +562,7 @@ class OverviewTest(VersionsTest):
         self.check()
         result = self.json("images")
         self.assertEqual(result["available"]["tools"], {"orca": "1.4.251", "claude-code": "2.1.7", "codex": "0.80.0",
-                                                        "opencode": "1.2.3", "fedora": None})
+                                                        "opencode": "1.2.3", "playwright": "1.65.1", "fedora": None})
         self.assertEqual((result["available"]["orca_version"], result["available"]["package_min_age_days"]), (None, 2))
         self.assertRegex(result["available"]["checked"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
         base = result["images"][0]
@@ -576,6 +582,18 @@ class OverviewTest(VersionsTest):
         base = self.json("images")["images"][0]
         self.assertEqual((base["update"], base["updates"], base["package_updates"]), (False, [], 0))
         self.assertIn("Update: a new Build would bring nothing new\n", self.ok("images"))
+
+    def test_a_newer_playwright_is_an_update(self):
+        """#162: Playwright comes like the agents, so a newer version old enough is what a new
+        Build brings, and the version in a Build is shown for a project to pin."""
+        self.registry({**REGISTRY, "npm": {**REGISTRY["npm"], "@anthropic-ai/claude-code": npm("2.1.5", ("2.1.5", 30)),
+                                           "playwright": npm("1.66.1", ("1.65.1", 6), ("1.66.0", 3), ("1.66.1", 1))}})
+        self.built()
+        self.check()
+        result = self.json("images")
+        self.assertEqual(result["available"]["tools"]["playwright"], "1.66.0")
+        self.assertEqual(result["images"][0]["builds"][0]["updates"], ["orca", "playwright"])
+        self.assertIn("  Update available: a new Build would bring Orca, Playwright\n", self.ok("images"))
 
     def test_package_updates_counted_for_an_earlier_build_are_unknown_for_the_new_one(self):
         self.built()
@@ -623,7 +641,7 @@ class OverviewTest(VersionsTest):
             "packages": {}}))
         result = self.json("images")
         self.assertEqual(result["available"]["tools"], {"orca": None, "claude-code": "2.1.7", "codex": "0.80.0",
-                                                        "opencode": "1.2.3", "fedora": None})
+                                                        "opencode": "1.2.3", "playwright": None, "fedora": None})
         self.assertEqual(result["images"][0]["updates"], ["claude-code"])
         self.assertRegex(self.ok("images"), r"Available \(checked .*\): Orca \?, Claude Code 2\.1\.7")
 
@@ -638,9 +656,11 @@ class OverviewTest(VersionsTest):
         self.check()
         out = self.ok("images")
         self.assertIn("  Update available: a new Build would bring Orca, Claude Code\n", out)
-        self.assertIn("Orca 1.4.241, Claude Code 2.1.5, codex 0.80.0, opencode 1.2.3, Fedora 44\n", out)
+        self.assertIn("Orca 1.4.241, Claude Code 2.1.5, codex 0.80.0, opencode 1.2.3, Playwright 1.65.1, Fedora 44\n",
+                      out)
         self.assertRegex(out, r"Available \(checked \d{4}-\d\d-\d\d \d\d:\d\d, at least 2 days old\): "
-                              r"Orca 1\.4\.251, Claude Code 2\.1\.7, codex 0\.80\.0, opencode 1\.2\.3\n")
+                              r"Orca 1\.4\.251, Claude Code 2\.1\.7, codex 0\.80\.0, opencode 1\.2\.3, "
+                              r"Playwright 1\.65\.1\n")
         self.ok("set-settings", "orca_version=1.4.250")
         self.check()
         self.assertRegex(self.ok("images"), r"Available \(checked [^)]*, at least 2 days old; Orca pinned to "

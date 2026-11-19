@@ -603,8 +603,8 @@ same 64 KiB display cap, sanitizing and `release` field apply. `recipe-show --fi
 any one UTF-8 Recipe member up to 256 KiB on the Host.
 
 Tool versions (#104), every version a string or `null` (unknown):
-- a Build's `tools`: `{"orca", "claude-code", "codex", "opencode", "fedora"}`, what the Build
-  contains (Builds made before have only the npm tools); `updates`: the tools a new Build would
+- a Build's `tools`: `{"orca", "claude-code", "codex", "opencode", "playwright", "fedora"}`, what
+  the Build contains (Builds made before have only the agents); `updates`: the tools a new Build would
   change, by `available` (an npm tool with a newer version, `orca` with another version, which
   a pinned `orca_version` may make an older one); `[]` for a Build that cannot be used.
 - `available`: `{"checked": "<time>"|null, "package_min_age_days", "tools": {...},

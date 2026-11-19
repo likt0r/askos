@@ -2,11 +2,12 @@
 // the tools in a Build and what is available (#104).
 
 /** The tools whose versions a Build records, in the order they are shown. */
-export const TOOLS = ['orca', 'claude-code', 'codex', 'opencode', 'fedora'] as const
+export const TOOLS = ['orca', 'claude-code', 'codex', 'opencode', 'playwright', 'fedora'] as const
 export type Tool = typeof TOOLS[number]
 /** Product names, the same in every language. */
 export const TOOL_NAMES: Record<Tool, string> = {
-  'orca': 'Orca', 'claude-code': 'Claude Code', 'codex': 'codex', 'opencode': 'opencode', 'fedora': 'Fedora',
+  'orca': 'Orca', 'claude-code': 'Claude Code', 'codex': 'codex', 'opencode': 'opencode', 'playwright': 'Playwright',
+  'fedora': 'Fedora',
 }
 /** {tool: version}; null: unknown (not recorded, not checked, or the check failed) */
 export type ToolVersions = Partial<Record<Tool, string | null>>

@@ -6,11 +6,12 @@ from the same mounted filesystem, by reading files; nothing from the Image runs 
   orca                          /usr/lib/orca/resources/app.asar, the version in Orca's
                                 package.json (the Build installs the RPM of Orca's GitHub
                                 release there, vm/build/orca-release)
-  claude-code, codex, opencode  /usr/lib/node_modules/<package>/package.json
+  claude-code, codex, opencode, /usr/lib/node_modules/<package>/package.json; for playwright
+  playwright                    the npm package whose Chromium and Firefox the Build installs
   fedora                        VERSION_ID of /usr/lib/os-release
 
-Builds made before have only the versions of the npm tools (their `agents`); the others
-are unknown.
+Builds made before have only the versions of the agents (their `agents`); the others are
+unknown.
 
 What is available is determined once a day on the Host, in the Maintenance window
 (maintenance.py, which starts agentbox-versions.service, written by `agentbox regenerate`), in
@@ -65,10 +66,11 @@ from .commands import declare
 from .errors import Fail, die
 from .sanitize import clean
 
-TOOLS = ("orca", "claude-code", "codex", "opencode", "fedora")
+TOOLS = ("orca", "claude-code", "codex", "opencode", "playwright", "fedora")
 NAMES = {"orca": "Orca", "claude-code": "Claude Code", "codex": "codex", "opencode": "opencode",
-         "fedora": "Fedora"}
-NPM = {"claude-code": "@anthropic-ai/claude-code", "codex": "@openai/codex", "opencode": "opencode-ai"}
+         "playwright": "Playwright", "fedora": "Fedora"}
+NPM = {"claude-code": "@anthropic-ai/claude-code", "codex": "@openai/codex", "opencode": "opencode-ai",
+       "playwright": "playwright"}
 VERSION = safeguards.VERSION
 SEMVER = re.compile(r"v?(\d{1,9})\.(\d{1,9})\.(\d{1,9})(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?")
 IMAGE_ORCA = "/usr/lib/orca"                     # where vm/Containerfile installs it
@@ -170,13 +172,14 @@ def in_image(root):
             found["fedora"] = _version(release.get("VERSION_ID"))
     except (OSError, ValueError):
         pass
-    agents = safeguards.agents(root)
-    return {tool: found[tool] if tool in found else agents.get(tool) for tool in TOOLS}
+    for tool, package in NPM.items():
+        found[tool] = safeguards.npm_version(root, package)
+    return {tool: found[tool] for tool in TOOLS}
 
 
 def of_build(rec):
     """{tool: version or None} of a Build's record: what it recorded, and for a Build from
-    before, the npm tools from its `agents`."""
+    before, the agents from its `agents`."""
     tools = rec.get("tools")
     if not isinstance(tools, dict):
         agents = rec.get("agents") if isinstance(rec.get("agents"), dict) else {}

@@ -52,6 +52,7 @@ REFUSED = [
     "PAIRING_ADDRESS",
     # the rest of the Image's DefaultEnvironment
     "DO_NOT_TRACK", "ORCA_TELEMETRY_DISABLED", "DISABLE_AUTOUPDATER", "DOCKER_HOST", "RUSTUP_HOME", "JAVA_HOME",
+    "PLAYWRIGHT_BROWSERS_PATH", "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD",
     # what the patterns miss: npm going around the minimum release age, in either case as npm reads it
     "npm_config_before", "NPM_CONFIG_BEFORE",
 ]
