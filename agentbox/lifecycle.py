@@ -181,8 +181,11 @@ def wake(ctx):
     with state_files.vm_lock(ctx):
         started = not states.running(ctx)
         if started:
+            resumed = states.has_pause(ctx)
             responding.clear(ctx)         # the failed wakes of its last start are over
             must("start", dom(ctx))
+            if not resumed:               # also off without stop(): it reads its SSH access from fw_cfg
+                ssh_access.drop_pending(ctx)
     start = responding.start(ctx)         # the start of the VM this wake waits for
     waiting = responding.clock()
     addr = responding.orca_address(ctx)

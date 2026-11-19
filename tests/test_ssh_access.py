@@ -1418,6 +1418,21 @@ class LiveTest(SshTest):
         self.ok("start", "work")
         self.assertEqual(self.applied(), [])
 
+    def test_a_vm_that_went_off_by_itself_reads_it_from_fw_cfg_when_a_connection_starts_it(self):
+        """Shut down from inside, crashed or forced off without agentbox: the wake that starts it
+        anew drops the marker, as start does, and does not ask the VM."""
+        self.on_with_two_keys()
+        self.scenario(agent_down=True)
+        self.failed("remove-ssh-key", "work", LAPTOP_FP)
+        self.assertTrue(self.exists(PENDING.format("work")))
+        self.turned_off("work")
+        self.forget_calls()
+        code, _, err = self.wake("SSH (192.0.2.7)")
+        self.assertEqual(code, 0, err)
+        self.assertEqual([c["cmd"] for c in self.virsh("start")], ["start"])
+        self.assertFalse(self.exists(PENDING.format("work")))
+        self.assertEqual(self.applied(), [])
+
     def test_a_build_without_the_wrapper_keeps_the_change_and_says_ssh_missing(self):
         self.add()
         self.scenario(missing_wrappers=[WRAPPER])

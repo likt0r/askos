@@ -393,7 +393,8 @@ flowchart LR
   before the connection is forwarded) hand the change over under the lifecycle lock, and while
   that fails a connection to the SSH port is refused. A connection to the Orca port leaves the
   change alone and goes on, without waiting for the guest agent. A VM that starts anew reads the fw_cfg
-  file, so a stop drops the marker. A VM whose Build lacks the wrapper keeps the saved change
+  file, so a stop drops the marker, and so do `start` and `wake` when they start a VM anew
+  (one shut down from inside or forced off without `stop`). A VM whose Build lacks the wrapper keeps the saved change
   for its next start and the command fails with `ssh_missing`: until a Reset onto a newer
   Build that VM keeps the keys it started with.
 - VMs are reset automatically once their System disk is seven days old, and with automatic
