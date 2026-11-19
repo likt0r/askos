@@ -491,7 +491,8 @@ entry. Destinations with strong Signals are refused with the reason (HTTP 409,
 
 A VM has no SSH access until you turn it on, on the Host or in the Control Room's Access tab of
 the VM ([ADR 0020](docs/adr/0020-ssh-into-a-vm-through-its-own-host-port.md)). There you add a key
-by its `.pub` file or as pasted text, remove one, and copy the connection help: the `known_hosts`
+by its `.pub` file or as pasted text, remove one, copy the keys of another VM once ("Copy keys
+from VM", also in the dialog that creates a VM), and copy the connection help: the `known_hosts`
 line, the block and the command, as `agentbox ssh-config` prints them for that VM. On the Host:
 
 ```sh

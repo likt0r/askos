@@ -702,11 +702,34 @@ describe('creating a VM', () => {
     expect(post.path).toBe('/vms')
     expect(post.headers['x-agentbox']).toBe('1')
     expect(post.body).toEqual({ name: 'lab', image: 'base', memory_mib: 16384, data_disk_gib: 200,
-      github_owners: ['likt0r', 'acme'], copy_allowlist_from: null })
+      github_owners: ['likt0r', 'acme'], copy_allowlist_from: null, copy_ssh_keys_from: null })
     es.emit('state', { vms: [WORK, vm('lab', 'stopped', { network: 3 })], problems: [] })
     await flushPromises()
     await vi.waitFor(() => expect(useRouter().currentRoute.value.path).toBe('/vms/lab/web'))
     expect(document.body.textContent).toContain('Network 3, Orca port 6803.')
+  })
+
+  it('copies the SSH keys of another VM once when asked, and says how many', async () => {
+    const api = fakeApi(routes({ 'POST /vms': { status: 201, body: { vm: 'lab', network: 3, orca_port: 6803, image: 'base',
+      ssh_keys_from: 'work', ssh_keys: [{ fingerprint: 'SHA256:a', name: 'laptop', type: 'ssh-ed25519' },
+        { fingerprint: 'SHA256:b', name: 'phone', type: 'ssh-ed25519' }] } } }))
+    await openApp('/vms', [WORK])
+    await click('vm-create')
+    expect(byTestId('create-dialog').text()).toContain('Copy SSH keys from')
+    expect(byTestId('create-dialog').text()).toContain('SSH access stays off until you turn it on.')
+    await type('create-name', 'lab')
+    // the select's hidden form control takes a value the way autofill gives it: an input event
+    const native = (document.body.querySelector<HTMLSelectElement>('select[name="copy_ssh_keys_from"]')
+      ?? document.body.querySelectorAll<HTMLSelectElement>('[data-testid="create-dialog"] select')[2])!
+    if (![...native.options].some(o => o.value === 'work')) native.insertAdjacentHTML('beforeend', '<option value="work">work</option>')
+    native.value = 'work'
+    native.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    expect(text('create-copy-ssh')).toContain('work')
+    await submit('create-dialog')
+    const post = api.calls.find(c => c.method === 'POST')!
+    expect(post.body).toMatchObject({ name: 'lab', copy_allowlist_from: null, copy_ssh_keys_from: 'work' })
+    await vi.waitFor(() => expect(document.body.textContent).toContain('Network 3, Orca port 6803. 2 SSH keys copied from work.'))
   })
 
   it('shows agentbox\'s refusal translated', async () => {

@@ -2,7 +2,8 @@
 // name, type, fingerprint and date, adding one pasted or from a .pub file with an optional
 // name, removing one after a confirmation that says open sessions end, a pending change and
 // ssh_missing explained, the connection help from GET /vms/<vm>/ssh-config with copy buttons
-// (Local-only: the --mine hint), the SSH sessions apart from the Orca devices, German texts.
+// (Local-only: the --mine hint), the SSH sessions apart from the Orca devices, copying the keys
+// of another VM once (#136) with which keys went in and which not, German texts.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resetSessionForTests } from '~/composables/useSession'
 import { resetLiveForTests } from '~/composables/useLive'
@@ -42,17 +43,36 @@ function sshConfig(mode = 'local', on = true) {
   }
 }
 
-/** The Access tab of work with these SSH fields; GET /vms answers what `current` holds. */
-async function openSsh(ssh: Record<string, unknown> = {}, routes: Record<string, unknown> = {}, mode = 'local') {
+/** The Access tab of work with these SSH fields; GET /vms answers what `current` holds, and the
+ * `others` VMs beside it. */
+async function openSsh(ssh: Record<string, unknown> = {}, routes: Record<string, unknown> = {}, mode = 'local',
+  others: ReturnType<typeof vm>[] = []) {
   const current = { vm: sshVm(ssh) }
   const opened = await openApp('/vms/work/access', {
     'GET /github-app': ok({ apps: [], missing: [] }),
     'GET /vms/work/github-tokens?since=-7d': ok({ vm: 'work', repositories: [], requests: [], truncated: false, retention_days: 90 }),
-    'GET /vms': () => ok({ vms: [current.vm], problems: [] }),
+    'GET /vms': () => ok({ vms: [current.vm, ...others], problems: [] }),
     'GET /vms/work/ssh-config': () => ok(sshConfig(mode, (current.vm.ssh as { enabled: boolean }).enabled)),
     ...(routes as Record<string, never>),
-  }, [current.vm])
+  }, [current.vm, ...others])
   return { ...opened, current }
+}
+
+const PRIV = vm('priv', 'stopped', { network: 2 })
+const DESK_FP = 'SHA256:Kd1pqVpQq1yH9p4b2N0q3hZ2yWm5o8XxQyGk2cHn0s7'
+
+/** Chooses the VM to copy keys from through the select's hidden form control, as autofill gives
+ * a value: an input event (its options exist only while the list is open). */
+async function chooseCopyFrom(name: string) {
+  const native = ($('select[name="ssh-copy-from"]') ?? must('[data-testid="ssh-copy"] select')) as HTMLSelectElement
+  if (![...native.options].some(o => o.value === name)) native.insertAdjacentHTML('beforeend', `<option value="${name}">${name}</option>`)
+  native.value = name
+  native.dispatchEvent(new Event('input', { bubbles: true }))
+  await settle()
+}
+
+function copyButton(): HTMLButtonElement {
+  return must('[data-testid="ssh-copy-submit"]') as HTMLButtonElement
 }
 
 function textarea(): HTMLTextAreaElement {
@@ -259,9 +279,99 @@ describe('SSH access', () => {
     expect($('[data-testid="ssh-local-only"]')).toBeNull()
   })
 
+  it('copies the keys of another VM once and lists which went in and which not, with why', async () => {
+    const { api } = await openSsh({ enabled: false }, {
+      'POST /vms/work/ssh-keys': ok({
+        vm: 'work', from: 'priv', folder: null,
+        added: [{ type: 'ecdsa-sha2-nistp256', fingerprint: DESK_FP, name: 'desk' }],
+        skipped: [
+          { type: 'ssh-ed25519', fingerprint: LAPTOP_FP, name: 'laptop', error: 'ssh_key_duplicate', message: 'entered for work already' },
+          { type: 'ssh-ed25519', fingerprint: PHONE_FP, name: '', error: 'ssh_keys_too_many', message: 'at most 16' },
+          { error: 'ssh_key_unheard_of', message: 'agentbox\'s own words' },
+        ],
+        enabled: false, keys: 3, state: 'stopped', applies: 'next_start', message: 'x',
+      }),
+    }, 'local', [PRIV])
+    const form = must('[data-testid="ssh-copy"]')
+    expect(form.textContent).toContain('Copy keys from VM …')
+    expect(form.textContent).toContain('once: keys added to or removed from it later stay its own')
+    expect(copyButton().disabled).toBe(true)
+    // the VM itself is no source
+    await chooseCopyFrom('work')
+    expect(copyButton().disabled).toBe(true)
+    await chooseCopyFrom('priv')
+    expect(must('[data-testid="ssh-copy-from"]').textContent).toContain('priv')
+    expect(copyButton().disabled).toBe(false)
+    await click(copyButton())
+    expect(changes(api.calls)).toEqual([{ method: 'POST', path: '/vms/work/ssh-keys', body: { from: 'priv' }, csrf: '1' }])
+
+    const result = must('[data-testid="ssh-copy-result"]')
+    expect(must('[data-testid="ssh-copy-summary"]').textContent).toContain('One key copied from priv.')
+    expect(must('[data-testid="ssh-copy-summary"]').textContent).toContain('SSH access is off: turn it on to log in with them.')
+    const added = $$('[data-testid="ssh-copy-added-key"]')
+    expect(added.map(k => k.dataset.fingerprint)).toEqual([DESK_FP])
+    expect(added[0]!.textContent).toContain('desk')
+    expect(result.textContent).toContain('Not copied:')
+    const skipped = $$('[data-testid="ssh-copy-skipped-key"]')
+    expect(skipped.map(k => k.dataset.error)).toEqual(['ssh_key_duplicate', 'ssh_keys_too_many', 'ssh_key_unheard_of'])
+    expect(skipped.map(k => k.querySelector('[data-testid="ssh-copy-skipped-name"]')!.textContent)).toEqual(['laptop', PHONE_FP, 'a key'])
+    expect(skipped.map(k => k.querySelector('[data-testid="ssh-copy-reason"]')!.textContent)).toEqual([
+      'This SSH key is entered for this VM already.', 'A VM has at most 16 SSH keys.', 'agentbox\'s own words'])
+    expect($('[data-testid="ssh-error"]')).toBeNull()
+  })
+
+  it('drops the result of a copy when the next key action starts', async () => {
+    const { current } = await openSsh({}, {
+      'POST /vms/work/ssh-keys': ok({
+        vm: 'work', from: 'priv', folder: null,
+        added: [{ type: 'ecdsa-sha2-nistp256', fingerprint: DESK_FP, name: 'desk' }], skipped: [],
+        enabled: true, keys: 3, state: 'running', applies: 'now', message: 'x',
+      }),
+      'POST /vms/work/ssh-keys/remove': () => {
+        current.vm = sshVm({ keys: [KEYS[1]] })
+        return ok({ vm: 'work', fingerprint: LAPTOP_FP, name: 'laptop', type: 'ssh-ed25519', enabled: true, keys: 1, state: 'running', applies: 'now', message: 'x' })
+      },
+    }, 'local', [PRIV])
+    await chooseCopyFrom('priv')
+    await click(copyButton())
+    expect($('[data-testid="ssh-copy-result"]')).not.toBeNull()
+    await click(must(`[data-testid="ssh-key"][data-fingerprint="${LAPTOP_FP}"] [data-testid="ssh-key-remove"]`))
+    await click('[data-testid="confirm-action"]')
+    await waitFor(() => expect($('[data-testid="ssh-copy-result"]')).toBeNull())
+  })
+
+  it('says when the other VM has no keys, and when there is no other VM', async () => {
+    await openSsh({}, {
+      'POST /vms/work/ssh-keys': ok({ vm: 'work', from: 'priv', folder: null, added: [], skipped: [], enabled: true, keys: 2, state: 'running', applies: null, message: 'x' }),
+    }, 'local', [PRIV])
+    await chooseCopyFrom('priv')
+    await click(copyButton())
+    expect(must('[data-testid="ssh-copy-summary"]').textContent).toContain('priv has no SSH keys: nothing was copied.')
+    expect($('[data-testid="ssh-copy-added"]')).toBeNull()
+    expect($('[data-testid="ssh-copy-skipped"]')).toBeNull()
+  })
+
+  it('has nothing to copy from without another VM', async () => {
+    await openSsh()
+    expect(must('[data-testid="ssh-copy-no-other"]').textContent).toContain('There is no other VM to copy keys from.')
+    expect($('[data-testid="ssh-copy-submit"]')).toBeNull()
+  })
+
+  it('explains a copy the VM has not taken', async () => {
+    await openSsh({}, { 'POST /vms/work/ssh-keys': fail(409, 'ssh_missing') }, 'local', [PRIV])
+    await chooseCopyFrom('priv')
+    await click(copyButton())
+    const error = must('[data-testid="ssh-error"]')
+    expect(error.dataset.code).toBe('ssh_missing')
+    expect(error.textContent).toContain('until a Reset onto a newer Build')
+    expect($('[data-testid="ssh-copy-result"]')).toBeNull()
+  })
+
   it('in German', async () => {
     await useNuxtApp().$i18n.setLocale('de')
-    await openSsh()
+    await openSsh({}, {}, 'local', [PRIV])
+    expect(must('[data-testid="ssh-copy"]').textContent).toContain('Schlüssel übernehmen von VM …')
+    expect(copyButton().textContent).toContain('Schlüssel übernehmen')
     const section = must('[data-testid="ssh-access"]')
     expect(section.textContent).toContain('SSH-Zugang')
     expect(section.textContent).toContain('SSH-Schlüssel')

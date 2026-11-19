@@ -1,8 +1,9 @@
 <script setup lang="ts">
 // Creating a VM with the CLI's rules (`agentbox create`): a name that cannot change
 // later, an Image with a Build, memory, Data disk size, GitHub owners, and optionally
-// a copy of another VM's Allowlist entries. Network and Orca port are assigned by the
-// Host. The VM is not started: pairing or the first Orca connection starts it.
+// a copy of another VM's Allowlist entries and of its SSH keys (once, ADR 0001; SSH access
+// stays off). Network and Orca port are assigned by the Host. The VM is not started: pairing or
+// the first Orca connection starts it.
 import type { Image } from '~/utils/images'
 
 const open = defineModel<boolean>('open', { default: false })
@@ -12,7 +13,7 @@ const toast = useToast()
 const live = useLive()
 
 const NONE = '__none__'
-const form = reactive({ name: '', image: '', memory: '' as string | number, disk: '' as string | number, owners: '', copyFrom: NONE })
+const form = reactive({ name: '', image: '', memory: '' as string | number, disk: '' as string | number, owners: '', copyFrom: NONE, copySshFrom: NONE })
 const touched = ref(false)
 const images = ref<Image[] | null>(null)
 const loading = ref(false)
@@ -40,7 +41,7 @@ async function load() {
 
 watch(open, (value) => {
   if (!value) return
-  Object.assign(form, { name: '', image: '', memory: '', disk: '', owners: '', copyFrom: NONE })
+  Object.assign(form, { name: '', image: '', memory: '', disk: '', owners: '', copyFrom: NONE, copySshFrom: NONE })
   touched.value = false
   error.value = null
   errorField.value = null
@@ -82,7 +83,7 @@ async function create() {
   error.value = null
   errorField.value = null
   try {
-    const r = await api<{ vm: string, network?: number, orca_port?: number }>('/vms', {
+    const r = await api<{ vm: string, network?: number, orca_port?: number, ssh_keys?: unknown[] }>('/vms', {
       method: 'POST',
       body: {
         name: name.value,
@@ -91,12 +92,16 @@ async function create() {
         data_disk_gib: typeof disk.value === 'number' ? disk.value : null,
         github_owners: owners.value.owners,
         copy_allowlist_from: form.copyFrom === NONE ? null : form.copyFrom,
+        copy_ssh_keys_from: form.copySshFrom === NONE ? null : form.copySshFrom,
       },
     })
     open.value = false
     toast.add({
       title: t('vm.create.done', { name: r?.vm ?? name.value }),
-      description: t('vm.create.doneText', { network: r?.network ?? '?', port: r?.orca_port ?? '?' }),
+      description: [
+        t('vm.create.doneText', { network: r?.network ?? '?', port: r?.orca_port ?? '?' }),
+        ...(form.copySshFrom === NONE ? [] : [t('vm.create.doneSsh', { from: form.copySshFrom }, Array.isArray(r?.ssh_keys) ? r.ssh_keys.length : 0)]),
+      ].join(' '),
       color: 'success',
       icon: 'i-lucide-check',
     })
@@ -172,6 +177,10 @@ async function create() {
 
         <UFormField :label="t('vm.create.copyFrom')" :help="t('vm.create.copyFromHelp')">
           <USelect v-model="form.copyFrom" :items="copyItems" class="w-full" data-testid="create-copy" />
+        </UFormField>
+
+        <UFormField :label="t('vm.create.copySshFrom')" :help="t('vm.create.copySshFromHelp')" name="copy_ssh_keys_from">
+          <USelect v-model="form.copySshFrom" name="copy_ssh_keys_from" :items="copyItems" class="w-full" data-testid="create-copy-ssh" />
         </UFormField>
 
         <p class="text-xs text-muted">
