@@ -10,7 +10,8 @@ fsfreeze hook: freeze and thaw are ignored.
       rootless Podman, the Container images that no container uses (running or stopped,
       also a build's) and whose last use is more than <days> (1 to 365) calendar days ago.
       A Container image without a recorded use counts as used when this command first sees
-      it. Removes nothing but Container images: never a container or a volume, and never by
+      it, and one a container uses counts as used at every run, so it stays for <days> after
+      the last run that saw its last container. Removes nothing but Container images: never a container or a volume, and never by
       force, so Podman itself refuses a Container image a container took meanwhile. Prints
       only {"removed": N, "freed_bytes": N}: the Container images removed and the sizes
       Podman gives for them (layers shared with others count in full).
@@ -272,9 +273,10 @@ def prune(days, home, podman):
     today = datetime.date.fromtimestamp(now)
     with usage.held():
         last = usage.read()
-        # first seen now; images that are gone are forgotten, except those the recorder wrote
-        # after the listing (pulled meanwhile)
-        last = {**{i: t for i, t in last.items() if t >= listed}, **{i: last.get(i, now) for i in images}}
+        # first seen now, and used now when a container uses it; images that are gone are
+        # forgotten, except those the recorder wrote after the listing (pulled meanwhile)
+        last = {**{i: t for i, t in last.items() if t >= listed}, **{i: last.get(i, now) for i in images},
+                **{i: max(last.get(i, now), now) for i in used if i in images}}
         usage.write(last)
     due = [image for i, image in images.items()
            if i not in used and not image["read_only"] and calendar_days(last[i], today) > days]

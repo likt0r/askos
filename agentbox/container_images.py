@@ -18,9 +18,14 @@ neither, reaches the output or Activity. Anything else is container_image_cleanu
 
 Activity: container-image-cleanup.removed for a VM where something was removed,
 container-image-cleanup.failed with the error code for one that failed, nothing for a run
-that removed nothing or a VM that was skipped. The command records these entries itself; the
-dispatcher records nothing for it (activity.own_entry()). One VM failing never stops the
-others, and the command fails only when the VM registry cannot be read.
+that removed nothing or a VM that was skipped. A failure is recorded only when it differs
+from the VM's previous run: the first one, one with another error code, or one after a run
+that succeeded. The error code of a VM's failing run is kept in
+footprint.container_image_cleanup_file until a run succeeds (removed something or nothing);
+a skipped VM leaves it as it is, and delete removes it with the VM. The JSON output reports
+every run. The command records these entries itself; the dispatcher records nothing for it
+(activity.own_entry()). One VM failing never stops the others, and the command fails only
+when the VM registry cannot be read.
 """
 import json
 import os
@@ -75,6 +80,35 @@ STARTING = object()          # _run: the VM is still starting
 WRAPPER_STARTING = 75        # the wrapper's exit code for it
 
 
+def _being_deleted(ctx):
+    """Whether a delete of the VM has begun (it does not take the lifecycle lock)."""
+    return os.path.exists(footprint.delete_marker(ctx)) or not os.path.exists(footprint.record_file(ctx))
+
+
+def _failure_is_news(ctx, error):
+    """Keep error as the VM's last outcome; whether it differs from the previous run's.
+    A file that cannot be read or written counts as news: a failure is recorded too often
+    rather than never."""
+    path = footprint.container_image_cleanup_file(ctx)
+    news = state_files.json_object(path, {}).get("error") != error
+    if news:
+        try:
+            state_files.write_json(path, {"error": error}, 0o600, indent=None)
+            if _being_deleted(ctx):          # the delete may have removed the VM's files already
+                state_files.remove(path, fail=False)
+        except (Fail, OSError) as e:
+            print(f"agentbox: {e.message if isinstance(e, Fail) else e}", file=sys.stderr, flush=True)
+    return news
+
+
+def _succeeded(ctx):
+    """A run that succeeded ends the VM's series of failures."""
+    try:
+        state_files.remove(footprint.container_image_cleanup_file(ctx), fail=False)
+    except OSError as e:
+        print(f"agentbox: {e}", file=sys.stderr, flush=True)
+
+
 def _result(ctx, outcome, reason=None, removed=None, freed=None, error=None):
     return {"vm": ctx, "outcome": outcome, "reason": reason, "removed": removed, "freed_bytes": freed,
             "error": error}
@@ -104,14 +138,16 @@ def _one(rec, say):
                 return _result(ctx, "skipped", "starting")
             removed, freed = _answer(ctx, out)
         except Fail as f:
-            if os.path.exists(footprint.delete_marker(ctx)) or not os.path.exists(footprint.record_file(ctx)):
+            if _being_deleted(ctx):
                 say(f"{ctx}: skipped, the VM is being deleted")     # delete does not take the lock
                 return _result(ctx, "skipped", "not_running")
             print(f"agentbox: {f.message}", file=sys.stderr, flush=True)
-            activity.record("action", "container-image-cleanup.failed",
-                            f"Container image cleanup failed: {f.message}", ctx, "failed", params={"days": days},
-                            error=f.error, error_params=f.params)
+            if _failure_is_news(ctx, f.error):
+                activity.record("action", "container-image-cleanup.failed",
+                                f"Container image cleanup failed: {f.message}", ctx, "failed",
+                                params={"days": days}, error=f.error, error_params=f.params)
             return _result(ctx, "failed", error=f.error)
+        _succeeded(ctx)
     if not removed:
         say(f"{ctx}: nothing to remove")
         return _result(ctx, "nothing", removed=0, freed=freed)
