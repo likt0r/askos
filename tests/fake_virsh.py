@@ -22,6 +22,7 @@ scenario.json:
                               as if something else started it (default false)
                 start_fails   `start` fails with libvirt's error (default false); "active":
                               with "domain is already active"
+                managedsave_fails  `managedsave` fails with libvirt's error (default false)
                 start_waits   `start` of the stopped VM waits until another call asks for
                               its state (domstate), and that call's answer waits for the
                               start: whoever polls the VMs sees the start as it happens,
@@ -378,6 +379,10 @@ def lifecycle(scenario, cmd, domain):
             save_state(domain, state="shut off")
         print(f"Domain '{domain}' destroyed")
     elif cmd == "managedsave":
+        if conf.get("managedsave_fails"):
+            print(f"error: Failed to save domain '{domain}' state", file=sys.stderr)
+            print("error: operation failed: domain save job: unexpectedly failed", file=sys.stderr)
+            return 1
         process_gone(domain)
         save_state(domain, state="shut off", managed_save=True)
         print(f"\nDomain '{domain}' state saved by libvirt")

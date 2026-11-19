@@ -7,7 +7,7 @@ The web interface on the Host for operating VMs, the allowlist, alerts and crede
 _Avoid_: dashboard, admin panel, web UI
 
 **Settings**:
-The one root-owned record (`/etc/agentbox/settings.json`) of what the owner can tune: Reset age, the time of the Maintenance window, rebuild day, Builds kept, defaults for new VMs, longest Open web, default temporary-entry duration, young-domain threshold, feed interval, package minimum age, Orca version, automatic updates, Activity retention, session length and language (German UI: Einstellungen). Every value has a built-in default. The Control Room password and everything in the Host setup are not Settings; they change only on the Host.
+The one root-owned record (`/etc/agentbox/settings.json`) of what the owner can tune: Reset age, the time of the Maintenance window, rebuild day, Builds kept, defaults for new VMs, longest Open web, what an Alert with a strong Signal does (`alert_action`), default temporary-entry duration, young-domain threshold, feed interval, package minimum age, Orca version, automatic updates, Activity retention, session length and language (German UI: Einstellungen). Every value has a built-in default. The Control Room password and everything in the Host setup are not Settings; they change only on the Host.
 _Avoid_: config, preferences, options
 
 **Sign-in link**:
@@ -19,7 +19,7 @@ The timeline of what happened on the Host and who caused it: sign-ins, actions, 
 _Avoid_: audit log, history, event log
 
 **Actor**:
-Who caused an Activity entry: a device and address in the Control Room, a timer, a connection to a VM's Orca port, `watch` for a VM it found Not responding, or the user at the terminal.
+Who caused an Activity entry: a device and address in the Control Room, a timer, a connection to a VM's Orca port, `watch` for a VM it found Not responding, `alert-watch` for a VM an Alert paused, or the user at the terminal.
 _Avoid_: user, initiator, source
 
 ## Machines
@@ -165,7 +165,7 @@ _Avoid_: unblock, web mode
 ## Detection
 
 **Alert**:
-A single event in which a VM tried to reach a suspicious destination; the owner can mark Alerts as seen so only new ones stand out (German UI: Verdacht).
+A single event in which a VM tried to reach a suspicious destination; the owner can mark Alerts as seen so only new ones stand out (German UI: Verdacht). An Alert with a strong Signal also pauses the VM, unless the Setting `alert_action` is `none`.
 _Avoid_: finding, incident, IOC
 
 **Signal**:

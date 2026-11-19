@@ -386,10 +386,11 @@ def looked(name, at_start, seen, incident):
 
 
 def clear(name):
-    """Start, Restart, Reset, Pause, delete: the failed wakes are over. Called once the VM
-    is off, so that a wake giving up while it shuts down does not begin a new incident.
-    Bookkeeping only: a file that cannot be removed is reported, the action goes on; a
-    caller that may not write agentbox's state (`pair` without root) leaves it alone."""
+    """Start, Restart, Reset, Pause, delete: the failed wakes are over, and so is a Pause an
+    Alert made (its mark, alert_watch.py, written after this when an Alert pauses the VM).
+    Called once the VM is off, so that a wake giving up while it shuts down does not begin a
+    new incident. Bookkeeping only: a file that cannot be removed is reported, the action
+    goes on; a caller that may not write agentbox's state (`pair` without root) leaves it alone."""
     if not os.access(paths.STATE, os.W_OK):
         return
     try:
@@ -401,3 +402,9 @@ def clear(name):
         print(f"agentbox: {footprint.wakes_file(name)}: {e.strerror}", file=sys.stderr, flush=True)
     except Fail as f:
         print(f"agentbox: {f.message}", file=sys.stderr, flush=True)
+    try:
+        os.unlink(footprint.alert_pause_file(name))
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        print(f"agentbox: {footprint.alert_pause_file(name)}: {e.strerror}", file=sys.stderr, flush=True)

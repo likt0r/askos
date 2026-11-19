@@ -274,7 +274,7 @@ agentbox watch-add --regex '^npm-[a-z]+\.(com|net)$' --category phishing   # a f
 agentbox check-regex harmless --regex '^ci[0-9]+\.example$' ci7.example   # can it be an entry, does it match
 agentbox legitimate                 # the Legitimate domains, the Host's and the built-in ones
 agentbox legitimate-add pnpm.io --note "pnpm registry"   # no pattern Signals or Feed hits for it
-agentbox mark-harmless foo.example  # a false positive: no more Alerts (blocking stays)
+agentbox mark-harmless foo.example  # a false positive: no more Alerts or Pauses (blocking stays)
 agentbox reset priv                 # fresh system disk, data disk kept
 agentbox import priv ~/projects/foo # copy a folder into the VM, unpacked: ~/code/foo there
 agentbox import priv ~/projects/foo clients/foo-new   # ... to ~/code/clients/foo-new
@@ -324,6 +324,19 @@ Control Room never passes `--force`. A new Host starts with entries for all VMs
 (`proxy/allowlist`), among them `claudeusercontent.com`, so claude.ai artifacts load in every VM
 without Open web; a subdomain the threat-intelligence Feed lists there stays blocked, with an
 Alert.
+
+An Alert with a strong Signal also pauses the VM within seconds
+([ADR 0022](docs/adr/0022-a-root-watcher-pauses-a-vm-on-a-strong-alert.md)): an agent that
+tried to reach a known exfiltration or malware host is likely following planted instructions.
+`agentbox-alert-watch.service` (root, enabled by `agentbox setup`) reads the proxies' Alerts and
+pauses only the VM whose own proxy raised it; weak Signals (young domains, `payload`, odd
+names) never pause. It is an ordinary Pause: `agentbox status` shows the VM as paused,
+`agentbox describe` and the Control Room as paused by an Alert, with the destination; Activity
+records it (`alert.paused`), and `agentbox start <vm>` or the next Orca connection resumes it;
+look at what the agent was doing first, since the next attempt pauses it again. `sudo agentbox
+set-settings alert_action=none` turns the Pause off (the destination stays blocked); a Harmless
+mark stops the Alert of a false positive and so its Pause.
+
 An entry can also be a pattern, a **Regex entry**: `--regex PATTERN` in place of the domain,
 in every command of the four lists (Allowlist, Watchlist, Legitimate domains, Harmless marks),
 also to remove or change it ([ADR 0013](docs/adr/0013-regex-entries-in-every-list.md)). It
@@ -906,6 +919,7 @@ no longer counts; the next change writes the file without both.
 | `default_memory_mib`, `default_data_disk_gib`, `default_image` | 26624, 300, base | defaults of `create` |
 | `default_container_image_cleanup`, `default_container_image_cleanup_days` | true, 7 | true, false and 1–365: the Container image cleanup a new VM starts with (for new VMs) |
 | `open_web_max_minutes` | 240 | 1–1440, longest Open web |
+| `alert_action` | pause | pause, none: what an Alert with a strong Signal does to its VM; `pause` pauses it within seconds (weak Signals never do), `none` only blocks the destination (see [Day to day](#day-to-day)) |
 | `temporary_entry_default` | 1h | 15min, 1h, 8h, 7d (`allow --temporary`, and `duration: default` in the API) |
 | `young_domain_days` | 14 | 7, 14, 21, 28, 35 (days of the newly-registered list) |
 | `feed_interval_hours` | 12 | 1–168 |

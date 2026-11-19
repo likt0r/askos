@@ -118,6 +118,11 @@ def wakes_file(name):
     return os.path.join(host_paths.STATE, f"wakes-{name}.json")
 
 
+def alert_pause_file(name):
+    """The Alert that paused the VM (alert_watch.py), while that Pause lasts."""
+    return os.path.join(host_paths.STATE, f"alert-pause-{name}.json")
+
+
 def container_image_cleanup_file(name):
     """The error code of the VM's last Container image cleanup run, while it failed
     (container_images.py); gone after a run that succeeded."""
@@ -230,7 +235,8 @@ def paths(rec):
             legacy_owners_file(name), legacy_allowlist_file(name), legacy_allowlist_migrated_file(name),
             observer_dir(name), open_web_file(name), claude_token_file(name), vm_env_file(name),
             vm_secrets_file(name), ssh_host_key_file(name), ssh_host_key_public_file(name), vm_ssh_file(name),
-            ssh_pending_file(name), seen_file(name), wakes_file(name), container_image_cleanup_file(name),
+            ssh_pending_file(name), seen_file(name), wakes_file(name), alert_pause_file(name),
+            container_image_cleanup_file(name),
             domain_file(name),
             *unit_files(rec), *socket_pending_files(rec))
 

@@ -33,6 +33,7 @@ const LATER = {
 const DEFAULTS: Record<string, string | number | boolean> = {
   maintenance_time: '02:00', reset_age_days: 7, auto_update: true, rebuild_day: 'sun', builds_kept: 3,
   default_memory_mib: 26624, default_data_disk_gib: 300, default_image: 'base', default_container_image_cleanup: true, default_container_image_cleanup_days: 7, open_web_max_minutes: 240,
+  alert_action: 'pause',
   temporary_entry_default: '1h', young_domain_days: 14, feed_interval_hours: 12, package_min_age_days: 2,
   orca_version: '', playwright_version: '', activity_retention_days: 90, session_hours: 12, default_language: 'browser',
 }
@@ -68,7 +69,7 @@ describe('settings (units)', () => {
   const listed = [...section.slice(0, section.indexOf('The password')).matchAll(/`([a-z_]+)`/g)].map(m => m[1]!)
 
   it('knows the keys of docs/control-room-api.md, no more and no fewer', () => {
-    expect(listed.length).toBe(20)
+    expect(listed.length).toBe(21)
     expect([...listed].sort()).toEqual(Object.keys(SETTING_SPECS).sort())
     expect(Object.keys(SETTING_SPECS).sort()).toEqual(Object.keys(DEFAULTS).sort())
   })
@@ -158,12 +159,12 @@ describe('settings (units)', () => {
 describe('Settings page', () => {
   useFreshApp()
 
-  it('shows all 20 settings with label, current value and default, and when a change applies', async () => {
+  it('shows all 21 settings with label, current value and default, and when a change applies', async () => {
     const { wrapper } = await openPage('/settings', {
       'GET /settings': ok(settingsBody({ reset_age_days: 14, rebuild_day: 'fri', temporary_entry_default: '8h', young_domain_days: 28, default_language: 'en' })),
     })
     const rows = wrapper.findAll('[data-testid="setting"]')
-    expect(rows).toHaveLength(20)
+    expect(rows).toHaveLength(21)
     expect(new Set(rows.map(r => r.attributes('data-key')))).toEqual(new Set(Object.keys(DEFAULTS)))
     expect(wrapper.find('[data-testid="settings-load-error"]').exists()).toBe(false)
 
@@ -194,6 +195,12 @@ describe('Settings page', () => {
     expect(field(wrapper, 'default_language').find('[data-testid="setting-restore"]').exists()).toBe(true)
     expect(field(wrapper, 'default_memory_mib').find('[data-testid="setting-default"]').text()).toBe('Default: 26624 MiB')
     expect(field(wrapper, 'default_data_disk_gib').find('[data-testid="setting-default"]').text()).toBe('Default: 300 GiB')
+    // alert_action (#11): pause by default, a choice of pausing the VM and nothing
+    expect((input(wrapper, 'alert_action').element as HTMLSelectElement).value).toBe('pause')
+    expect(field(wrapper, 'alert_action').findAll('option').map(o => [o.attributes('value'), o.text()])).toEqual([['pause', 'Pause the VM'], ['none', 'Nothing']])
+    expect(field(wrapper, 'alert_action').find('[data-testid="setting-default"]').text()).toBe('Default: Pause the VM')
+    expect(field(wrapper, 'alert_action').text()).toContain('On an Alert with a strong Signal')
+    expect(field(wrapper, 'alert_action').text()).toContain('Weak Signals')
     // auto_update: on by default, a choice of On and Off
     expect((input(wrapper, 'auto_update').element as HTMLSelectElement).value).toBe('true')
     expect(field(wrapper, 'auto_update').findAll('option').map(o => [o.attributes('value'), o.text()])).toEqual([['true', 'On'], ['false', 'Off']])
@@ -615,7 +622,7 @@ describe('Settings page', () => {
       'PATCH /settings': ok(changedBody),
     })
     const rows = wrapper.findAll('[data-testid="setting"]')
-    expect(rows).toHaveLength(21)
+    expect(rows).toHaveLength(22)
     expect(rows.at(-1)!.attributes('data-key')).toBe('future_key')
     expect(rows.at(-1)!.text()).toContain('future_key')
     expect(rows.at(-1)!.find('[data-testid="setting-later"]').text()).toBe('beim naechsten Mal')

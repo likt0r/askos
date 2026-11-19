@@ -3,8 +3,9 @@
 One object per VM, shared with `agentbox watch` (watch.py), which sends the same
 objects whenever one changes: the registry record, the state, agents, whether the VM
 answers and its failed wakes, the System disk's age and the Build it was created from,
-the Image with its pin and current Build, Open web, the Claude token's age, its SSH access,
-and the devices connected to the VM's Orca port or with an SSH session through its SSH port.
+the Image with its pin and current Build, the Alert that paused it (alert_watch.py), Open web,
+the Claude token's age, its SSH access, and the devices connected to the VM's Orca port or with
+an SSH session through its SSH port.
 Memory in use is not part of it; the Control Room reads it without privileges from the VM's
 QEMU process (host readings).
 
@@ -20,7 +21,7 @@ import re
 import sys
 import time
 
-from . import footprint, images, lifecycle, paths, programs, registry, responding, settings, state_files, states, times
+from . import alert_watch, footprint, images, lifecycle, paths, programs, registry, responding, settings, state_files, states, times
 from . import ssh_access, virsh, vmenv
 from .commands import declare
 from .errors import Fail, die
@@ -230,6 +231,8 @@ def vm(rec, units, observed, backing, now=None, current=None, starts=None):
         "responding": answers,
         # wakes that gave up since the VM's last start
         "failed_wakes": {"count": wakes["count"], "last": iso(wakes["last"]), "address": wakes["address"]},
+        # the Alert that paused it, while that Pause lasts (alert_watch.py)
+        "paused_by_alert": alert_watch.paused_by(name) if state == states.PAUSED else None,
         "open_web_until": iso(open_until),
         "claude_token_since": iso(token_since),
         "ssh": ssh_access.described(rec),
@@ -277,7 +280,9 @@ def describe(args):
             f"{d['address']}{' SSH' if d['kind'] == 'ssh' else ''} ({d['connections']})" for d in v["devices"])
         ssh = v["ssh"]
         answers, wakes = v["responding"], v["failed_wakes"]
-        print(f"{v['name']}: {v['state']}")
+        alert = v["paused_by_alert"]
+        print(f"{v['name']}: {v['state']}" + (f" by an Alert: {alert['domain']} [{','.join(alert['signals'])}] "
+                                              f"at {alert['time']}" if alert else ""))
         if answers and v["state"] != "running":
             guest_agent = {True: "answers", False: "does not answer"}.get(answers["guest_agent"], "?")
             print("  Answers:      Orca does not answer" + (f" (since {answers['since']})" if answers["since"] else "")

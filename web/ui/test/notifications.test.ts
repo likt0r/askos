@@ -34,6 +34,7 @@ function stubNotification(permission: string = 'granted', fail = false) {
 const T = '2026-11-03T12:00:00Z'
 const events: Record<string, Record<string, unknown>> = {
   alert: { time: T, kind: 'alert', severity: 'critical', vm: 'work', text: 'work tried to reach paste.example:443 (paste, young)', domain: 'paste.example:443', signals: ['paste', 'young'] },
+  'alert-paused': { time: T, kind: 'alert', severity: 'critical', vm: 'work', text: 'work paused: it tried to reach paste.example (paste)', domain: 'paste.example', signals: ['paste'], paused: true },
   'github-refused': { time: T, kind: 'github-refused', severity: 'warning', vm: 'work', text: 'GitHub token refused', request: 'likt0r/askos', detail: 'Repository not allowed' },
   'build-failed': { time: T, kind: 'build-failed', severity: 'warning', vm: null, text: 'Build failed', image: 'base', build: '7', detail: 'dnf failed' },
   'build-rejected': { time: T, kind: 'build-rejected', severity: 'critical', vm: null, text: 'Build rejected', image: 'base', build: '8', detail: 'safeguard missing' },
@@ -43,6 +44,7 @@ const events: Record<string, Record<string, unknown>> = {
 
 const EN: Record<string, [string, string]> = {
   alert: ['Alert: work', 'work tried to reach paste.example:443 (paste, young)'],
+  'alert-paused': ['Paused by an Alert: work', 'work tried to reach paste.example (paste) and was paused'],
   'github-refused': ['GitHub token refused: work', 'work: the GitHub token request for likt0r/askos was refused'],
   'build-failed': ['Build failed: base', 'Build base-7 failed. The previous Build stays in use.'],
   'build-rejected': ['Build rejected: base', 'Build base-8 was rejected: a safeguard is missing or weakened. The previous Build stays in use.'],
@@ -51,6 +53,7 @@ const EN: Record<string, [string, string]> = {
 }
 const DE: Record<string, [string, string]> = {
   alert: ['Alert: work', 'work wollte paste.example:443 erreichen (paste, young)'],
+  'alert-paused': ['Wegen Verdacht pausiert: work', 'work wollte paste.example erreichen (paste) und wurde pausiert'],
   'github-refused': ['GitHub-Token abgelehnt: work', 'work: Die Anfrage nach einem GitHub-Token für likt0r/askos wurde abgelehnt'],
   'build-failed': ['Build gescheitert: base', 'Build base-7 ist gescheitert. Der vorherige Build bleibt in Gebrauch.'],
   'build-rejected': ['Build verworfen: base', 'Build base-8 wurde verworfen: eine Schutzmaßnahme fehlt oder ist abgeschwächt. Der vorherige Build bleibt in Gebrauch.'],

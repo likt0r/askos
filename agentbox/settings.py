@@ -42,6 +42,7 @@ PLAYWRIGHT_VERSION = ORCA_VERSION
 MAX_MEMORY_MIB = 1048576       # as vms.py: when the Host's memory is unknown; create checks the real one
 MAX_DATA_DISK_GIB = 16384
 RESET = "default"              # as a value in set-settings: back to the built-in default
+ALERT_PAUSE, ALERT_NONE = "pause", "none"     # alert_action
 
 
 class Setting:
@@ -124,6 +125,9 @@ SPEC = {
     "default_container_image_cleanup": Setting(True, _bool(), NEW_VMS),
     "default_container_image_cleanup_days": Setting(7, _int(1, 365), NEW_VMS),
     "open_web_max_minutes": Setting(240, _int(1, 1440)),
+    # what an Alert with a strong Signal does to its VM (ADR 0022): pause it, or nothing (none);
+    # agentbox alert-watch reads it at every such Alert
+    "alert_action": Setting(ALERT_PAUSE, _choice(ALERT_PAUSE, ALERT_NONE)),
     "temporary_entry_default": Setting("1h", _choice(*durations.DURATIONS), "for new Temporary allowlist entries"),
     "young_domain_days": Setting(14, _young_days(), "at the next fetch of the Feeds"),
     "feed_interval_hours": Setting(12, _int(1, 168)),

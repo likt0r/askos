@@ -30,7 +30,8 @@ LOCAL_RECORD = {"mode": "local", "bind": "127.0.0.1", "web_port": 8800, "owner_u
 NETWORK_ARGS = ["--mode", "network", "--bind", "192.0.2.8", "--home-network", "192.0.2.0/24"]
 LIBVIRT_GID = 975
 # the units setup enables itself; all of them run once it is done
-ENABLED = ["agentbox-allowlist-expire.timer", "agentbox-container-image-cleanup.timer", "agentbox-vmnet.service",
+ENABLED = ["agentbox-alert-watch.service", "agentbox-allowlist-expire.timer", "agentbox-container-image-cleanup.timer",
+           "agentbox-vmnet.service",
            "agentbox-web.service",
            "libvirt-guests.service"]
 SEEDS = ("allowlist", "suspicious-domains", "legitimate-domains")
@@ -751,7 +752,7 @@ class HostStepsTest(SetupTest):
         self.assertLessEqual(set(ENABLED), set(self.enabled()))
         systemctl = [c["argv"] for c in self.calls("systemctl")]
         for unit in ("libvirt-guests.service", "agentbox-allowlist-expire.timer",
-                     "agentbox-container-image-cleanup.timer"):
+                     "agentbox-container-image-cleanup.timer", "agentbox-alert-watch.service"):
             self.assertIn(["start", unit], systemctl)
         self.assertIn(["restart", "agentbox-vmnet.service"], systemctl)     # by regenerate, with the new rules
         self.assertNotIn(["restart", "libvirt-guests.service"], systemctl)  # that would shut every VM down
@@ -784,7 +785,7 @@ class HostStepsTest(SetupTest):
         self.assertEqual([s["step"] for s in json.loads(out)["steps"]],
                          ["Self-test of the detection", "Directories", "Groups", "Lists", "Firewall zone libvirt",
                           "Network rules of the VMs", "libvirt-guests", "Expiry of Temporary allowlist entries",
-                          "Container image cleanup", "migrate", "migrate-allowlist", "Certificate and password", "Firewall for the home network", "regenerate",
+                          "Container image cleanup", "Pause on Alerts", "migrate", "migrate-allowlist", "Certificate and password", "Firewall for the home network", "regenerate",
                           "Proxies", "migrate-lists", "Activity journal", "Feeds", "Control Room",
                           "Firewall rules taken back"])
 
@@ -817,7 +818,7 @@ class HostStepsTest(SetupTest):
         self.assertEqual(self.changing_calls(), [])
         self.assertIn("Host setup unchanged: Local-only", out)
         for step in ("Directories", "Groups", "Lists", "Firewall zone libvirt", "Network rules of the VMs",
-                     "libvirt-guests", "migrate", "migrate-allowlist", "regenerate", "Proxies", "migrate-lists",
+                     "libvirt-guests", "Pause on Alerts", "migrate", "migrate-allowlist", "regenerate", "Proxies", "migrate-lists",
                      "Activity journal", "Feeds", "Control Room", "Firewall rules taken back"):
             self.assertIn(f"\n{step}: up to date\n", "\n" + out)
         # also in Network mode, with its rules in place

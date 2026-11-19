@@ -43,6 +43,7 @@ JOURNAL_WRITERS = "agentbox-web.service"
 VM_PORTS = ("53/udp", "53/tcp", "443/tcp", "9100/tcp")
 EXPIRY_TIMER = "agentbox-allowlist-expire.timer"
 CONTAINER_IMAGE_CLEANUP_TIMER = "agentbox-container-image-cleanup.timer"
+ALERT_WATCH = "agentbox-alert-watch.service"
 # the VMs' proxies (agentbox regenerate writes one unit per VM)
 PROXIES = "agentbox-proxy-*.service"
 LIBVIRT_GUESTS_UNIT = "libvirt-guests.service"
@@ -381,6 +382,11 @@ def expiry_timer():
 def container_image_cleanup_timer():
     """The timer of the Container image cleanup in the running VMs, every hour."""
     return enable(CONTAINER_IMAGE_CLEANUP_TIMER)
+
+
+def alert_watch():
+    """The watcher that pauses a VM on an Alert with a strong Signal (alert_watch.py)."""
+    return enable(ALERT_WATCH)
 
 
 def proxies_before_lists():

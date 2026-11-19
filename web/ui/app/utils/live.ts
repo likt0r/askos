@@ -44,6 +44,8 @@ export interface Vm {
   responding?: { guest_agent: boolean | null, orca: boolean, since: string | null } | null
   /** wakes that gave up since the VM's last start */
   failed_wakes?: { count: number, last: string | null, address: string | null } | null
+  /** the Alert with a strong Signal that paused the VM, while that Pause lasts (agentbox alert-watch) */
+  paused_by_alert?: PausedByAlert | null
   open_web_until?: string | null
   /** open connections per remote address and kind: to the Orca port, or SSH sessions */
   devices?: { address: string, kind?: 'orca' | 'ssh', connections: number }[] | null
@@ -51,6 +53,8 @@ export interface Vm {
   ssh?: SshAccess | null
   [key: string]: unknown
 }
+
+export interface PausedByAlert { time: string | null, domain: string, signals: string[] }
 
 export interface SshKey { name: string, type: string, fingerprint: string, added: string }
 

@@ -1,0 +1,17 @@
+# Pauses a VM whose own proxy raised an Alert with a strong Signal, while alert_action of the
+# Settings is pause (rpm/agentbox.spec, ADR 0022). Not enabled by installing: agentbox setup
+# enables and starts it. It reads the proxies' Alerts from the Activity journal; the proxies
+# never call it.
+[Unit]
+Description=Agent Box: pause a VM on an Alert with a strong Signal
+After=systemd-journald@agentbox.socket
+Wants=systemd-journald@agentbox.socket
+
+[Service]
+ExecStart=/usr/bin/agentbox alert-watch
+NoNewPrivileges=yes
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

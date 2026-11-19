@@ -1079,6 +1079,35 @@ class ForgedTest(JournalTest):
         self.assertEqual([e["description"] for e in json.loads(out)["entries"]],
                          [e["description"] for e in TIMELINE[:2]])
 
+    def test_a_pause_by_an_alert_counts_only_from_root_in_the_alert_watch(self):
+        """#11, ADR 0022: kind alert under agentbox-activity is only agentbox alert-watch's
+        Pause (alert.paused), and only root in agentbox-alert-watch.service writes it."""
+        watcher = {"_UID": "0", "_GID": "0", "_SYSTEMD_UNIT": "agentbox-alert-watch.service", "_COMM": "agentbox",
+                   "_EXE": "/usr/bin/python3.14", "_TRANSPORT": "journal"}
+        params = {"AGENTBOX_CODE": "alert.paused", "AGENTBOX_PARAM_DOMAIN": "evil.example",
+                  "AGENTBOX_PARAM_SIGNALS": "exfil, young"}
+
+        def pause(age, by, action="alert.paused", vm="work"):
+            return written_by(recorded(age, "alert", action, f"Paused for an Alert: evil.example [exfil,young] {age}",
+                                       vm=vm, actor="alert-watch", **{**params, "AGENTBOX_CODE": action}), by)
+        self.journal([
+            pause(HOUR, watcher),
+            pause(HOUR + 1, CLI),                                   # root's CLI at a terminal
+            pause(HOUR + 2, MEMBER),                                # a member of agentbox-journal
+            pause(HOUR + 3, proxy("work")),                         # the VM's proxy
+            pause(HOUR + 4, {**watcher, "_SYSTEMD_UNIT": "agentbox-web.service"}),
+            pause(HOUR + 5, watcher, action="alert"),               # another action of kind alert
+            journal_entry("agentbox-proxy-work", "[work] ALERT evil.example [exfil,young]", HOUR + 6),
+        ])
+        code, out, err = self.run_agentbox("activity", "--kind=alert", "--json")
+        self.assertEqual((code, err), (0, UNTRUSTED.format(5)))
+        entries = json.loads(out)["entries"]
+        self.assertEqual([(e["action"], e["actor"], e["description"]) for e in entries], [
+            ("alert.paused", "alert-watch", f"Paused for an Alert: evil.example [exfil,young] {HOUR}"),
+            ("alert", "VM work", "Alert: evil.example (exfil,young)")])
+        self.assertEqual((entries[0]["kind"], entries[0]["code"], entries[0]["params"]),
+                         ("alert", "alert.paused", {"domain": "evil.example", "signals": "exfil, young"}))
+
     def test_the_warning_tells_nothing_of_their_content(self):
         self.journal(FORGED_ENTRIES)
         code, out, err = self.run_agentbox("activity")
@@ -1224,6 +1253,8 @@ class ControlRoomWordsTest(unittest.TestCase):
                 action = node.args[1]
                 if isinstance(action, ast.Constant):
                     actions.add(action.value)
+                elif isinstance(action, ast.Attribute) and getattr(action.value, "id", None) == "activity":
+                    actions.add(getattr(activity, action.attr))     # a constant of activity.py (alert.paused)
                 elif ast.unparse(action) == "f'maintenance.{step}'":     # a step of the Maintenance window
                     actions |= {f"maintenance.{step}" for step, _, _ in maintenance.STEPS}
                 else:       # build.<status> of a Build that failed or was rejected (images._Failed)

@@ -74,6 +74,7 @@ export default {
     starting: 'Startet',
     not_responding: 'Antwortet nicht',
     paused: 'Pausiert',
+    paused_by_alert: 'Wegen Verdacht pausiert',
     stopped: 'Gestoppt',
     suspended: 'Angehalten',
     shutting_down: 'Fährt herunter',

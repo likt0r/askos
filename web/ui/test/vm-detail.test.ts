@@ -181,6 +181,56 @@ describe('a VM that does not respond (#54)', () => {
   })
 })
 
+describe('a VM paused by an Alert (#11)', () => {
+  const PAUSED = '2026-11-19T10:15:00Z'
+  const ALERTED = {
+    ...WORK, state: 'paused', agents: null, reset_due: false,
+    paused_by_alert: { time: PAUSED, domain: 'upload.exfil.example', signals: ['exfil', 'young'] },
+  }
+  const at = (iso: string) => {
+    const d = new Date(iso)
+    const sameDay = d.toDateString() === new Date().toDateString()
+    return new Intl.DateTimeFormat('en', sameDay ? { timeStyle: 'short' } : { dateStyle: 'medium', timeStyle: 'short' }).format(d)
+  }
+
+  it('says which destination paused it, with its Signals and when, and offers Start', async () => {
+    fakeApi({ 'GET /session': SIGNED_IN })
+    await openApp('/vms/work/web', [ALERTED])
+    const state = byTestId('vm-detail').find('[data-testid="vm-state"]')
+    expect(state.text()).toBe('Paused by Alert')
+    expect(state.attributes('data-state')).toBe('paused')
+    expect(state.attributes('data-by-alert')).toBe('true')
+    expect(byTestId('vm-paused-by-alert').attributes('data-domain')).toBe('upload.exfil.example')
+    expect(text('paused-by-alert-what')).toContain('upload.exfil.example')
+    expect(text('paused-by-alert-what')).toContain(at(PAUSED))
+    expect(text('paused-by-alert-hint')).toContain('The destination stays blocked.')
+    expect(exists('action-start')).toBe(true)
+  })
+
+  it('in German', async () => {
+    fakeApi({ 'GET /session': SIGNED_IN })
+    await useNuxtApp().$i18n.setLocale('de')
+    await openApp('/vms/work/web', [ALERTED])
+    expect(byTestId('vm-detail').find('[data-testid="vm-state"]').text()).toBe('Wegen Verdacht pausiert')
+    expect(text('paused-by-alert-what')).toContain('Die VM wollte upload.exfil.example')
+    await useNuxtApp().$i18n.setLocale('en')
+  })
+
+  it('is an ordinary Pause without the mark, and goes away once the VM runs again', async () => {
+    fakeApi({ 'GET /session': SIGNED_IN })
+    const { es } = await openApp('/vms/work/web', [{ ...ALERTED, paused_by_alert: null }])
+    expect(byTestId('vm-detail').find('[data-testid="vm-state"]').text()).toBe('Paused')
+    expect(exists('vm-paused-by-alert')).toBe(false)
+    es.emit('vm', ALERTED)
+    await flushPromises()
+    expect(exists('vm-paused-by-alert')).toBe(true)
+    es.emit('vm', { ...ALERTED, state: 'running' })
+    await flushPromises()
+    expect(exists('vm-paused-by-alert')).toBe(false)
+    expect(byTestId('vm-detail').find('[data-testid="vm-state"]').text()).toBe('Running')
+  })
+})
+
 describe('lifecycle actions', () => {
   it('pauses with the CSRF header; the state comes from the stream', async () => {
     const api = fakeApi({ 'GET /session': SIGNED_IN, 'POST /vms/work/pause': OK({ vm: 'work', state: 'paused' }) })

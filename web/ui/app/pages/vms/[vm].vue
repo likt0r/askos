@@ -1,5 +1,6 @@
 <script setup lang="ts">
-// A VM's detail: its live state, what does not answer when it does not respond (#54),
+// A VM's detail: its live state, the Alert that paused it (#11), what does not answer when it
+// does not respond (#54),
 // lifecycle actions and overview (#13), and the tabs Web, Access, Log (#3), Pair (#19).
 import type { NavigationMenuItem } from '@nuxt/ui'
 
@@ -40,7 +41,7 @@ const tabs = computed<NavigationMenuItem[]>(() => [
         <h2 class="text-xl font-semibold text-highlighted">
           {{ vm.name }}
         </h2>
-        <VmStateBadge :state="vm.state" />
+        <VmStateBadge :state="vm.state" :by-alert="!!pausedByAlert(vm)" />
         <span class="font-mono text-xs text-muted">{{ vm.image }}<template v-if="vm.build_pin"> @ {{ vm.build_pin }}</template></span>
         <span class="flex-1" />
         <UButton
@@ -53,6 +54,7 @@ const tabs = computed<NavigationMenuItem[]>(() => [
           @click="overviewOpen = !overviewOpen"
         />
       </div>
+      <VmPausedByAlert :vm="vm" />
       <VmNotResponding :vm="vm" />
       <VmActions :vm="vm" />
       <VmOverview v-if="overviewOpen" :vm="vm" />

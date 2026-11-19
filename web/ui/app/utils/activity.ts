@@ -254,6 +254,9 @@ export const SENTENCES: Record<string, Sentence> = {
   'alert': (p, tr) => (!has(p, 'domain') ? null
     : has(p, 'signals') ? say(tr, 'alertSignals', { domain: p.domain, signals: p.signals!.split(', ').map(s => signalName(s, tr)).join(', ') })
       : say(tr, 'alert', { domain: p.domain })),
+  // a Pause by an Alert with a strong Signal (agentbox alert-watch), or one that failed
+  'alert.paused': (p, tr, e) => (!has(p, 'domain') ? null
+    : say(tr, e.outcome === 'failed' ? 'alertPauseFailed' : 'alertPaused', { domain: p.domain, signals: (p.signals ?? '').split(', ').filter(Boolean).map(s => signalName(s, tr)).join(', ') })),
   // the GitHub token service's lines (agentbox/activity.py github_entry); an error adds its message
   'github.token': (p, tr) => (has(p, 'repository') ? say(tr, 'githubToken', { repository: p.repository }) : null),
   'github.refused': (p, tr) => {

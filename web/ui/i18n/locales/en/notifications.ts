@@ -16,6 +16,7 @@ export default {
     title: {
       section: 'Notifications in this browser',
       alert: 'Alert: {vm}',
+      'alert-paused': 'Paused by an Alert: {vm}',
       'github-refused': 'GitHub token refused: {vm}',
       'build-failed': 'Build failed: {image}',
       'build-rejected': 'Build rejected: {image}',
@@ -25,6 +26,7 @@ export default {
     },
     text: {
       alert: '{vm} tried to reach {domain} ({signals})',
+      'alert-paused': '{vm} tried to reach {domain} ({signals}) and was paused',
       'github-refused': '{vm}: the GitHub token request for {request} was refused',
       'build-failed': 'Build {image}-{build} failed. The previous Build stays in use.',
       'build-rejected': 'Build {image}-{build} was rejected: a safeguard is missing or weakened. The previous Build stays in use.',

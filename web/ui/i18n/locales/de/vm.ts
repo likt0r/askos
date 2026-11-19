@@ -71,6 +71,11 @@ export default {
       'focus-off': 'Fokus aus. Pausierte VMs wachen auf, sobald Orca sich verbindet.',
     },
   },
+  pausedByAlert: {
+    title: 'Wegen Verdacht pausiert',
+    what: 'Die VM wollte {domain} ({signals}) erreichen und wurde um {time} pausiert.',
+    hint: 'Das Ziel bleibt gesperrt. Sieh nach, was der Agent tat, bevor du die VM wieder startest oder dich aus Orca verbindest: sie macht dort weiter, wo sie stand, und ein neuer Versuch pausiert sie wieder.',
+  },
   notResponding: {
     what: {
       system: 'Das System ist nicht hochgefahren: weder Orca noch der Gast-Agent antworten.',
