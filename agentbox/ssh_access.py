@@ -7,22 +7,25 @@ defined again when its definition changed (a domain from before SSH access lacks
 entry), and the units of its SSH port follow its SSH access (generate.ssh_port): the port
 listens while it is on and is gone while it is off. The keys stay when SSH access goes off.
 
-What reaches the VM (SSH access and the keys) applies at once. A running VM gets it through
-the fifth fixed guest-agent wrapper of the Image, agentbox-ssh, which checks the keys again,
-replaces the key file whole and starts or stops sshd; only its small JSON answer comes back
-and must be exactly what the Host sent. A VM that is off reads the fw_cfg file at its next
-start. Any other VM (paused, or running but not taking the change) has a pending marker
-(footprint.ssh_pending_file), set before any step that can fail: `start` and `wake` hand the
-change over before the first connection is forwarded (apply_pending), and a connection to the
-SSH port is refused while that fails. A Build without the wrapper keeps the saved change for
-its next start, and the command fails with ssh_missing.
+What reaches the VM (SSH access and the keys) applies at once. A running VM gets it through the
+fifth fixed guest-agent wrapper of the Image, agentbox-ssh, which checks the keys again,
+replaces the key file whole and starts or stops sshd; only its small JSON answer comes back and
+must be exactly what the Host sent. A VM that is off reads the fw_cfg file at its next start.
+Any other VM (paused, or running but not taking the change) has a pending marker
+(footprint.ssh_pending_file), set before the change is saved, so that a marker that cannot be
+written leaves the change unsaved: `start` and `wake` hand the change over before the first
+connection is forwarded (apply_pending), and a connection to the SSH port is refused while that
+fails. A Build without the wrapper keeps the saved change for its next start, and the command
+fails with ssh_missing.
 
-Removing a key and turning SSH access off end every open SSH session of the VM: the Host
-cannot tell which session used which key, so every running connection unit of its SSH port
-stops. Turning it off closes the port first and then ends the sessions, removing a key ends
-them first, both before any step that can fail. A connection that comes in meanwhile waits in
-`wake` for the VM's lifecycle lock, which the change holds, and so meets the new key file, or
-the marker.
+Removing a key and turning SSH access off end every open SSH session of the VM: the Host cannot
+tell which session used which key, so every running connection unit of its SSH port stops.
+Turning it off closes the port first and then ends the sessions, removing a key ends them
+first, both right after the change is saved and before any later step that can fail. The same
+call again ends them also when the record does not change any more: `set-ssh off` always,
+`remove-ssh-key` of a key no longer in the record while the VM has a pending change, which it
+then hands over. A connection that comes in meanwhile waits in `wake` for the VM's lifecycle
+lock, which the change holds, and so meets the new key file, or the marker.
 
 Each command that changes something holds the registry lock, the record's lock and the VM's
 lifecycle lock, as set-env does, and records its own Activity entry (ssh.enabled,
@@ -155,15 +158,20 @@ def _each(*steps):
     if failure:
         raise failure
 
-def _change(name, change, ends_sessions=False):
-    """Apply change(record) -> record: saved when it differs; then, each also when the one
-    before failed, the port closed without SSH access, every SSH session of the VM ended with
-    ends_sessions, and the pending marker set for a VM that is not off when what reaches it
-    changed; then the host key made (with SSH access or a key), the file the VM reads written,
-    the VM defined again if its definition changed, the SSH port set up, and a running VM given
-    the change. So the port is closed and the sessions have ended whatever fails later. Returns
-    (before, after, state, applies, defined), applies: now (the VM runs and has it), on_resume
-    (any other VM that is not off), next_start (off), None when nothing changed."""
+def _change(name, change, ends_sessions=False, again=False):
+    """Apply change(record) -> record. When what reaches the VM changes and the VM is not off,
+    the pending marker is set first: a VM without its marker could resume with a removed key, so
+    when the marker cannot be written nothing changes. Then the record is saved when it differs;
+    then, each also when the one before failed, the port closed without SSH access and every SSH
+    session of the VM ended with ends_sessions (also when the record did not change, so that the
+    same call again ends what an earlier one could not); then the host key made (with SSH access
+    or a key), the file the VM reads written, the VM defined again if its definition changed,
+    the SSH port set up, and a running VM given the change. So the port is closed and the
+    sessions have ended whatever fails later. A failure after the save names what finishes it:
+    the same call again (again, or a command that ends sessions while the marker is set),
+    otherwise agentbox regenerate. Returns (before, after, state, applies, defined), applies:
+    now (the VM runs and has it), on_resume (any other VM that is not off), next_start (off),
+    None when nothing changed."""
     with state_files.locked(paths.REGISTRY):
         with state_files.locked(footprint.record_file(name)):
             with state_files.vm_lock(name):
@@ -174,15 +182,20 @@ def _change(name, change, ends_sessions=False):
                     where = "" if hostsetup.load()["mode"] == hostsetup.NETWORK else f" on {hostsetup.LOOPBACK}"
                     die(f"{name}: port {registry.ssh_port(after)}{where} is taken: another service listens there, "
                         "so the VM's SSH port could not open; stop that service first", error="action_failed", vm=name)
+                state = states.status(name)
                 if after != before:
+                    if _in_vm(after) != _in_vm(before) and not states.starts_anew(state):
+                        try:
+                            _mark(name)
+                        except OSError as e:
+                            die(f"{name}: nothing changed: the VM's pending marker could not be written "
+                                f"({e.filename}: {e.strerror})", error="action_failed", vm=name)
                     registry.save(after)
                 on = registry.ssh_access(after)
-                state = states.status(name)
                 closed = []
                 try:
                     _each(lambda: closed.append(not on and generate.ssh_port(after)),
-                          lambda: ends_sessions and after != before and _end_sessions(name),
-                          lambda: _in_vm(after) != _in_vm(before) and not states.starts_anew(state) and _mark(name))
+                          lambda: ends_sessions and _end_sessions(name))
                     port = closed[0]
                     made = (on or bool(registry.ssh_keys(after))) and generate.ssh_host_key(after)
                     written = generate.vm_ssh(after)
@@ -192,7 +205,9 @@ def _change(name, change, ends_sessions=False):
                     why = e.message.strip() if isinstance(e, Fail) else f"{e.filename}: {e.strerror}"
                     said = "the change is saved, but not applied" if after != before else \
                         "nothing changed, but applying the VM's SSH access failed"
-                    die(f"{name}: {said}: {why}; agentbox regenerate finishes it", error="action_failed", vm=name)
+                    finish = "the same call again" if again or (ends_sessions and pending(name)) else \
+                        "agentbox regenerate"
+                    die(f"{name}: {said}: {why}; {finish} finishes it", error="action_failed", vm=name)
                 changed = after != before or made or written or defined == "domain" or port
                 if states.starts_anew(state):
                     drop_pending(name)
@@ -253,7 +268,7 @@ def set_ssh(args):
         name = registry.check(positional[0])
         before, after, state, applies, defined = _change(
             name, lambda rec: rec if registry.ssh_access(rec) == on else {**rec, "ssh_access": on},
-            ends_sessions=not on)
+            ends_sessions=not on, again=not on)
     except Fail as f:
         _record(action, activity.known_vm(positional), what, f)
         raise
@@ -333,14 +348,19 @@ def add_ssh_key(args):
 
 def remove_ssh_key(args):
     """agentbox remove-ssh-key <vm> <fingerprint> [--json]: remove an SSH key by its SHA256
-    fingerprint; every SSH session of the VM ends."""
+    fingerprint; every SSH session of the VM ends. A key no longer in the record while the VM
+    has a pending change (an earlier removal the VM did not take) is no error: the same call
+    again hands that change over and ends every SSH session."""
     positional, opts = options.parse(args)
     given = positional[1] if len(positional) == 2 and FINGERPRINT.fullmatch(positional[1]) else None
-    removed = {}
+    removed, retried = {}, []
 
     def without(rec):
         keys = registry.ssh_keys(rec)
         found = [k for k in keys if k["fingerprint"] == positional[1]]
+        if not found and given and pending(name):
+            retried.append(True)
+            return rec
         if not found:
             die(f"{name}: no SSH key {clean(positional[1], False)[:60]} (agentbox ssh {name} lists them)",
                 error="ssh_key_not_found", vm=name)
@@ -357,17 +377,27 @@ def remove_ssh_key(args):
                 {"fingerprint": removed["fingerprint"], "name": removed["name"]} if removed
                 else {"fingerprint": given} if given else None)
         raise
-    shown = removed["fingerprint"] + (f" ({removed['name']})" if removed["name"] else "")
-    _record("ssh.key-removed", name, f"Remove the SSH key {shown}",
-            params={"fingerprint": removed["fingerprint"], "name": removed["name"]})
-    message = f"{name}: SSH key {shown} removed" + (
-        f" and every SSH session ended; {_when(name, applies, defined)}" if registry.ssh_access(after)
-        else "; SSH access is off")
+    if retried:
+        applies = applies or ("now" if state == states.RUNNING else "next_start" if states.starts_anew(state)
+                              else "on_resume")
+        _record("ssh.key-removed", name, f"Remove the SSH key {given}: hand the pending change over",
+                params={"fingerprint": given})
+        message = (f"{name}: no SSH key {given} in the record any more; every SSH session ended and the VM's "
+                   "pending SSH change " + ("is handed over; it applies in the VM now" if applies == "now"
+                                            else f"waits; {_when(name, applies, defined)}"))
+        removed = {"fingerprint": given, "name": None, "key": None}
+    else:
+        shown = removed["fingerprint"] + (f" ({removed['name']})" if removed["name"] else "")
+        _record("ssh.key-removed", name, f"Remove the SSH key {shown}",
+                params={"fingerprint": removed["fingerprint"], "name": removed["name"]})
+        message = f"{name}: SSH key {shown} removed" + (
+            f" and every SSH session ended; {_when(name, applies, defined)}" if registry.ssh_access(after)
+            else "; SSH access is off")
     if "json" in opts:
         print(json.dumps({"vm": name, "fingerprint": removed["fingerprint"], "name": removed["name"],
-                          "type": sshkeys.key_type(removed["key"]), "enabled": registry.ssh_access(after),
-                          "keys": len(registry.ssh_keys(after)), "state": state, "applies": applies,
-                          "message": message}, ensure_ascii=False))
+                          "type": removed["key"] and sshkeys.key_type(removed["key"]),
+                          "enabled": registry.ssh_access(after), "keys": len(registry.ssh_keys(after)),
+                          "state": state, "applies": applies, "message": message}, ensure_ascii=False))
     else:
         print(message)
 

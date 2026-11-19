@@ -1230,6 +1230,74 @@ class LiveTest(SshTest):
         self.assertEqual(self.json("regenerate")["vms"]["work"], ["units", "vm-ssh"])
         self.assertFalse(self.exists(SOCKET.format("work")))
 
+    def test_off_again_ends_the_sessions_the_first_call_did_not(self):
+        self.on_with_two_keys()
+        self.scenario(systemctl_fails=["stop"])
+        said = self.failed("set-ssh", "work", "off")
+        self.assertTrue(said["message"].startswith("work: the change is saved, but not applied: "), said["message"])
+        self.assertTrue(said["message"].endswith("; the same call again finishes it"), said["message"])
+        self.assertIs(self.record()["ssh_access"], False)
+        self.scenario()
+        self.forget_calls()
+        # the record does not change any more, but the sessions end and the rest is finished
+        self.assertEqual(self.ok("set-ssh", "work", "off"), "work: SSH access off, port 2201 closed and every SSH "
+                                                            "session ended, its SSH keys stay\n")
+        self.assertIn(["stop", "agentbox-ssh-work@*.service"], self.systemctl())
+        self.assertEqual(self.read(SSH_FILE.format("work")), "none\n")
+        self.assertFalse(self.exists(SOCKET.format("work")))
+        self.assertIsNone(self.authorized())
+        self.assertFalse(self.exists(PENDING.format("work")))
+
+    def test_a_marker_that_cannot_be_written_changes_nothing(self):
+        self.on_with_two_keys()
+        self.ok("pause", "work")
+        blocker = self.path(os.path.dirname(PENDING.format("work")))
+        shutil.rmtree(blocker, ignore_errors=True)
+        open(blocker, "w").close()                              # no directory for the marker
+        said = self.failed("remove-ssh-key", "work", LAPTOP_FP)
+        self.assertEqual(said["error"], "action_failed")
+        self.assertTrue(said["message"].startswith("work: nothing changed: "), said["message"])
+        self.assertNotIn("regenerate", said["message"])
+        # the key stays in the record: the paused VM that still has it resumes with what the record says
+        self.assertEqual(len(self.record()["ssh_keys"]), 2)
+        os.remove(blocker)
+        self.ok("remove-ssh-key", "work", LAPTOP_FP)
+        self.assertTrue(self.exists(PENDING.format("work")))
+        # the same call again while it waits for the resume: every SSH session ends again, nothing else
+        self.forget_calls()
+        self.assertEqual(self.ok("remove-ssh-key", "work", LAPTOP_FP),
+                         f"work: no SSH key {LAPTOP_FP} in the record any more; every SSH session ended and the VM's "
+                         "pending SSH change waits; the VM gets it when it resumes\n")
+        self.assertEqual(self.systemctl()[0], ["stop", "agentbox-ssh-work@*.service"])
+        self.assertEqual(self.applied(), [])
+        self.assertTrue(self.exists(PENDING.format("work")))
+        self.ok("start", "work")
+        self.assertEqual(self.authorized(), self.PHONE.rsplit(" ", 1)[0] + "\n")
+
+    def test_remove_again_hands_the_pending_removal_over_and_ends_the_sessions(self):
+        self.on_with_two_keys()
+        self.scenario(agent_down=True)
+        said = self.failed("remove-ssh-key", "work", LAPTOP_FP)
+        self.assertEqual(said["error"], "guest_agent_unavailable")
+        self.assertEqual(len(self.record()["ssh_keys"]), 1)
+        self.assertEqual(self.authorized().count("\n"), 2)
+        self.scenario()
+        self.forget_calls()
+        self.journald.entries()
+        self.journald.datagrams.clear()
+        result = self.json("remove-ssh-key", "work", LAPTOP_FP)
+        self.assertEqual(result.pop("message"), f"work: no SSH key {LAPTOP_FP} in the record any more; every SSH "
+                                                "session ended and the VM's pending SSH change is handed over; it "
+                                                "applies in the VM now")
+        self.assertEqual(result, {"vm": "work", "fingerprint": LAPTOP_FP, "name": None, "type": None,
+                                  "enabled": True, "keys": 1, "state": "running", "applies": "now"})
+        self.assertEqual(self.systemctl()[0], ["stop", "agentbox-ssh-work@*.service"])
+        self.assertEqual(self.authorized(), self.PHONE.rsplit(" ", 1)[0] + "\n")
+        self.assertFalse(self.exists(PENDING.format("work")))
+        self.assertEqual(self.activity(), [("ssh.key-removed", "work", "ok", {"fingerprint": LAPTOP_FP})])
+        # nothing pending any more: the same call is refused again
+        self.assertEqual(self.failed("remove-ssh-key", "work", LAPTOP_FP)["error"], "ssh_key_not_found")
+
     def test_a_vm_that_does_not_take_it_refuses_ssh_connections_until_it_does(self):
         self.on_with_two_keys()
         os.makedirs(self.guest(""), exist_ok=True)

@@ -135,7 +135,10 @@ flowchart LR
   resumes, a VM that is off at its next start ([VMs](#vms)). Removing a key and turning SSH
   access off end every open SSH session of the VM: the Host cannot tell which session used
   which key, so every running connection unit of the SSH port stops, before any step that
-  can fail (turning it off closes the port first). Each change is recorded in Activity
+  can fail (turning it off closes the port first). The same call again ends them also when the
+  record no longer changes, as after a call that failed halfway: `set-ssh <vm> off` always, and
+  `remove-ssh-key` of a key no longer in the record while the VM has a pending change, which it
+  then hands over. Each change is recorded in Activity
   (`ssh.enabled`, `ssh.disabled`, `ssh.key-added` and `ssh.key-removed` with the key's
   fingerprint and name), each connection is not.
 - **Names for SSH**: `agentbox ssh-config [<vm>...]` prints a `~/.ssh/config` block per VM with
@@ -384,13 +387,14 @@ flowchart LR
   true|false}` comes back, and it must be exactly what the Host sent; anything else, a failure
   or a VM that does not answer fails the command with the change saved. A VM that is not
   running and not off (paused) gets a pending marker instead
-  (`/var/lib/agentbox/pending/ssh-<vm>`), written before any step that can fail and also left
-  by a running VM that did not take the change: `start` (resuming a Pause) and `wake` (once
-  Orca answers, before the connection is forwarded) hand the change over under the lifecycle
-  lock, and while that fails a connection to the SSH port is refused (Orca connections go on).
-  A VM that starts anew reads the fw_cfg file, so a stop drops the marker. A VM whose Build
-  lacks the wrapper keeps the saved change for its next start and the command fails with
-  `ssh_missing`: until a Reset onto a newer Build that VM keeps the keys it started with.
+  (`/var/lib/agentbox/pending/ssh-<vm>`), written before the change is saved (when it cannot
+  be written, nothing changes) and also left by a running VM that did not take the change:
+  `start` (resuming a Pause) and `wake` (once Orca answers, before the connection is
+  forwarded) hand the change over under the lifecycle lock, and while that fails a connection
+  to the SSH port is refused (Orca connections go on). A VM that starts anew reads the fw_cfg
+  file, so a stop drops the marker. A VM whose Build lacks the wrapper keeps the saved change
+  for its next start and the command fails with `ssh_missing`: until a Reset onto a newer
+  Build that VM keeps the keys it started with.
 - VMs are reset automatically once their System disk is seven days old, and with automatic
   updates (`auto_update`) once their Image has a newer current Build than the one their
   System disk came from (not when pinned to a Build), but only when no Orca client is
