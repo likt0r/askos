@@ -32,7 +32,7 @@ Controls the agent VMs on this Host.
   agentbox sign-in-link [--json]                     a link that signs a browser in to the Control Room once,
                                                      within 2 minutes, without the password (root and the
                                                      members of libvirt)
-  agentbox create <vm> [--image I] [--memory-mib N] [--data-disk-gib N] [--owner O]... [--container-image-cleanup on|off] [--container-image-cleanup-days N] [--copy-allowlist-from VM] [--json]
+  agentbox create <vm> [--image I] [--memory-mib N] [--data-disk-gib N] [--owner O]... [--container-image-cleanup on|off] [--container-image-cleanup-days N] [--copy-allowlist-from VM] [--copy-ssh-keys-from VM] [--json]
                 new VM; network and Orca port are picked automatically
   agentbox delete <vm> --confirm <vm> [--delete-data-disk] [--json]
                 delete a VM; its Data disk is archived, or deleted with --delete-data-disk
@@ -52,9 +52,11 @@ Controls the agent VMs on this Host.
                                                      fingerprint with a known_hosts line, its SSH keys
   agentbox set-ssh <vm> on|off [--json]              SSH access through the SSH port (2200 + network number, on
                                                      127.0.0.1); off ends every SSH session, the keys stay
-  agentbox add-ssh-key <vm> [--name N] [FILE] [--json]
+  agentbox add-ssh-key <vm> [--name N] [FILE] | --from <vm> | --mine [--yes] [--json]
                 add an SSH key (a line of a .pub file) from FILE or stdin; its comment is its name; a
-                running VM takes it at once, a paused one when it resumes
+                running VM takes it at once, a paused one when it resumes. --from: a one-time copy of
+                another VM's keys; --mine: your own ~/.ssh/*.pub, read with your rights, after you
+                confirm (--yes: without asking); keys refused or entered already are named and left out
   agentbox remove-ssh-key <vm> <fingerprint> [--json]
                 remove an SSH key (its SHA256 fingerprint, agentbox ssh lists them); it stops working at
                 once and every SSH session of the VM ends

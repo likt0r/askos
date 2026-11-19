@@ -120,7 +120,16 @@ flowchart LR
   from stdin without a file; its comment is its name unless `--name` gives one), `agentbox
   remove-ssh-key <vm> <fingerprint>` removes one by its SHA256 fingerprint, and `agentbox
   ssh <vm>` shows it: on or off, the SSH port, the fingerprint of the host key with a
-  `known_hosts` line, the keys, and whether the VM has yet to take a change. While SSH access
+  `known_hosts` line, the keys, and whether the VM has yet to take a change. Keys reach another
+  VM only by an explicit copy ([ADR 0001](docs/adr/0001-vm-is-the-unit-of-separation.md)):
+  `agentbox add-ssh-key <vm> --from <other>` (and `agentbox create <vm> --copy-ssh-keys-from
+  <other>`) copies the other VM's keys once, and no link stays between the two. `agentbox
+  add-ssh-key <vm> --mine` reads `~/.ssh/*.pub` of the user who ran `sudo` (else of the caller)
+  in a child process with that user's rights, as `import` packs a folder, so root reads nothing
+  for it that this user could not read; it shows the keys it found and adds them only after a
+  confirmation at a terminal (`--yes` instead). Each key of a copy or of `--mine` goes through
+  the checks and limits of one key; a key refused or entered already is named and left out
+  while the others go in, and every key added is its own `ssh.key-added` entry. While SSH access
   is on, the VM's SSH port, 2200 + its network number (2201–2454), listens where its Orca port
   does: on `127.0.0.1` in Local-only, on every address behind the rules of the home network in
   Network mode; each connection runs `wake` with the Actor `SSH (<address>)` and then forwards
@@ -190,7 +199,8 @@ flowchart LR
   stops `regenerate`; `status` and the daily Reset check carry on with the other VMs.
 - `agentbox create` adds a record with the lowest free network number (Orca port 6800 + N),
   no Allowlist entries of its own (optionally a one-time copy of another VM's own entries,
-  [ADR 0001](docs/adr/0001-vm-is-the-unit-of-separation.md)) and a System disk, then runs
+  [ADR 0001](docs/adr/0001-vm-is-the-unit-of-separation.md)), no SSH access and no SSH keys
+  (optionally a one-time copy of another VM's keys) and a System disk, then runs
   `regenerate`. It refuses names the CLI or the Control Room use themselves and anything an
   earlier VM of that name left behind (Data disk, Claude token, VM variables, SSH host key,
   SSH access, Observer, domain, network), so nothing carries over between VMs. The VM starts on its first `agentbox pair` or Orca
