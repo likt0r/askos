@@ -96,7 +96,7 @@ SSHD = {"passwordauthentication": "no", "kbdinteractiveauthentication": "no", "p
         "authorizedkeysfile": f"{SSHD_RUN}/authorized_keys", "authorizedkeyscommand": "none",
         "trustedusercakeys": "none", "allowtcpforwarding": "local", "allowagentforwarding": "no",
         "allowstreamlocalforwarding": "no", "x11forwarding": "no", "permittunnel": "no", "gatewayports": "no",
-        "permituserenvironment": "no"}
+        "permituserenvironment": "no", "usepam": "yes"}
 SSHD_PATHS = ("authorizedkeysfile", "authorizedkeyscommand", "trustedusercakeys")
 SSHD_CASED = SSHD_PATHS + ("authenticationmethods",)    # sshd reads these values case-sensitively
 SSHD_ALIASES = {"challengeresponseauthentication": "kbdinteractiveauthentication",
@@ -106,7 +106,7 @@ SSHD_NAMES = {n.lower(): n for n in ("PasswordAuthentication", "KbdInteractiveAu
                                      "AuthenticationMethods", "HostbasedAuthentication", "PermitRootLogin",
                                      "AuthorizedKeysFile", "AuthorizedKeysCommand", "TrustedUserCAKeys",
                                      "AllowTcpForwarding", "AllowAgentForwarding", "AllowStreamLocalForwarding",
-                                     "X11Forwarding", "PermitTunnel", "GatewayPorts", "PermitUserEnvironment")}
+                                     "X11Forwarding", "PermitTunnel", "GatewayPorts", "PermitUserEnvironment", "UsePAM")}
 SSHD_UNITS = ("sshd.service", "sshd.socket")
 # masked in the Base image: Fedora's sshd@.service adds ~/.ssh/authorized_keys on its command
 # line, and systemd's generator would start it on a local socket

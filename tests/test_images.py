@@ -719,7 +719,7 @@ class SafeguardTest(ImagesTest):
         self.assertEqual(first["passwordauthentication"], ("no", safeguards.SSHD_DROPIN))
         self.assertEqual(first["x11forwarding"], ("no", safeguards.SSHD_DROPIN))
         self.assertEqual(first["authorizedkeysfile"], ("/run/agentbox/ssh/authorized_keys", safeguards.SSHD_DROPIN))
-        self.assertEqual(first["usepam"], ("yes", "/etc/ssh/sshd_config.d/50-redhat.conf"))
+        self.assertEqual(first["usepam"], ("yes", safeguards.SSHD_DROPIN))
         self.assertEqual(lists, {"allowusers": ["agent"], "hostkey": ["/run/agentbox/ssh/host_key"]})
         # Fedora's sshd@.service (sshd -o "AuthorizedKeysFile ... .ssh/authorized_keys") is masked, and
         # so is systemd's generator that would start it on a local socket
@@ -752,6 +752,7 @@ class SafeguardTest(ImagesTest):
         cases = [(name, drop, {"x.conf": conf}, {}, problem) for name, conf, problem in (
             ("password", "PasswordAuthentication yes\n", "sshd: PasswordAuthentication is yes instead of no "
                                                          "(/etc/ssh/sshd_config.d/00-x.conf)"),
+            ("pam", "UsePAM no\n", "sshd: UsePAM is no instead of yes"),
             ("kbd", "ChallengeResponseAuthentication yes\n", "sshd: KbdInteractiveAuthentication is yes instead of no"),
             ("root", "permitrootlogin=prohibit-password\n", "sshd: PermitRootLogin is prohibit-password instead of no"),
             ("homekeys", 'AuthorizedKeysFile ".ssh/authorized_keys"\n',
@@ -2208,7 +2209,7 @@ class LoginEnvironmentTest(ImagesTest):
             self.assertEqual(logins, safeguards.systemd_environment(root))
 
     def test_a_value_pam_env_would_read_differently_fails(self):
-        for value in ("", "a#b", "'quoted'", '"x"', "a\\b", "$HOME/bin", " lead", "trail ", "tab\tx"):
+        for value in ("", "a#b", "'quoted'", '"x"', "$HOME/bin", " lead", "trail ", "tab\tx"):
             with self.subTest(value=value), tempfile.TemporaryDirectory() as root:
                 self.put(root, "/usr/lib/systemd/system.conf.d/agentbox.conf",
                          f'[Manager]\nDefaultEnvironment="OK=1" {shlex.quote("BAD=" + value)}\n')
@@ -2219,6 +2220,8 @@ class LoginEnvironmentTest(ImagesTest):
         for conf, message in (('DefaultEnvironment="NOEQUALS"', "is no NAME=VALUE"),
                               ('DefaultEnvironment="1A=x"', "is no NAME=VALUE"),
                               ('DefaultEnvironment="A=open', "No closing quotation"),
+                              ('DefaultEnvironment="A=x\\ny"', "has a backslash"),
+                              ('DefaultEnvironment=A=a\\ b', "has a backslash"),
                               ("DefaultEnvironment=", "DefaultEnvironment is empty")):
             with self.subTest(conf=conf), tempfile.TemporaryDirectory() as root:
                 self.put(root, "/usr/lib/systemd/system.conf.d/agentbox.conf", f"[Manager]\n{conf}\n")

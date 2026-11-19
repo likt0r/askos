@@ -957,7 +957,7 @@ Host after every Build
   `AllowUsers agent`, the key file and every host key in the root-owned `/run/agentbox/ssh`
   (never `~/.ssh`), no `AuthorizedKeysCommand` or `TrustedUserCAKeys`, `AllowTcpForwarding
   local`, no agent, X11, stream-local or tunnel forwarding, no `GatewayPorts`, no
-  `PermitUserEnvironment`. sshd must not start by itself: `sshd.service` and `sshd.socket` must
+  `PermitUserEnvironment`, `UsePAM yes` (PAM gives logins the image-wide variables). sshd must not start by itself: `sshd.service` and `sshd.socket` must
   not be enabled, the presets must disable both (systemd applies them again at a VM's first
   boot), and `sshd@.service` and `systemd-ssh-generator` must stay masked. `/etc/sysconfig/sshd`
   must add no `OPTIONS` to sshd's command line. Like the rest of the check, this catches

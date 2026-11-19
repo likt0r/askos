@@ -84,6 +84,9 @@ def default_environment(root):
             if not value.strip():
                 env = {}
                 continue
+            if "\\" in value:
+                raise ValueError(f"{path}: DefaultEnvironment has a backslash; systemd unescapes it "
+                                 "differently from the login, so write the value without one")
             try:
                 words = shlex.split(value)
             except ValueError as e:
