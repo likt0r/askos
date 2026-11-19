@@ -389,9 +389,10 @@ flowchart LR
   running and not off (paused) gets a pending marker instead
   (`/var/lib/agentbox/pending/ssh-<vm>`), written before the change is saved (when it cannot
   be written, nothing changes) and also left by a running VM that did not take the change:
-  `start` (resuming a Pause) and `wake` (once Orca answers, before the connection is
-  forwarded) hand the change over under the lifecycle lock, and while that fails a connection
-  to the SSH port is refused (Orca connections go on). A VM that starts anew reads the fw_cfg
+  `start` (resuming a Pause) and the `wake` of a connection to the SSH port (once Orca answers,
+  before the connection is forwarded) hand the change over under the lifecycle lock, and while
+  that fails a connection to the SSH port is refused. A connection to the Orca port leaves the
+  change alone and goes on, without waiting for the guest agent. A VM that starts anew reads the fw_cfg
   file, so a stop drops the marker. A VM whose Build lacks the wrapper keeps the saved change
   for its next start and the command fails with `ssh_missing`: until a Reset onto a newer
   Build that VM keeps the keys it started with.

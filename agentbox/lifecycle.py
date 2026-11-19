@@ -173,9 +173,9 @@ SSH_ACTOR = re.compile(r"SSH \((.{1,64})\)")
 
 
 def wake(ctx):
-    """Start the VM if needed and wait until its Orca accepts connections, then hand it a
-    pending change of its SSH access (_ssh_pending), before the connection is forwarded.
-    True when the VM had to be started. While a Reset, Restart, Pause or delete runs,
+    """Start the VM if needed and wait until its Orca accepts connections; for a connection to
+    its SSH port, then hand it a pending change of its SSH access (_ssh_pending), before the
+    connection is forwarded. True when the VM had to be started. While a Reset, Restart, Pause or delete runs,
     wait for it; then act on the state it left. The lock is not held while waiting
     for Orca. The outcome goes to the VM's wakes file (responding.py)."""
     with state_files.vm_lock(ctx):
@@ -201,18 +201,20 @@ def wake(ctx):
 
 
 def _ssh_pending(ctx):
-    """A change of the VM's SSH access it has not taken yet (a key removed while it was paused)
-    goes into it now, under its lifecycle lock; Orca answering means guest-setup has finished.
-    When that fails, a connection to the SSH port is refused, so that no removed key logs in;
-    others go on with a message. A Build without the wrapper never takes it: it keeps the keys
-    it started with until its next start (ssh_access.apply_pending)."""
-    if not ssh_access.pending(ctx):
+    """For a connection to the VM's SSH port: a change of its SSH access it has not taken yet (a
+    key removed while it was paused) goes into it now, under its lifecycle lock; Orca answering
+    means guest-setup has finished. When that fails, the connection is refused, so that no
+    removed key logs in. Any other wake (a connection to the Orca port) leaves it alone: it
+    neither waits for the guest agent nor holds the lock for it, and goes on. A Build without
+    the wrapper never takes it: it keeps the keys it started with until its next start
+    (ssh_access.apply_pending), and the connection goes on with a message."""
+    if not SSH_ACTOR.fullmatch(activity.actor()) or not ssh_access.pending(ctx):
         return
     with state_files.vm_lock(ctx):
         try:
             ssh_access.apply_pending(ctx)
         except Fail as f:
-            if f.error != "ssh_missing" and SSH_ACTOR.fullmatch(activity.actor()):
+            if f.error != "ssh_missing":
                 raise
             print(f"agentbox: {f.message}", file=sys.stderr, flush=True)
 

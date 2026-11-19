@@ -13,9 +13,9 @@ replaces the key file whole and starts or stops sshd; only its small JSON answer
 must be exactly what the Host sent. A VM that is off reads the fw_cfg file at its next start.
 Any other VM (paused, or running but not taking the change) has a pending marker
 (footprint.ssh_pending_file), set before the change is saved, so that a marker that cannot be
-written leaves the change unsaved: `start` and `wake` hand the change over before the first
-connection is forwarded (apply_pending), and a connection to the SSH port is refused while that
-fails. A Build without the wrapper keeps the saved change for its next start, and the command
+written leaves the change unsaved: `start` and the `wake` of a connection to the SSH port hand
+the change over before that connection is forwarded (apply_pending), and such a connection is
+refused while that fails; a connection to the Orca port leaves it alone. A Build without the wrapper keeps the saved change for its next start, and the command
 fails with ssh_missing.
 
 Removing a key and turning SSH access off end every open SSH session of the VM: the Host cannot

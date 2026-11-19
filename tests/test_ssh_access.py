@@ -1310,13 +1310,14 @@ class LiveTest(SshTest):
         self.assertEqual(self.systemctl()[0], ["stop", "agentbox-ssh-work@*.service"])
         self.assertEqual(self.authorized().count("\n"), 2)
         self.assertTrue(self.exists(PENDING.format("work")))
-        # a connection to the SSH port is refused; one to the Orca port goes on, with a message
+        # a connection to the SSH port is refused; one to the Orca port goes on without asking the VM
         code, _, err = self.wake("SSH (192.0.2.7)")
         self.assertEqual(code, 1)
         self.assertIn("work: the VM is still starting", err)
+        calls = len(self.applied())
         code, _, err = self.wake("Orca (192.0.2.7)")
         self.assertEqual(code, 0, err)
-        self.assertIn("agentbox: work: the VM is still starting", err)
+        self.assertEqual(len(self.applied()), calls)
         self.assertTrue(self.exists(PENDING.format("work")))
         # once the VM takes it, the next connection goes through
         os.remove(self.guest("starting"))
@@ -1328,6 +1329,22 @@ class LiveTest(SshTest):
         calls = len(self.applied())
         self.assertEqual(self.wake("SSH (192.0.2.7)")[0], 0)
         self.assertEqual(len(self.applied()), calls)
+
+    def test_an_orca_connection_does_not_ask_the_vm_for_a_pending_change(self):
+        """Only a connection to the SSH port hands a pending change over: one to the Orca port goes
+        on at once, without a guest-agent call that would hold it and the VM's lifecycle lock up."""
+        self.on_with_two_keys()
+        self.scenario(agent_down=True)
+        self.failed("remove-ssh-key", "work", LAPTOP_FP)
+        argv = os.path.join(self.dir, "argv.jsonl")
+        os.remove(argv)
+        code, _, err = self.wake("Orca (192.0.2.7)")
+        self.assertEqual(code, 0, err)
+        with open(argv) as f:
+            calls = [[a for a in json.loads(line) if a not in ("-q", "-c", "qemu:///system")] for line in f]
+        self.assertTrue(calls)
+        self.assertEqual([c for c in calls if not c or c[0] == "qemu-agent-command"], [])
+        self.assertTrue(self.exists(PENDING.format("work")))
 
     def test_the_same_call_again_hands_a_pending_change_over(self):
         self.on_with_two_keys()
