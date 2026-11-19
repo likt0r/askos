@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// A VM's Access tab: its GitHub owners, its Claude token, the GitHub tokens it got and the
-// refused requests.
+// A VM's Access tab: its GitHub owners, its Claude token, its SSH access, the GitHub tokens it
+// got and the refused requests.
 const route = useRoute()
 const live = useLive()
 const name = computed(() => String(route.params.vm))
@@ -13,6 +13,7 @@ const vm = computed(() => live.state.vms.find(v => v.name === name.value))
       <AccessGithubOwners :key="`owners-${vm.name}`" :vm="vm" />
       <AccessClaudeToken :key="`claude-${vm.name}`" :vm="vm" />
     </div>
+    <AccessSshAccess :key="`ssh-${vm.name}`" :vm="vm" />
     <AccessGithubTokens :vm="vm.name" />
   </div>
 </template>

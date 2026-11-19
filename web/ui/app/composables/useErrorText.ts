@@ -11,6 +11,9 @@ export function useErrorText() {
       if (error.code === 'invalid_pattern' && reason && te(`regex.reasons.${reason}`))
         return t('regex.invalid', { reason: t(`regex.reasons.${reason}`) })
       if (error.code === 'pattern_too_broad' && error.params?.host) return t('regex.tooBroad', { host: error.params.host })
+      // a change of SSH access saved but not applied: the command that finishes it on the Host
+      if (error.code === 'ssh_not_applied')
+        return t(key, { finish: error.params?.finish ?? 'agentbox regenerate' })
       if (te(key)) return t(key, { ...params, field: error.field ?? '' })
       if (error.message) return error.message
     }

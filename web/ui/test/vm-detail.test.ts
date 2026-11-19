@@ -40,7 +40,7 @@ describe('VM overview', () => {
     expect(api.calls.some(c => c.path.startsWith('/activity'))).toBe(true)
   })
 
-  it('names an open SSH session as why a Reset waits, and lists it beside the Orca connections of the same address', async () => {
+  it('names an open SSH session as why a Reset waits, and lists it apart from the Orca connections of the same address', async () => {
     fakeApi({
       'GET /session': SIGNED_IN,
       'GET /activity?kind=reset&vm=work&since=-14d&lines=1':
@@ -49,7 +49,25 @@ describe('VM overview', () => {
     await openApp('/vms/work/web', [{ ...WORK, devices: [{ address: '192.0.2.36', kind: 'orca', connections: 2 },
       { address: '192.0.2.36', kind: 'ssh', connections: 1 }] }])
     expect(text('overview-postponed')).toBe('Automatic Reset postponed: an SSH session is open')
-    expect(byTestId('overview-devices').findAll('li')).toHaveLength(2)
+    const devices = byTestId('overview-devices').findAll('li')
+    expect(devices).toHaveLength(1)
+    expect(devices[0]!.text()).toContain('2 connections')
+    const sessions = byTestId('overview-ssh-sessions').findAll('li')
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0]!.text()).toContain('SSH')
+    expect(sessions[0]!.text()).toContain('192.0.2.36')
+    expect(sessions[0]!.text()).toContain('one connection')
+    expect(document.body.textContent).toContain('SSH sessions')
+  })
+
+  it('shows SSH sessions without any Orca device apart, and none without one', async () => {
+    fakeApi({ 'GET /session': SIGNED_IN })
+    const { es } = await openApp('/vms/work/web', [{ ...WORK, reset_due: false, devices: [{ address: '192.0.2.7', kind: 'ssh', connections: 3 }] }])
+    expect(text('overview-devices')).toBe('none')
+    expect(byTestId('overview-ssh-sessions').text()).toContain('192.0.2.7')
+    es.emit('vm', { ...WORK, reset_due: false, devices: [] })
+    await flushPromises()
+    expect(exists('overview-ssh-sessions')).toBe(false)
   })
 
   it('follows vm events: state, buttons and pin change without reloading', async () => {

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // A VM at a glance: state, memory (its limit can be changed), Container image cleanup,
-// agents, connected devices, its VM variables (changed in VmEnvDialog),
+// agents, connected devices and SSH sessions, its VM variables (changed in VmEnvDialog),
 // System disk (age, Build, Reset due and why an automatic Reset was postponed), Image and
 // Build (pin, what the next Reset brings) with the versions of the tools in the VM (VmVersions,
 // from GET /images). Everything else comes live from the `vm` and `host` events.
@@ -16,6 +16,10 @@ const cleanupOpen = ref(false)
 const envOpen = ref(false)
 const env = computed(() => Object.entries(props.vm.env ?? {}).filter(([, v]) => typeof v === 'string'))
 const refused = computed(() => new Set(Array.isArray(props.vm.env_refused) ? props.vm.env_refused : []))
+
+// devices connected to the Orca port, and SSH sessions apart (#135)
+const orcaDevices = computed(() => (props.vm.devices ?? []).filter(d => d.kind !== 'ssh'))
+const sshSessions = computed(() => (props.vm.devices ?? []).filter(d => d.kind === 'ssh'))
 
 const used = computed(() => memoryInUse(live.state.host, props.vm.name))
 const limit = computed(() => (typeof props.vm.memory_mib === 'number' ? mibAsGib(props.vm.memory_mib) : null))
@@ -128,14 +132,26 @@ const postponedText = computed(() => {
       </h3>
       <div class="text-sm" data-testid="overview-devices">
         <span v-if="props.vm.devices == null" class="text-muted">{{ t('vms.unknown') }}</span>
-        <span v-else-if="!props.vm.devices.length" class="text-muted">{{ t('vm.overview.noDevices') }}</span>
+        <span v-else-if="!orcaDevices.length" class="text-muted">{{ t('vm.overview.noDevices') }}</span>
         <ul v-else class="space-y-0.5">
-          <li v-for="d in props.vm.devices" :key="`${d.address} ${d.kind}`" class="flex flex-wrap items-baseline gap-x-2">
+          <li v-for="d in orcaDevices" :key="d.address" class="flex flex-wrap items-baseline gap-x-2">
             <span class="font-mono text-xs">{{ d.address }}</span>
             <span class="text-xs text-muted">{{ t('vm.overview.connections', d.connections) }}</span>
           </li>
         </ul>
       </div>
+      <template v-if="sshSessions.length">
+        <h3 class="pt-1 text-xs font-medium uppercase tracking-wide text-dimmed">
+          {{ t('vm.overview.sshSessions') }}
+        </h3>
+        <ul class="space-y-0.5 text-sm" data-testid="overview-ssh-sessions">
+          <li v-for="d in sshSessions" :key="d.address" class="flex flex-wrap items-baseline gap-x-2">
+            <UBadge color="neutral" variant="subtle" size="sm" label="SSH" />
+            <span class="font-mono text-xs">{{ d.address }}</span>
+            <span class="text-xs text-muted">{{ t('vm.overview.connections', d.connections) }}</span>
+          </li>
+        </ul>
+      </template>
     </section>
 
     <!-- System disk -->

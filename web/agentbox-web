@@ -1114,7 +1114,11 @@ ERROR_PARAMS = {"invalid_pattern": {"reason": re.compile(r"[a-z][a-z-]{0,39}").f
                 # the VM variable refused, as agentbox names it
                 "env_name_reserved": {"name": vmenv.is_name},
                 "invalid_env_value": {"name": vmenv.is_name},
-                "env_too_large": {"name": vmenv.is_name}}
+                "env_too_large": {"name": vmenv.is_name},
+                # the command that finishes a change of SSH access saved but not applied
+                "ssh_not_applied": {"finish": re.compile(
+                    rf"agentbox (regenerate|set-ssh {VM_NAME.pattern} off"
+                    rf"|remove-ssh-key {VM_NAME.pattern} SHA256:[A-Za-z0-9+/]{{43}})").fullmatch}}
 
 
 def error_params(error, params):
@@ -1527,6 +1531,50 @@ def put_claude_token(h, m, url, body):
     if not isinstance(token, str) or not token.strip():
         raise invalid("token", "token is missing")
     return 200, run_json("set-claude-token", m["vm"], "--no-prompt", "--json", stdin=token, secrets_in=(token,))
+
+
+# --- SSH access (ADR 0020) ---
+# A change may wait for the VM's locks and for agentbox-ssh in a running VM (up to 75 s).
+SSH_TIMEOUT = 300
+FINGERPRINT = re.compile(r"SHA256:[A-Za-z0-9+/]{43}")
+
+
+@route("PUT", VM + "/ssh")
+def put_ssh(h, m, url, body):
+    enabled = body.get("enabled")
+    if not isinstance(enabled, bool):
+        raise invalid("enabled", "enabled must be true or false")
+    return 200, run_json("set-ssh", m["vm"], "on" if enabled else "off", "--json", timeout=SSH_TIMEOUT)
+
+
+@route("POST", VM + "/ssh-keys")
+def post_ssh_key(h, m, url, body):
+    """add-ssh-key with the key's text on stdin, the only way the Control Room passes a key: never
+    a file or --mine, which read files on the Host (agentbox refuses them from the Control Room
+    too). An empty name: the key's comment is its name."""
+    key, name = body.get("key"), body.get("name")
+    if not isinstance(key, str) or not key.strip():
+        raise invalid("key", "key is missing")
+    if not utf8(key) or "\0" in key:
+        raise refused("ssh_key_invalid", field="key")
+    if name is not None and (not isinstance(name, str) or not utf8(name) or "\0" in name):
+        raise invalid("name", "name must be text")
+    name = (name or "").strip()
+    return 201, run_json("add-ssh-key", m["vm"], *([f"--name={name}"] if name else []), "--json", stdin=key,
+                         timeout=SSH_TIMEOUT)
+
+
+@route("POST", VM + "/ssh-keys/remove")
+def post_remove_ssh_key(h, m, url, body):
+    fingerprint = body.get("fingerprint")
+    if not isinstance(fingerprint, str) or not FINGERPRINT.fullmatch(fingerprint):
+        raise invalid("fingerprint", "fingerprint must be an SSH key's SHA256 fingerprint")
+    return 200, run_json("remove-ssh-key", m["vm"], fingerprint, "--json", timeout=SSH_TIMEOUT)
+
+
+@route("GET", VM + "/ssh-config")
+def get_ssh_config(h, m, url, body):
+    return 200, run_json("ssh-config", m["vm"], "--json")
 
 
 @route("POST", VM + "/open-web")

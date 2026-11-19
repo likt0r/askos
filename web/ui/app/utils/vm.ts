@@ -10,9 +10,16 @@ export function agentCounts(vm: Vm): { key: string, n: number }[] | null {
     .map(([key, n]) => ({ key, n }))
 }
 
+/** Addresses connected to the Orca port (SSH sessions apart: sshSessionCount). */
 export function deviceCount(vm: Vm): number | null {
   if (vm.devices == null) return null
-  return vm.devices.length
+  return vm.devices.filter(d => d.kind !== 'ssh').length
+}
+
+/** Addresses with an open SSH session. */
+export function sshSessionCount(vm: Vm): number | null {
+  if (vm.devices == null) return null
+  return vm.devices.filter(d => d.kind === 'ssh').length
 }
 
 /** The VM's Container image cleanup; records without the fields mean on and 7 days. */

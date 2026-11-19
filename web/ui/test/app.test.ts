@@ -65,6 +65,13 @@ describe('app shell', () => {
     await flushPromises()
     expect(rows(wrapper)).toEqual([['work', 'running'], ['priv', 'running']])
     expect(wrapper.find('[data-vm="priv"]').text()).toContain('2 working · 1 waiting')
+    expect(wrapper.find('[data-vm="priv"]').text()).toContain('no device')
+
+    // SSH sessions count apart from the devices connected to the Orca port
+    es.emit('vm', vm('priv', 'running', { network: 2, devices: [{ address: '192.0.2.36', kind: 'orca', connections: 2 },
+      { address: '192.0.2.36', kind: 'ssh', connections: 1 }, { address: '192.0.2.7', kind: 'ssh', connections: 1 }] }))
+    await flushPromises()
+    expect(wrapper.find('[data-vm="priv"]').text()).toContain('one device · 2 SSH sessions')
 
     // filter
     await wrapper.find('[data-testid="vm-filter"] input, input[data-testid="vm-filter"]').setValue('pri')

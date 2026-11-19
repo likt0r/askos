@@ -62,6 +62,7 @@ export default {
     columns: { name: 'Name', state: 'Zustand', image: 'Image', agents: 'Agenten', devices: 'Geräte', disk: 'System disk' },
     agents: { none: 'keine', unknown: 'unbekannt', working: '{n} arbeiten', waiting: '{n} warten', done: '{n} fertig' },
     devices: 'kein Gerät | ein Gerät | {n} Geräte',
+    sshSessions: 'keine SSH-Sitzung | eine SSH-Sitzung | {n} SSH-Sitzungen',
     diskAge: 'von heute | einen Tag alt | {n} Tage alt',
     resetDue: 'Reset fällig',
     unknown: 'unbekannt',
