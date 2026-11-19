@@ -1,9 +1,13 @@
 """Who may run the commands that need no root but hand out access: root and the members of
-libvirt, who control every VM anyway (`sign-in-link`, `ssh-config`).
+libvirt, who control every VM anyway (`sign-in-link`, `ssh-config`); and whose rights a
+command run through sudo reads the owner's own files with (sudo_user(), become()): `import`
+packs a folder, `add-ssh-key --mine` reads ~/.ssh/*.pub, so root reads nothing for them that
+the user who ran sudo could not read.
 
 A leaf module: the Control Room imports sign_in_links, which uses it.
 """
 import os
+import pwd
 
 from . import paths
 from .errors import die
@@ -23,6 +27,33 @@ def _libvirt_gid():
     except OSError:
         pass
     return None
+
+
+def sudo_user():
+    """(uid, gid) of the user who ran `sudo` (SUDO_UID and SUDO_GID, which sudo sets itself);
+    None without them, for root, or for a uid the Host does not know."""
+    try:
+        uid, gid = int(os.environ["SUDO_UID"]), int(os.environ["SUDO_GID"])
+        if uid > 0 and gid >= 0:
+            pwd.getpwuid(uid)
+            return uid, gid
+    except (KeyError, ValueError, OverflowError):
+        pass
+    return None
+
+
+def become(uid, gid):
+    """The rights of this user, for good (a child process): their groups, and their home as
+    HOME."""
+    try:
+        pw = pwd.getpwuid(uid)
+        groups, home = os.getgrouplist(pw.pw_name, gid), pw.pw_dir
+    except KeyError:
+        groups, home = [gid], "/"
+    os.setgroups(groups)
+    os.setgid(gid)
+    os.setuid(uid)
+    os.environ["HOME"] = home
 
 
 def check(command):

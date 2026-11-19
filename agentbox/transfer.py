@@ -29,7 +29,6 @@ are taken from it, and its error output is cleaned.
 import fcntl
 import json
 import os
-import pwd
 import secrets
 import signal
 import stat
@@ -38,8 +37,8 @@ import sys
 import tarfile
 import time
 
-from . import activity, footprint, guest, lifecycle, paths, programs, responding, ssh_access, state_files, states, times
-from . import virsh
+from . import activity, callers, footprint, guest, lifecycle, paths, programs, responding, ssh_access, state_files
+from . import states, times, virsh
 from .commands import declare
 from .errors import Fail, die
 from .registry import check, dom
@@ -165,7 +164,7 @@ def pack(source, fd):
         try:
             os.close(r)
             if os.geteuid() == 0 and who[0] != 0:
-                _become(*who)
+                callers.become(*who)       # with their home: git reads its configuration there
             result, status = {"packed": _archive(source, fd)}, 0
         except Fail as f:
             result = {"error": f.error, "message": f.message}
@@ -197,28 +196,11 @@ def pack(source, fd):
 def _identity(source):
     """(uid, gid) packing runs as: the user who ran `sudo` (SUDO_UID, SUDO_GID), so they can
     send only what they could read themselves; in a root shell the owner of the folder."""
-    try:
-        uid, gid = int(os.environ["SUDO_UID"]), int(os.environ["SUDO_GID"])
-        if uid > 0 and gid >= 0:
-            pwd.getpwuid(uid)
-            return uid, gid
-    except (KeyError, ValueError, OverflowError):
-        pass
+    who = callers.sudo_user()
+    if who:
+        return who
     owner = os.stat(source)
     return owner.st_uid, owner.st_gid
-
-
-def _become(uid, gid):
-    """The rights of this user: their groups and home (git reads its configuration there)."""
-    try:
-        pw = pwd.getpwuid(uid)
-        groups, home = os.getgrouplist(pw.pw_name, gid), pw.pw_dir
-    except KeyError:
-        groups, home = [gid], "/"
-    os.setgroups(groups)
-    os.setgid(gid)
-    os.setuid(uid)
-    os.environ["HOME"] = home
 
 
 def _archive(source, fd):

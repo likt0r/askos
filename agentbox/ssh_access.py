@@ -30,20 +30,33 @@ call again ends them also when the record does not change any more: `set-ssh off
 then hands over. A connection that comes in meanwhile waits in `wake` for the VM's lifecycle
 lock, which the change holds, and so meets the new key file, or the marker.
 
+Several keys go in as one change: `add-ssh-key <vm> --from <other>` copies the other VM's keys
+once (no link stays: later changes of either VM stay its own), `create --copy-ssh-keys-from`
+does it for a new VM, and `add-ssh-key <vm> --mine` adds the owner's own ~/.ssh/*.pub, read in a
+child process with the rights of the user who ran sudo (else the caller's), as `import` packs a
+folder, after the owner confirms the keys it shows (--yes skips that). Each key goes through
+the rules and limits of one key (sshkeys.parse, sshkeys.add); one they refuse, or one entered
+already, is named and left out while the others go in. A copy across VMs is always this
+explicit owner action, never a default (ADR 0001).
+
 Each command that changes something holds the registry lock, the record's lock and the VM's
 lifecycle lock, as set-env does, and records its own Activity entry (ssh.enabled,
-ssh.disabled, ssh.key-added and ssh.key-removed with the key's fingerprint and name),
-failures included: also a wrong argument, an unknown VM or a broken record (set-ssh with a
-word other than "off" counts as turning it on).
+ssh.disabled, ssh.key-added and ssh.key-removed with the key's fingerprint and name; one
+ssh.key-added per key of several, none for a key left out), failures included: also a wrong
+argument, an unknown VM or a broken record (set-ssh with a word other than "off" counts as
+turning it on).
 """
 import json
 import os
+import pwd
 import re
+import signal
+import stat
 import sys
 import time
 
-from . import activity, footprint, generate, guest, hostsetup, options, paths, programs, registry, sshkeys
-from . import state_files, states, times
+from . import activity, callers, footprint, generate, guest, hostsetup, options, paths, programs, registry
+from . import sshkeys, state_files, states, times
 from .commands import declare
 from .errors import Fail, die
 from .sanitize import clean
@@ -336,14 +349,20 @@ def _read_key(path):
         die("not a valid SSH public key: not UTF-8 text", error="ssh_key_invalid")
 
 
+USAGE_ADD = "add-ssh-key <vm> [--name N] [FILE] | --from <vm> | --mine [--yes] [--json]"
+
+
 def add_ssh_key(args):
     """agentbox add-ssh-key <vm> [--name N] [FILE] [--json]: add an SSH key (a line of a .pub
-    file) from FILE or stdin; its comment is its name unless --name gives one."""
+    file) from FILE or stdin; its comment is its name unless --name gives one. With --from <vm>
+    the keys of that VM, with --mine the owner's own ~/.ssh/*.pub (_add_many)."""
     positional, opts = options.parse(args)
+    if "from" in opts or "mine" in opts:
+        return _add_many(positional, opts)
     key = None
     try:
-        if len(positional) not in (1, 2):
-            die("add-ssh-key <vm> [--name N] [FILE] [--json]", error="invalid_argument")
+        if len(positional) not in (1, 2) or "yes" in opts:
+            die(USAGE_ADD, error="invalid_argument")
         name = registry.check(positional[0])
         key = sshkeys.parse(_read_key(positional[1] if len(positional) == 2 else None), opts.get("name"))
         entry = {"key": key["key"], "name": key["name"], "fingerprint": key["fingerprint"],
@@ -366,6 +385,250 @@ def add_ssh_key(args):
                           "state": state, "applies": applies, "message": message}, ensure_ascii=False))
     else:
         print(message)
+
+
+# --- several keys at once: --from, --mine, create --copy-ssh-keys-from ---------
+
+class _Unchanged(Exception):
+    """None of several keys goes in: the record stays as it is and nothing is applied."""
+
+
+def _parsed(items):
+    """Keys as add-ssh-key takes them, each through sshkeys.parse: (found, refused). items:
+    {"text", "name"?, "file"?}, or {"file", "error", "message"} for a file that was not read."""
+    found, refused = [], []
+    for item in items:
+        where = {"file": item["file"]} if "file" in item else {}
+        if "error" in item:
+            refused.append({**where, "error": item["error"], "message": item["message"]})
+            continue
+        try:
+            found.append({**sshkeys.parse(item["text"], item.get("name")), **where})
+        except Fail as f:
+            refused.append({**where, "error": f.error, "message": f.message})
+    return found, refused
+
+
+def keys_of(rec):
+    """The SSH keys of a VM's record as add-ssh-key takes them, to copy into another VM: (found,
+    refused), each through the rules of one key again."""
+    return _parsed([{"text": k["key"], "name": k["name"]} for k in registry.ssh_keys(rec)])
+
+
+def copy_keys(keys, found, by):
+    """keys with each found key that sshkeys.add takes, in order, added now by `by`: (keys,
+    added, refused). A key it refuses (entered for this VM already, beyond 16 keys, beyond what
+    the file the VM reads holds) is left out with why; the others still go in."""
+    added, refused, now = [], [], times.iso(time.time())
+    for k in found:
+        try:
+            keys = sshkeys.add(keys, {"key": k["key"], "name": k["name"], "fingerprint": k["fingerprint"],
+                                      "added": now, "added_by": by})
+        except Fail as f:
+            refused.append({**k, "error": f.error, "message": f.message})
+        else:
+            added.append(k)
+    return keys, added, refused
+
+
+def _public(k):
+    """What a message or --json shows of a key: never the key itself."""
+    return {f: k[f] for f in ("file", "type", "fingerprint", "name") if f in k}
+
+
+def record_copied(name, source, added, failure=None):
+    """An Activity entry ssh.key-added per key added (copied from the VM source, or one of the
+    owner's own), as add-ssh-key records one key."""
+    for k in added:
+        how = f", copied from {source}" if source else f", from {k['file']}" if "file" in k else ""
+        _record("ssh.key-added", name, f"Add the SSH key {_shown(k)}{how}", failure,
+                {"fingerprint": k["fingerprint"], "name": k["name"]})
+
+
+def label(k):
+    """A key left out, for a message: its file and, once known, its fingerprint and name."""
+    if "fingerprint" in k:
+        return (f"{k['file']} " if "file" in k else "") + _shown(k)
+    return k.get("file", "an SSH key")
+
+
+def _add_many(positional, opts):
+    """add-ssh-key <vm> --from <other> | --mine [--yes]: several keys in one change, each through
+    the rules and limits of one key; a key refused or entered already is named and left out,
+    the others go in. Without a key to add, nothing changes."""
+    source, mine, as_json = opts.get("from"), "mine" in opts, "json" in opts
+    what = f"Copy the SSH keys of {clean(source, False)[:40]}" if source is not None else "Add your own SSH keys"
+    added, refused, folder = [], [], None
+    try:
+        if len(positional) != 1 or (source is not None) == mine or "name" in opts or ("yes" in opts and not mine):
+            die(USAGE_ADD, error="invalid_argument")
+        name = registry.check(positional[0])
+        candidates = None
+        if source is not None:
+            source = registry.check(source)
+            if source == name:
+                die(f"{name}: SSH keys are copied from another VM", error="invalid_argument", option="--from")
+        else:
+            if "yes" not in opts and (as_json or not sys.stdin.isatty()):
+                die("--mine adds your keys only after you confirm them at a terminal, or with --yes",
+                    error="confirmation_required", vm=name)
+            folder, files = _own_keys()
+            candidates = _parsed(files)
+            if "yes" not in opts:
+                _confirm(name, folder, *candidates)
+        by = activity.actor()
+
+        def change(rec):
+            found, bad = candidates or keys_of(registry.load(source))
+            keys, got, left = copy_keys(registry.ssh_keys(rec), found, by)
+            added[:], refused[:] = got, bad + left
+            if not got:
+                raise _Unchanged
+            return {**rec, "ssh_keys": keys}
+        try:
+            _, after, state, applies, defined = _change(name, change)
+        except _Unchanged:
+            after, state, applies, defined = registry.load(name), states.status(name), None, None
+    except Fail as f:
+        if added:
+            record_copied(activity.known_vm(positional), source, added, f)
+        else:
+            _record("ssh.key-added", activity.known_vm(positional), what, f)
+        raise
+    record_copied(name, source, added)
+    verb = f"copied from {source}" if source else "added"
+    if added:
+        lines = [f"{name}: {len(added)} SSH key{'s' if len(added) > 1 else ''} {verb}: "
+                 + ", ".join(_shown(k) for k in added) + "; " + (
+                     _when(name, applies, defined) if registry.ssh_access(after)
+                     else f"SSH access is off (agentbox set-ssh {name} on)")]
+    else:
+        lines = [f"{name}: no SSH key {verb}" + (f", {source} has none" if source and not refused else "")]
+    lines += [f"{name}: {label(k)} not {'copied' if source else 'added'}: {k['message']}" for k in refused]
+    message = "\n".join(lines)
+    if as_json:
+        print(json.dumps({"vm": name, "from": source, "folder": folder, "added": [_public(k) for k in added],
+                          "skipped": [{**_public(k), "error": k["error"], "message": k["message"]} for k in refused],
+                          "enabled": registry.ssh_access(after), "keys": len(registry.ssh_keys(after)),
+                          "state": state, "applies": applies, "message": message}, ensure_ascii=False))
+    else:
+        print(message)
+
+
+def _confirm(name, folder, found, refused):
+    """Show the keys --mine found and ask before any goes in; dies unless the answer is yes.
+    Whether each would go in is checked against the record as it is now; the change checks
+    again under its locks."""
+    _, would, left = copy_keys(registry.ssh_keys(registry.load(name)), found, activity.actor())
+    lines = [f"SSH keys in {clean(folder, False)}:"]
+    lines += [f"  {k['file']}: {k['type']} {_shown(k)}" for k in would]
+    lines += [f"  {label(k)}: left out, {k['message']}" for k in refused + left]
+    print("\n".join(lines))
+    if not would:
+        return
+    print(f"Add {len(would)} SSH key{'s' if len(would) > 1 else ''} to {name}? [y/N] ", end="", flush=True)
+    if sys.stdin.readline().strip().lower() not in ("y", "yes"):
+        die(f"{name}: no SSH key added", error="confirmation_required", vm=name)
+
+
+MAX_OWN_FILES = 32           # ~/.ssh/*.pub read at most, by name; the others are named and left out
+
+
+def _own_keys():
+    """The owner's own SSH public keys: ~/.ssh/*.pub of the user who ran sudo, else of the caller,
+    read in a child process with that user's rights, as `import` packs a folder (callers.py),
+    so root reads nothing for it that this user could not read: (folder, [{"file", "text"} or
+    {"file", "error", "message"}]). Dies when the folder cannot be read or holds no such file."""
+    r, w = os.pipe()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    pid = os.fork()
+    if pid == 0:                                   # the child: never returns
+        status = 1
+        try:
+            os.close(r)
+            who = callers.sudo_user()
+            if os.geteuid() == 0 and who:
+                callers.become(*who)
+            result, status = _read_own(), 0
+        except Fail as f:
+            result = {"fail": f.message, "error": f.error}
+        except BaseException as e:                 # the child reports every failure
+            result = {"fail": f"reading ~/.ssh fails ({type(e).__name__}: {e})", "error": "action_failed"}
+        try:
+            with os.fdopen(w, "w") as pipe:
+                json.dump(result, pipe)
+        finally:
+            os._exit(status)
+    os.close(w)
+    try:
+        with os.fdopen(r) as pipe:
+            data = pipe.read()
+    except BaseException:                          # an interrupted parent leaves no child behind
+        os.kill(pid, signal.SIGKILL)
+        os.waitpid(pid, 0)
+        raise
+    os.waitpid(pid, 0)
+    # what the child sends is taken as untrusted: the user it ran as decides what it read
+    try:
+        result = json.loads(data)
+    except (ValueError, RecursionError):
+        result = None
+    if isinstance(result, dict) and isinstance(result.get("fail"), str) and isinstance(result.get("error"), str):
+        raise Fail(clean(result["fail"], False)[:500], error=clean(result["error"], False)[:64])
+    files = result.get("files") if isinstance(result, dict) else None
+    if not (isinstance(files, list) and isinstance(result.get("folder"), str)
+            and all(isinstance(f, dict) and isinstance(f.get("file"), str)
+                    and all(isinstance(v, str) for v in f.values()) for f in files)):
+        die("reading ~/.ssh fails", error="action_failed")
+    cleaned = {"file": 200, "message": 500, "error": 64}
+    return clean(result["folder"], False), [
+        {**f, **{k: clean(f[k], False)[:n] for k, n in cleaned.items() if k in f}} for f in files]
+
+
+def _read_own():
+    """In the child, with the user's rights: their ~/.ssh/*.pub. Their home is HOME, which
+    become() sets from the passwd entry; else (no HOME) the passwd entry of the caller."""
+    home = os.environ.get("HOME", "")
+    if not os.path.isabs(home):
+        home = pwd.getpwuid(os.geteuid()).pw_dir
+    folder = os.path.join(home, ".ssh")
+    try:
+        names = sorted(n for n in os.listdir(folder) if n.endswith(".pub") and not n.startswith("."))
+    except OSError as e:
+        die(f"no SSH key found: {clean(folder, False)}: {e.strerror}", error="ssh_key_invalid")
+    if not names:
+        die(f"no SSH key found: {clean(folder, False)} has no *.pub file", error="ssh_key_invalid")
+    files = [_read_own_file(folder, n) for n in names[:MAX_OWN_FILES]]
+    files += [{"file": clean(n, False)[:200], "error": "invalid_argument",
+               "message": f"not read: only the first {MAX_OWN_FILES} *.pub files by name are"}
+              for n in names[MAX_OWN_FILES:]]
+    return {"folder": folder, "files": files}
+
+
+def _read_own_file(folder, n):
+    """One .pub file: {"file", "text"}, or {"file", "error", "message"} when it is no regular
+    file, cannot be read, is too long or no UTF-8 text. Its text never appears in a message."""
+    shown = clean(n, False)[:200]
+    try:
+        fd = os.open(os.path.join(folder, n), os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError as e:
+        return {"file": shown, "error": "invalid_argument", "message": e.strerror}
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        return {"file": shown, "error": "invalid_argument", "message": "not a regular file"}
+    with os.fdopen(fd, "rb") as f:
+        try:
+            data = f.read(sshkeys.MAX_INPUT + 1)
+        except OSError as e:
+            return {"file": shown, "error": "invalid_argument", "message": e.strerror}
+    if len(data) > sshkeys.MAX_INPUT:
+        return {"file": shown, "error": "ssh_key_invalid",
+                "message": f"not a valid SSH public key: longer than {sshkeys.MAX_INPUT} bytes"}
+    try:
+        return {"file": shown, "text": data.decode("utf-8")}
+    except UnicodeDecodeError:
+        return {"file": shown, "error": "ssh_key_invalid", "message": "not a valid SSH public key: not UTF-8 text"}
 
 
 # --- remove-ssh-key ----------------------------------------------------------
@@ -466,8 +729,9 @@ DECLARATIONS = {
     "ssh": declare(ssh, "agentbox ssh <vm> [--json]", options={"json": False}, read_only=True, option_exit=1),
     "set-ssh": declare(set_ssh, "agentbox set-ssh <vm> on|off [--json]", options={"json": False},
                        own_entries=True, option_exit=1),
-    "add-ssh-key": declare(add_ssh_key, "agentbox add-ssh-key <vm> [--name N] [FILE] [--json]",
-                           options={"name": True, "json": False}, own_entries=True, option_exit=1),
+    "add-ssh-key": declare(add_ssh_key, "agentbox " + USAGE_ADD,
+                           options={"name": True, "from": True, "mine": False, "yes": False, "json": False},
+                           own_entries=True, option_exit=1),
     "remove-ssh-key": declare(remove_ssh_key, "agentbox remove-ssh-key <vm> <fingerprint> [--json]",
                               options={"json": False}, own_entries=True, option_exit=1),
 }

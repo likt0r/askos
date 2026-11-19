@@ -1,4 +1,4 @@
-"""SSH access to a VM through its SSH port (#129, #130, #131, ADR 0020).
+"""SSH access to a VM through its SSH port (#129, #130, #131, #132, ADR 0020).
 
 `agentbox set-ssh`, `add-ssh-key`, `remove-ssh-key` and `ssh` keep SSH access and the SSH keys in the VM's record,
 the Host makes the VM's host key once, `regenerate` and the commands write the fw_cfg file the
@@ -6,7 +6,9 @@ VM reads at boot and the units of the SSH port (2200 + network number) while SSH
 on the loopback address in Local-only, on every address behind the firewall rules of the home
 network in Network mode (the fake firewall-cmd). A running VM takes each change at once through
 agentbox-ssh, which the fake virsh runs for real in the VM's own root; a paused one when it
-resumes; removing a key and turning SSH access off end every SSH session.
+resumes; removing a key and turning SSH access off end every SSH session. Keys are copied from
+another VM once (`--from`, `create --copy-ssh-keys-from`) or read from the owner's own ~/.ssh
+(`--mine`, with the caller's rights, after a confirmation).
 The real CLI runs with AGENTBOX_ROOT pointing at a temporary root and the fakes of
 test_registry.py (openssl is the real one, as in test_github_app.py); the guest side
 (vm/files/usr/lib/agentbox/fwcfg-ssh, which guest-setup runs, and the wrapper agentbox-ssh)
@@ -419,7 +421,7 @@ class KeyRulesTest(SshTest):
         for args in ((), ("work", "a", "b")):
             with self.subTest(args=args):
                 self.assertEqual(self.refused("add-ssh-key", *args),
-                                 "agentbox: add-ssh-key <vm> [--name N] [FILE] [--json]\n")
+                                 "agentbox: add-ssh-key <vm> [--name N] [FILE] | --from <vm> | --mine [--yes] [--json]\n")
         self.assertEqual(self.refused("add-ssh-key", "nope"), "agentbox: No such VM: nope\n")
 
 
@@ -1932,6 +1934,429 @@ class WrapperTest(unittest.TestCase):
         # its checks are fwcfg-ssh's, loaded from the Image's fixed path, not a copy
         self.assertIn('FWCFG_SSH = "/usr/lib/agentbox/fwcfg-ssh"', text)
         self.assertNotIn("TYPES", text)
+
+
+# --- copying keys from another VM, adding one's own (#132) --------------------------------------
+
+PHONE = key(seed=7, comment="phone")
+DESK = key("ecdsa-sha2-nistp256", seed=8, comment="desk")
+
+
+def stored(line):
+    """A key line as the record stores it: type and base64."""
+    return " ".join(line.split()[:2])
+
+
+class CopyTest(SshTest):
+    """add-ssh-key <vm> --from <other>: a one-time copy of the other VM's keys."""
+
+    def keys(self, vm="work"):
+        return [(k["fingerprint"], k["name"]) for k in self.record(vm).get("ssh_keys", [])]
+
+    def copy(self, *args, vm="work"):
+        code, out, err = self.run_input("add-ssh-key", vm, *args, "--json")
+        self.assertEqual(code, 0, err)
+        return json.loads(out)
+
+    def test_it_copies_every_key_once_and_keeps_no_link(self):
+        self.add("priv")
+        self.add("priv", PHONE)
+        self.forget_calls()
+        self.journald.entries()
+        self.journald.datagrams.clear()
+        result = self.copy("--from", "priv")
+        message = result.pop("message")
+        self.assertEqual(result, {"vm": "work", "from": "priv", "folder": None,
+                                  "added": [{"type": "ssh-ed25519", "fingerprint": LAPTOP_FP, "name": "laptop"},
+                                            {"type": "ssh-ed25519", "fingerprint": fingerprint(PHONE),
+                                             "name": "phone"}],
+                                  "skipped": [], "enabled": False, "keys": 2, "state": result["state"],
+                                  "applies": result["applies"]})
+        self.assertEqual(message, f"work: 2 SSH keys copied from priv: {LAPTOP_FP} (laptop), {fingerprint(PHONE)} "
+                                  "(phone); SSH access is off (agentbox set-ssh work on)")
+        self.assertEqual(self.keys(), [(LAPTOP_FP, "laptop"), (fingerprint(PHONE), "phone")])
+        # the copy is this VM's own: added now, by whoever copied them
+        for k in self.record()["ssh_keys"]:
+            self.assertEqual(k["added_by"], self.record("priv")["ssh_keys"][0]["added_by"])
+        self.assertEqual(self.read(SSH_FILE.format("work")), "none\n")
+        self.assertTrue(self.exists(HOST_KEY.format("work")))
+        # each key added is recorded, as add-ssh-key records one
+        self.assertEqual(self.activity(), [
+            ("ssh.key-added", "work", "ok", {"fingerprint": LAPTOP_FP, "name": "laptop"}),
+            ("ssh.key-added", "work", "ok", {"fingerprint": fingerprint(PHONE), "name": "phone"})])
+        # once: what changes in priv afterwards stays in priv
+        self.add("priv", DESK)
+        self.ok("remove-ssh-key", "priv", LAPTOP_FP)
+        self.assertEqual(self.keys(), [(LAPTOP_FP, "laptop"), (fingerprint(PHONE), "phone")])
+
+    def test_keys_entered_already_are_skipped_and_named(self):
+        self.add("priv")
+        self.add("priv", PHONE)
+        self.add("work", LAPTOP.replace("laptop", "mine"))
+        self.journald.entries()
+        self.journald.datagrams.clear()
+        result = self.copy("--from", "priv")
+        self.assertEqual([k["fingerprint"] for k in result["added"]], [fingerprint(PHONE)])
+        self.assertEqual(result["skipped"], [
+            {"type": "ssh-ed25519", "fingerprint": LAPTOP_FP, "name": "laptop", "error": "ssh_key_duplicate",
+             "message": f"this SSH key ({LAPTOP_FP}) is entered for this VM already"}])
+        self.assertEqual(self.keys(), [(LAPTOP_FP, "mine"), (fingerprint(PHONE), "phone")])
+        self.assertEqual([a[3]["fingerprint"] for a in self.activity()], [fingerprint(PHONE)])
+        self.journald.datagrams.clear()
+        # the same again adds nothing, changes nothing and records nothing
+        before = self.files()
+        out = self.ok("add-ssh-key", "work", "--from", "priv")
+        self.assertEqual(out, "work: no SSH key copied from priv\n"
+                              f"work: {LAPTOP_FP} (laptop) not copied: this SSH key ({LAPTOP_FP}) is entered for "
+                              "this VM already\n"
+                              f"work: {fingerprint(PHONE)} (phone) not copied: this SSH key ({fingerprint(PHONE)}) "
+                              "is entered for this VM already\n")
+        self.assertEqual(self.files(), before)
+        self.assertEqual(self.activity(), [])
+
+    def test_the_16_key_limit_holds(self):
+        for i in range(15):
+            self.add(line=key(seed=100 + i))
+        self.add("priv")
+        self.add("priv", PHONE)
+        self.add("priv", DESK)
+        result = self.copy("--from", "priv")
+        self.assertEqual([k["fingerprint"] for k in result["added"]], [LAPTOP_FP])
+        self.assertEqual([(k["fingerprint"], k["error"]) for k in result["skipped"]],
+                         [(fingerprint(PHONE), "ssh_keys_too_many"), (fingerprint(DESK), "ssh_keys_too_many")])
+        self.assertEqual(result["keys"], 16)
+        self.assertEqual(len(self.record()["ssh_keys"]), 16)
+
+    def test_a_vm_without_keys_copies_nothing(self):
+        before = self.files()
+        self.assertEqual(self.ok("add-ssh-key", "work", "--from", "priv"), "work: no SSH key copied from priv, priv "
+                                                                          "has none\n")
+        self.assertEqual(self.files(), before)
+        self.assertEqual(self.activity(), [])
+
+    def test_refusals_change_nothing_and_are_recorded(self):
+        self.add("priv")
+        self.journald.entries()
+        self.journald.datagrams.clear()
+        usage = "agentbox: add-ssh-key <vm> [--name N] [FILE] | --from <vm> | --mine [--yes] [--json]\n"
+        for args in (("work", "--from", "priv", "key.pub"), ("work", "--from", "priv", "--mine"),
+                     ("work", "--from", "priv", "--name", "x"), ("work", "--from", "priv", "--yes"),
+                     ("work", "--yes"), ("--from", "priv")):
+            with self.subTest(args=args):
+                self.assertEqual(self.refused("add-ssh-key", *args), usage)
+        self.assertEqual(self.refused("add-ssh-key", "work", "--from", "nope"), "agentbox: No such VM: nope\n")
+        self.assertEqual(self.refused("add-ssh-key", "work", "--from", "work"),
+                         "agentbox: work: SSH keys are copied from another VM\n")
+        self.assertEqual(self.keys(), [])
+        self.assertEqual([(a, vm, o) for a, vm, o, _ in self.activity()],
+                         [("ssh.key-added", "work", "failed")] * 5 + [("ssh.key-added", None, "failed")]
+                         + [("ssh.key-added", "work", "failed")] * 2)
+
+
+class CopyLiveTest(LiveTest):
+    def test_a_running_vm_takes_the_copied_keys_at_once_in_one_step(self):
+        self.ok("set-ssh", "work", "on")
+        self.add("priv")
+        self.add("priv", PHONE)
+        self.forget_calls()
+        result = json.loads(self.ok("add-ssh-key", "work", "--from", "priv", "--json"))
+        self.assertEqual((result["state"], result["applies"]), ("running", "now"))
+        self.assertTrue(result["message"].endswith("; it applies in the VM now"), result["message"])
+        self.assertEqual(self.applied(), [(["apply"], self.read(SSH_FILE.format("work")))])
+        self.assertEqual(self.authorized(), stored(LAPTOP) + "\n" + stored(PHONE) + "\n")
+
+    def test_a_saved_copy_the_vm_does_not_take_is_recorded_per_key(self):
+        self.ok("set-ssh", "work", "on")
+        self.add("priv")
+        self.add("priv", PHONE)
+        self.journald.entries()
+        self.journald.datagrams.clear()
+        self.scenario(missing_wrappers=[WRAPPER])
+        said = self.failed("add-ssh-key", "work", "--from", "priv")
+        self.assertEqual(said["error"], "ssh_missing")
+        self.assertEqual(len(self.record()["ssh_keys"]), 2)
+        self.assertEqual([(a, o, p) for a, _, o, p in self.activity()],
+                         [("ssh.key-added", "failed", {"fingerprint": LAPTOP_FP, "name": "laptop"}),
+                          ("ssh.key-added", "failed", {"fingerprint": fingerprint(PHONE), "name": "phone"})])
+
+
+class CreateCopyTest(SshTest):
+    """agentbox create <vm> --copy-ssh-keys-from <other>."""
+
+    def test_a_new_vm_gets_a_copy_of_the_keys_without_ssh_access(self):
+        self.add("priv")
+        self.add("priv", PHONE)
+        self.journald.entries()
+        self.journald.datagrams.clear()
+        result = self.json("create", "lab", "--copy-ssh-keys-from", "priv")
+        self.assertEqual((result["ssh_keys_from"], result["ssh_keys"]),
+                         ("priv", [{"fingerprint": LAPTOP_FP, "name": "laptop", "type": "ssh-ed25519"},
+                                   {"fingerprint": fingerprint(PHONE), "name": "phone", "type": "ssh-ed25519"}]))
+        self.assertIn("lab: 2 SSH keys copied from priv, SSH access is off (agentbox set-ssh lab on)",
+                      result["message"].splitlines())
+        rec = self.record("lab")
+        self.assertNotIn("ssh_access", rec)
+        self.assertEqual([(k["key"], k["name"]) for k in rec["ssh_keys"]],
+                         [(stored(LAPTOP), "laptop"), (stored(PHONE), "phone")])
+        # no SSH port and nothing for the VM yet, but its host key, as for a key added to it
+        self.assertEqual(self.read(SSH_FILE.format("lab")), "none\n")
+        self.assertFalse(self.exists(SOCKET.format("lab")))
+        self.assertTrue(self.exists(HOST_KEY.format("lab")))
+        self.assertTrue(self.exists(PUBLIC_KEY.format("lab")))
+        entries = self.activity()
+        self.assertEqual(entries[:2], [("ssh.key-added", "lab", "ok", {"fingerprint": LAPTOP_FP, "name": "laptop"}),
+                                       ("ssh.key-added", "lab", "ok",
+                                        {"fingerprint": fingerprint(PHONE), "name": "phone"})])
+        self.assertEqual(entries[2][:3], ("create", "lab", "ok"))
+        # turned on, the VM reads exactly those keys
+        self.ok("set-ssh", "lab", "on")
+        self.assertEqual(self.read(SSH_FILE.format("lab")).splitlines()[1:], [f"key {stored(LAPTOP)}",
+                                                                             f"key {stored(PHONE)}"])
+
+    def test_without_the_option_or_keys_the_new_vm_has_none(self):
+        self.assertEqual(self.json("create", "lab")["ssh_keys"], [])
+        self.assertEqual(self.json("create", "lab2", "--copy-ssh-keys-from", "priv")["ssh_keys"], [])
+        for vm in ("lab", "lab2"):
+            self.assertNotIn("ssh_keys", self.record(vm))
+            self.assertFalse(self.exists(HOST_KEY.format(vm)))
+
+    def test_an_unknown_vm_is_refused_before_anything_changes(self):
+        self.assertEqual(self.refused("create", "lab", "--copy-ssh-keys-from", "nope"), "agentbox: No such VM: nope\n")
+
+
+class MineTest(SshTest):
+    """add-ssh-key <vm> --mine: the owner's own ~/.ssh/*.pub, with the caller's rights, after a
+    confirmation (--yes skips it)."""
+
+    def setUp(self):
+        super().setUp()
+        self.home = os.path.join(self.dir, "home")
+        os.makedirs(os.path.join(self.home, ".ssh"))
+
+    def pub(self, name, text, mode=0o644):
+        path = os.path.join(self.home, ".ssh", name)
+        with open(path, "w") as f:
+            f.write(text)
+        os.chmod(path, mode)
+
+    def mine(self, *args, stdin=None, terminal=None, **env):
+        """add-ssh-key work --mine ... with HOME the test's home; stdin a pipe, or with terminal the
+        answer typed at a terminal."""
+        env = {"PATH": os.path.join(self.dir, "bin") + ":" + os.environ["PATH"], "FAKE_VIRSH_DIR": self.dir,
+               "FAKE_DIR": self.dir, "AGENTBOX_ROOT": self.root, "LANG": "C.UTF-8", "TZ": "UTC", "HOME": self.home,
+               **env}
+        cmd = [AGENTBOX, "add-ssh-key", "work", "--mine", *args]
+        if terminal is None:
+            r = subprocess.run(cmd, input=stdin or "", capture_output=True, text=True, env=env, timeout=60)
+            return r.returncode, r.stdout, r.stderr
+        master, slave = os.openpty()
+        try:
+            os.write(master, terminal.encode())
+            r = subprocess.run(cmd, stdin=slave, capture_output=True, text=True, env=env, timeout=60)
+        finally:
+            os.close(slave)
+            os.close(master)
+        return r.returncode, r.stdout, r.stderr
+
+    def mine_json(self, *args, **env):
+        code, out, err = self.mine("--yes", "--json", *args, **env)
+        self.assertEqual(code, 0, err)
+        return json.loads(out)
+
+    def test_yes_adds_the_good_keys_and_names_each_refused_one_and_why(self):
+        self.pub("id_ed25519.pub", LAPTOP + "\n")
+        self.pub("id_ed25519", "-----BEGIN OPENSSH PRIVATE KEY-----\nnot read\n")     # no .pub: never read
+        self.pub("id_rsa.pub", key("ssh-rsa", bits=2048, comment="old") + "\n")
+        self.pub("id_dsa.pub", key("ssh-dss", comment="older") + "\n")
+        self.pub("restricted.pub", 'command="ls" ' + PHONE + "\n")
+        self.pub("work.pub", DESK + "\n")
+        os.mkdir(os.path.join(self.home, ".ssh", "folder.pub"))
+        result = self.mine_json()
+        message = result.pop("message")
+        self.assertEqual(result, {
+            "vm": "work", "from": None, "folder": os.path.join(self.home, ".ssh"),
+            "added": [{"file": "id_ed25519.pub", "type": "ssh-ed25519", "fingerprint": LAPTOP_FP, "name": "laptop"},
+                      {"file": "work.pub", "type": "ecdsa-sha2-nistp256", "fingerprint": fingerprint(DESK),
+                       "name": "desk"}],
+            "skipped": [
+                {"file": "folder.pub", "error": "invalid_argument", "message": "not a regular file"},
+                {"file": "id_dsa.pub", "error": "ssh_key_type_refused",
+                 "message": "SSH keys of type ssh-dss are refused (allowed: Ed25519, ECDSA, their security-key forms, "
+                            "RSA of at least 3072 bits)"},
+                {"file": "id_rsa.pub", "error": "ssh_key_too_weak",
+                 "message": "RSA keys need at least 3072 bits, this one has 2048"},
+                {"file": "restricted.pub", "error": "ssh_key_options_refused",
+                 "message": "SSH keys with options (command=, from=, restrict, ...) are refused: the VM alone would "
+                            "enforce them, so they restrict nothing"}],
+            "enabled": False, "keys": 2, "state": result["state"], "applies": result["applies"]})
+        self.assertEqual(message.splitlines()[0], f"work: 2 SSH keys added: {LAPTOP_FP} (laptop), "
+                                                  f"{fingerprint(DESK)} (desk); SSH access is off "
+                                                  "(agentbox set-ssh work on)")
+        self.assertIn("work: id_rsa.pub not added: RSA keys need at least 3072 bits, this one has 2048",
+                      message.splitlines())
+        self.assertEqual([k["key"] for k in self.record()["ssh_keys"]], [stored(LAPTOP), stored(DESK)])
+        self.assertEqual(self.activity(), [
+            ("ssh.key-added", "work", "ok", {"fingerprint": LAPTOP_FP, "name": "laptop"}),
+            ("ssh.key-added", "work", "ok", {"fingerprint": fingerprint(DESK), "name": "desk"})])
+        # again: entered already, named, nothing changes
+        before = self.files()
+        self.journald.datagrams.clear()
+        result = self.mine_json()
+        self.assertEqual(self.activity(), [])
+        self.assertEqual(result["added"], [])
+        self.assertEqual([(k["file"], k["error"]) for k in result["skipped"] if k["error"] == "ssh_key_duplicate"],
+                         [("id_ed25519.pub", "ssh_key_duplicate"), ("work.pub", "ssh_key_duplicate")])
+        self.assertEqual(self.files(), before)
+
+    def test_a_fifo_named_pub_is_named_as_skipped_without_blocking(self):
+        self.pub("id_ed25519.pub", LAPTOP + "\n")
+        os.mkfifo(os.path.join(self.home, ".ssh", "x.pub"))
+        result = self.mine_json()
+        self.assertEqual([k["fingerprint"] for k in result["added"]], [LAPTOP_FP])
+        self.assertEqual(result["skipped"],
+                         [{"file": "x.pub", "error": "invalid_argument", "message": "not a regular file"}])
+
+    def test_the_16_key_limit_holds_for_mine_too(self):
+        for i in range(15):
+            self.add(line=key(seed=100 + i))
+        self.pub("a.pub", LAPTOP + "\n")
+        self.pub("b.pub", PHONE + "\n")
+        self.pub("c.pub", DESK + "\n")
+        result = self.mine_json()
+        self.assertEqual([k["fingerprint"] for k in result["added"]], [LAPTOP_FP])
+        self.assertEqual([(k["file"], k["error"]) for k in result["skipped"]],
+                         [("b.pub", "ssh_keys_too_many"), ("c.pub", "ssh_keys_too_many")])
+        self.assertEqual(result["keys"], 16)
+        self.assertEqual(len(self.record()["ssh_keys"]), 16)
+
+    def test_a_file_the_user_cannot_read_is_named_and_the_others_go_in(self):
+        if os.geteuid() == 0:
+            self.skipTest("root reads every file")
+        self.pub("id_ed25519.pub", LAPTOP + "\n")
+        self.pub("other.pub", PHONE + "\n", mode=0o000)
+        result = self.mine_json()
+        self.assertEqual([k["fingerprint"] for k in result["added"]], [LAPTOP_FP])
+        self.assertEqual(result["skipped"], [{"file": "other.pub", "error": "invalid_argument",
+                                              "message": "Permission denied"}])
+        # a ~/.ssh the user cannot read: nothing found, nothing changes
+        os.chmod(os.path.join(self.home, ".ssh"), 0o000)
+        try:
+            code, out, err = self.mine("--yes", "--json")
+        finally:
+            os.chmod(os.path.join(self.home, ".ssh"), 0o755)
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(json.loads(err)["error"], "ssh_key_invalid")
+        self.assertIn(".ssh: Permission denied", json.loads(err)["message"])
+
+    def test_at_a_terminal_it_shows_the_keys_and_adds_them_only_after_yes(self):
+        self.pub("id_ed25519.pub", LAPTOP + "\n")
+        self.pub("id_rsa.pub", key("ssh-rsa", bits=2048, comment="old") + "\n")
+        before = self.files()
+        code, out, err = self.mine(terminal="n\n")
+        self.assertEqual((code, err), (1, "agentbox: work: no SSH key added\n"))
+        shown = [f"SSH keys in {self.home}/.ssh:",
+                 f"  id_ed25519.pub: ssh-ed25519 {LAPTOP_FP} (laptop)",
+                 "  id_rsa.pub: left out, RSA keys need at least 3072 bits, this one has 2048",
+                 "Add 1 SSH key to work? [y/N] "]
+        self.assertEqual(out, "\n".join(shown))
+        self.assertEqual(self.files(), before)
+        self.assertEqual([(a, o) for a, _, o, _ in self.activity()], [("ssh.key-added", "failed")])
+        code, out, err = self.mine(terminal="y\n")
+        self.assertEqual(code, 0, err)
+        self.assertTrue(out.startswith("\n".join(shown) + f"work: 1 SSH key added: {LAPTOP_FP} (laptop); "), out)
+        self.assertEqual([k["fingerprint"] for k in self.record()["ssh_keys"]], [LAPTOP_FP])
+
+    def test_without_a_terminal_or_with_json_it_needs_yes(self):
+        self.pub("id_ed25519.pub", LAPTOP + "\n")
+        before = self.files()
+        for args, kwargs in (((), {}), (("--json",), {}), (("--json",), {"terminal": "y\n"})):
+            with self.subTest(args=args, **kwargs):
+                code, out, err = self.mine(*args, stdin="y\n", **kwargs)
+                self.assertEqual((code, out), (1, ""))
+                self.assertIn("--mine adds your keys only after you confirm them at a terminal, or with --yes", err)
+        self.assertEqual(self.files(), before)
+
+    def test_no_pub_file_is_named(self):
+        code, out, err = self.mine("--yes")
+        self.assertEqual((code, out), (1, ""))
+        self.assertEqual(err, f"agentbox: no SSH key found: {self.home}/.ssh has no *.pub file\n")
+
+    def test_the_home_of_the_user_who_ran_sudo(self):
+        """Not root here: no rights to switch to, so the caller's own HOME; see OwnRightsTest."""
+        self.pub("id_ed25519.pub", LAPTOP + "\n")
+        result = self.mine_json(SUDO_UID=str(os.getuid()), SUDO_GID=str(os.getgid()), SUDO_USER="someone")
+        self.assertEqual([k["fingerprint"] for k in result["added"]], [LAPTOP_FP])
+        self.assertEqual(self.record()["ssh_keys"][0]["added_by"], "someone")
+
+
+class OwnRightsTest(unittest.TestCase):
+    """--mine reads in a child process that runs as the user who ran sudo, as import packs (#47)."""
+
+    def setUp(self):
+        from unittest import mock
+        from agentbox import callers, ssh_access
+        self.mock, self.callers, self.ssh_access = mock, callers, ssh_access
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        env = {k: v for k, v in os.environ.items() if not k.startswith("SUDO_")}
+        patcher = mock.patch.dict(os.environ, env, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.home = os.path.join(self.tmp.name, "home")
+        os.makedirs(os.path.join(self.home, ".ssh"))
+        with open(os.path.join(self.home, ".ssh", "id_ed25519.pub"), "w") as f:
+            f.write(LAPTOP + "\n")
+
+    def read_as_root(self):
+        """_own_keys() as root would run it: who the child became, and what it read."""
+        seen = os.path.join(self.tmp.name, "seen")
+
+        def become(uid, gid):
+            with open(seen, "w") as f:
+                json.dump([uid, gid], f)
+            os.environ["HOME"] = self.home
+        with self.mock.patch.object(self.callers, "become", become), \
+                self.mock.patch("os.geteuid", return_value=0):
+            folder, files = self.ssh_access._own_keys()
+        try:
+            with open(seen) as f:
+                return json.load(f), folder, files
+        except FileNotFoundError:
+            return None, folder, files
+
+    def test_under_sudo_the_child_becomes_the_user_who_ran_it_and_reads_their_home(self):
+        if os.getuid() == 0:
+            self.skipTest("needs a user that is not root")
+        os.environ.update(SUDO_UID=str(os.getuid()), SUDO_GID=str(os.getgid()), HOME="/root")
+        who, folder, files = self.read_as_root()
+        self.assertEqual(who, [os.getuid(), os.getgid()])
+        self.assertEqual((folder, files), (os.path.join(self.home, ".ssh"),
+                                           [{"file": "id_ed25519.pub", "text": LAPTOP + "\n"}]))
+
+    def test_what_the_child_sends_is_checked(self):
+        from agentbox.errors import Fail
+        for sent in ({"folder": 1, "files": []}, {"folder": "/h", "files": [{"file": "a.pub", "text": 1}]},
+                     {"folder": "/h", "files": [{"text": LAPTOP}]}, {"folder": "/h"}, [], "x"):
+            with self.subTest(sent=sent), self.mock.patch.object(self.ssh_access, "_read_own", return_value=sent):
+                with self.assertRaises(Fail) as caught:
+                    self.ssh_access._own_keys()
+                self.assertEqual((caught.exception.error, caught.exception.message),
+                                 ("action_failed", "reading ~/.ssh fails"))
+        sent = {"folder": "/h\x1b[2J", "files": [{"file": "a\x1b[2J.pub", "text": LAPTOP}]}
+        with self.mock.patch.object(self.ssh_access, "_read_own", return_value=sent):
+            folder, files = self.ssh_access._own_keys()
+        self.assertNotIn("\x1b", folder + files[0]["file"])
+        sent = {"folder": "/h", "files": [{"file": "a.pub", "error": "invalid\x1b[2J", "message": "bad\x1b[2J\x07"}]}
+        with self.mock.patch.object(self.ssh_access, "_read_own", return_value=sent):
+            _, files = self.ssh_access._own_keys()
+        self.assertNotRegex(files[0]["error"] + files[0]["message"], "[\x00-\x1f]")
+
+    def test_without_sudo_root_reads_its_own_home(self):
+        os.environ["HOME"] = self.home
+        for env in ({}, {"SUDO_UID": "0", "SUDO_GID": "0"}, {"SUDO_UID": "x", "SUDO_GID": "1"}):
+            with self.subTest(env=env), self.mock.patch.dict(os.environ, env):
+                who, folder, _ = self.read_as_root()
+                self.assertEqual((who, folder), (None, os.path.join(self.home, ".ssh")))
 
 
 if __name__ == "__main__":

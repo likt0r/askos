@@ -147,7 +147,7 @@ class CreateTest(VmsTest):
         self.assertEqual(result, {"vm": "lab", "network": 3, "orca_port": 6803, "image": "base", "memory_mib": 26624,
                                   "data_disk_gib": 300, "container_image_cleanup": True,
                                   "container_image_cleanup_days": 7, "github_owners": ["likt0r"],
-                                  "allowlist_from": None})
+                                  "allowlist_from": None, "ssh_keys_from": None, "ssh_keys": []})
         self.assertTrue(message.startswith("lab: entered into the registry"))
 
     def test_options(self):

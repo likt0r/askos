@@ -2,8 +2,9 @@
 
 `agentbox create` enters a VM into the registry with the lowest free network
 number (Orca port = 6800 + network), starts it without Allowlist entries of its
-own (or with a copy of another VM's) and a System disk from its Image, and brings up
-everything else through regenerate. It does not start the VM: `agentbox pair`
+own (or with a copy of another VM's), without SSH access and without SSH keys (or with a
+copy of another VM's keys, each through the rules of add-ssh-key) and a System disk from its
+Image, and brings up everything else through regenerate. It does not start the VM: `agentbox pair`
 or the first Orca connection does, so a VM made for later costs no memory.
 
 `agentbox delete` takes down everything regenerate made for a VM, deletes its
@@ -38,7 +39,7 @@ import re
 import time
 
 from . import activity, allowlist, footprint, generate, images, lifecycle, paths, registry, settings, state_files
-from . import options, states, times, virsh, vmenv
+from . import options, ssh_access, states, times, virsh, vmenv
 from .commands import declare
 from .credentials import OWNER
 from .errors import Fail, die
@@ -160,12 +161,12 @@ def _leftovers(rec):
 def create(args):
     """agentbox create <vm> [--image I] [--memory-mib N] [--data-disk-gib N]
     [--container-image-cleanup on|off] [--container-image-cleanup-days N] [--owner O]...
-    [--copy-allowlist-from VM] [--json]"""
+    [--copy-allowlist-from VM] [--copy-ssh-keys-from VM] [--json]"""
     positional, opts = options.parse(args)
     if len(positional) != 1:
         die("create <vm> [--image I] [--memory-mib N] [--data-disk-gib N] [--owner O]... "
             "[--container-image-cleanup on|off] [--container-image-cleanup-days N] "
-            "[--copy-allowlist-from VM]", error="invalid_argument")
+            "[--copy-allowlist-from VM] [--copy-ssh-keys-from VM]", error="invalid_argument")
     name = _new_name(positional[0])
     defaults = settings.load()     # the defaults for new VMs (Settings)
     image = _image(opts.get("image", defaults["default_image"]))
@@ -177,12 +178,14 @@ def create(args):
                                           defaults["default_container_image_cleanup_days"]))
     owners = _owners(opts.get("owner", []))
     source = opts.get("copy-allowlist-from")
+    ssh_source = opts.get("copy-ssh-keys-from")
     say, lines = lifecycle.reporter("json" in opts)
     with state_files.locked(paths.REGISTRY):
         records = registry.all_records()         # a broken registry stops create, as it stops regenerate
         generate.ports_free()                    # so does a service holding the resolver's or the proxy's ports
-        if source is not None and source not in [r["name"] for r in records]:
-            die("No such VM: " + clean(source, False)[:40], error="vm_not_found", vm=clean(source, False)[:40])
+        for given in (source, ssh_source):
+            if given is not None and given not in [r["name"] for r in records]:
+                die("No such VM: " + clean(given, False)[:40], error="vm_not_found", vm=clean(given, False)[:40])
         if os.path.exists(footprint.record_file(name)):
             die(f"{name} exists already", error="vm_exists", vm=name)
         if os.path.exists(footprint.delete_marker(name)):
@@ -197,12 +200,26 @@ def create(args):
         if left:
             die(f"{name}: leftovers of an earlier VM exist ({', '.join(left)}), remove them first",
                 error="vm_leftovers", vm=name, leftovers=left)
+        keys, refused = [], []
+        if ssh_source is not None:
+            # SSH access stays off; regenerate makes the host key for the keys (generate.vm_ssh)
+            found, refused = ssh_access.keys_of(next(r for r in records if r["name"] == ssh_source))
+            ssh_keys, keys, more = ssh_access.copy_keys([], found, activity.actor())
+            refused += more
+            if ssh_keys:
+                rec["ssh_keys"] = ssh_keys
         copied = allowlist.start_vm(name, source)
         state_files.remove(footprint.open_web_file(name))
         registry.save(rec)
+        ssh_access.record_copied(name, ssh_source, keys)
         say(f"{name}: entered into the registry (network {n}, Orca port {rec['orca_port']})")
         if source:
             say(f"{name}: {copied} Allowlist entries copied from {source}")
+        if ssh_source:
+            say(f"{name}: {len(keys)} SSH keys copied from {ssh_source}"
+                + (f", SSH access is off (agentbox set-ssh {name} on)" if keys else ""))
+            for k in refused:
+                say(f"{name}: {ssh_access.label(k)} not copied: {k['message']}")
         todo = f"agentbox reset {name} --no-start and agentbox regenerate finish it"
         try:
             lifecycle.reset(name, False, say)
@@ -220,7 +237,10 @@ def create(args):
         print(json.dumps({"vm": name, **{k: rec[k] for k in ("network", "orca_port", "image", "memory_mib",
                                                               "data_disk_gib", "container_image_cleanup",
                                                               "container_image_cleanup_days", "github_owners")},
-                          "allowlist_from": source, "message": lifecycle.message(lines)}, ensure_ascii=False))
+                          "allowlist_from": source, "ssh_keys_from": ssh_source,
+                          "ssh_keys": [{"fingerprint": k["fingerprint"], "name": k["name"], "type": k["type"]}
+                                       for k in keys],
+                          "message": lifecycle.message(lines)}, ensure_ascii=False))
 
 
 # --- delete ------------------------------------------------------------------
@@ -457,10 +477,11 @@ def env(args):
 
 
 DECLARATIONS = {
-    "create": declare(create, "agentbox create <vm> [--image I] [--memory-mib N] [--data-disk-gib N] [--owner O]... [--container-image-cleanup on|off] [--container-image-cleanup-days N] [--copy-allowlist-from VM] [--json]",
+    "create": declare(create, "agentbox create <vm> [--image I] [--memory-mib N] [--data-disk-gib N] [--owner O]... [--container-image-cleanup on|off] [--container-image-cleanup-days N] [--copy-allowlist-from VM] [--copy-ssh-keys-from VM] [--json]",
                       options={"image": True, "memory-mib": True, "data-disk-gib": True, "owner": options.MANY,
                                "container-image-cleanup": True, "container-image-cleanup-days": True,
-                               "copy-allowlist-from": True, "json": False}, control_room=True, option_exit=1,
+                               "copy-allowlist-from": True, "copy-ssh-keys-from": True, "json": False},
+                      control_room=True, option_exit=1,
                       describe=lambda a: activity.said(
                           "Create the VM" + (f" with Image {activity.name(a.values.get('image'), settings.IMAGE)}"
                                              if activity.name(a.values.get("image"), settings.IMAGE) else ""),

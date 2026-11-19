@@ -559,9 +559,9 @@ def ssh_host_key(rec):
     """The VM's SSH host key, made once and kept (ADR 0020): an Ed25519 key whose secret
     openssl makes, in OpenSSH's own format; owner root, group qemu, mode 0640, beside the
     Claude token. Made when SSH access is first turned on or a first SSH key is added;
-    regenerate makes one that is missing while the VM has SSH access. Its public half goes
-    beside, readable by everyone (footprint.ssh_host_key_public_file), also for a key made
-    before. Whether the key was made."""
+    regenerate makes one that is missing while the VM has SSH access or SSH keys. Its public
+    half goes beside, readable by everyone (footprint.ssh_host_key_public_file), also for a key
+    made before. Whether the key was made."""
     path = footprint.ssh_host_key_file(rec["name"])
     made = not os.path.exists(path)
     if made:
@@ -595,10 +595,11 @@ def host_key(name):
 
 def vm_ssh(rec):
     """The file of the VM's SSH access (sshkeys.fw_cfg) from its record and its host key, which
-    is made here when the VM has SSH access and none yet; a VM picks a change up at its next
-    start. Written before the domain is defined, which names it. False, or what was done:
-    "ssh-host-key" (made, and the file written) or "vm-ssh" (the file written)."""
-    made = registry.ssh_access(rec) and ssh_host_key(rec)
+    is made here when the VM has SSH access or SSH keys and none yet (a VM created with keys
+    copied from another); a VM picks a change up at its next start. Written before the domain
+    is defined, which names it. False, or what was done: "ssh-host-key" (made, and the file
+    written) or "vm-ssh" (the file written)."""
+    made = (registry.ssh_access(rec) or bool(registry.ssh_keys(rec))) and ssh_host_key(rec)
     data = sshkeys.fw_cfg(registry.ssh_access(rec), registry.ssh_keys(rec), host_key(rec["name"]) or b"")
     written = fw_cfg_file(footprint.vm_ssh_file(rec["name"]), data)
     return "ssh-host-key" if made else "vm-ssh" if written else False

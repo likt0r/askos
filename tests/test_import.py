@@ -417,8 +417,8 @@ class PackTest(unittest.TestCase):
 class IdentityTest(unittest.TestCase):
     def setUp(self):
         sys.path.insert(0, REPO)
-        from agentbox import transfer
-        self.transfer = transfer
+        from agentbox import callers, transfer
+        self.callers, self.transfer = callers, transfer
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         env = {k: v for k, v in os.environ.items() if not k.startswith("SUDO_")}
@@ -456,7 +456,7 @@ class IdentityTest(unittest.TestCase):
         folder = os.path.join(self.tmp.name, "f")
         os.mkdir(folder)
         with open(os.path.join(self.tmp.name, "out"), "wb") as out, \
-                mock.patch.object(self.transfer, "_become", become), mock.patch("os.geteuid", return_value=0):
+                mock.patch.object(self.callers, "become", become), mock.patch("os.geteuid", return_value=0):
             self.transfer.pack(folder, out.fileno())
         with open(seen) as f:
             self.assertEqual(json.load(f), [os.getuid(), os.getgid()])

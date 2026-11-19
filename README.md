@@ -385,8 +385,9 @@ creates none without the text file.
 `agentbox create <name>` takes `--image` (an Image with a Build, `base` by default), `--memory-mib` (default
 26624, at most the Host's memory), `--data-disk-gib` (default 300), `--owner` (repeatable)
 `--container-image-cleanup on|off` and `--container-image-cleanup-days` (defaults from the Settings: on, 7),
-and `--copy-allowlist-from <vm>` (a one-time copy of that VM's own Allowlist entries;
-deleting a VM removes its own entries). Names are 2 to 16 characters of `a-z`, `0-9` and `-`,
+`--copy-allowlist-from <vm>` (a one-time copy of that VM's own Allowlist entries;
+deleting a VM removes its own entries) and `--copy-ssh-keys-from <vm>` (a one-time copy of
+that VM's SSH keys; SSH access stays off, see [SSH into a VM](#ssh-into-a-vm)). Names are 2 to 16 characters of `a-z`, `0-9` and `-`,
 start with a letter and cannot be changed later; words the CLI or the Control Room use
 themselves (`off`, `all`, `status`, `login`, `settings`, `v1`, …) are refused. The VM gets the
 lowest free network number and the Orca port 6800 + that number. It is not started:
@@ -493,6 +494,8 @@ A VM has no SSH access until you turn it on, and only on the Host
 
 ```sh
 sudo agentbox add-ssh-key lab ~/.ssh/id_ed25519.pub   # or: ... add-ssh-key lab < key.pub, --name NAME
+sudo agentbox add-ssh-key lab --mine                  # your own ~/.ssh/*.pub, after you confirm them
+sudo agentbox add-ssh-key lab --from priv             # a one-time copy of priv's SSH keys
 sudo agentbox set-ssh lab on                          # the SSH port 2200 + network number opens
 sudo agentbox ssh lab                                 # port, host key fingerprint, known_hosts line, keys
 agentbox ssh-config > ~/.ssh/agentbox.conf            # a block per VM with SSH access: ssh lab.agentbox
@@ -526,7 +529,21 @@ and is recorded as its Actor `SSH (<address>)`. You log in as `agent`, the user 
 agents run as, only with a key; `ssh -L` works, remote and agent forwarding do not. Allowed
 keys: Ed25519, ECDSA, their security-key forms (`sk-…`) and RSA of 3072 to 16384 bits, one line
 of a `.pub` file without options (`command=`, `from=`), at most 16 per VM; the comment becomes
-the key's name unless `--name` gives one. The host key is made by the Host once per VM and
+the key's name unless `--name` gives one.
+
+Keys belong to one VM: a key that may enter `lab` does not enter `priv` until you add it there
+too. Two ways save typing it again. `add-ssh-key lab --from priv` copies every key of `priv`
+into `lab` once; nothing links them afterwards, so a key you add to or remove from `priv`
+later stays in `priv` (`create lab --copy-ssh-keys-from priv` does the same for a new VM).
+`add-ssh-key lab --mine` reads your own `~/.ssh/*.pub` with your rights, not root's (the
+`~/.ssh` of the user who ran `sudo`, as `agentbox import` reads a folder), shows the keys it
+found and adds them after you answer `y`; `--yes` adds them without asking, and without a
+terminal or with `--json` it needs `--yes`. Both add each key as `add-ssh-key` adds one, by the
+same rules and the same limit of 16: a key refused (an RSA key under 3072 bits, a DSA key, a
+file you cannot read) or one the VM has already is named with the reason and left out, the
+others go in, and each key added is an entry in Activity.
+
+The host key is made by the Host once per VM and
 stays the same across every Reset, so `ssh` never asks you to answer "yes" or warns about a
 changed host key. Every change applies at once: a running VM takes a new key, a removed key or
 SSH access turned off without a Restart, a paused VM when it resumes, a VM that is off at its
