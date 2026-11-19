@@ -178,6 +178,7 @@ export default {
     },
     named: {
       env_name_reserved: '{name}: diese Variable setzt oder liest eine Schutzmaßnahme oder Agent Box selbst, sie kann keine VM-Variable sein.',
+      env_name_is_secret: '{name} ist ein Geheimnis der VM. Ein Name kann nicht beides sein.',
       invalid_env_value: '{name}: der Wert enthält einen Zeilenumbruch oder ein anderes Steuerzeichen.',
       env_too_large: '{name}: der Wert ist länger als {max} Bytes.',
     },

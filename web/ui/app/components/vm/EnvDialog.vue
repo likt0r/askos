@@ -64,7 +64,7 @@ function remove(i: number) {
 /** agentbox's refusal, naming the variable where it gives one. */
 function refusal(e: unknown): string {
   const name = e instanceof ApiError ? e.params?.name : undefined
-  if (e instanceof ApiError && typeof name === 'string' && ['env_name_reserved', 'invalid_env_value', 'env_too_large'].includes(e.code))
+  if (e instanceof ApiError && typeof name === 'string' && ['env_name_reserved', 'env_name_is_secret', 'invalid_env_value', 'env_too_large'].includes(e.code))
     return t(`vm.env.named.${e.code}`, { name, max: MAX_ENV_VALUE_BYTES })
   return errorText(e)
 }

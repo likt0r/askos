@@ -178,6 +178,7 @@ export default {
     },
     named: {
       env_name_reserved: '{name}: a Safeguard or Agent Box itself sets or reads this variable, it cannot be a VM variable.',
+      env_name_is_secret: '{name} is a secret of the VM. A name cannot be both.',
       invalid_env_value: '{name}: the value has a line break or another control character.',
       env_too_large: '{name}: the value is longer than {max} bytes.',
     },
