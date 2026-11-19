@@ -128,7 +128,11 @@ flowchart LR
   add-ssh-key <vm> --mine` reads `~/.ssh/*.pub` of the user who ran `sudo` (else of the caller)
   in a child process with that user's rights, as `import` packs a folder, so root reads nothing
   for it that this user could not read; it shows the keys it found and adds them only after a
-  confirmation at a terminal (`--yes` instead). Each key of a copy or of `--mine` goes through
+  confirmation at a terminal (`--yes` instead). `agentbox add-ssh-key <vm> FILE` reads FILE the
+  same way, in a child process with the rights of the user who ran `sudo` (else of the caller), so
+  a file only root can read is refused as unreadable; FILE and each file of `--mine` are opened
+  without blocking and read only when they are regular files, so a FIFO is refused, not waited
+  on. Each key of a copy or of `--mine` goes through
   the checks and limits of one key; a key refused or entered already is named and left out
   while the others go in, and every key added is its own `ssh.key-added` entry. While SSH access
   is on, the VM's SSH port, 2200 + its network number (2201–2454), listens where its Orca port

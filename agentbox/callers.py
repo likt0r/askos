@@ -1,8 +1,8 @@
 """Who may run the commands that need no root but hand out access: root and the members of
 libvirt, who control every VM anyway (`sign-in-link`, `ssh-config`); and whose rights a
 command run through sudo reads the owner's own files with (sudo_user(), become()): `import`
-packs a folder, `add-ssh-key --mine` reads ~/.ssh/*.pub, so root reads nothing for them that
-the user who ran sudo could not read.
+packs a folder, `add-ssh-key` reads FILE or, with --mine, ~/.ssh/*.pub, so root reads nothing
+for them that the user who ran sudo could not read.
 
 A leaf module: the Control Room imports sign_in_links, which uses it.
 """
