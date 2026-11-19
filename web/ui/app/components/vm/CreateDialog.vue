@@ -2,7 +2,8 @@
 // Creating a VM with the CLI's rules (`agentbox create`): a name that cannot change
 // later, an Image with a Build, memory, Data disk size, GitHub owners, and optionally
 // a copy of another VM's Allowlist entries and of its SSH keys (once, ADR 0001; SSH access
-// stays off). Network and Orca port are assigned by the Host. The VM is not started: pairing or the first Orca connection starts it.
+// stays off). Network and Orca port are assigned by the Host. The VM is not started: pairing or
+// the first Orca connection starts it.
 import type { Image } from '~/utils/images'
 
 const open = defineModel<boolean>('open', { default: false })

@@ -41,6 +41,7 @@ async function setEnabled(on: boolean) {
   wanted.value = on
   switching.value = true
   error.value = null
+  copyResult.value = null
   try {
     await api(`/vms/${props.vm.name}/ssh`, { method: 'PUT', body: { enabled: on } })
     toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t(on ? 'access.ssh.turnedOn' : 'access.ssh.turnedOff', { vm: props.vm.name }) })
@@ -89,6 +90,7 @@ async function addKey() {
   const name = keyName.value.trim()
   adding.value = true
   error.value = null
+  copyResult.value = null
   try {
     const r = await api<{ name?: string | null, fingerprint?: string, enabled?: boolean }>(`/vms/${props.vm.name}/ssh-keys`, {
       method: 'POST',
@@ -182,6 +184,7 @@ async function removeKey() {
   removeBusy.value = true
   removeError.value = null
   error.value = null
+  copyResult.value = null
   try {
     await api(`/vms/${props.vm.name}/ssh-keys/remove`, { method: 'POST', body: { fingerprint: k.fingerprint } })
     toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t('access.ssh.remove.done', { name: keyLabel(k), vm: props.vm.name }) })

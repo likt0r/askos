@@ -320,6 +320,26 @@ describe('SSH access', () => {
     expect($('[data-testid="ssh-error"]')).toBeNull()
   })
 
+  it('drops the result of a copy when the next key action starts', async () => {
+    const { current } = await openSsh({}, {
+      'POST /vms/work/ssh-keys': ok({
+        vm: 'work', from: 'priv', folder: null,
+        added: [{ type: 'ecdsa-sha2-nistp256', fingerprint: DESK_FP, name: 'desk' }], skipped: [],
+        enabled: true, keys: 3, state: 'running', applies: 'now', message: 'x',
+      }),
+      'POST /vms/work/ssh-keys/remove': () => {
+        current.vm = sshVm({ keys: [KEYS[1]] })
+        return ok({ vm: 'work', fingerprint: LAPTOP_FP, name: 'laptop', type: 'ssh-ed25519', enabled: true, keys: 1, state: 'running', applies: 'now', message: 'x' })
+      },
+    }, 'local', [PRIV])
+    await chooseCopyFrom('priv')
+    await click(copyButton())
+    expect($('[data-testid="ssh-copy-result"]')).not.toBeNull()
+    await click(must(`[data-testid="ssh-key"][data-fingerprint="${LAPTOP_FP}"] [data-testid="ssh-key-remove"]`))
+    await click('[data-testid="confirm-action"]')
+    await waitFor(() => expect($('[data-testid="ssh-copy-result"]')).toBeNull())
+  })
+
   it('says when the other VM has no keys, and when there is no other VM', async () => {
     await openSsh({}, {
       'POST /vms/work/ssh-keys': ok({ vm: 'work', from: 'priv', folder: null, added: [], skipped: [], enabled: true, keys: 2, state: 'running', applies: null, message: 'x' }),
