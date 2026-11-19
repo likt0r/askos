@@ -915,10 +915,24 @@ Host after every Build
   Chromium and Firefox headless and reads a page back from each, after Playwright's own check
   of the libraries they need; any failure fails the Build. The browsers are part of the Image
   under `/usr`, read-only in the VM, and every service (systemd's `DefaultEnvironment`) and
-  login (`/etc/profile.d/agentbox.sh`) has `PLAYWRIGHT_BROWSERS_PATH=/usr/lib/ms-playwright`
+  login (`/etc/environment`) has `PLAYWRIGHT_BROWSERS_PATH=/usr/lib/ms-playwright`
   and `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`. Playwright's CDN is not on the Allowlist, so a VM
   downloads no other browser builds: a project uses the `@playwright/test` version of its
   Build, which the Build records with the other tools' versions.
+- The image-wide variables (`PATH`, `RUSTUP_HOME`, `JAVA_HOME`, `PLAYWRIGHT_BROWSERS_PATH`,
+  `DOCKER_HOST`, the package minimum age for uv and pnpm, `ENABLE_CLAUDEAI_MCP_SERVERS`, ...)
+  live in one place, systemd's `DefaultEnvironment`: `vm/files/usr/lib/systemd/system.conf.d/agentbox.conf`
+  and the `agentbox-packages.conf` that `package-safeguards` writes. Every service has them,
+  `orca serve`, the agents and the terminals it starts among them. sshd builds a fresh
+  environment for each login, and bash reads no profile for `ssh <vm> 'cmd'`, so the Build
+  writes the merged `DefaultEnvironment`, read as systemd reads it, into `/etc/environment`
+  (`vm/build/login-environment`, after `package-safeguards`), which PAM's `pam_env` gives every
+  login, SSH sessions and commands included. A value `pam_env` would read differently (empty,
+  with a quote, backslash, `#`, `$` or control character, or surrounding blanks) fails the Build.
+  `/etc/profile.d/agentbox.sh` sets only what differs by shell: `DOCKER_HOST`, the agent's Podman
+  only for the agent, and `ENABLE_CLAUDEAI_MCP_SERVERS` again for shells whose environment was
+  rebuilt. A derived Image keeps `/etc/environment` as the Base Build has it; it can give logins
+  more variables in `/etc/security/pam_env.conf`.
 - The safeguard check (`agentbox/safeguards.py`) mounts the built image (`podman image mount`)
   and reads files; nothing from the Image runs, and links are resolved inside the Image. It
   parses regular files only; a file it verifies that is larger than 1 MiB fails the check. It
@@ -943,7 +957,7 @@ Host after every Build
   `AllowUsers agent`, the key file and every host key in the root-owned `/run/agentbox/ssh`
   (never `~/.ssh`), no `AuthorizedKeysCommand` or `TrustedUserCAKeys`, `AllowTcpForwarding
   local`, no agent, X11, stream-local or tunnel forwarding, no `GatewayPorts`, no
-  `PermitUserEnvironment`. sshd must not start by itself: `sshd.service` and `sshd.socket` must
+  `PermitUserEnvironment`, `UsePAM yes` (PAM gives logins the image-wide variables). sshd must not start by itself: `sshd.service` and `sshd.socket` must
   not be enabled, the presets must disable both (systemd applies them again at a VM's first
   boot), and `sshd@.service` and `systemd-ssh-generator` must stay masked. `/etc/sysconfig/sshd`
   must add no `OPTIONS` to sshd's command line. Like the rest of the check, this catches

@@ -1,0 +1,124 @@
+#!/usr/bin/python3
+"""The image-wide variables for logins (#164), run in the Build container of the Base image
+(vm/Containerfile), never on the Host.
+
+  login-environment [ROOT]
+
+Every service of the VM has systemd's DefaultEnvironment (agentbox.conf in vm/files and the
+agentbox-packages.conf package-safeguards writes), the one place the image-wide variables
+are set. sshd builds a fresh environment for each login, and bash reads no profile for
+`ssh <vm> 'cmd'`; PAM's pam_env gives every login, SSH included, the variables of
+/etc/environment. This writes the merged DefaultEnvironment, read as systemd reads it (the
+main configuration, then every drop-in in name order, one in /etc replacing one of the same
+name further down, an empty DefaultEnvironment= clearing what came before), into
+ROOT/etc/environment (ROOT: the image itself; another one only in tests), which it replaces.
+
+pam_env reads a line as NAME=VALUE without quotes or escapes; a value it would read
+differently (empty, with a quote, backslash, `#`, `$`, a control character or surrounding
+blanks) or a name that is none ends with exit 1 and a line on stderr, and so does the Build.
+"""
+import os
+import re
+import shlex
+import sys
+
+SYSTEM_CONF = ("/etc/systemd/system.conf", "/run/systemd/system.conf", "/usr/local/lib/systemd/system.conf",
+               "/usr/lib/systemd/system.conf")
+SYSTEM_DROPINS = ("/usr/lib/systemd/system.conf.d", "/usr/local/lib/systemd/system.conf.d",
+                  "/run/systemd/system.conf.d", "/etc/systemd/system.conf.d")
+TARGET = "/etc/environment"
+NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+UNSAFE = re.compile(r"[\"'\\#$\x00-\x1f\x7f]")
+HEADER = ("# The image-wide variables for logins (pam_env), the same as every service has from\n"
+          "# systemd's DefaultEnvironment; written by the Build (vm/build/login-environment).\n")
+
+
+def _read(path):
+    try:
+        with open(path) as f:
+            return f.read()
+    except FileNotFoundError:
+        return None
+
+
+def _logical_lines(content):
+    """systemd configuration lines with backslash continuations joined."""
+    lines, current = [], ""
+    for raw in content.splitlines():
+        stripped = raw.rstrip()
+        if stripped.endswith("\\"):
+            current += stripped[:-1] + " "
+            continue
+        lines.append(current + stripped)
+        current = ""
+    if current:
+        lines.append(current)
+    return lines
+
+
+def default_environment(root):
+    files = [p for p in SYSTEM_CONF if _read(root + p) is not None][:1]
+    dropins = {}
+    for d in SYSTEM_DROPINS:
+        try:
+            names = os.listdir(root + d)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        for name in names:
+            if name.endswith(".conf") and os.path.isfile(f"{root}{d}/{name}"):
+                dropins[name] = f"{d}/{name}"
+    files += [dropins[n] for n in sorted(dropins)]
+    env = {}
+    for path in files:
+        section = ""
+        for line in _logical_lines(_read(root + path) or ""):
+            line = line.strip()
+            if not line or line[0] in "#;":
+                continue
+            if line.startswith("["):
+                section = line.strip("[] ")
+                continue
+            key, eq, value = line.partition("=")
+            if section != "Manager" or key.strip() != "DefaultEnvironment" or not eq:
+                continue
+            if not value.strip():
+                env = {}
+                continue
+            if "\\" in value:
+                raise ValueError(f"{path}: DefaultEnvironment has a backslash; systemd unescapes it "
+                                 "differently from the login, so write the value without one")
+            try:
+                words = shlex.split(value)
+            except ValueError as e:
+                raise ValueError(f"{path}: {e}") from None
+            for word in words:
+                name, eq, v = word.partition("=")
+                if not eq or not NAME.fullmatch(name):
+                    raise ValueError(f"{path}: {word!r} is no NAME=VALUE")
+                env[name] = v
+    return env
+
+
+def main(argv):
+    root = argv[1].rstrip("/") if len(argv) > 1 else ""
+    try:
+        env = default_environment(root)
+    except ValueError as e:
+        print(f"login-environment: {e}", file=sys.stderr)
+        return 1
+    for name, value in env.items():
+        if not value or value != value.strip() or UNSAFE.search(value):
+            print(f"login-environment: the value of {name} cannot go into {TARGET} as it is: {value!r}",
+                  file=sys.stderr)
+            return 1
+    if not env:
+        print("login-environment: systemd's DefaultEnvironment is empty", file=sys.stderr)
+        return 1
+    with open(root + TARGET, "w") as f:
+        f.write(HEADER + "".join(f"{name}={value}\n" for name, value in env.items()))
+    os.chmod(root + TARGET, 0o644)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

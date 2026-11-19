@@ -529,7 +529,9 @@ where its Orca port is: on `127.0.0.1` in Local-only, also from the home network
 rules of the SSH ports come with `agentbox regenerate`, so an update needs no `setup` for them.
 A connection wakes the VM like an Orca connection
 and is recorded as its Actor `SSH (<address>)`. You log in as `agent`, the user Orca and the
-agents run as, only with a key; `ssh -L` works, remote and agent forwarding do not. Allowed
+agents run as, only with a key; `ssh -L` works, remote and agent forwarding do not. A session,
+and a single command (`ssh lab.agentbox 'cargo build'`), has the variables the Image sets for
+every service in the VM (`RUSTUP_HOME`, `JAVA_HOME`, `PLAYWRIGHT_BROWSERS_PATH`, ...). Allowed
 keys: Ed25519, ECDSA, their security-key forms (`sk-…`) and RSA of 3072 to 16384 bits, one line
 of a `.pub` file without options (`command=`, `from=`), at most 16 per VM; the comment becomes
 the key's name unless `--name` gives one. `add-ssh-key lab FILE` reads FILE with your rights,

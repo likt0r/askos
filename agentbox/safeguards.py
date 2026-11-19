@@ -74,6 +74,7 @@ CONTAINER_IMAGES_NEVER = ("--force", '"-f"', '"rm"', '"volume"', '"system"', '"i
 NM_CONF = "/etc/NetworkManager/conf.d/agentbox.conf"
 RESOLVER = 'echo "nameserver $gw" > /etc/resolv.conf'   # guest-setup: the Host on the VM's network
 PROFILE = "/etc/profile.d/agentbox.sh"
+LOGIN_ENV = "/etc/environment"        # the DefaultEnvironment again, for logins (pam_env; vm/build/login-environment)
 # systemd-resolved's configuration: the main file and its drop-in directories, lowest first
 RESOLVED_MAIN = ("/etc/systemd/resolved.conf", "/usr/local/lib/systemd/resolved.conf", "/usr/lib/systemd/resolved.conf")
 RESOLVED_DROPINS = ("/usr/lib/systemd/resolved.conf.d", "/usr/local/lib/systemd/resolved.conf.d",
@@ -95,7 +96,7 @@ SSHD = {"passwordauthentication": "no", "kbdinteractiveauthentication": "no", "p
         "authorizedkeysfile": f"{SSHD_RUN}/authorized_keys", "authorizedkeyscommand": "none",
         "trustedusercakeys": "none", "allowtcpforwarding": "local", "allowagentforwarding": "no",
         "allowstreamlocalforwarding": "no", "x11forwarding": "no", "permittunnel": "no", "gatewayports": "no",
-        "permituserenvironment": "no"}
+        "permituserenvironment": "no", "usepam": "yes"}
 SSHD_PATHS = ("authorizedkeysfile", "authorizedkeyscommand", "trustedusercakeys")
 SSHD_CASED = SSHD_PATHS + ("authenticationmethods",)    # sshd reads these values case-sensitively
 SSHD_ALIASES = {"challengeresponseauthentication": "kbdinteractiveauthentication",
@@ -105,7 +106,7 @@ SSHD_NAMES = {n.lower(): n for n in ("PasswordAuthentication", "KbdInteractiveAu
                                      "AuthenticationMethods", "HostbasedAuthentication", "PermitRootLogin",
                                      "AuthorizedKeysFile", "AuthorizedKeysCommand", "TrustedUserCAKeys",
                                      "AllowTcpForwarding", "AllowAgentForwarding", "AllowStreamLocalForwarding",
-                                     "X11Forwarding", "PermitTunnel", "GatewayPorts", "PermitUserEnvironment")}
+                                     "X11Forwarding", "PermitTunnel", "GatewayPorts", "PermitUserEnvironment", "UsePAM")}
 SSHD_UNITS = ("sshd.service", "sshd.socket")
 # masked in the Base image: Fedora's sshd@.service adds ~/.ssh/authorized_keys on its command
 # line, and systemd's generator would start it on a local socket
@@ -124,7 +125,7 @@ FILES = ("/etc/npmrc", NPM_DEFAULT, f"{NPM}/npmrc", "/etc/uv/uv.toml", "/etc/git
          HOME_PATHS, FWCFG_SSH,
          "/usr/lib/agentbox/package-safeguards", "/usr/lib/systemd/system/agentbox-guest-setup.service",
          "/usr/lib/systemd/system.conf.d/agentbox.conf", "/usr/lib/systemd/system.conf.d/agentbox-packages.conf",
-         NM_CONF, PROFILE, SSHD_DROPIN, SSHD_PRESET)
+         NM_CONF, PROFILE, LOGIN_ENV, SSHD_DROPIN, SSHD_PRESET)
 # Directories a derived Image must leave exactly as they are.
 SEALED = (HOOKS, QGA)
 # Where environment and configuration are read: a derived Image may add or change files
