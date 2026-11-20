@@ -632,11 +632,11 @@ async def hold(ctx, lists, host, tags, key, reader, head, seconds):
             fresh = now_key != key
             if fresh:
                 key = now_key
-                tags, alert = classified(host)
+                before, (tags, alert) = tags, classified(host)
+                if alert and tags != before:
+                    log(lines.alert(ctx, host, alert))  # Signals gained during the hold, as for a tunnel
             grant, why = decide(ctx, lists, host, tags, time.time())
             stop = grant is None and (why != lines.NOT_ALLOWED or not holdable(tags))
-            if fresh and alert and stop:
-                log(lines.alert(ctx, host, alert))      # the Signals that end the hold
             if grant is not None or stop:
                 return grant, why, tags, key
         return None, lines.NOT_ALLOWED, tags, key

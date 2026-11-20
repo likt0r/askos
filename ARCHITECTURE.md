@@ -666,7 +666,9 @@ flowchart LR
   names holds them all, but only the first ten of a minute announce themselves; their `BLOCKED`
   or `ALLOWED` lines are unchanged), the Control Room notifies about it at once, at most 3 a
   minute per VM, and the destination shows in the VM's blocked list from that moment, with its
-  "Allow…". Destinations
+  "Allow…". The caps are per VM: a VM that tries many names in one minute uses up its own
+  announcements, and its later holds of that minute show only in its blocked list, once refused.
+  Destinations
   with strong Signals or on the Watchlist are never held and are refused at once, so a phishing
   domain never invites a click; a strong Signal gained during the hold, or a Watchlist that
   becomes unreadable, refuses the held connection at once. When the time runs out, the client
