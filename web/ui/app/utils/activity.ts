@@ -332,6 +332,10 @@ export const SENTENCES: Record<string, Sentence> = {
 /** The generic error code: agentbox's own message says more than its translation would. */
 const GENERIC_ERROR = 'action_failed'
 
+/** Failures whose sentence already names why in the UI's language: their English `message` is
+ * not added to it. */
+const SAYS_WHY = new Set(['claude.refused'])
+
 /** What the timeline shows for an entry in the UI's language: the sentence of its action; for a
  * failure followed by the translation of its error code, or, without one, by what failed as
  * agentbox said it (`message`, English); else agentbox's stored text. */
@@ -341,7 +345,7 @@ export function activityText(e: ActivityEntry, tr: Translator): string {
   const text = sentence ? sentence(p, tr, e) : null
   if (!text) return e.description
   if (e.outcome !== 'failed') return text
-  if (!e.error) return has(p, 'message') ? `${text}: ${p.message}` : text
+  if (!e.error) return has(p, 'message') && !SAYS_WHY.has(e.code ?? '') ? `${text}: ${p.message}` : text
   const key = `errors.${e.error}`
   if (e.error === GENERIC_ERROR || !tr.te(key)) return e.description
   return `${text}: ${tr.t(key, { field: '', ...(e.error_params ?? {}) })}`
