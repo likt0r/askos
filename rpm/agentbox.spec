@@ -97,7 +97,7 @@ install -m 0644 VERSION %{buildroot}%{_prefix}/lib/agentbox/VERSION
 
 install -d -m 0755 %{buildroot}%{_libexecdir}
 install -m 0755 proxy/agentbox-proxy proxy/agentbox-suspicious proxy/agentbox-feeds \
-    github-app/agentbox-gh-tokend web/agentbox-web %{buildroot}%{_libexecdir}/
+    github-app/agentbox-gh-tokend github-app/agentbox-claude-route web/agentbox-web %{buildroot}%{_libexecdir}/
 # loaded by agentbox-web from next to it, not run
 install -m 0644 web/agentbox-readings %{buildroot}%{_libexecdir}/
 
@@ -138,7 +138,8 @@ install -D -m 0440 rpm/agentbox-web.sudoers %{buildroot}%{_sysconfdir}/sudoers.d
 
 # the Host's directories; what goes into them comes from agentbox setup and the CLI
 install -d -m 0755 %{buildroot}%{_sysconfdir}/agentbox
-install -d -m 0750 %{buildroot}%{_sysconfdir}/agentbox/web %{buildroot}%{_sysconfdir}/agentbox/github
+install -d -m 0750 %{buildroot}%{_sysconfdir}/agentbox/web %{buildroot}%{_sysconfdir}/agentbox/github \
+    %{buildroot}%{_sysconfdir}/agentbox/claude
 install -d -m 0755 %{buildroot}%{_sharedstatedir}/agentbox
 install -d -m 0711 %{buildroot}%{_sharedstatedir}/agentbox/images %{buildroot}%{_sharedstatedir}/agentbox/vms
 
@@ -220,7 +221,7 @@ fi
 # closed until the Host restarts.
 %systemd_preun agentbox-web.service agentbox-alert-watch.service agentbox-allowlist-expire.timer agentbox-container-image-cleanup.timer
 # removal only: the units agentbox regenerate wrote to /etc/systemd/system run programs of
-# this package: per VM the proxy, the token service and the Orca port, and the Maintenance
+# this package: per VM the proxy, the token service, its Anthropic route and the Orca port, and the Maintenance
 # window, the Feeds, the Builds and the version check (and the timers of before the
 # Maintenance window, should any be left). They are disabled, stopped and deleted with it, and systemd forgets
 # them, so none is left enabled pointing at a removed program; agentbox setup writes them again after a new
@@ -229,7 +230,7 @@ fi
 # networks stay (docs/releasing.md).
 if [ $1 -eq 0 ] && cd %{_sysconfdir}/systemd/system 2>/dev/null; then
     generated="agentbox-proxy-*.socket agentbox-proxy-*.service agentbox-ghvm-*.socket agentbox-ghvm-*@.service
-               agentbox-gui-*.socket agentbox-gui-*@.service agentbox-maintenance.timer
+               agentbox-claude-*.socket agentbox-claude-*@.service agentbox-gui-*.socket agentbox-gui-*@.service agentbox-maintenance.timer
                agentbox-maintenance.service agentbox-feeds.timer agentbox-feeds.service
                agentbox-build@.service agentbox-versions.service agentbox-versions-fetch.service
                agentbox-weekly.timer agentbox-weekly.service agentbox-rebuild.timer agentbox-rebuild.service
@@ -285,6 +286,7 @@ fi
 %{_libexecdir}/agentbox-suspicious
 %{_libexecdir}/agentbox-feeds
 %{_libexecdir}/agentbox-gh-tokend
+%{_libexecdir}/agentbox-claude-route
 %{_libexecdir}/agentbox-web
 %{_libexecdir}/agentbox-readings
 %{_datadir}/agentbox/
@@ -302,6 +304,7 @@ fi
 %dir %attr(0755,root,root) %{_sysconfdir}/agentbox
 %dir %attr(0750,root,agentbox-web) %{_sysconfdir}/agentbox/web
 %dir %attr(0750,root,agentbox-gh) %{_sysconfdir}/agentbox/github
+%dir %attr(0750,root,agentbox-claude) %{_sysconfdir}/agentbox/claude
 %dir %attr(0755,root,root) %{_sharedstatedir}/agentbox
 %dir %attr(0711,root,root) %{_sharedstatedir}/agentbox/images
 %dir %attr(0711,root,root) %{_sharedstatedir}/agentbox/vms

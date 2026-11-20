@@ -40,12 +40,15 @@ install -m 640 -g agent /dev/null /run/agentbox/agent-env
 /usr/lib/agentbox/fwcfg-env /sys/firmware/qemu_fw_cfg/by_name/opt/agentbox/secrets/raw \
   /run/agentbox/env /run/agentbox/agent-env
 printf 'AGENTBOX_CONTEXT=%s\nORCA_PORT=%s\nPAIRING_ADDRESS=%s\n' "$CONTEXT" "$ORCA_PORT" "$PAIRING_ADDRESS" >> /run/agentbox/env
-# Claude token from the Host (empty as long as none is stored). Orca passes it
-# on to all terminals and agents.
-token=$(fwcfg claude_token 2>/dev/null | tr -d '[:space:]' || true)
-if [[ "$token" == sk-ant-* ]]; then
-  printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$token" >> /run/agentbox/env
-  printf 'export CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$token" >> /run/agentbox/agent-env
+# The Claude token stays on the Host (ADR 0023): the VM gets a placeholder that only its
+# Anthropic route on the Host accepts, and Claude Code sends its requests there. Every VM gets
+# both, with or without a stored token, so a token set later works without a restart. Without
+# the placeholder entry Claude Code is not pointed at a route the Host does not serve. Orca
+# passes both on to all terminals and agents.
+placeholder=$(fwcfg claude_placeholder 2>/dev/null | tr -d '[:space:]' || true)
+if [[ "$placeholder" =~ ^agentbox-claude-[A-Za-z0-9_-]+$ ]]; then
+  printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\nANTHROPIC_BASE_URL=http://host.agentbox:9101\n' "$placeholder" >> /run/agentbox/env
+  printf 'export CLAUDE_CODE_OAUTH_TOKEN=%s\nexport ANTHROPIC_BASE_URL=http://host.agentbox:9101\n' "$placeholder" >> /run/agentbox/agent-env
 fi
 hostnamectl set-hostname "agentbox-$CONTEXT"
 

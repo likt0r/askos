@@ -78,6 +78,13 @@ class ClaudeTokenTest(CredentialsTest):
         self.assertIn("priv v1 PUT put_claude_token -> FAILED claude_token_rejected", self.server_log())
         self.assert_nowhere(TOKEN, answer[1])
 
+    def test_remove_runs_remove_claude_token(self):
+        self.respond({"vm": "priv", "removed": True})
+        status, obj = self.request("DELETE", "/api/v1/vms/priv/claude-token")[:2]
+        self.assertEqual((status, obj), (200, {"vm": "priv", "removed": True}))
+        self.assertEqual(self.calls(), [["remove-claude-token", "priv", "--json"]])
+        self.assertIn("priv v1 DELETE delete_claude_token -> ok", self.server_log())
+
     def test_a_token_echoed_by_mistake_is_hidden(self):
         wrapped = TOKEN[:20] + "\n" + TOKEN[20:] + "\n"
         self.respond("", stderr=failure("action_failed", f"broken: {TOKEN}"), exitcode=1)

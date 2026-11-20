@@ -17,8 +17,8 @@ The actor is the global option --actor (the Control Room passes device and
 address, timers pass "timer"), else the user at the terminal.
 
 Where. Entries go to the journald namespace "agentbox" through the native
-journal protocol; the proxy and the GitHub token service log there too
-(LogNamespace= in their units, generate.py). The namespace keeps entries for
+journal protocol; the proxy, the GitHub token service and the Anthropic route
+log there too (LogNamespace= in their units, generate.py). The namespace keeps entries for
 retention_days() (journald@agentbox.conf, written by `agentbox regenerate`).
 While it is not set up, entries go to the default journal so they are not
 lost (journalctl -t agentbox-activity), but they are not part of the timeline.
@@ -26,9 +26,9 @@ Only root and the group agentbox-journal may write into the namespace; anyone
 else gets a warning and the command stands.
 
 Reading. `agentbox activity` merges the recorded entries (from the namespace
-only), Alerts from the proxy and GitHub tokens issued or refused (from the
-namespace and the default journal, where they were logged before) into one
-timeline (SOURCES), never older than the retention.
+only), Alerts from the proxy, GitHub tokens issued or refused and the requests
+of the Anthropic route (from the namespace and the default journal, where they
+were logged before) into one timeline (SOURCES), never older than the retention.
 
 Who wrote it. Each writer may write only its own kinds of entries; readers
 check that by the fields journald adds itself (trusted()) and count the others
@@ -58,7 +58,7 @@ from .sanitize import clean, field, message_text, redact
 NAMESPACE = "agentbox"
 IDENTIFIER = "agentbox-activity"
 # kinds of entries in the timeline; `agentbox activity --kind` accepts these
-KINDS = ("signin", "action", "allowlist", "alert", "github", "pairing", "build", "reset", "settings",
+KINDS = ("signin", "action", "allowlist", "alert", "github", "claude", "pairing", "build", "reset", "settings",
          "credentials")
 # the running sockets of the namespace (stdout, socket, dev-log)
 JOURNAL_RUN = paths.host(f"/run/systemd/journal.{NAMESPACE}")
@@ -487,10 +487,12 @@ def journald_conf(days):
 #                         agentbox alert-watch (agentbox-alert-watch.service as root): the
 #                         Pauses its Alerts made (kind alert, ALERT_PAUSED), the only
 #                         entries of kind alert under this identifier.
-#                         The proxy and token service users: nothing.
+#                         The proxy, token service and Anthropic route users: nothing.
 #   agentbox-proxy-<vm>   that VM's proxy, agentbox-proxy-<vm>.service as agentbox-proxy
 #   agentbox-gh-<vm>      that VM's token service, agentbox-ghvm-<vm>@<connection>.service
 #                         as agentbox-gh
+#   agentbox-claude-<vm>  that VM's Anthropic route, agentbox-claude-<vm>@<connection>.service
+#                         as agentbox-claude
 # The services' logs are also read from the default journal (before the namespace),
 # which anyone can write, so their readers ask journalctl only for entries of their
 # user (_uids()); `agentbox watch` counts what it leaves out.
@@ -498,11 +500,11 @@ JOURNAL_GROUP = "agentbox-journal"
 CONTROL_ROOM = ("agentbox-web", "agentbox-web.service")
 SIGN_INS = {"signin", "signin.failed", "signin.link", "signin.link-refused", "signin.locked",
             "signout"}                                                  # web/agentbox-web
-PROXY_USER, TOKEN_USER = "agentbox-proxy", "agentbox-gh"                # rpm/agentbox.sysusers
-CLI_KINDS = set(KINDS) - {"signin", "alert", "github"}                  # what record() is given
+PROXY_USER, TOKEN_USER, CLAUDE_USER = "agentbox-proxy", "agentbox-gh", "agentbox-claude"   # rpm/agentbox.sysusers
+CLI_KINDS = set(KINDS) - {"signin", "alert", "github", "claude"}        # what record() is given
 ALERT_WATCH_UNIT, ALERT_PAUSED = "agentbox-alert-watch.service", "alert.paused"   # alert_watch.py
-SERVICE = re.compile(r"agentbox-(proxy|gh)-(" + registry.NAME.pattern + ")")
-SERVICE_UNIT = re.compile(r"agentbox-(proxy-[^@/]+|ghvm-[^@/]+@[^/]*)\.service")
+SERVICE = re.compile(r"agentbox-(proxy|gh|claude)-(" + registry.NAME.pattern + ")")
+SERVICE_UNIT = re.compile(r"agentbox-(proxy-[^@/]+|ghvm-[^@/]+@[^/]*|claude-[^@/]+@[^/]*)\.service")
 PASSWD, GROUP = paths.host("/etc/passwd"), paths.host("/etc/group")
 
 _users = (None, {})
@@ -567,7 +569,8 @@ def trusted(e):
             # it writes, so journald always knows the unit
             return uid == "0" and unit == ALERT_WATCH_UNIT and action == ALERT_PAUSED
         # never the services, by user and (should /etc/passwd not tell) by unit
-        if uid in (_uid(PROXY_USER), _uid(TOKEN_USER)) or isinstance(unit, str) and SERVICE_UNIT.fullmatch(unit):
+        if (uid in (_uid(PROXY_USER), _uid(TOKEN_USER), _uid(CLAUDE_USER))
+                or isinstance(unit, str) and SERVICE_UNIT.fullmatch(unit)):
             return False
         return isinstance(kind, str) and kind in CLI_KINDS
     m = SERVICE.fullmatch(ident)
@@ -576,6 +579,8 @@ def trusted(e):
     service, vm = m.groups()
     if service == "proxy":
         return uid == _uid(PROXY_USER) and unit == f"agentbox-proxy-{vm}.service"
+    if service == "claude":
+        return uid == _uid(CLAUDE_USER) and unit.startswith(f"agentbox-claude-{vm}@") and unit.endswith(".service")
     return uid == _uid(TOKEN_USER) and unit.startswith(f"agentbox-ghvm-{vm}@") and unit.endswith(".service")
 
 
@@ -864,10 +869,69 @@ def github_entry(e):
     return entry
 
 
+# the Anthropic route's lines (github-app/agentbox-claude-route): a request it forwarded, one it
+# refused (its reason, with parameters as in REFUSAL), or an error of its own
+CLAUDE = re.compile(r"\[[a-z0-9-]+\] (claude|refused:|error:) (.*)")
+CLAUDE_REQUEST = re.compile(r"([A-Z]{1,16}) (/[A-Za-z0-9._/-]{0,63}) ([1-5][0-9][0-9]) "
+                            r"model=([A-Za-z0-9._:@/\[\]-]{1,100}) ([0-9]{1,7}\.[0-9]{2})s ([0-9]{1,12})B "
+                            r"request-id=([A-Za-z0-9_-]{1,128})( interrupted)?")
+CLAUDE_ACTIONS = {"claude": "claude.request", "refused:": "claude.refused", "error:": "claude.error"}
+
+
+def claude_entry(e):
+    """A line of the Anthropic route as a timeline entry with the code `claude.request` (its method,
+    path, status, model, seconds, bytes, request_id and, for an answer that broke off,
+    interrupted), `claude.refused` (reason, with its parameters method and path, and message) or
+    `claude.error` (message); or None. Never a token, a placeholder or a body: the route logs none."""
+    m, base, name = CLAUDE.fullmatch(_text(e, "MESSAGE") or ""), _base(e), _per_vm(e, "agentbox-claude")
+    if not (m and base and name):
+        return None
+    action, rest = CLAUDE_ACTIONS[m.group(1)], m.group(2)
+    if action == "claude.request":
+        r = CLAUDE_REQUEST.fullmatch(rest)
+        if not r:
+            return None
+        method, path, status, model, seconds, size, request_id, broke = r.groups()
+        params = {"method": method, "path": path, "status": status, "model": model, "seconds": seconds,
+                  "bytes": size, "request_id": request_id, **({"interrupted": "yes"} if broke else {})}
+        outcome = "failed" if broke or int(status) >= 400 else "ok"
+        text = (f"Claude {method} {path} {status}, model {model}, {seconds} s, {size} bytes"
+                + (", interrupted" if broke else ""))
+    elif action == "claude.refused":
+        r = REFUSAL.fullmatch(rest)
+        if not r:
+            return None
+        reason, named, why = r.groups()
+        params = {"reason": reason}
+        for pair in named.split():
+            key, _, value = pair.partition("=")
+            if key in ("method", "path"):
+                params[key] = redact(value)
+        params["message"] = redact(why)[:MAX_DESCRIPTION]
+        outcome, text = "failed", f"Claude request refused: {why}"
+    else:
+        params = {"message": redact(rest)[:MAX_DESCRIPTION]}
+        outcome, text = "failed", f"Claude request failed: {rest}"
+    entry = {**base, "vm": name, "actor": f"VM {name}", "kind": "claude", "action": action, "outcome": outcome,
+             "description": redact(text)[:MAX_DESCRIPTION], "code": action, "params": params}
+    if action == "claude.refused":
+        entry["reason"] = params["reason"]
+    return entry
+
+
+def _claude(window, kinds, vm, cap):
+    """The requests of the Anthropic route (agentbox-claude-<vm>), of one VM or every VM."""
+    for e in _journal(window, [f"agentbox-claude-{vm}"] if vm else None, (CLAUDE_USER,), cap=cap,
+                      prefix="agentbox-claude-"):
+        entry = claude_entry(e)
+        if entry:
+            yield entry
+
+
 # Where the timeline comes from: (kinds a source can contain, None for any; reader).
 # A reader gets ((since, until), kinds or None, vm or None, cap or None) and yields
 # entries. Builds record their outcome with record() (images.py).
-SOURCES = [(None, _recorded), ({"alert"}, _alerts), ({"github"}, _github)]
+SOURCES = [(None, _recorded), ({"alert"}, _alerts), ({"github"}, _github), ({"claude"}, _claude)]
 
 
 def timeline(opts, now=None):

@@ -4,6 +4,7 @@ u agentbox-web   - "Agent Box Control Room"          - -
 u agentbox-proxy - "Agent Box allowlist proxy"       - -
 u agentbox-feeds - "Agent Box Feeds"                 - -
 u agentbox-gh    - "Agent Box GitHub token service"  - -
+u agentbox-claude - "Agent Box Anthropic route"     - -
 # who may write into the Activity journal besides root (ADR 0007): the services through
 # their units, and the members of libvirt
 g agentbox-journal -

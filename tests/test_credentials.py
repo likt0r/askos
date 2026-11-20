@@ -1,5 +1,5 @@
-"""`agentbox owners`, `set-owners` and `set-claude-token` against a temporary root
-and a fake `curl` that stands in for Anthropic.
+"""`agentbox owners`, `set-owners`, `set-claude-token` and `remove-claude-token` against a
+temporary root and a fake `curl` that stands in for Anthropic.
 
 Run from the repo root: python3 -m unittest discover -s tests
 """
@@ -60,7 +60,7 @@ CLAUDE_CODE_ONLY = ('{"type":"error","error":{"type":"invalid_request_error","me
                     'authorized for use with Claude Code and cannot be used for other API requests."}}')
 OLD_TOKEN = "sk-ant-oat01-Old-working-token_000"
 PROMPT = "Paste the token from 'claude setup-token' for priv, then Enter and Ctrl+D:\n"
-STORED = "Token valid and stored (30 characters). Takes effect after: agentbox restart priv\n"
+STORED = "Token valid and stored (30 characters). priv uses it from its next request on.\n"
 
 
 class CredentialsTest(unittest.TestCase):
@@ -69,7 +69,7 @@ class CredentialsTest(unittest.TestCase):
         self.dir = self.tmp.name
         self.conf = os.path.join(self.dir, "etc", "agentbox")
         os.makedirs(os.path.join(self.conf, "github"))
-        os.makedirs(os.path.join(self.conf, "secrets"))
+        os.makedirs(os.path.join(self.conf, "claude"))
         vm_records.write(self.dir)
         os.mkdir(os.path.join(self.dir, "bin"))
         curl = os.path.join(self.dir, "bin", "curl")
@@ -103,6 +103,8 @@ class CredentialsTest(unittest.TestCase):
         return os.path.join(self.conf, *parts)
 
     def write(self, rel, text, mode=0o640):
+        if os.path.exists(self.path(*rel.split("/"))):
+            os.chmod(self.path(*rel.split("/")), 0o600)
         with open(self.path(*rel.split("/")), "w") as f:
             f.write(text)
         os.chmod(self.path(*rel.split("/")), mode)
@@ -200,7 +202,7 @@ class SetOwnersTest(CredentialsTest):
 class SetClaudeTokenTest(CredentialsTest):
     def setUp(self):
         super().setUp()
-        self.write("secrets/claude-priv", "none\n", mode=0o640)
+        self.write("claude/token-priv", "none\n", mode=0o400)
 
     def assert_not_printed(self, out, err):
         self.assertNotIn(TOKEN, out + err)
@@ -209,8 +211,9 @@ class SetClaudeTokenTest(CredentialsTest):
     def test_stores_token_without_whitespace(self):
         code, out, err = self.run_agentbox("set-claude-token", "priv", stdin=PASTED)
         self.assertEqual((code, out, err), (0, PROMPT + STORED, ""))
-        self.assertEqual(self.read("secrets/claude-priv"), TOKEN + "\n")
-        self.assertEqual(self.mode("secrets/claude-priv"), 0o640)
+        self.assertEqual(self.read("claude/token-priv"), TOKEN + "\n")
+        # only root and the Anthropic route's user (as owner) read it
+        self.assertEqual(self.mode("claude/token-priv"), 0o400)
 
     def test_checks_token_with_anthropic(self):
         self.run_agentbox("set-claude-token", "priv", "--no-prompt", stdin=PASTED)
@@ -237,13 +240,13 @@ class SetClaudeTokenTest(CredentialsTest):
     def test_no_prompt(self):
         self.assertEqual(self.run_agentbox("set-claude-token", "priv", "--no-prompt", stdin=PASTED),
                          (0, STORED, ""))
-        self.assertEqual(self.read("secrets/claude-priv"), TOKEN + "\n")
+        self.assertEqual(self.read("claude/token-priv"), TOKEN + "\n")
 
     def test_json(self):
         code, out, err = self.run_agentbox("set-claude-token", "priv", "--no-prompt", "--json", stdin=PASTED)
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(json.loads(out), {"vm": "priv", "stored": True, "length": 30})
-        self.assertEqual(self.read("secrets/claude-priv"), TOKEN + "\n")
+        self.assertEqual(self.read("claude/token-priv"), TOKEN + "\n")
 
     def test_json_keeps_prompt_off_stdout(self):
         code, out, err = self.run_agentbox("set-claude-token", "priv", "--json", stdin=PASTED)
@@ -257,7 +260,7 @@ class SetClaudeTokenTest(CredentialsTest):
                     self.run_agentbox("set-claude-token", "priv", "--no-prompt", stdin=pasted),
                     (1, "", "agentbox: this does not look like a Claude token (sk-ant-...)\n"))
         self.assertEqual(self.curl_calls(), [])
-        self.assertEqual(self.read("secrets/claude-priv"), "none\n")
+        self.assertEqual(self.read("claude/token-priv"), "none\n")
 
     def test_rejects_authentication_and_permission_errors(self):
         for answer in (AUTH_ERROR, PERMISSION_ERROR):
@@ -266,7 +269,7 @@ class SetClaudeTokenTest(CredentialsTest):
                 code, out, err = self.run_agentbox("set-claude-token", "priv", stdin=PASTED)
                 self.assertEqual((code, out, err),
                                  (1, PROMPT, f"agentbox: Anthropic rejects the token: {answer}\n"))
-                self.assertEqual(self.read("secrets/claude-priv"), "none\n")
+                self.assertEqual(self.read("claude/token-priv"), "none\n")
 
     def test_rejection_shows_at_most_200_characters(self):
         answer = '{"type":"error","error":{"type":"authentication_error","message":"' + "x" * 300 + '"}}'
@@ -281,7 +284,7 @@ class SetClaudeTokenTest(CredentialsTest):
                 self.assertEqual(
                     self.run_agentbox("set-claude-token", "priv", "--no-prompt", stdin=PASTED),
                     (1, "", "agentbox: Anthropic rejects the token: no answer\n"))
-                self.assertEqual(self.read("secrets/claude-priv"), "none\n")
+                self.assertEqual(self.read("claude/token-priv"), "none\n")
 
     def test_failed_request_is_a_rejection(self):
         # curl aborted (time limit, no connection), possibly after part of an answer
@@ -291,32 +294,32 @@ class SetClaudeTokenTest(CredentialsTest):
                 self.assertEqual(
                     self.run_agentbox("set-claude-token", "priv", "--no-prompt", stdin=PASTED),
                     (1, "", "agentbox: Anthropic rejects the token: no answer\n"))
-                self.assertEqual(self.read("secrets/claude-priv"), "none\n")
+                self.assertEqual(self.read("claude/token-priv"), "none\n")
 
     def test_secret_file_must_exist(self):
-        os.remove(self.path("secrets", "claude-priv"))
-        missing = os.path.join(self.dir, "etc/agentbox/secrets/claude-priv")
+        os.remove(self.path("claude", "token-priv"))
+        missing = os.path.join(self.dir, "etc/agentbox/claude/token-priv")
         self.assertEqual(self.run_agentbox("set-claude-token", "priv", "--no-prompt", stdin=PASTED),
                          (1, "", f"agentbox: {missing} is missing, run agentbox setup first\n"))
         self.assertFalse(os.path.exists(missing))
         self.assertEqual(self.curl_calls(), [])
 
     def test_renewing_replaces_the_working_token_in_one_rename(self):
-        self.write("secrets/claude-priv", OLD_TOKEN + "\n", mode=0o640)
+        self.write("claude/token-priv", OLD_TOKEN + "\n", mode=0o400)
         self.assertEqual(self.run_agentbox("set-claude-token", "priv", "--no-prompt", stdin=PASTED), (0, STORED, ""))
-        self.assertEqual(self.read("secrets/claude-priv"), TOKEN + "\n")
-        self.assertEqual(self.mode("secrets/claude-priv"), 0o640)
-        self.assertEqual(os.listdir(self.path("secrets")), ["claude-priv"])
+        self.assertEqual(self.read("claude/token-priv"), TOKEN + "\n")
+        self.assertEqual(self.mode("claude/token-priv"), 0o400)
+        self.assertEqual(os.listdir(self.path("claude")), ["token-priv"])
 
     def test_a_refused_token_keeps_the_working_one(self):
-        self.write("secrets/claude-priv", OLD_TOKEN + "\n", mode=0o640)
+        self.write("claude/token-priv", OLD_TOKEN + "\n", mode=0o400)
         for answer in (AUTH_ERROR, PERMISSION_ERROR, BILLING_ERROR):
             with self.subTest(answer=answer):
                 self.scenario(answer=answer)
                 self.assertEqual(self.run_agentbox("set-claude-token", "priv", "--no-prompt", stdin=PASTED),
                                  (1, "", f"agentbox: Anthropic rejects the token: {answer}\n"))
-                self.assertEqual(self.read("secrets/claude-priv"), OLD_TOKEN + "\n")
-                self.assertEqual(self.mode("secrets/claude-priv"), 0o640)
+                self.assertEqual(self.read("claude/token-priv"), OLD_TOKEN + "\n")
+                self.assertEqual(self.mode("claude/token-priv"), 0o400)
 
     def test_errors_that_come_after_the_token_was_accepted_mean_valid(self):
         """Anthropic checks the token first: refusing the request itself (as it does for
@@ -324,14 +327,14 @@ class SetClaudeTokenTest(CredentialsTest):
         for answer in (CLAUDE_CODE_ONLY, '{"type":"error","error":{"type":"not_found_error","message":"model"}}',
                        RATE_LIMIT):
             with self.subTest(answer=answer):
-                self.write("secrets/claude-priv", OLD_TOKEN + "\n", mode=0o640)
+                self.write("claude/token-priv", OLD_TOKEN + "\n", mode=0o640)
                 self.scenario(answer=answer)
                 self.assertEqual(self.run_agentbox("set-claude-token", "priv", "--no-prompt", stdin=PASTED),
                                  (0, STORED, ""))
-                self.assertEqual(self.read("secrets/claude-priv"), TOKEN + "\n")
+                self.assertEqual(self.read("claude/token-priv"), TOKEN + "\n")
 
     def test_answers_that_prove_nothing_store_nothing(self):
-        self.write("secrets/claude-priv", OLD_TOKEN + "\n", mode=0o640)
+        self.write("claude/token-priv", OLD_TOKEN + "\n", mode=0o640)
         for answer in ('{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}',
                        '{"type":"error","error":{"type":"api_error","message":"Internal server error"}}',
                        "<html><body>502 Bad Gateway</body></html>", "[]", '{"type":"mess', '{"error":"x"}'):
@@ -340,7 +343,7 @@ class SetClaudeTokenTest(CredentialsTest):
                 self.assertEqual(self.run_agentbox("set-claude-token", "priv", "--no-prompt", stdin=PASTED),
                                  (1, "", "agentbox: Anthropic answered unexpectedly, token not stored "
                                          f"(try again later): {answer}\n"))
-                self.assertEqual(self.read("secrets/claude-priv"), OLD_TOKEN + "\n")
+                self.assertEqual(self.read("claude/token-priv"), OLD_TOKEN + "\n")
 
     def test_control_characters_in_the_answer_are_removed(self):
         self.scenario(answer='{"type":"error","error":{"type":"authentication_error","message":"a\x1b[31m‮b"}}')
@@ -353,7 +356,7 @@ class SetClaudeTokenTest(CredentialsTest):
                          (1, "", "agentbox: this is an API key; the VM needs a token from "
                                  "'claude setup-token' (sk-ant-oat...)\n"))
         self.assertEqual(self.curl_calls(), [])
-        self.assertEqual(self.read("secrets/claude-priv"), "none\n")
+        self.assertEqual(self.read("claude/token-priv"), "none\n")
 
     def test_rejects_unexpected_characters_without_echoing_them(self):
         for pasted in ("sk-ant-oat01-abc\x01def", "sk-ant-oat01-ab:cd", "sk-ant-oat01-aäb", "sk-ant-",
@@ -362,7 +365,7 @@ class SetClaudeTokenTest(CredentialsTest):
                 self.assertEqual(self.run_agentbox("set-claude-token", "priv", "--no-prompt", stdin=pasted),
                                  (1, "", "agentbox: the token holds unexpected characters or is too long\n"))
         self.assertEqual(self.curl_calls(), [])
-        self.assertEqual(self.read("secrets/claude-priv"), "none\n")
+        self.assertEqual(self.read("claude/token-priv"), "none\n")
 
     def test_never_prints_the_token(self):
         cases = [(OK_ANSWER, ()), (OK_ANSWER, ("--json",)), (AUTH_ERROR, ()),
@@ -373,7 +376,7 @@ class SetClaudeTokenTest(CredentialsTest):
                 self.scenario(answer=answer)
                 _, out, err = self.run_agentbox("set-claude-token", "priv", *extra, stdin=PASTED)
                 self.assert_not_printed(out, err)
-        os.remove(self.path("secrets", "claude-priv"))
+        os.remove(self.path("claude", "token-priv"))
         self.scenario(answer=OK_ANSWER)
         _, out, err = self.run_agentbox("set-claude-token", "priv", stdin=PASTED)
         self.assert_not_printed(out, err)
@@ -382,6 +385,44 @@ class SetClaudeTokenTest(CredentialsTest):
         self.assertEqual(self.run_agentbox("set-claude-token", "test", "--no-prompt", stdin=PASTED),
                          (1, "", "agentbox: No such VM: test\n"))
         self.assertEqual(self.curl_calls(), [])
+
+
+class RemoveClaudeTokenTest(CredentialsTest):
+    """`agentbox remove-claude-token` writes `none`, which the Anthropic route reads at the VM's
+    next request (tests/test_claude_route.py); Anthropic is not asked."""
+
+    def setUp(self):
+        super().setUp()
+        self.write("claude/token-priv", OLD_TOKEN + "\n", mode=0o400)
+
+    def test_writes_none_in_one_rename_and_asks_anthropic_nothing(self):
+        self.assertEqual(self.run_agentbox("remove-claude-token", "priv"),
+                         (0, "priv: Claude token removed; the VM's next request is refused. Revoke it with "
+                             "Anthropic if it should stop working everywhere.\n", ""))
+        self.assertEqual(self.read("claude/token-priv"), "none\n")
+        self.assertEqual(self.mode("claude/token-priv"), 0o400)
+        self.assertEqual(os.listdir(self.path("claude")), ["token-priv"])
+        self.assertEqual(self.curl_calls(), [])
+
+    def test_json_and_a_vm_without_a_token(self):
+        code, out, err = self.run_agentbox("remove-claude-token", "priv", "--json")
+        self.assertEqual((code, json.loads(out), err), (0, {"vm": "priv", "removed": True}, ""))
+        code, out, err = self.run_agentbox("remove-claude-token", "priv", "--json")
+        self.assertEqual((code, json.loads(out), err), (0, {"vm": "priv", "removed": False}, ""))
+        self.assertEqual(self.run_agentbox("remove-claude-token", "priv"), (0, "priv: no Claude token stored\n", ""))
+        self.assertEqual(self.read("claude/token-priv"), "none\n")
+
+    def test_never_prints_the_token(self):
+        _, out, err = self.run_agentbox("remove-claude-token", "priv")
+        self.assertNotIn(OLD_TOKEN, out + err)
+
+    def test_file_must_exist_and_vm_must_be_known(self):
+        os.chmod(self.path("claude", "token-priv"), 0o600)
+        os.remove(self.path("claude", "token-priv"))
+        missing = os.path.join(self.dir, "etc/agentbox/claude/token-priv")
+        self.assertEqual(self.run_agentbox("remove-claude-token", "priv"),
+                         (1, "", f"agentbox: {missing} is missing, run agentbox setup first\n"))
+        self.assertEqual(self.run_agentbox("remove-claude-token", "test"), (1, "", "agentbox: No such VM: test\n"))
 
 
 if __name__ == "__main__":

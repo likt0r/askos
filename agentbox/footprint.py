@@ -34,6 +34,8 @@ def system_disk(name):
 
 
 SYSTEM_DISK = re.compile(r"(.+)-system\.qcow2")      # a System disk's file name, group 1 the VM
+# the Claude tokens and placeholders: only root and the Anthropic route's user read them (ADR 0023)
+CLAUDE_DIR = os.path.join(host_paths.CONF, "claude")
 
 
 def archive_path(name):
@@ -73,7 +75,20 @@ def open_web_file(name):
 
 
 def claude_token_file(name):
-    return os.path.join(host_paths.CONF, "secrets", f"claude-{name}")
+    """The VM's Claude token, or `none`; the Anthropic route reads it at each request, and it
+    never enters the VM."""
+    return os.path.join(CLAUDE_DIR, f"token-{name}")
+
+
+def claude_placeholder_file(name):
+    """The VM's placeholder, made once and kept until the VM is deleted: the route accepts only
+    requests that carry it."""
+    return os.path.join(CLAUDE_DIR, f"placeholder-{name}")
+
+
+def claude_placeholder_fw_cfg_file(name):
+    """The placeholder again, as QEMU passes it into the VM (fw_cfg opt/agentbox/claude_placeholder)."""
+    return os.path.join(host_paths.CONF, "secrets", f"claude-placeholder-{name}")
 
 
 def vm_env_file(name):
@@ -82,7 +97,7 @@ def vm_env_file(name):
 
 
 def vm_secrets_file(name):
-    """The values of the VM's secrets, the only place they are kept, beside its Claude token;
+    """The values of the VM's secrets, the only place they are kept, beside its Claude placeholder;
     QEMU passes the file in as it is (fw_cfg opt/agentbox/secrets)."""
     return os.path.join(host_paths.CONF, "secrets", f"env-{name}")
 
@@ -148,8 +163,8 @@ def lifecycle_lock(name):
     return f"lifecycle-{name}"
 
 
-UNIT_KINDS = ("proxy.socket", "proxy.service", "ghvm.socket", "ghvm@.service", "gui.socket", "gui@.service",
-              "ssh.socket", "ssh@.service")
+UNIT_KINDS = ("proxy.socket", "proxy.service", "ghvm.socket", "ghvm@.service", "claude.socket", "claude@.service",
+              "gui.socket", "gui@.service", "ssh.socket", "ssh@.service")
 # the units of the SSH port exist only while the VM has SSH access (ADR 0020)
 SSH_UNIT_KINDS = ("ssh.socket", "ssh@.service")
 UNIT_TEMPLATES = {
@@ -157,6 +172,8 @@ UNIT_TEMPLATES = {
     "proxy.service": "agentbox-proxy-{vm}.service",
     "ghvm.socket": "agentbox-ghvm-{vm}.socket",
     "ghvm@.service": "agentbox-ghvm-{vm}@.service",
+    "claude.socket": "agentbox-claude-{vm}.socket",
+    "claude@.service": "agentbox-claude-{vm}@.service",
     "gui.socket": "agentbox-gui-{vm}.socket",
     "gui@.service": "agentbox-gui-{vm}@.service",
     "ssh.socket": "agentbox-ssh-{vm}.socket",
@@ -179,7 +196,8 @@ def unit_file(unit):
 def sockets(rec, every=False):
     """The VM's sockets: the SSH port's only while it has SSH access, or with every=True."""
     ssh = every or rec.get("ssh_access", False)
-    return [unit_name(rec["name"], kind) for kind in ("proxy.socket", "ghvm.socket", "gui.socket", "ssh.socket")
+    return [unit_name(rec["name"], kind) for kind in ("proxy.socket", "ghvm.socket", "claude.socket", "gui.socket",
+                                                      "ssh.socket")
             if ssh or kind != "ssh.socket"]
 
 
@@ -209,9 +227,10 @@ def transfer_files(name):
 
 
 def unit_instances(name):
-    """Patterns of the instances the VM's Orca port, SSH port and token service start per connection."""
+    """Patterns of the instances the VM's Orca port, SSH port, token service and Anthropic route start
+    per connection."""
     return tuple(unit_name(name, kind).replace("@.", "@*.") for kind in ("gui@.service", "ssh@.service",
-                                                                          "ghvm@.service"))
+                                                                          "ghvm@.service", "claude@.service"))
 
 
 def unit_files(rec):
@@ -233,7 +252,8 @@ def paths(rec):
     name = rec["name"]
     return (record_file(name), data_disk(name), system_disk(name), delete_marker(name),
             legacy_owners_file(name), legacy_allowlist_file(name), legacy_allowlist_migrated_file(name),
-            observer_dir(name), open_web_file(name), claude_token_file(name), vm_env_file(name),
+            observer_dir(name), open_web_file(name), claude_token_file(name), claude_placeholder_file(name),
+            claude_placeholder_fw_cfg_file(name), vm_env_file(name),
             vm_secrets_file(name), ssh_host_key_file(name), ssh_host_key_public_file(name), vm_ssh_file(name),
             ssh_pending_file(name), seen_file(name), wakes_file(name), alert_pause_file(name),
             container_image_cleanup_file(name),
@@ -370,7 +390,8 @@ def _files(rec, say):
     from . import allowlist, responding
     name = rec["name"]
     responding.clear(name)           # bookkeeping only, never fails (the stop removed it already)
-    gone = [state_files.remove(f) for f in (claude_token_file(name), vm_env_file(name), vm_secrets_file(name),
+    gone = [state_files.remove(f) for f in (claude_token_file(name), claude_placeholder_file(name),
+                                            claude_placeholder_fw_cfg_file(name), vm_env_file(name), vm_secrets_file(name),
                                             ssh_host_key_file(name), ssh_host_key_public_file(name),
                                             vm_ssh_file(name), open_web_file(name), legacy_owners_file(name),
                                             seen_file(name), container_image_cleanup_file(name),

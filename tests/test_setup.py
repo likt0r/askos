@@ -746,7 +746,7 @@ class HostStepsTest(SetupTest):
         self.assertFalse(os.path.lexists(self.path("etc/agentbox/build.conf")))
         # VM networks: proxy and token service open, ssh closed, also in the running firewall
         for side in ("permanent", "runtime"):
-            self.assertEqual(sorted(self.zone("libvirt", side)["ports"]), ["443/tcp", "53/tcp", "53/udp", "9100/tcp"])
+            self.assertEqual(sorted(self.zone("libvirt", side)["ports"]), ["443/tcp", "53/tcp", "53/udp", "9100/tcp", "9101/tcp"])
             self.assertNotIn("ssh", self.zone("libvirt", side)["services"])
         # units enabled at boot and running now
         self.assertLessEqual(set(ENABLED), set(self.enabled()))

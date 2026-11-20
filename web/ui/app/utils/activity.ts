@@ -1,11 +1,12 @@
 // The Activity timeline (GET /activity and `activity` events): one list of sign-ins, actions,
-// Allowlist changes, Alerts, GitHub tokens, pairings, Builds, Resets, Settings and credentials.
+// Allowlist changes, Alerts, GitHub tokens, Claude requests, pairings, Builds, Resets, Settings
+// and credentials.
 import { refusalText, signalName } from './access'
 import { parseApiTime } from './clock'
 import { formatHostBytes } from './host'
 
 export const ACTIVITY_KINDS = [
-  'signin', 'action', 'allowlist', 'alert', 'github', 'pairing', 'build', 'reset', 'settings', 'credentials',
+  'signin', 'action', 'allowlist', 'alert', 'github', 'claude', 'pairing', 'build', 'reset', 'settings', 'credentials',
 ] as const
 
 export interface ActivityEntry {
@@ -108,6 +109,13 @@ const flag = (p: Params, name: string) => p[name] === 'true'
 const say = (tr: Translator, key: string, values: Record<string, unknown> = {}) => tr.t(`activity.actions.${key}`, values)
 const part = (tr: Translator, key: string, values: Record<string, unknown> = {}) => tr.t(`activity.parts.${key}`, values)
 const joined = (...parts: (string | null)[]) => parts.filter(Boolean).join(' ')
+/** The size of an answer of the Anthropic route: bytes and KiB below a MiB, then as the Host's readings. */
+export function answerSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return '—'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 ** 2) return `${Math.round(bytes / 1024 * 10) / 10} KiB`
+  return formatHostBytes(bytes)
+}
 
 /** The entry a list command names: its domain, or the pattern of a Regex entry (`regex`). */
 function target(p: Params, tr: Translator): string {
@@ -215,6 +223,7 @@ export const SENTENCES: Record<string, Sentence> = {
   },
   'set-owners': (p, tr) => (has(p, 'owners') ? say(tr, 'setOwners', { owners: p.owners }) : null),
   'set-claude-token': plain('setClaudeToken'),
+  'remove-claude-token': plain('removeClaudeToken'),
   'sign-in-link': plain('signInLink'),
   'set-github-app': either('app_id', 'setGithubAppId', 'setGithubApp', 'id'),
   'remove-github-app': either('app_id', 'removeGithubAppId', 'removeGithubApp', 'id'),
@@ -264,6 +273,16 @@ export const SENTENCES: Record<string, Sentence> = {
     return reason ? say(tr, 'githubRefused', { request: p.request, reason }) : null
   },
   'github.error': (p, tr) => (has(p, 'request') ? say(tr, 'githubError', { request: p.request }) : null),
+  // the Anthropic route's lines (agentbox/activity.py claude_entry): never a token or a body
+  'claude.request': (p, tr) => (has(p, 'method', 'path', 'status', 'model', 'seconds', 'bytes')
+    ? say(tr, p.interrupted === 'yes' ? 'claudeRequestInterrupted' : 'claudeRequest',
+      { method: p.method, path: p.path, status: p.status, model: p.model, seconds: p.seconds, size: answerSize(Number(p.bytes)) })
+    : null),
+  'claude.refused': (p, tr) => {
+    const key = `activity.claudeReasons.${p.reason ?? ''}`
+    return has(p, 'reason') && tr.te(key) ? say(tr, 'claudeRefused', { reason: tr.t(key) }) : null
+  },
+  'claude.error': plain('claudeError'),
   'allowlist.expired': listed('expired'),
   'container-image-cleanup.removed': (p, tr) => (has(p, 'removed', 'freed_bytes')
     ? say(tr, Number(p.removed) === 1 ? 'cleanupRemovedOne' : 'cleanupRemoved',
@@ -313,6 +332,10 @@ export const SENTENCES: Record<string, Sentence> = {
 /** The generic error code: agentbox's own message says more than its translation would. */
 const GENERIC_ERROR = 'action_failed'
 
+/** Failures whose sentence already names why in the UI's language: their English `message` is
+ * not added to it. */
+const SAYS_WHY = new Set(['claude.refused'])
+
 /** What the timeline shows for an entry in the UI's language: the sentence of its action; for a
  * failure followed by the translation of its error code, or, without one, by what failed as
  * agentbox said it (`message`, English); else agentbox's stored text. */
@@ -322,7 +345,7 @@ export function activityText(e: ActivityEntry, tr: Translator): string {
   const text = sentence ? sentence(p, tr, e) : null
   if (!text) return e.description
   if (e.outcome !== 'failed') return text
-  if (!e.error) return has(p, 'message') ? `${text}: ${p.message}` : text
+  if (!e.error) return has(p, 'message') && !SAYS_WHY.has(e.code ?? '') ? `${text}: ${p.message}` : text
   const key = `errors.${e.error}`
   if (e.error === GENERIC_ERROR || !tr.te(key)) return e.description
   return `${text}: ${tr.t(key, { field: '', ...(e.error_params ?? {}) })}`

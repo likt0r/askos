@@ -6,6 +6,7 @@ virsh, qemu-img, systemctl and virt-install on PATH.
 
 Run from the repo root: python3 -m unittest discover -s tests
 """
+import grp
 import json
 import os
 import stat
@@ -147,7 +148,7 @@ class MigrateTest(RegistryTest):
 
     def test_keeps_disks_and_secrets(self):
         self.legacy()
-        self.write("etc/agentbox/secrets/claude-priv", "sk-ant-x\n", mode=0o640)
+        self.write("etc/agentbox/secrets/env-priv", "API_KEY=c2VjcmV0\n", mode=0o640)
         before = {k: v for k, v in self.snapshot().items() if "/github/" not in k}
         self.run_agentbox("migrate")
         after = {k: v for k, v in self.snapshot().items()
@@ -248,7 +249,7 @@ table inet agentbox_vm {
     iifname "abox-priv" ip daddr != 10.77.2.1 drop
     ct state established,related accept
     udp dport 53 accept
-    tcp dport { 53, 443, 9100 } accept
+    tcp dport { 53, 443, 9100, 9101 } accept
     meta l4proto tcp reject with tcp reset
     meta l4proto udp reject with icmp type port-unreachable
     drop
@@ -275,7 +276,8 @@ OLD_NETWORK = """<network>
 """
 WORK_NETWORK = (NETWORK.replace("priv", "work").replace("10.77.2.", "10.77.1.")
                 .replace("52:54:00:77:02:02", "52:54:00:77:01:02"))
-UNITS = ["agentbox-ghvm-{0}.socket", "agentbox-ghvm-{0}@.service", "agentbox-gui-{0}.socket",
+UNITS = ["agentbox-ghvm-{0}.socket", "agentbox-ghvm-{0}@.service", "agentbox-claude-{0}.socket",
+         "agentbox-claude-{0}@.service", "agentbox-gui-{0}.socket",
          "agentbox-gui-{0}@.service", "agentbox-proxy-{0}.service", "agentbox-proxy-{0}.socket"]
 
 
@@ -310,6 +312,24 @@ class RegenerateTest(RegistryTest):
                       self.read("etc/systemd/system/agentbox-ghvm-priv@.service"))
         self.assertIn("ListenStream=6802\n", self.read("etc/systemd/system/agentbox-gui-priv.socket"))
         self.assertEqual(self.read("etc/agentbox/vm-input.nft"), NFT)
+        # the Anthropic route (ADR 0023): its own socket on the VM network, one connection more
+        # than the route serves (it refuses that one so Activity shows it), its own user
+        socket = self.read("etc/systemd/system/agentbox-claude-priv.socket")
+        for line in ("ListenStream=10.77.2.1:9101\n", "Accept=yes\n", "MaxConnections=65\n"):
+            self.assertIn(line, socket)
+        service = self.read("etc/systemd/system/agentbox-claude-priv@.service")
+        for line in ("ExecStart=/usr/libexec/agentbox-claude-route priv\n", "User=agentbox-claude\n",
+                     "StandardInput=socket\n", "SyslogIdentifier=agentbox-claude-priv\n", "LogNamespace=agentbox\n",
+                     "RuntimeDirectory=agentbox-claude/priv\n", "RuntimeDirectoryPreserve=yes\n",
+                     "NoNewPrivileges=yes\n", "ProtectSystem=strict\n", "MemoryMax=256M\n", "TasksMax=8\n",
+                     "CPUQuota=50%\n", "CapabilityBoundingSet=\n", "AmbientCapabilities=\n",
+                     "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK\n", "ProtectKernelTunables=yes\n",
+                     "ProtectKernelModules=yes\n", "ProtectKernelLogs=yes\n", "ProtectControlGroups=yes\n",
+                     "RestrictNamespaces=yes\n", "LockPersonality=yes\n", "RestrictRealtime=yes\n",
+                     "SystemCallFilter=@system-service\n", "SystemCallArchitectures=native\n",
+                     "ProtectHome=yes\n", "PrivateTmp=yes\n"):
+            self.assertIn(line, service)
+        self.assertNotIn("MemoryDenyWriteExecute", service)
 
     def test_no_explicit_proxy_port_and_dns_switched_on(self):
         self.assertEqual(self.run_agentbox("regenerate")[0], 0)
@@ -338,7 +358,7 @@ class RegenerateTest(RegistryTest):
         self.assertEqual(before, ["    udp dport 67 accept"])
         after = chain[max(checks) + 1:]
         self.assertIn("    udp dport 53 accept", after)
-        self.assertIn("    tcp dport { 53, 443, 9100 } accept", after)
+        self.assertIn("    tcp dport { 53, 443, 9100, 9101 } accept", after)
         self.assertEqual(after[-2:], ["    drop", "  }"])
 
     def test_closed_ports_of_the_host_are_refused_and_everything_else_dropped(self):
@@ -374,8 +394,8 @@ class RegenerateTest(RegistryTest):
                          ("--osinfo", "linux2024"), ("--boot", "hd"),
                          ("--sysinfo", "type=fwcfg,entry0.name=opt/agentbox/context,entry0=priv,"
                                        "entry1.name=opt/agentbox/orca_port,entry1=6802,"
-                                       "entry2.name=opt/agentbox/claude_token,"
-                                       f"entry2.file={self.path('etc/agentbox/secrets/claude-priv')},"
+                                       "entry2.name=opt/agentbox/claude_placeholder,"
+                                       f"entry2.file={self.path('etc/agentbox/secrets/claude-placeholder-priv')},"
                                        "entry3.name=opt/agentbox/pairing_address,entry3=192.0.2.8,"
                                        "entry4.name=opt/agentbox/env,"
                                        f"entry4.file={self.path('var/lib/agentbox/vm-env/priv.env')},"
@@ -406,16 +426,50 @@ class RegenerateTest(RegistryTest):
         creates = [c["argv"] for c in self.calls("qemu-img") if c["argv"][0] == "create"]
         self.assertEqual(creates, [["create", "-q", "-f", "qcow2", self.path(f"var/lib/agentbox/vms/{vm}-data.qcow2"),
                                     "300G"] for vm in ("work", "priv")])
-        self.assertEqual(self.read("etc/agentbox/secrets/claude-priv"), "none\n")
-        self.assertEqual(self.mode("etc/agentbox/secrets/claude-priv"), 0o640)
+        # the Anthropic route's files (ADR 0023): the token file without a token, and the placeholder,
+        # also in the file QEMU passes in
+        self.assertEqual(self.read("etc/agentbox/claude/token-priv"), "none\n")
+        self.assertEqual(self.mode("etc/agentbox/claude/token-priv"), 0o400)
+        self.assertEqual(self.mode("etc/agentbox/claude"), 0o750)
+        placeholder = self.read("etc/agentbox/claude/placeholder-priv")
+        self.assertRegex(placeholder, r"^agentbox-claude-[A-Za-z0-9_-]{43}\n$")
+        self.assertEqual(self.mode("etc/agentbox/claude/placeholder-priv"), 0o400)
+        self.assertEqual(self.read("etc/agentbox/secrets/claude-placeholder-priv"), placeholder)
+        self.assertEqual(self.mode("etc/agentbox/secrets/claude-placeholder-priv"), 0o640)
+        self.assertNotEqual(self.read("etc/agentbox/claude/placeholder-work"), placeholder)
         self.assertEqual(self.mode("var/lib/agentbox/observer-priv"), 0o700)
+
+    def test_the_placeholder_is_made_once_and_kept(self):
+        self.run_agentbox("regenerate")
+        placeholder = self.read("etc/agentbox/claude/placeholder-priv")
+        # the copy QEMU reads is written again from the kept one
+        self.write("etc/agentbox/secrets/claude-placeholder-priv", "none\n", mode=0o600)
+        self.assertEqual(self.json("regenerate")["vms"]["priv"], ["claude"])
+        self.assertEqual(self.read("etc/agentbox/claude/placeholder-priv"), placeholder)
+        self.assertEqual(self.read("etc/agentbox/secrets/claude-placeholder-priv"), placeholder)
+        self.assertEqual(self.mode("etc/agentbox/secrets/claude-placeholder-priv"), 0o640)
+
+    def test_claude_files_get_their_mode_again_and_keep_their_content(self):
+        self.run_agentbox("regenerate")
+        placeholder = self.read("etc/agentbox/claude/placeholder-priv")
+        os.chmod(self.path("etc/agentbox/claude/placeholder-priv"), 0o644)
+        os.chmod(self.path("etc/agentbox/claude/token-priv"), 0o600)
+        self.write("etc/agentbox/claude/token-priv", "sk-ant-x\n", mode=0o666)
+        self.assertEqual(self.json("regenerate")["vms"]["priv"], ["claude"])
+        self.assertEqual(self.json("regenerate")["vms"]["priv"], [])
+        for name in ("placeholder-priv", "token-priv"):
+            self.assertEqual(self.mode(f"etc/agentbox/claude/{name}"), 0o400)
+        self.assertEqual(self.read("etc/agentbox/claude/placeholder-priv"), placeholder)
+        self.assertEqual(self.read("etc/agentbox/claude/token-priv"), "sk-ant-x\n")
 
     def test_keeps_existing_data_disk_and_token(self):
         self.write("var/lib/agentbox/vms/priv-data.qcow2", '{"mine": true}')
-        self.write("etc/agentbox/secrets/claude-priv", "sk-ant-x\n", mode=0o640)
+        os.makedirs(self.path("etc/agentbox/claude"))
+        self.write("etc/agentbox/claude/token-priv", "sk-ant-x\n", mode=0o400)
         self.run_agentbox("regenerate")
         self.assertEqual(self.read("var/lib/agentbox/vms/priv-data.qcow2"), '{"mine": true}')
-        self.assertEqual(self.read("etc/agentbox/secrets/claude-priv"), "sk-ant-x\n")
+        self.assertEqual(self.read("etc/agentbox/claude/token-priv"), "sk-ant-x\n")
+        self.assertNotIn("sk-ant-x", self.read("etc/agentbox/secrets/claude-placeholder-priv"))
         self.assertNotIn(self.path("var/lib/agentbox/vms/priv-data.qcow2"),
                          [c["argv"][-2] for c in self.calls("qemu-img") if c["argv"][0] == "create"])
 
@@ -520,11 +574,12 @@ class RegenerateTest(RegistryTest):
         code, out, err = self.run_agentbox("regenerate")
         self.assertEqual((code, err), (0, ""))
         self.assertTrue(out.startswith("firewall zone libvirt: port 53/udp open; port 53/tcp open; "
-                                       "port 443/tcp open\n"), out)
+                                       "port 443/tcp open; port 9101/tcp open\n"), out)
         with open(os.path.join(self.dir, "firewall.json")) as f:
             zones = json.load(f)
         for side in ("permanent", "runtime"):
-            self.assertEqual(sorted(zones[side]["libvirt"]["ports"]), ["443/tcp", "53/tcp", "53/udp", "9100/tcp"])
+            self.assertEqual(sorted(zones[side]["libvirt"]["ports"]),
+                             ["443/tcp", "53/tcp", "53/udp", "9100/tcp", "9101/tcp"])
         # the zone opened before any VM network comes up
         cmds = [(c["cmd"], c.get("argv", [])) for c in self.calls()]
         opened = max(i for i, (cmd, argv) in enumerate(cmds) if cmd == "firewall-cmd" and "--reload" in argv)
@@ -632,8 +687,9 @@ class RegenerateTest(RegistryTest):
             ["stop", "agentbox-maintenance.timer"], ["daemon-reload"], ["start", "agentbox-maintenance.timer"],
             ["enable", "--now", "agentbox-maintenance.timer"],
             ["daemon-reload"],
-            ["enable", "--now", "agentbox-proxy-work.socket", "agentbox-ghvm-work.socket", "agentbox-gui-work.socket",
-             "agentbox-proxy-priv.socket", "agentbox-ghvm-priv.socket", "agentbox-gui-priv.socket"]])
+            ["enable", "--now", "agentbox-proxy-work.socket", "agentbox-ghvm-work.socket",
+             "agentbox-claude-work.socket", "agentbox-gui-work.socket", "agentbox-proxy-priv.socket",
+             "agentbox-ghvm-priv.socket", "agentbox-claude-priv.socket", "agentbox-gui-priv.socket"]])
 
     def test_second_run_changes_nothing(self):
         self.run_agentbox("regenerate")
@@ -651,13 +707,13 @@ class RegenerateTest(RegistryTest):
 
     def test_first_run_reports_what_it_did(self):
         result = self.json("regenerate")
-        self.assertEqual(result, {"vms": {vm: ["network", "units", "data-disk", "claude-token", "vm-env", "vm-secrets",
+        self.assertEqual(result, {"vms": {vm: ["network", "units", "data-disk", "claude", "vm-env", "vm-secrets",
                                                "vm-ssh", "observer", "domain"]
                                           for vm in ("work", "priv")}, "firewall": True, "ssh_rules": 3,
                                   "storage": True,
                                   "retention": 90, "timers": True,
                                   "zone": ["port 53/udp open", "port 53/tcp open", "port 443/tcp open", "port 9100/tcp open",
-                                           "service ssh removed"]})
+                                           "port 9101/tcp open", "service ssh removed"]})
 
     def test_new_vm_keeps_the_uuid_from_its_first_definition(self):
         vm_records.write(self.root, record("lab", 3))
@@ -684,7 +740,7 @@ class RegenerateTest(RegistryTest):
     def test_paused_vm_keeps_its_definition_until_it_runs_again(self):
         self.scenario(vms={"priv": {"uuid": PRIV_UUID, "managed_save": True, "state": "shut off"}})
         self.assertEqual(self.json("regenerate")["vms"]["priv"],
-                         ["network", "units", "data-disk", "claude-token", "vm-env", "vm-secrets", "vm-ssh", "observer",
+                         ["network", "units", "data-disk", "claude", "vm-env", "vm-secrets", "vm-ssh", "observer",
                           "domain-postponed"])
         self.assertEqual([c["dom"] for c in self.calls("define")], ["agentbox-work"])
         self.scenario(vms={"priv": {"uuid": PRIV_UUID}})
@@ -705,6 +761,103 @@ class RegenerateTest(RegistryTest):
         self.assertIn("lab", err)
         self.assertEqual(self.calls(), [])
         self.assertEqual(self.units(), [])
+
+
+GUEST_SETUP = os.path.join(REPO, "vm", "files", "usr", "lib", "agentbox", "guest-setup")
+FWCFG_ENV = os.path.join(REPO, "vm", "files", "usr", "lib", "agentbox", "fwcfg-env")
+REAL_TOKEN = "sk-ant-oat01-The_real-owner-token-" + "z" * 70
+
+
+class ClaudeTokenStaysOnTheHostTest(RegistryTest):
+    """ADR 0023: with a Claude token stored, nothing the VM gets holds it: none of the files
+    virt-install passes in as fw_cfg entries, nor what guest-setup makes of them for orca serve
+    (/run/agentbox/env) and the shells (/run/agentbox/agent-env). The VM gets its placeholder and
+    the route's address instead."""
+
+    def setUp(self):
+        super().setUp()
+        vm_records.write(self.root)
+        vm_records.write_host_setup(self.root)
+        self.scenario(vms={"priv": {"uuid": PRIV_UUID}})
+        os.makedirs(self.path("etc/agentbox/claude"))
+        self.write("etc/agentbox/claude/token-priv", REAL_TOKEN + "\n", mode=0o400)
+
+    def fw_cfg(self):
+        """The fw_cfg entries virt-install was given for priv, as {name: content}."""
+        argv = [c["argv"] for c in self.calls("virt-install") if "agentbox-priv" in c["argv"]][-1]
+        sysinfo = argv[argv.index("--sysinfo") + 1]
+        self.assertTrue(sysinfo.startswith("type=fwcfg,"))
+        fields = dict(part.split("=", 1) for part in sysinfo.split(",")[1:])
+        entries = {}
+        for key, name in fields.items():
+            if key.endswith(".name"):
+                n = key[:-len(".name")]
+                if f"{n}.file" in fields:
+                    with open(fields[f"{n}.file"]) as f:
+                        entries[name] = f.read()
+                else:
+                    entries[name] = fields[n]
+        return entries
+
+    def guest_env(self, entries):
+        """/run/agentbox/env and agent-env as guest-setup writes them from these fw_cfg entries: its
+        lines from reading the entries to the fixed values of Agent Box, with fw_cfg, /run and
+        fwcfg-env moved into a temporary directory."""
+        fwcfg = os.path.join(self.dir, "fw_cfg")
+        for name, text in entries.items():
+            os.makedirs(os.path.join(fwcfg, name))
+            with open(os.path.join(fwcfg, name, "raw"), "w") as f:
+                f.write(text)
+        with open(GUEST_SETUP) as f:
+            code = f.read()
+        part = code[code.index("fwcfg() {"):code.index("hostnamectl set-hostname")]
+        run = os.path.join(self.dir, "run")
+        group = grp.getgrgid(os.getgid()).gr_name
+        part = (part.replace("modprobe qemu_fw_cfg", ":").replace("/sys/firmware/qemu_fw_cfg/by_name", fwcfg)
+                .replace("/usr/lib/agentbox/fwcfg-env", FWCFG_ENV).replace("/run/agentbox", run + "/agentbox")
+                .replace("-g agent ", f"-g {group} "))
+        r = subprocess.run(["bash", "-c", "set -euo pipefail\n" + part], capture_output=True, text=True, timeout=30,
+                           env={"PATH": os.environ["PATH"], "LANG": "C.UTF-8"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(os.path.join(run, "agentbox", "env")) as f, open(os.path.join(run, "agentbox", "agent-env")) as g:
+            return f.read(), g.read()
+
+    def test_no_real_token_in_the_fw_cfg_entries_or_the_environment_of_the_vm(self):
+        self.assertEqual(self.run_agentbox("regenerate")[0], 0)
+        entries = self.fw_cfg()
+        placeholder = self.read("etc/agentbox/claude/placeholder-priv").strip()
+        self.assertEqual(entries["opt/agentbox/claude_placeholder"], placeholder + "\n")
+        for name, text in entries.items():
+            with self.subTest(entry=name):
+                self.assertNotIn(REAL_TOKEN, text)
+                self.assertNotIn("sk-ant-", text)
+        env, agent_env = self.guest_env(entries)
+        for text in (env, agent_env):
+            self.assertNotIn(REAL_TOKEN, text)
+            self.assertNotIn("sk-ant-", text)
+        self.assertIn(f"CLAUDE_CODE_OAUTH_TOKEN={placeholder}\nANTHROPIC_BASE_URL=http://host.agentbox:9101\n", env)
+        self.assertIn(f"export CLAUDE_CODE_OAUTH_TOKEN={placeholder}\n"
+                      "export ANTHROPIC_BASE_URL=http://host.agentbox:9101\n", agent_env)
+        # the real token is still where the route reads it
+        self.assertEqual(self.read("etc/agentbox/claude/token-priv"), REAL_TOKEN + "\n")
+
+    def test_without_the_placeholder_entry_claude_code_is_not_pointed_at_the_route(self):
+        self.assertEqual(self.run_agentbox("regenerate")[0], 0)
+        entries = self.fw_cfg()
+        del entries["opt/agentbox/claude_placeholder"]
+        for text in self.guest_env(entries):
+            self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", text)
+            self.assertNotIn("ANTHROPIC_BASE_URL", text)
+
+    def test_vm_variables_and_secrets_cannot_set_the_token_or_the_base_url(self):
+        vm_records.write(self.root, record("priv", 2, env={"ANTHROPIC_BASE_URL": "http://evil.example"}))
+        for name in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL"):
+            with self.subTest(name=name):
+                code, _, err = self.run_agentbox("set-env", "priv", f"{name}=x")
+                self.assertNotEqual(code, 0)
+                self.assertIn("cannot be a VM variable", err)
+        self.assertEqual(self.run_agentbox("regenerate")[0], 0)
+        self.assertNotIn("evil.example", self.fw_cfg()["opt/agentbox/env"])
 
 
 class RegistryLookupTest(RegistryTest):

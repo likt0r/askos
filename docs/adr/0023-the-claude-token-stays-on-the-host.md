@@ -86,7 +86,7 @@ With `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, a `-p` run sent only `/v1/mes
 - **One Activity line per request**, from the route's own process. It goes into the Activity namespace under its own identifier (`agentbox-claude-<vm>`) and never carries the token, the placeholder, a header value or a body:
   - `[<vm>] claude POST /v1/messages 200 model=<model> <seconds>s <bytes>B request-id=<id>`, with the model taken from the body;
   - `[<vm>] refused: <reason>: <English text>`, where `<reason>` is a stable code (`no-token`, `wrong-placeholder`, `path-not-allowed`, `upgrade`, `too-large`, `invalid-request`, `upstream-tls`, `upstream-error`).
-  - `HEAD /api/hello` is not logged.
+  - A successful `HEAD /api/hello` is not logged; its refusals are.
 - **`set-claude-token` takes effect at once**, from the VM's next request, without a Restart. Replacing the token never interrupts a stream already running; that stream finishes with the token it started with. Removing the token works from the next request on.
 
 ## Plain HTTP on the VM network

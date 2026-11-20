@@ -28,7 +28,7 @@ LISTS = ((list_records.WATCHLIST, list_records.LEGACY_WATCHLIST),
 ALLOWLIST = (list_records.ALLOWLIST, list_records.LEGACY_ALLOWLIST[0])
 LIBVIRT_GROUP = "libvirt"
 # the package's service users (rpm/agentbox.sysusers): never the owner, never who runs setup
-SERVICE_USERS = ("agentbox-web", "agentbox-proxy", "agentbox-feeds", "agentbox-gh")
+SERVICE_USERS = ("agentbox-web", "agentbox-proxy", "agentbox-feeds", "agentbox-gh", "agentbox-claude")
 NO_LOGIN = ("nologin", "false")
 # the running sockets of the Activity journal (ADR 0007)
 JOURNAL_SOCKETS = ("stdout", "socket", "dev-log")
@@ -39,8 +39,8 @@ STREAMS_LOST = "journal-streams"
 # the Control Room writes sign-ins with agentbox-journal as supplementary group
 JOURNAL_WRITERS = "agentbox-web.service"
 # what the VMs reach on the Host, each on its own network: the resolver, the proxy and the
-# token service
-VM_PORTS = ("53/udp", "53/tcp", "443/tcp", "9100/tcp")
+# token service with its GitHub part and its Anthropic route
+VM_PORTS = ("53/udp", "53/tcp", "443/tcp", "9100/tcp", "9101/tcp")
 EXPIRY_TIMER = "agentbox-allowlist-expire.timer"
 CONTAINER_IMAGE_CLEANUP_TIMER = "agentbox-container-image-cleanup.timer"
 ALERT_WATCH = "agentbox-alert-watch.service"

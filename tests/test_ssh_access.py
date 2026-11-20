@@ -468,8 +468,9 @@ class SetSshTest(SshTest):
         self.forget_calls()
         self.assertEqual(self.json("regenerate")["vms"], {"work": [], "priv": []})
         self.assertIn(["enable", "--now", "agentbox-proxy-work.socket", "agentbox-ghvm-work.socket",
-                       "agentbox-gui-work.socket", "agentbox-ssh-work.socket", "agentbox-proxy-priv.socket",
-                       "agentbox-ghvm-priv.socket", "agentbox-gui-priv.socket"], self.systemctl())
+                       "agentbox-claude-work.socket", "agentbox-gui-work.socket", "agentbox-ssh-work.socket",
+                       "agentbox-proxy-priv.socket", "agentbox-ghvm-priv.socket", "agentbox-claude-priv.socket",
+                       "agentbox-gui-priv.socket"], self.systemctl())
 
     def test_the_host_key_is_an_ed25519_key_ssh_reads(self):
         self.ok("set-ssh", "work", "on")
@@ -1075,7 +1076,7 @@ class CreateDeleteTest(SshTest):
             self.assertFalse(self.exists(rel.format("lab")), rel)
         self.assertFalse(self.exists("etc/agentbox/vms/lab.json"))
         self.assertIn(["stop", "agentbox-gui-lab@*.service", "agentbox-ssh-lab@*.service",
-                       "agentbox-ghvm-lab@*.service"], self.systemctl())
+                       "agentbox-ghvm-lab@*.service", "agentbox-claude-lab@*.service"], self.systemctl())
         self.assertIn("agentbox-ssh-lab.socket", self.systemctl()[0])
 
     def test_create_refuses_what_an_earlier_vm_left(self):
@@ -1872,7 +1873,7 @@ class GuestTest(unittest.TestCase):
             os.symlink(os.path.join(os.path.dirname(FWCFG_SSH), name), os.path.join(lib, name))
         open(os.path.join(lib, "bunfig.toml"), "w").close()
         entries = {"context": "work", "orca_port": "6801", "pairing_address": "192.0.2.1", "env": "none",
-                   "claude_token": "", "ssh": "".join(line + "\n" for line in lines) if lines else "none\n"}
+                   "claude_placeholder": "", "ssh": "".join(line + "\n" for line in lines) if lines else "none\n"}
         for name, text in entries.items():
             folder = os.path.join(root, "sys", "firmware", "qemu_fw_cfg", "by_name", "opt", "agentbox", name)
             os.makedirs(folder)

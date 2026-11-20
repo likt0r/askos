@@ -116,10 +116,12 @@ class CreateTest(VmsTest):
         self.assertEqual([c["net"] for c in self.virsh("net-define")], ["agentbox-work", "agentbox-priv", "agentbox-lab"])
         self.assertIn("agentbox-lab", [c["dom"] for c in self.virsh("define")])
         self.assertIn(["enable", "--now", "agentbox-proxy-work.socket", "agentbox-ghvm-work.socket",
-                       "agentbox-gui-work.socket", "agentbox-proxy-priv.socket", "agentbox-ghvm-priv.socket",
-                       "agentbox-gui-priv.socket", "agentbox-proxy-lab.socket", "agentbox-ghvm-lab.socket",
+                       "agentbox-claude-work.socket", "agentbox-gui-work.socket", "agentbox-proxy-priv.socket",
+                       "agentbox-ghvm-priv.socket", "agentbox-claude-priv.socket", "agentbox-gui-priv.socket",
+                       "agentbox-proxy-lab.socket", "agentbox-ghvm-lab.socket", "agentbox-claude-lab.socket",
                        "agentbox-gui-lab.socket"], self.systemctl())
-        self.assertEqual(self.read("etc/agentbox/secrets/claude-lab"), "none\n")
+        self.assertEqual(self.read("etc/agentbox/claude/token-lab"), "none\n")
+        self.assertRegex(self.read("etc/agentbox/claude/placeholder-lab"), r"^agentbox-claude-")
         self.assertTrue(os.path.isdir(self.path("var/lib/agentbox/observer-lab")))
 
     def test_new_vm_has_disks_but_is_not_started(self):
@@ -293,15 +295,18 @@ class CreateTest(VmsTest):
 
     def test_leftovers_of_an_earlier_vm_are_not_taken_over(self):
         self.write("var/lib/agentbox/vms/lab-data.qcow2", "{}")
-        self.write("etc/agentbox/secrets/claude-lab", "sk-ant-old\n")
+        os.makedirs(self.path("etc/agentbox/claude"), exist_ok=True)
+        self.write("etc/agentbox/claude/token-lab", "sk-ant-old\n")
         self.assertEqual(self.refused("create", "lab"),
                          "agentbox: lab: leftovers of an earlier VM exist (Data disk, Claude token), remove them first\n")
         os.remove(self.path("var/lib/agentbox/vms/lab-data.qcow2"))
-        os.remove(self.path("etc/agentbox/secrets/claude-lab"))
+        os.remove(self.path("etc/agentbox/claude/token-lab"))
         # each file alone stops it, and is named (a directory ends in /)
         for what, rel in (("Data disk", "var/lib/agentbox/vms/lab-data.qcow2"),
                           ("System disk", "var/lib/agentbox/vms/lab-system.qcow2"),
-                          ("Claude token", "etc/agentbox/secrets/claude-lab"),
+                          ("Claude token", "etc/agentbox/claude/token-lab"),
+                          ("Claude token", "etc/agentbox/claude/placeholder-lab"),
+                          ("Claude token", "etc/agentbox/secrets/claude-placeholder-lab"),
                           ("Observer", "var/lib/agentbox/observer-lab/"),
                           ("units", "etc/systemd/system/agentbox-proxy-lab.socket")):
             with self.subTest(what=what):
@@ -571,8 +576,10 @@ class DeleteTest(VmsTest):
                          [("undefine", "agentbox-lab"), ("net-destroy", "agentbox-lab"), ("net-undefine", "agentbox-lab")])
         self.assertEqual(self.virsh("undefine")[0]["flags"], ["--managed-save"])
         self.assertEqual(self.systemctl()[:3], [
-            ["disable", "--now", "agentbox-proxy-lab.socket", "agentbox-ghvm-lab.socket", "agentbox-gui-lab.socket"],
-            ["stop", "agentbox-gui-lab@*.service", "agentbox-ssh-lab@*.service", "agentbox-ghvm-lab@*.service"],
+            ["disable", "--now", "agentbox-proxy-lab.socket", "agentbox-ghvm-lab.socket", "agentbox-claude-lab.socket",
+             "agentbox-gui-lab.socket"],
+            ["stop", "agentbox-gui-lab@*.service", "agentbox-ssh-lab@*.service", "agentbox-ghvm-lab@*.service",
+             "agentbox-claude-lab@*.service"],
             ["daemon-reload"]])
         self.assertIn(["restart", "agentbox-vmnet.service"], self.systemctl())
         self.assertNotIn("lab", json.loads(self.ok("status", "--json")))
@@ -641,7 +648,7 @@ class DeleteTest(VmsTest):
         for socket in footprint.sockets(rec, every=True):
             self.assertNotIn(socket, enabled)
         self.assertIn(["stop", "agentbox-gui-lab@*.service", "agentbox-ssh-lab@*.service",
-                       "agentbox-ghvm-lab@*.service"], self.systemctl())
+                       "agentbox-ghvm-lab@*.service", "agentbox-claude-lab@*.service"], self.systemctl())
         self.assertNotIn("abox-lab", self.read("etc/agentbox/vm-input.nft"))
         self.assertEqual(self.entries("lab"), [])
         self.assertEqual(len(self.archive()), 1)
@@ -711,7 +718,7 @@ class DeleteTest(VmsTest):
         self.ok("create", "lab")
         self.assertEqual(vm_records.read(self.root, "lab")["network"], 3)
         self.assertEqual(self.entries("lab"), [])
-        self.assertEqual(self.read("etc/agentbox/secrets/claude-lab"), "none\n")
+        self.assertEqual(self.read("etc/agentbox/claude/token-lab"), "none\n")
         self.ok("delete", "lab", "--confirm", "lab")
         self.assertEqual(len(self.archive()), 2)
         for name in self.archive():

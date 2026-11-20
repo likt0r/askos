@@ -379,7 +379,8 @@ the Actor); without it no link is made.
 | `GET /vms/<vm>/ssh-config` | | `ssh-config <vm> --json`: `{"mode": "local"\|"network", "hosts": [{"vm", "host", "options", "config", "known_hosts", "command"}]}`, the connection help: `config` the `~/.ssh/config` block (`host` is `<vm>.agentbox`, `options` its settings by name, among them `UserKnownHostsFile`), `known_hosts` the line of its host key under that alias (`null` before the Host made one), `command` `ssh <vm>.agentbox`; `hosts` is `[]` while the VM has no SSH access. `mode` is the Host setup's: in Local-only `HostName` is `127.0.0.1`, so the block works on the Host itself |
 | `PUT /vms/<vm>/image` | `{"image", "build": null\|"<build>"}` | `set-image`: `{"vm", "image", "build", "message"}`; applies at the next Reset |
 | `PUT /vms/<vm>/github-owners` | `{"owners": ["likt0r", ...]}` | `set-owners`: `{"vm", "owners"}` |
-| `PUT /vms/<vm>/claude-token` | `{"token": "sk-ant-oat..."}` | `set-claude-token` (token on stdin, checked with Anthropic before it replaces the old one): `{"vm", "stored": true, "length"}` |
+| `PUT /vms/<vm>/claude-token` | `{"token": "sk-ant-oat..."}` | `set-claude-token` (token on stdin, checked with Anthropic before it replaces the old one): `{"vm", "stored": true, "length"}`. The token stays on the Host; the VM's Anthropic route uses it from the VM's next request on, without a restart |
+| `DELETE /vms/<vm>/claude-token` | | `remove-claude-token`: `{"vm", "removed"}` (`false`: no token was stored); the route refuses the VM's next request (`no-token`), a request already streaming finishes. Anthropic is not asked: the token stays valid there until it is revoked |
 | `POST /vms/<vm>/open-web` | `{"minutes": 30}` | `open-web`; while the Watchlist cannot be read: `409 watchlist_unreadable` |
 | `DELETE /vms/<vm>/open-web` | | `close-web` |
 | `GET /vms/<vm>/logs` | `?unit&priority&since&until&boot&grep&lines&after_cursor` | `logs`: `{"vm", "entries": [{"time", "unit", "identifier", "priority", "message", "boot", "cursor"}], "cursor", "truncated"}`; poll with `after_cursor=<cursor>` for new lines |
@@ -511,7 +512,7 @@ first:
 
 | `code` | `params` |
 |---|---|
-| `start`, `wake`, `pause`, `restart`, `close-web`, `migrate-allowlist`, `set-claude-token`, `pair`, `observe`, `unpair`, `revoke-pairings`, `migrate`, `regenerate`, `setup`, `sign-in-link` | none |
+| `start`, `wake`, `pause`, `restart`, `close-web`, `migrate-allowlist`, `set-claude-token`, `remove-claude-token`, `pair`, `observe`, `unpair`, `revoke-pairings`, `migrate`, `regenerate`, `setup`, `sign-in-link` | none |
 | `reset` | `no_start` |
 | `focus` | `target` (a VM), or `off` |
 | `create` | `image` (when given) |
@@ -545,6 +546,9 @@ first:
 | `github.token` | `repository`, `expires` (GitHub's expiry, ISO 8601), `app_id` (the App that issued it; not in lines from before there were several Apps) |
 | `github.refused` | `request` (as the VM sent it), `repository` (when the request names one), `reason` (a stable code, below) and its parameters (`status`, `app_id`) |
 | `github.error` | `request`, `repository`, `message` (the token service's error, English) |
+| `claude.request` | `method`, `path`, `status` (Anthropic's), `model` (`-` when the body names none), `seconds`, `bytes` (of the answer the VM got), `request_id` (Anthropic's `request-id`, `-` without), `interrupted` (`yes`: the answer broke off on either side) |
+| `claude.refused` | `reason` (a stable code, below), `method` and `path` (`path-not-allowed`), `message` (the route's text, English) |
+| `claude.error` | `message` (the route's own error, English) |
 | `wake.not-responding` | `reason` |
 | `reset.automatic`, `reset.postponed`, `reset.failed` | `reason`; onto a newer Build also `image`, `build` |
 | `reset.update` | `image`; done: `build`, `started`; failed: `running`; never begun: `skipped`, `failed_builds` |
@@ -572,7 +576,7 @@ up (actor `Orca (<address>)`) or `agentbox watch` (actor `watch`), also when no 
 client connects. An incident lasts until Orca answers again or the VM starts again. A wake
 that started the VM and gave up has its own failed `wake` entry unless it recorded the
 incident's entry itself, so Activity says who caused the start. Kinds:
-`signin`, `action`, `allowlist`, `alert`, `github`, `pairing`, `build`, `reset`, `settings`,
+`signin`, `action`, `allowlist`, `alert`, `github`, `claude`, `pairing`, `build`, `reset`, `settings`,
 `credentials`. `since`/`until`:
 `today`, `yesterday`, `now`, `-2h`, `-7d`, `2026-11-03`, `2026-11-03 12:00`. New entries
 arrive as `activity` events.
@@ -602,6 +606,35 @@ reason and an error by its `message`.
 | `not-installed` | no GitHub App is installed on the repository (a missing Installation): every App answered 404; with the parameter `app_id` when that App's installation was gone by the time it asked for the token |
 | `github-status` | GitHub answered with another error; parameters `status`, GitHub's HTTP status, and `app_id`, the App that got it. The Apps after it are not asked |
 | `app-key` | the key of the App `app_id` (a parameter) cannot sign: its file is missing or broken. The Apps after it are not asked |
+
+### Claude requests in Activity
+
+The Anthropic route of the token service (ADR 0023) writes one English line per request,
+never the token, the placeholder, a header value or a body (`github-app/agentbox-claude-route`);
+a successful `HEAD /api/hello` is not logged (its refusals are):
+
+```text
+[<vm>] claude <method> <path> <status> model=<model> <seconds>s <bytes>B request-id=<id>[ interrupted]
+[<vm>] refused: <reason>[ <name>=<value>...]: <English text>
+[<vm>] error: <error>
+```
+
+Activity reads them as `claude.request` (outcome `ok`, `failed` for a status of 400 or more or
+an answer that broke off), `claude.refused` and `claude.error` (outcome `failed`), kind
+`claude`, actor `VM <vm>`, with the parameters in the table above; a refusal's `reason` is also
+the entry's `reason`. The UI words a refusal by its reason.
+
+| `reason` | Why the route refused (status the VM got) |
+|---|---|
+| `no-token` | no Claude token is stored for the VM (401) |
+| `wrong-placeholder` | `Authorization` is not `Bearer` and the VM's placeholder, or `x-api-key` was sent (401) |
+| `path-not-allowed` | anything but `POST /v1/messages`, `POST /v1/messages/count_tokens` and `HEAD /api/hello`; parameters `method` and `path` (404) |
+| `upgrade` | `CONNECT` or an `Upgrade` header (400) |
+| `too-large` | a body over 32 MB (400) |
+| `invalid-request` | not HTTP/1.1, malformed, `Expect`, or ambiguous: both `Content-Length` and `Transfer-Encoding`, a repeated `Host`, `Authorization` or `Content-Length`, a target that is not a canonical path (400) |
+| `upstream-tls` | the TLS connection to `api.anthropic.com` could not be verified (502, never retried) |
+| `upstream-error` | `api.anthropic.com` could not be reached or did not answer (502) |
+| `too-many-connections` | the VM already has 64 connections to the route (503 with `x-should-retry: true`) |
 
 ## Host and System
 

@@ -84,7 +84,9 @@ Controls the agent VMs on this Host.
                 name); of a Git repository .git and the files Git does not ignore; starts the VM if needed
   agentbox logs <vm> [--unit U] [--priority P] [--since T] [--until T] [--boot current|all] [--grep TEXT] [--lines N] [--after-cursor C] [--json]
                 the VM's journal
-  agentbox set-claude-token <vm> [--no-prompt] [--json]   token from `claude setup-token` (stdin)
+  agentbox set-claude-token <vm> [--no-prompt] [--json]   token from `claude setup-token` (stdin); used from
+                                                         the next request on, it never enters the VM
+  agentbox remove-claude-token <vm> [--json]              the next request of the VM is refused
   agentbox blocked <vm> [--json]
   agentbox alerts <vm> [--json]
   agentbox allowlist [<vm>|all] [--json]             Allowlist entries (all, a VM's, those for all VMs)

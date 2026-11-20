@@ -206,6 +206,34 @@ describe('Activity in the UI language', () => {
     ])
   })
 
+  it('words the Anthropic route\'s requests and refusals, never more than the route logged', async () => {
+    const claude = (n: number, action: string, params: Record<string, string>, description: string, outcome = 'failed') =>
+      coded(n, action, params, description, { kind: 'claude', actor: 'VM work', outcome })
+    const entries = [
+      claude(0, 'claude.request', { method: 'POST', path: '/v1/messages', status: '200', model: 'claude-opus-5-5',
+        seconds: '12.34', bytes: '45678', request_id: 'req_011' }, 'Claude POST /v1/messages 200, ...', 'ok'),
+      claude(1, 'claude.request', { method: 'POST', path: '/v1/messages', status: '200', model: '-', seconds: '0.50',
+        bytes: '512', request_id: '-', interrupted: 'yes' }, 'Claude POST /v1/messages 200, ..., interrupted'),
+      claude(2, 'claude.refused', { reason: 'no-token', message: 'no Claude token is stored for the VM work' },
+        'Claude request refused: no Claude token is stored for the VM work'),
+      // a reason this UI does not know
+      claude(3, 'claude.refused', { reason: 'made-up', message: 'x' }, 'Claude request refused: something new'),
+    ]
+    expect((await list(entries)).shown).toEqual([
+      'Claude POST /v1/messages: 200, claude-opus-5-5, 12.34 s, 44.6 KiB',
+      'Claude POST /v1/messages: 200, -, 0.50 s, 512 B, interrupted',
+      'Claude request refused: no Claude token is stored for the VM',
+      'Claude request refused: something new',
+    ])
+    await useNuxtApp().$i18n.setLocale('de')
+    expect((await list(entries)).shown).toEqual([
+      'Claude POST /v1/messages: 200, claude-opus-5-5, 12.34 s, 44.6 KiB',
+      'Claude POST /v1/messages: 200, -, 0.50 s, 512 B, abgebrochen',
+      'Claude-Anfrage abgelehnt: für die VM ist kein Claude-Token gespeichert',
+      'Claude request refused: something new',
+    ])
+  })
+
   it('has the words of every sentence in both languages', async () => {
     const params: Record<string, string> = {
       domain: 'd.example', scope: 'all', duration: '1h', target: 'priv', image: 'base', build: '20261101', mib: '8192',
@@ -214,10 +242,11 @@ describe('Activity in the UI language', () => {
       repository: 'a/b', request: 'a/b', folder: '/home/a/foo', files: '3', bytes: '120', env: 'A=1', names: 'A',
       enabled: 'true', days: '7', removed: '2', freed_bytes: '2048', time: '02:00',
       name: 'dms', sha256: 'a1b2c3', version: '20261116-120000', created: 'true',
+      method: 'POST', path: '/v1/messages', status: '200', model: 'claude-x', seconds: '1.20',
     }
     // a reason the sentence knows, where it is a code of its own
     const reasons: Record<string, string> = { 'wake.not-responding': 'system-not-booted', 'github.refused': 'not-installed',
-      'maintenance.skipped': 'already-ran' }
+      'maintenance.skipped': 'already-ran', 'claude.refused': 'wrong-placeholder' }
     const entries = Object.keys(SENTENCES).map((action, n) => coded(n % 60, action,
       reasons[action] ? { ...params, reason: reasons[action] } : params, 'STORED'))
     for (const language of ['en', 'de']) {

@@ -219,5 +219,13 @@ _Avoid_: grant, org access
 ## Claude
 
 **Claude token**:
-A VM's long-lived token from `claude setup-token`, stored on the Host, passed to the VM at boot and replaced only by one Anthropic accepts.
+A VM's long-lived token from `claude setup-token`, stored on the Host and replaced only by one Anthropic accepts. It never enters the VM: the VM's Anthropic route adds it to the VM's requests on the Host, from the next request after it was set or removed.
 _Avoid_: API key, login, subscription
+
+**Anthropic route**:
+The part of a VM's token service on port 9101 of the Host's address on the VM's network that Claude Code in the VM sends its requests to. It accepts only the VM's Claude placeholder, forwards the Messages API to `api.anthropic.com` with the real Claude token on its own verified TLS connection, and logs one line per request in Activity (kind `claude`).
+_Avoid_: proxy, gateway, broker
+
+**Claude placeholder**:
+What a VM has in place of its Claude token, as `CLAUDE_CODE_OAUTH_TOKEN`: `agentbox-claude-` and random characters, made once per VM and kept until it is deleted. Only that VM's Anthropic route accepts it; anywhere else it is worth nothing.
+_Avoid_: fake token, session token

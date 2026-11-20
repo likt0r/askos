@@ -100,7 +100,7 @@ describe('Access tab', () => {
     expect(changes(api.calls)).toEqual([{ method: 'PUT', path: '/vms/work/claude-token', body: { token: TOKEN }, csrf: '1' }])
     expect(input.value).toBe('')
     expect(must('[data-testid="claude-stored"]').textContent).toContain(`Token valid and stored (${TOKEN.length} characters).`)
-    expect(must('[data-testid="claude-stored"]').textContent).toContain('restart of work')
+    expect(must('[data-testid="claude-stored"]').textContent).toContain('work uses it from its next request on, without a restart.')
     expect(document.body.innerHTML).not.toContain(TOKEN.slice(13, 40))
   })
 
@@ -113,6 +113,22 @@ describe('Access tab', () => {
     expect(error.textContent).toContain('The stored token stays in use.')
     expect((must('[data-testid="claude-input"] input, input[data-testid="claude-input"]') as HTMLInputElement).value).toBe('')
     expect(document.body.innerHTML).not.toContain(TOKEN.slice(13, 40))
+  })
+
+  it('removes the Claude token after asking, and says Anthropic still has to revoke it', async () => {
+    const { api } = await openApp('/vms/work/access', { ...ACCESS, 'DELETE /vms/work/claude-token': ok({ vm: 'work', removed: true }) }, [workVm()])
+    await click('[data-testid="claude-remove"]')
+    expect(changes(api.calls)).toEqual([])
+    expect(document.body.textContent).toContain('Remove the Claude token of work?')
+    await click('[data-testid="confirm-action"]')
+    expect(changes(api.calls)).toEqual([{ method: 'DELETE', path: '/vms/work/claude-token', body: undefined, csrf: '1' }])
+    await waitFor(() => expect(must('[data-testid="claude-removed"]').textContent).toContain('Claude token of work removed.'))
+    expect(must('[data-testid="claude-removed"]').textContent).toContain('revoke it with Anthropic')
+  })
+
+  it('offers no removal without a stored token', async () => {
+    await openApp('/vms/work/access', ACCESS, [workVm({ claude_token_since: null })])
+    expect($('[data-testid="claude-remove"]')).toBeNull()
   })
 
   it('refuses an API key before sending it', async () => {

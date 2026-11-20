@@ -30,7 +30,7 @@ NAMED = re.compile(r"^ExecStart(?:Pre)?=(/\S*agentbox\S*)", re.MULTILINE)
 def rpm(prefix):
     """The files the units name, under prefix."""
     return {f"{prefix}/bin/agentbox", f"{prefix}/libexec/agentbox-proxy", f"{prefix}/libexec/agentbox-gh-tokend",
-            f"{prefix}/libexec/agentbox-feeds"}
+            f"{prefix}/libexec/agentbox-claude-route", f"{prefix}/libexec/agentbox-feeds"}
 
 
 class InstalledTest(RegistryTest):

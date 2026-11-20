@@ -24,7 +24,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vm_records  # noqa: E402
 from fake_journald import Journald  # noqa: E402
-from journal_writers import (CLI, CONTROL_ROOM, FORGED, GH, MEMBER, PROXY, proxy, token_service,  # noqa: E402
+from journal_writers import (CLAUDE, CLI, CONTROL_ROOM, FORGED, GH, MEMBER, PROXY, claude_route, proxy, token_service,  # noqa: E402
                              write_group, write_passwd, writer, written_by)
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -73,7 +73,7 @@ class ActivityTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.dir = os.path.realpath(tmp.name)
         self.root = os.path.join(self.dir, "root")
-        for sub in ("etc/agentbox/secrets", "etc/agentbox/github", "etc/systemd/system", "var/lib/agentbox/vms",
+        for sub in ("etc/agentbox/secrets", "etc/agentbox/claude", "etc/agentbox/github", "etc/systemd/system", "var/lib/agentbox/vms",
                     "var/lib/agentbox/images"):
             os.makedirs(self.path(sub))
         vm_records.write(self.root)
@@ -512,7 +512,7 @@ class SecretTest(ActivityTest):
 
     def setUp(self):
         super().setUp()
-        with open(self.path("etc/agentbox/secrets/claude-priv"), "w") as f:
+        with open(self.path("etc/agentbox/claude/token-priv"), "w") as f:
             f.write("none\n")
 
     def answer(self, text):
@@ -792,6 +792,62 @@ class TimelineTest(JournalTest):
             ("github.refused", "failed", "GitHub token for a/b refused: GitHub answered 404",
              {"request": "a/b", "repository": "a/b", "reason": "github-status", "status": "404"}, "github-status")])
 
+    def test_claude_route_entries_name_model_duration_size_and_request_id(self):
+        # github-app/agentbox-claude-route writes these lines; never a token, a placeholder or a body
+        self.journal([
+            journal_entry("agentbox-claude-priv", "[priv] claude POST /v1/messages 200 model=claude-opus-5-5 12.34s "
+                                                  "45678B request-id=req_011", HOUR),
+            journal_entry("agentbox-claude-priv", "[priv] claude POST /v1/messages 529 model=- 0.50s 120B "
+                                                  "request-id=- interrupted", 2 * HOUR),
+            journal_entry("agentbox-claude-priv", "[priv] refused: path-not-allowed method=GET path=/v1/models: the "
+                                                  "route forwards only POST /v1/messages and /v1/messages/count_tokens",
+                          3 * HOUR),
+            journal_entry("agentbox-claude-priv", "[priv] refused: no-token: no Claude token is stored for the VM priv; "
+                                                  "on the Host: agentbox set-claude-token priv", 4 * HOUR),
+            journal_entry("agentbox-claude-priv", "[priv] error: ValueError", 5 * HOUR),
+            # not a line of the route: left out
+            journal_entry("agentbox-claude-priv", "[priv] claude something else", 6 * HOUR),
+        ])
+        entries = self.timeline("--kind=claude")["entries"]
+        self.assertEqual([(e["kind"], e["vm"], e["actor"], e["code"], e["outcome"], e["params"], e.get("reason"))
+                          for e in entries], [
+            ("claude", "priv", "VM priv", "claude.request", "ok",
+             {"method": "POST", "path": "/v1/messages", "status": "200", "model": "claude-opus-5-5",
+              "seconds": "12.34", "bytes": "45678", "request_id": "req_011"}, None),
+            ("claude", "priv", "VM priv", "claude.request", "failed",
+             {"method": "POST", "path": "/v1/messages", "status": "529", "model": "-", "seconds": "0.50",
+              "bytes": "120", "request_id": "-", "interrupted": "yes"}, None),
+            ("claude", "priv", "VM priv", "claude.refused", "failed",
+             {"reason": "path-not-allowed", "method": "GET", "path": "/v1/models",
+              "message": "the route forwards only POST /v1/messages and /v1/messages/count_tokens"}, "path-not-allowed"),
+            ("claude", "priv", "VM priv", "claude.refused", "failed",
+             {"reason": "no-token", "message": "no Claude token is stored for the VM priv; on the Host: agentbox "
+                                               "set-claude-token priv"}, "no-token"),
+            ("claude", "priv", "VM priv", "claude.error", "failed", {"message": "ValueError"}, None)])
+        self.assertEqual(entries[0]["description"],
+                         "Claude POST /v1/messages 200, model claude-opus-5-5, 12.34 s, 45678 bytes")
+
+    def test_claude_route_entries_only_from_the_routes_user_and_unit(self):
+        line = "[priv] claude POST /v1/messages 200 model=m 1.00s 1B request-id=r"
+        good = journal_entry("agentbox-claude-priv", line, HOUR)
+        self.journal([
+            good,
+            written_by(journal_entry("agentbox-claude-priv", line, 2 * HOUR), FORGED),
+            # the token service's user, or the route of another VM, writing as this one
+            written_by(journal_entry("agentbox-claude-priv", line, 3 * HOUR), token_service("priv")),
+            written_by(journal_entry("agentbox-claude-priv", line, 4 * HOUR), claude_route("work")),
+        ])
+        code, out, err = self.run_agentbox("activity", "--kind=claude", "--json")
+        # another user's entries are not even read (journalctl asks for the route's user); the
+        # route of another VM is counted and left out
+        self.assertEqual((code, err), (0, "agentbox: journal entries without a known writer left out: 1\n"))
+        self.assertEqual(len(json.loads(out)["entries"]), 1)
+        # and the route's user never writes Activity of its own
+        self.journal([written_by(recorded(HOUR, "action", "reset", "Reset", vm="priv"), claude_route("priv"))])
+        code, out, err = self.run_agentbox("activity", "--json")
+        self.assertEqual((code, json.loads(out)["entries"]), (0, []))
+        self.assertIn("left out: 1", err)
+
     def test_text(self):
         self.journal(JOURNAL[:3])
         code, out, err = self.run_agentbox("activity")
@@ -811,14 +867,14 @@ class TimelineTest(JournalTest):
     def test_reads_the_journal_of_activity(self):
         self.journal(JOURNAL)
         self.timeline()
-        recorded_call, proxy_call, token_call = self.journalctl()
+        recorded_call, proxy_call, token_call, claude_call = self.journalctl()
         # recorded entries only from the namespace, by whoever its sockets let write
         self.assertIn("--namespace=agentbox", recorded_call)
         self.assertEqual([a for a in recorded_call if a.startswith(("--identifier=", "_UID="))],
                          ["--identifier=agentbox-activity"])
         # the services' logs also from the default journal (anyone can write it), by their
         # users, of every VM that ever logged (lab is deleted)
-        for call, uid in ((proxy_call, PROXY), (token_call, GH)):
+        for call, uid in ((proxy_call, PROXY), (token_call, GH), (claude_call, CLAUDE)):
             self.assertIn("--namespace=+agentbox", call)
             self.assertEqual([a for a in call if a.startswith(("--identifier=", "_UID="))], [f"_UID={uid}"])
         self.assertIn("lab", {e["vm"] for e in self.timeline()["entries"]})
@@ -954,16 +1010,19 @@ class TimelineTest(JournalTest):
             journal_entry("agentbox-gh-priv", "[priv] refused: 'ghs_" + "Q3-x.Y_z9" * 40 + "': invalid-request: no",
                           HOUR),
             journal_entry("agentbox-gh-priv", "[priv] error: 'a/b': OSError('sk-ant-oat01-abcdefghijkl')", HOUR),
+            # a VM's Claude placeholder, should a line of the route ever carry one
+            journal_entry("agentbox-claude-priv", "[priv] error: KeyError('agentbox-claude-" + "Pl4ce_h-" * 6 + "')",
+                          HOUR),
         ])
         out = json.dumps(self.timeline())
-        for bad in ("\\u001b", "\\u0007", "\\u202e", "Ab3_x-9", "sk-ant", "ghs_", "\\n", "Q3-x", "Y_z9"):
+        for bad in ("\\u001b", "\\u0007", "\\u202e", "Ab3_x-9", "sk-ant", "ghs_", "\\n", "Q3-x", "Y_z9", "Pl4ce_h"):
             self.assertNotIn(bad, out)
         self.assertIn("ared orca://pair?[hidden] [hidden]", out)
 
     def test_nothing_logged_yet(self):
         self.assertEqual(self.timeline(), {"entries": [], "truncated": False, "retention_days": 90})
         # recorded entries, and the services' logs by their users
-        self.assertEqual(len(self.journalctl()), 3)
+        self.assertEqual(len(self.journalctl()), 4)
 
     def test_failing_journalctl(self):
         self.scenario(journalctl_exit=4)
@@ -1280,6 +1339,18 @@ class ControlRoomWordsTest(unittest.TestCase):
             block = text[text.index("    tokens: {"):]
             block = block[block.index("      reasons: {"):]
             translated = set(re.findall(r"^        '([a-z-]+)': ", block[:block.index("\n      },")], re.M))
+            with self.subTest(language=language):
+                self.assertEqual(translated, reasons)
+
+    def test_every_reason_of_the_claude_route_is_translated(self):
+        with open(os.path.join(REPO, "github-app", "agentbox-claude-route")) as f:
+            source = f.read()
+        reasons = set(ast.literal_eval(re.search(r"^REASONS = (\(.*?\))$", source, re.M | re.S).group(1)))
+        self.assertIn("wrong-placeholder", reasons)
+        for language in ("en", "de"):
+            text = self.ui("i18n", "locales", language, "activity.ts")
+            block = text[text.index("    claudeReasons: {"):]
+            translated = set(re.findall(r"^      '([a-z-]+)': ", block[:block.index("\n    },")], re.M))
             with self.subTest(language=language):
                 self.assertEqual(translated, reasons)
 

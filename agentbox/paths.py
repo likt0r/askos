@@ -14,6 +14,7 @@ lies under the prefix /usr, where the RPM puts it (ADR 0009):
   libexec/agentbox-suspicious                                   SUSPICIOUS
   libexec/agentbox-feeds                                        FEEDS_PROGRAM
   libexec/agentbox-gh-tokend                                    TOKEND
+  libexec/agentbox-claude-route                                 CLAUDE_ROUTE
   libexec/agentbox-web                                          WEB_BACKEND
   libexec/agentbox-readings       (loaded by agentbox-web)
   share/agentbox/web/ui/          the Control Room UI           WEB_UI
@@ -49,6 +50,7 @@ SHARE = PREFIX + "/share/agentbox"
 # named in units (agentbox regenerate)
 PROXY = LIBEXEC + "/agentbox-proxy"
 TOKEND = LIBEXEC + "/agentbox-gh-tokend"
+CLAUDE_ROUTE = LIBEXEC + "/agentbox-claude-route"
 FEEDS_PROGRAM = LIBEXEC + "/agentbox-feeds"
 # run or read by agentbox and the Control Room
 SUSPICIOUS = host(LIBEXEC + "/agentbox-suspicious")
