@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.9.0](https://github.com/likt0r/askos/compare/v0.8.1...v0.9.0) (2026-11-20)
+
+### Features
+
+* an Alert with a strong Signal pauses its VM ([#11](https://github.com/likt0r/askos/issues/11)) ([#173](https://github.com/likt0r/askos/issues/173)) ([e3d1048](https://github.com/likt0r/askos/commit/e3d10488ae19a0965bed29a551177c86ebf53ec7))
+* Container image cleanup counts a container's image as used at every run, records a repeated failure once ([#68](https://github.com/likt0r/askos/issues/68), [#69](https://github.com/likt0r/askos/issues/69)) ([#169](https://github.com/likt0r/askos/issues/169)) ([b0604db](https://github.com/likt0r/askos/commit/b0604db551ac4a40ba25b75d002cfb0781afdd9f)), references [60/#67](https://github.com/likt0r/askos/issues/67) [#67](https://github.com/likt0r/askos/issues/67)
+* Secrets per VM, passed like VM variables but never shown or logged on the Host ([#30](https://github.com/likt0r/askos/issues/30)) ([#172](https://github.com/likt0r/askos/issues/172)) ([6e0eb70](https://github.com/likt0r/askos/commit/6e0eb7067a6c635e060c6bc34ed33c3159241a87)), references [#166](https://github.com/likt0r/askos/issues/166)
+* strong Signals always block, also on the Allowlist ([#59](https://github.com/likt0r/askos/issues/59)) ([#170](https://github.com/likt0r/askos/issues/170)) ([c44b809](https://github.com/likt0r/askos/commit/c44b809c6a2b7e51fb2dedbc318a2686c44a252e))
+* the Claude token stays on the Host behind an Anthropic route of the token service ([#12](https://github.com/likt0r/askos/issues/12)) ([#175](https://github.com/likt0r/askos/issues/175)) ([e17f1e5](https://github.com/likt0r/askos/commit/e17f1e5270bac4295b128b4ffe4eab6406302dae))
+
 ## [0.8.1](https://github.com/likt0r/askos/compare/v0.8.0...v0.8.1) (2026-11-19)
 
 ### Bug Fixes
