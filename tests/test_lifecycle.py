@@ -54,7 +54,7 @@ class LifecycleTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = os.path.realpath(self.tmp.name)
         self.root = os.path.join(self.dir, "root")
-        for sub in ("var/lib/agentbox/vms", "var/lib/agentbox/images", "etc/agentbox/secrets"):
+        for sub in ("var/lib/agentbox/vms", "var/lib/agentbox/images", "etc/agentbox/secrets", "etc/agentbox/claude"):
             os.makedirs(self.path(sub))
         self.base = self.path("var/lib/agentbox/images/base-20261101.qcow2")
         open(self.base, "w").close()
@@ -216,9 +216,9 @@ class StatusTest(LifecycleTest):
         self.disk("priv", backing="/x/base-20261101.qcow2", mtime=1762000000)
         self.observer("work", "priv")
         self.write("etc/agentbox/open-work", "4102444800\n")
-        self.write("etc/agentbox/secrets/claude-work", "sk-ant-abc\n", mtime=1760000000)
+        self.write("etc/agentbox/claude/token-work", "sk-ant-abc\n", mtime=1760000000)
         self.write("etc/agentbox/open-priv", "1000\n")                     # expired
-        self.write("etc/agentbox/secrets/claude-priv", "nope\n", mtime=1760000000)
+        self.write("etc/agentbox/claude/token-priv", "none\n", mtime=1760000000)
         code, out, err = self.run_agentbox("status", "--json")
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(out, (

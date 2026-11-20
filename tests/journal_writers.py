@@ -23,10 +23,11 @@ import os
 
 TRUSTED = ("_UID", "_GID", "_SYSTEMD_UNIT", "_COMM", "_EXE", "_TRANSPORT")
 
-PROXY, GH, WEB = "962", "963", "959"
+PROXY, GH, CLAUDE, WEB = "962", "963", "964", "959"
 PASSWD = f"""root:x:0:0:root:/root:/bin/bash
 agentbox-proxy:x:{PROXY}:{PROXY}::/home/agentbox-proxy:/usr/sbin/nologin
 agentbox-gh:x:{GH}:{GH}::/home/agentbox-gh:/usr/sbin/nologin
+agentbox-claude:x:{CLAUDE}:{CLAUDE}::/home/agentbox-claude:/usr/sbin/nologin
 agentbox-web:x:{WEB}:{WEB}::/home/agentbox-web:/usr/sbin/nologin
 bewr:x:1000:1000::/home/bewr:/bin/bash
 gast:x:1002:1002::/home/gast:/bin/bash
@@ -67,6 +68,12 @@ def token_service(vm):
             "_COMM": "agentbox-gh-tok", "_EXE": "/usr/bin/python3.14", "_TRANSPORT": "stdout"}
 
 
+def claude_route(vm):
+    return {"_UID": CLAUDE, "_GID": "970",
+            "_SYSTEMD_UNIT": f"agentbox-claude-{vm}@9-4243-10.77.1.1:9101-10.77.1.2:51667.service",
+            "_COMM": "agentbox-claude", "_EXE": "/usr/bin/python3.14", "_TRANSPORT": "stdout"}
+
+
 def writer(ident, kind=None):
     """The trusted fields of the legitimate writer of this identifier (none for others)."""
     if ident == "agentbox-activity":
@@ -75,6 +82,8 @@ def writer(ident, kind=None):
         return proxy(ident[len("agentbox-proxy-"):])
     if ident.startswith("agentbox-gh-"):
         return token_service(ident[len("agentbox-gh-"):])
+    if ident.startswith("agentbox-claude-"):
+        return claude_route(ident[len("agentbox-claude-"):])
     return {}
 
 

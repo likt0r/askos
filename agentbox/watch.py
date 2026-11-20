@@ -307,10 +307,11 @@ def _follow(argv, handle, name):
 
 
 def on_namespace(e):
-    """Activity, Alerts and GitHub tokens from the namespace agentbox, each only from
-    the writer known for its identifier; the others are counted (activity.trusted)."""
+    """Activity, Alerts, GitHub tokens and the Anthropic route's requests from the namespace
+    agentbox, each only from the writer known for its identifier; the others are counted
+    (activity.trusted)."""
     ident = field(e, "SYSLOG_IDENTIFIER") or ""
-    if not (ident == activity.IDENTIFIER or ident.startswith(("agentbox-proxy-", "agentbox-gh-"))):
+    if not (ident == activity.IDENTIFIER or ident.startswith(("agentbox-proxy-", "agentbox-gh-", "agentbox-claude-"))):
         return
     if not activity.trusted(e):
         activity.count_untrusted()
@@ -333,6 +334,10 @@ def on_namespace(e):
                                   "repository": entry["_repository"], "request": entry["_request"],
                                   "reason": entry["_reason"], "reason_code": entry["_code"],
                                   "reason_params": entry["_code_params"], "expires": entry["_expires"]})
+            emit("activity", _public(entry))
+    elif ident.startswith("agentbox-claude-"):
+        entry = activity.claude_entry(e)
+        if entry:
             emit("activity", _public(entry))
 
 

@@ -1,0 +1,515 @@
+#!/usr/bin/python3 -I
+"""The Anthropic route of a VM's token service (ADR 0023): the VM's Claude Code sends its
+requests here, and the Claude token stays on the Host.
+
+Runs per connection (a systemd socket with Accept=yes on <Host address on the VM network>:9101)
+as the user agentbox-claude, the only one that may read the Claude tokens. It knows the VM by
+the address it listens on (its argument): nftables lets only the VM's own network reach it.
+It speaks HTTP/1.1, plain, and serves one request after another on the connection.
+
+What it accepts: only requests whose Authorization is `Bearer <the VM's placeholder>` and that
+carry no x-api-key (<CONF>/claude/placeholder-<vm>, made once per VM by `agentbox regenerate`).
+Then POST /v1/messages and POST /v1/messages/count_tokens (with their query) go to
+api.anthropic.com, HEAD /api/hello is answered here with 204, and every other path or method gets
+404. CONNECT, an Upgrade header, Expect, a body over 32 MB and an ambiguous request (both
+Content-Length and Transfer-Encoding, a repeated Host, Authorization or Content-Length, a target
+that is not a canonical path) get 400. After a refusal the connection is closed.
+
+How a request goes upstream: the token file (<CONF>/claude/token-<vm>) is read at each request,
+so a token set or removed on the Host counts from the next request on; a stream already running
+finishes with the token it started with. A file without a token (`none`) is a 401 that names
+`agentbox set-claude-token`. The route opens its own TLS connection to api.anthropic.com:443
+with the system's CAs, the certificate and the name verified, and follows no redirect; a TLS
+failure is a 502, never retried. Authorization becomes the real token; only the headers Claude
+Code needs go on (FORWARDED), so hop-by-hop headers, Proxy-*, Forwarded, X-Forwarded-*, Cookie
+and Accept-Encoding never do, and the answer comes back uncompressed.
+
+How the answer comes back: its status, and of its headers only those in ANSWER_HEADERS. The body
+goes to the VM chunk by chunk as it arrives, nothing buffered, so an event stream reaches it event
+by event. The exact bytes of the real token are taken out of every header and of the body, also
+when they arrive split across chunks.
+
+At most SLOTS connections of one VM are served at once (a lock per slot in the runtime
+directory); the socket lets one more in, which is refused with 503 so that Activity shows it.
+
+One journal line per request (agentbox/activity.py reads them), never the token, the placeholder,
+a header value or a body; HEAD /api/hello is not logged:
+  [<vm>] claude <method> <path> <status> model=<model> <seconds>s <bytes>B request-id=<id>[ interrupted]
+  [<vm>] refused: <reason>[ <name>=<value>...]: <English text>
+<reason> is one of REASONS; `interrupted` marks an answer that broke off on either side.
+
+Only in tests (AGENTBOX_ROOT set): AGENTBOX_CLAUDE_TEST_UPSTREAM (host:port to connect to instead
+of api.anthropic.com:443; the certificate must still be for api.anthropic.com) and
+AGENTBOX_CLAUDE_TEST_CA (the CA file the certificate is verified against).
+"""
+import fcntl
+import hmac
+import http
+import http.client
+import json
+import os
+import re
+import socket
+import ssl
+import sys
+import time
+
+# AGENTBOX_ROOT only for tests (as with the agentbox CLI)
+ROOT = os.environ.get("AGENTBOX_ROOT", "")
+CLAUDE_DIR = ROOT + "/etc/agentbox/claude"
+RUN_DIR = ROOT + "/run/agentbox-claude"           # RuntimeDirectory= of the unit, per VM
+VM_NAME = re.compile(r"[a-z][a-z0-9-]{1,15}")      # as agentbox/registry.py
+HOST = "api.anthropic.com"
+PORT = 443
+
+MAX_BODY = 32 * 1024 * 1024        # Anthropic's limit for the Messages API
+MAX_LINE = 8192                    # request line, a header line, a chunk size line
+MAX_HEADERS = 100
+SLOTS = 64                         # connections served at once (the socket's MaxConnections is one more)
+IDLE_SECONDS = 120                 # for the next request on a connection
+READ_SECONDS = 60                  # for the rest of a request once it began
+UPSTREAM_SECONDS = 600             # Anthropic's answer, and each piece of a stream
+CHUNK = 65536
+
+# the requests that go upstream, and the one answered here
+FORWARD = {("POST", "/v1/messages"), ("POST", "/v1/messages/count_tokens")}
+HELLO = ("HEAD", "/api/hello")
+# headers of the VM's request that go on unchanged (ADR 0023: what the compatibility guide asks)
+FORWARDED = {"content-type", "accept", "user-agent", "x-app"}
+FORWARDED_PREFIXES = ("anthropic-", "x-claude-code-", "x-stainless-")
+# headers of Anthropic's answer that come back
+ANSWER_HEADERS = {"content-type", "request-id", "retry-after", "x-should-retry"}
+ANSWER_PREFIXES = ("anthropic-ratelimit-unified-",)
+
+TOKEN = re.compile(rb"sk-ant-[A-Za-z0-9_-]{1,500}")         # as agentbox/credentials.py
+PLACEHOLDER = re.compile(rb"agentbox-claude-[A-Za-z0-9_-]{40,100}")
+REQUEST_LINE = re.compile(rb"([A-Z]{1,16}) (\S{1,8000}) HTTP/1\.1\r\n")
+HEADER = re.compile(rb"([!#$%&'*+.^_`|~0-9A-Za-z-]{1,64}):[ \t]*([^\x00-\x08\x0a-\x1f\x7f]*?)[ \t]*\r\n")
+# a path in origin form without dot segments, empty segments or escapes, and an optional query
+TARGET = re.compile(r"(/(?:[A-Za-z0-9_~!$&'()*+,;=:@-][A-Za-z0-9._~!$&'()*+,;=:@-]*"
+                    r"(?:/[A-Za-z0-9_~!$&'()*+,;=:@-][A-Za-z0-9._~!$&'()*+,;=:@-]*)*)?)"
+                    r"(\?[A-Za-z0-9._~!$&'()*+,;=:@/?%-]*)?")
+SEGMENT_DOTS = re.compile(r"(?:^|/)\.\.?(?:/|$)")
+MODEL = re.compile(r"[A-Za-z0-9._:@/\[\]-]{1,100}")
+REQUEST_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
+LOGGED_PATH = re.compile(r"/[A-Za-z0-9._/-]{0,63}")
+REDACTED = b"[redacted]"
+
+# why a request is refused: the stable codes of the journal line (docs/control-room-api.md)
+REASONS = ("no-token", "wrong-placeholder", "path-not-allowed", "upgrade", "too-large", "invalid-request",
+           "upstream-tls", "upstream-error", "too-many-connections")
+# the status and Anthropic's error type the VM gets for each
+ANSWERS = {"no-token": (401, "authentication_error"), "wrong-placeholder": (401, "authentication_error"),
+           "path-not-allowed": (404, "not_found_error"), "upgrade": (400, "invalid_request_error"),
+           "too-large": (400, "invalid_request_error"), "invalid-request": (400, "invalid_request_error"),
+           "upstream-tls": (502, "api_error"), "upstream-error": (502, "api_error"),
+           "too-many-connections": (503, "overloaded_error")}
+
+
+class Refused(Exception):
+    """A request turned down: one of REASONS, the English text the VM gets, and parameters for
+    the journal line (names and values without spaces or colons)."""
+
+    def __init__(self, reason, text, **params):
+        super().__init__(text)
+        self.reason, self.params = reason, params
+
+
+class Closed(Exception):
+    """The VM closed the connection, or sent nothing in time, between requests."""
+
+
+def _test_upstream():
+    """Only in tests (AGENTBOX_ROOT set): (host, port, CA file) instead of api.anthropic.com:443
+    and the system's CAs."""
+    if not ROOT:
+        return None
+    host, _, port = os.environ.get("AGENTBOX_CLAUDE_TEST_UPSTREAM", "").rpartition(":")
+    if not host or not port.isdigit():
+        return None
+    return host, int(port), os.environ.get("AGENTBOX_CLAUDE_TEST_CA") or None
+
+
+def log(line):
+    print(line, file=sys.stderr, flush=True)
+
+
+def read_secret(path, form):
+    """The file's content without surrounding whitespace when it has this form, else None."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read(4096).strip()
+    except OSError:
+        return None
+    return data if form.fullmatch(data) else None
+
+
+def slot(vm):
+    """A lock on one of SLOTS slot files of the VM, held for as long as this process runs; None
+    when every slot is taken. Without the runtime directory there is no limit here (the socket's
+    MaxConnections still holds)."""
+    directory = f"{RUN_DIR}/{vm}"
+    try:
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+    except OSError:
+        return -1
+    for n in range(SLOTS):
+        try:
+            fd = os.open(f"{directory}/slot-{n}", os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+        except OSError:
+            return -1
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except OSError:
+            os.close(fd)
+    return None
+
+
+class Reader:
+    """The VM's side of the connection, read in pieces with a timeout."""
+
+    def __init__(self, sock):
+        self.sock, self.buf = sock, b""
+
+    def _more(self):
+        data = self.sock.recv(CHUNK)
+        if not data:
+            raise EOFError
+        self.buf += data
+
+    def line(self, limit=MAX_LINE):
+        while True:
+            end = self.buf.find(b"\n")
+            if end != -1:
+                if end + 1 > limit:
+                    raise Refused("invalid-request", "a line of the request is too long")
+                line, self.buf = self.buf[:end + 1], self.buf[end + 1:]
+                return line
+            if len(self.buf) > limit:
+                raise Refused("invalid-request", "a line of the request is too long")
+            self._more()
+
+    def exactly(self, n):
+        while len(self.buf) < n:
+            self._more()
+        data, self.buf = self.buf[:n], self.buf[n:]
+        return data
+
+
+def read_head(reader):
+    """(method, target, [(name in lower case, value)]) of the next request; Closed when the VM
+    closes the connection or sends nothing in time."""
+    reader.sock.settimeout(IDLE_SECONDS)
+    try:
+        while not reader.buf:
+            reader._more()
+    except (EOFError, OSError):
+        raise Closed()
+    reader.sock.settimeout(READ_SECONDS)
+    try:
+        first = reader.line()
+        m = REQUEST_LINE.fullmatch(first)
+        if not m:
+            if first.startswith(b"CONNECT "):
+                raise Refused("upgrade", "CONNECT is not served here")
+            raise Refused("invalid-request", "not an HTTP/1.1 request line")
+        headers = []
+        while True:
+            line = reader.line()
+            if line == b"\r\n":
+                break
+            h = HEADER.fullmatch(line)
+            if not h:
+                raise Refused("invalid-request", "a header line is malformed")
+            if len(headers) >= MAX_HEADERS:
+                raise Refused("invalid-request", "too many headers")
+            headers.append((h.group(1).decode("ascii").lower(), h.group(2)))
+    except EOFError:
+        raise Refused("invalid-request", "the request ended early")
+    except socket.timeout:
+        raise Refused("invalid-request", "the request did not arrive in time")
+    return m.group(1).decode("ascii"), m.group(2).decode("ascii"), headers
+
+
+def values(headers, name):
+    return [v for n, v in headers if n == name]
+
+
+def check(method, target, headers):
+    """The path of a request that is unambiguous and asks for no tunnel, and the length of its
+    body (None: chunked); Refused otherwise."""
+    if method == "CONNECT":
+        raise Refused("upgrade", "CONNECT is not served here")
+    if values(headers, "upgrade"):
+        raise Refused("upgrade", "protocol upgrades are not served here")
+    if values(headers, "expect"):
+        raise Refused("invalid-request", "Expect is not supported, send the body with the request")
+    for name in ("host", "authorization", "content-length", "transfer-encoding", "x-api-key"):
+        if len(values(headers, name)) > 1:
+            raise Refused("invalid-request", f"the request repeats {name}")
+    if len(values(headers, "host")) != 1:
+        raise Refused("invalid-request", "the request names no host")
+    length, chunked = values(headers, "content-length"), values(headers, "transfer-encoding")
+    if length and chunked:
+        raise Refused("invalid-request", "the request has both Content-Length and Transfer-Encoding")
+    if chunked and chunked[0].lower() != b"chunked":
+        raise Refused("invalid-request", "the only transfer coding accepted is chunked")
+    if length and not re.fullmatch(rb"[0-9]{1,12}", length[0]):
+        raise Refused("invalid-request", "Content-Length is not a number")
+    m = TARGET.fullmatch(target)
+    if not m or not m.group(1) or SEGMENT_DOTS.search(m.group(1)):
+        raise Refused("invalid-request", "the request's target is not a canonical path")
+    size = int(length[0]) if length else (None if chunked else 0)
+    if size is not None and size > MAX_BODY:
+        raise Refused("too-large", "the body is larger than 32 MB")
+    return m.group(1), size
+
+
+def placeholder_ok(vm, headers):
+    """Whether the request carries exactly the VM's placeholder and no API key."""
+    if values(headers, "x-api-key"):
+        return False
+    placeholder = read_secret(f"{CLAUDE_DIR}/placeholder-{vm}", PLACEHOLDER)
+    auth = values(headers, "authorization")
+    return bool(placeholder and auth) and hmac.compare_digest(auth[0], b"Bearer " + placeholder)
+
+
+def read_body(reader, size):
+    """The request's body: of this length, or chunked (size None), at most MAX_BODY."""
+    try:
+        if size is not None:
+            return reader.exactly(size)
+        body = b""
+        while True:
+            m = re.fullmatch(rb"([0-9A-Fa-f]{1,8})(?:;[^\r\n]*)?\r\n", reader.line())
+            if not m:
+                raise Refused("invalid-request", "a chunk of the body is malformed")
+            n = int(m.group(1), 16)
+            if len(body) + n > MAX_BODY:
+                raise Refused("too-large", "the body is larger than 32 MB")
+            if n == 0:
+                while reader.line() != b"\r\n":      # trailers are dropped
+                    pass
+                return body
+            body += reader.exactly(n)
+            if reader.exactly(2) != b"\r\n":
+                raise Refused("invalid-request", "a chunk of the body is malformed")
+    except EOFError:
+        raise Refused("invalid-request", "the request ended early")
+    except socket.timeout:
+        raise Refused("invalid-request", "the request did not arrive in time")
+
+
+def model_of(body):
+    try:
+        model = json.loads(body).get("model")
+    except (ValueError, AttributeError, RecursionError):
+        return "-"
+    return model if isinstance(model, str) and MODEL.fullmatch(model) else "-"
+
+
+class Redactor:
+    """Takes the exact bytes of a secret out of a stream that arrives in pieces: what could be
+    the start of the secret at the end of a piece is held back until the next piece shows it."""
+
+    def __init__(self, secret):
+        self.secret, self.held = secret, b""
+
+    def feed(self, data):
+        data = (self.held + data).replace(self.secret, REDACTED)
+        keep = next((k for k in range(min(len(data), len(self.secret) - 1), 0, -1)
+                     if data.endswith(self.secret[:k])), 0)
+        self.held = data[len(data) - keep:] if keep else b""
+        return data[:len(data) - keep]
+
+    def flush(self):
+        out, self.held = self.held, b""
+        return out
+
+
+def status_line(status):
+    try:
+        phrase = http.HTTPStatus(status).phrase
+    except ValueError:
+        phrase = "Status"
+    return f"HTTP/1.1 {status} {phrase}\r\n".encode()
+
+
+def refuse(sock, vm, e, hello=False):
+    """The refusal as Anthropic words errors, so Claude Code shows the text; then the connection
+    closes."""
+    status, kind = ANSWERS[e.reason]
+    body = json.dumps({"type": "error", "error": {"type": kind, "message": f"Agent Box: {e}"}}).encode()
+    retry = b"x-should-retry: true\r\nretry-after: 2\r\n" if status == 503 else b"x-should-retry: false\r\n"
+    head = (status_line(status) + b"content-type: application/json\r\n" + retry
+            + b"connection: close\r\ncontent-length: " + str(len(body)).encode() + b"\r\n\r\n")
+    if not hello:
+        params = "".join(f" {k}={v}" for k, v in e.params.items())
+        log(f"[{vm}] refused: {e.reason}{params}: {e}")
+    try:
+        sock.settimeout(10)
+        sock.sendall(head + body)
+        # what the VM still sends is read away for a moment, so closing does not reset the
+        # connection before it has read the answer
+        sock.shutdown(socket.SHUT_WR)
+        sock.settimeout(1)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and sock.recv(CHUNK):
+            pass
+    except OSError:
+        pass
+
+
+def upstream_connection():
+    """A TLS connection to api.anthropic.com, the certificate and name verified, as an HTTP
+    connection; no proxy from the environment. Refused on failure, never retried."""
+    test = _test_upstream()
+    host, port, cafile = test or (HOST, PORT, None)
+    context = ssl.create_default_context(cafile=cafile)
+    try:
+        raw = socket.create_connection((host, port), timeout=30)
+    except OSError as e:
+        raise Refused("upstream-error", f"api.anthropic.com cannot be reached ({type(e).__name__})")
+    try:
+        tls = context.wrap_socket(raw, server_hostname=HOST)
+    except ssl.SSLError:
+        raw.close()
+        raise Refused("upstream-tls", "the TLS connection to api.anthropic.com could not be verified")
+    except OSError as e:
+        raw.close()
+        raise Refused("upstream-error", f"api.anthropic.com cannot be reached ({type(e).__name__})")
+    tls.settimeout(UPSTREAM_SECONDS)
+    conn = http.client.HTTPConnection(HOST, PORT, timeout=UPSTREAM_SECONDS)
+    conn.sock = tls
+    return conn
+
+
+def forward(sock, vm, method, path, target, headers, body, token, close):
+    """The request to Anthropic with the real token, and its answer to the VM as it arrives.
+    Returns the journal line's parts: status, bytes, request-id, whether it broke off."""
+    conn = upstream_connection()
+    try:
+        try:
+            conn.putrequest(method, target, skip_host=True, skip_accept_encoding=True)
+            conn.putheader("Host", HOST)
+            conn.putheader("Accept-Encoding", "identity")
+            conn.putheader("Authorization", b"Bearer " + token)
+            for name, value in headers:
+                if name in FORWARDED or name.startswith(FORWARDED_PREFIXES):
+                    conn.putheader(name, value)
+            conn.putheader("Content-Length", str(len(body)))
+            conn.endheaders(body)
+            resp = conn.getresponse()
+        except ssl.SSLError:
+            raise Refused("upstream-tls", "the TLS connection to api.anthropic.com broke")
+        except (OSError, http.client.HTTPException) as e:
+            raise Refused("upstream-error", f"api.anthropic.com did not answer ({type(e).__name__})")
+        redactor = Redactor(token)
+        head = [status_line(resp.status)]
+        for name, value in resp.getheaders():
+            lower = name.lower()
+            if lower in ANSWER_HEADERS or lower.startswith(ANSWER_PREFIXES):
+                value = value.encode("latin-1", "replace").replace(token, REDACTED)
+                if not re.search(rb"[\x00-\x08\x0a-\x1f\x7f]", value):
+                    head.append(lower.encode() + b": " + value + b"\r\n")
+        request_id = resp.getheader("request-id") or ""
+        request_id = request_id if REQUEST_ID.fullmatch(request_id) else "-"
+        bodyless = method == "HEAD" or resp.status in (204, 304)
+        if not bodyless:
+            head.append(b"transfer-encoding: chunked\r\n")
+        if close:
+            head.append(b"connection: close\r\n")
+        sock.settimeout(UPSTREAM_SECONDS)
+        sent, broke = 0, False
+        try:
+            sock.sendall(b"".join(head) + b"\r\n")
+            while not bodyless:
+                try:
+                    data = resp.read1(CHUNK)
+                except (OSError, http.client.HTTPException):
+                    broke = True
+                    break
+                out = redactor.feed(data) if data else redactor.flush()
+                if out:
+                    sock.sendall(b"%x\r\n" % len(out) + out + b"\r\n")
+                    sent += len(out)
+                if not data:
+                    sock.sendall(b"0\r\n\r\n")
+                    break
+        except OSError:
+            broke = True             # the VM went away
+        return resp.status, sent, request_id, broke
+    finally:
+        conn.close()
+
+
+def serve(sock, vm):
+    reader = Reader(sock)
+    while True:
+        try:
+            method, target, headers = read_head(reader)
+        except Closed:
+            return
+        except Refused as e:
+            refuse(sock, vm, e)
+            return
+        started = time.monotonic()
+        path = target.split("?", 1)[0]
+        hello = (method, path) == HELLO
+        try:
+            path, size = check(method, target, headers)
+            if not placeholder_ok(vm, headers):
+                raise Refused("wrong-placeholder", "only the placeholder Agent Box gives this VM is accepted "
+                                                   "here, no other login or API key")
+            if (method, path) not in FORWARD and (method, path) != HELLO:
+                raise Refused("path-not-allowed", "the route forwards only POST /v1/messages and "
+                                                  "/v1/messages/count_tokens",
+                              method=method, **({"path": path} if LOGGED_PATH.fullmatch(path) else {}))
+            body = read_body(reader, size)
+            close = any(t.strip() == b"close" for v in values(headers, "connection") for t in v.lower().split(b","))
+            if (method, path) == HELLO:
+                sock.sendall(b"HTTP/1.1 204 No Content\r\n" + (b"connection: close\r\n" if close else b"") + b"\r\n")
+                if close:
+                    return
+                continue
+            token = read_secret(f"{CLAUDE_DIR}/token-{vm}", TOKEN)
+            if token is None:
+                raise Refused("no-token", f"no Claude token is stored for the VM {vm}; on the Host: "
+                                          f"agentbox set-claude-token {vm}")
+            status, sent, request_id, broke = forward(sock, vm, method, path, target, headers, body, token, close)
+        except Refused as e:
+            refuse(sock, vm, e, hello)
+            return
+        except OSError:
+            return
+        seconds = time.monotonic() - started
+        log(f"[{vm}] claude {method} {path} {status} model={model_of(body)} {seconds:.2f}s {sent}B "
+            f"request-id={request_id}" + (" interrupted" if broke else ""))
+        if broke or close:
+            return
+
+
+def main():
+    vm = sys.argv[1] if len(sys.argv) > 1 else ""
+    if not VM_NAME.fullmatch(vm):
+        sys.exit("agentbox-claude-route: no valid VM name")
+    sock = socket.socket(fileno=os.dup(0))
+    held = slot(vm)
+    if held is None:
+        refuse(sock, vm, Refused("too-many-connections", f"the VM already has {SLOTS} connections to the route, "
+                                                          "try again in a moment"))
+        return
+    try:
+        serve(sock, vm)
+    except Exception as e:
+        log(f"[{vm}] error: {type(e).__name__}")
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+
+if __name__ == "__main__":
+    main()

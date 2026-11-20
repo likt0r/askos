@@ -45,7 +45,7 @@ SETUP = STATE and os.environ.get("AGENTBOX_RPM_SETUP") and os.geteuid() == 0 and
 STARTER = "#!/usr/bin/python3 -I"
 # the programs in libexec (agentbox-readings is loaded by agentbox-web, not run)
 PROGRAMS = {"agentbox-proxy": "proxy", "agentbox-suspicious": "proxy", "agentbox-feeds": "proxy",
-            "agentbox-gh-tokend": "github-app", "agentbox-web": "web"}
+            "agentbox-gh-tokend": "github-app", "agentbox-claude-route": "github-app", "agentbox-web": "web"}
 # what vm/Containerfile copies from outside vm/ (the build context is the repository)
 GUEST_TOOLS = ("agentbox-gh-token", "git-credential-agentbox", "gh")
 SEEDS = ("allowlist", "suspicious-domains", "legitimate-domains")
@@ -53,6 +53,7 @@ SEEDS = ("allowlist", "suspicious-domains", "legitimate-domains")
 DIRECTORIES = {"/etc/agentbox": ("root", "root", 0o755),
                "/etc/agentbox/web": ("root", "agentbox-web", 0o750),
                "/etc/agentbox/github": ("root", "agentbox-gh", 0o750),
+               "/etc/agentbox/claude": ("root", "agentbox-claude", 0o750),
                "/var/lib/agentbox": ("root", "root", 0o755),
                "/var/lib/agentbox/images": ("root", "root", 0o711),
                "/var/lib/agentbox/vms": ("root", "root", 0o711)}
@@ -144,7 +145,7 @@ class PackageTest(unittest.TestCase):
         """The users of the Control Room, the proxies, the Feeds and the token service, and the
         group that may write into the Activity journal."""
         users, groups = sysusers()
-        self.assertEqual(users, {"agentbox-web", "agentbox-proxy", "agentbox-feeds", "agentbox-gh"})
+        self.assertEqual(users, {"agentbox-web", "agentbox-proxy", "agentbox-feeds", "agentbox-gh", "agentbox-claude"})
         self.assertLessEqual({activity.CONTROL_ROOM[0], activity.PROXY_USER, activity.TOKEN_USER}, users)
         self.assertEqual(groups, {activity.JOURNAL_GROUP})
         self.assertIn("install -D -m 0644 rpm/agentbox.sysusers %{buildroot}%{_sysusersdir}/agentbox.conf", self.spec)
@@ -524,7 +525,7 @@ class InstalledTest(unittest.TestCase):
         self.assertEqual(changed, [])
         self.assertEqual([path for path in before if path not in after], [])
         self.assertEqual(sorted(p for p in after if p.startswith("/etc/agentbox/")),
-                         ["/etc/agentbox/github", "/etc/agentbox/web"])
+                         ["/etc/agentbox/claude", "/etc/agentbox/github", "/etc/agentbox/web"])
         self.assertEqual(sorted(p for p in after if p.startswith("/var/lib/agentbox/")),
                          ["/var/lib/agentbox/images", "/var/lib/agentbox/vms"])
         self.assertFalse(any(p.startswith(("/etc/systemd/system/", "/etc/firewalld/")) and before.get(p) != after[p]
@@ -739,7 +740,7 @@ class InstalledSetupTest(unittest.TestCase):
     def test_the_units_and_the_zone_of_the_vm_networks(self):
         self.assertLessEqual(set(self.ENABLED), set(self.fake_state("systemctl.json")["enabled"]))
         libvirt = self.fake_state("firewall.json")["permanent"]["libvirt"]
-        self.assertEqual(sorted(libvirt["ports"]), ["443/tcp", "53/tcp", "53/udp", "9100/tcp"])
+        self.assertEqual(sorted(libvirt["ports"]), ["443/tcp", "53/tcp", "53/udp", "9100/tcp", "9101/tcp"])
         self.assertNotIn("ssh", libvirt["services"])
         self.assertFalse(any(c["cmd"] == "firewall-cmd" and any("rich-rule" in a for a in c["argv"])
                              for c in self.first_calls))

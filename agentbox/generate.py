@@ -1,10 +1,10 @@
 """The registry put to work: the one-time migration of work and priv into it,
 and the Host configuration of every VM generated from it.
 
-`agentbox regenerate` writes per VM the libvirt network, the proxy and
-token-service sockets and services, the Orca port forwarder, the SSH port
-forwarder while the VM has SSH access, the Data disk, the Claude-token
-placeholder, the file of its VM variables (vmenv.py), the file of its secrets (never
+`agentbox regenerate` writes per VM the libvirt network, the sockets and services of
+the proxy, the token service and its Anthropic route, the Orca port forwarder, the SSH port
+forwarder while the VM has SSH access, the Data disk, the Claude placeholder (made once) and
+an empty Claude token file, the file of its VM variables (vmenv.py), the file of its secrets (never
 from the record: it holds their values, the record only their names), the file of its SSH access
 with the SSH host key it makes once (sshkeys.py), the Observer directory and the
 libvirt domain (through virt-install, ADR 0004);
@@ -47,7 +47,7 @@ SAID = {"network": "network created or started", "units": "units written",
         "network-redefined-running": "network brought to the current definition and restarted; the running "
                                      "VM has no network until its next Restart (libvirt does not reconnect "
                                      "a running VM to a restarted network)",
-        "data-disk": "Data disk created", "claude-token": "placeholder for the Claude token created",
+        "data-disk": "Data disk created", "claude": "Claude placeholder and token file created",
         "vm-env": "VM variables written (apply from the next start)",
         "vm-secrets": "secrets written (apply from the next start)",
         "ssh-host-key": "SSH host key made, SSH access written (applies from the next start)",
@@ -121,7 +121,8 @@ def migrate(args):
 # --- regenerate --------------------------------------------------------------
 
 def nft_rules(records):
-    """A VM network reaches only the Host's resolver, proxy and token service on it. Only DHCP
+    """A VM network reaches only the Host's resolver, proxy and token service (GitHub on 9100, the
+    Anthropic route on 9101) on it. Only DHCP
     is accepted before the address check (the VM asks before it has an address); everything
     else, the resolver's port 53 included, only to the Host's address on the VM's own network,
     so no other resolver on the Host (one on its LAN address) can be reached. What reaches the
@@ -143,7 +144,7 @@ def nft_rules(records):
         *(f'    iifname "{bridge(r)}" ip daddr != {host_ip(r)} drop' for r in records),
         "    ct state established,related accept",
         "    udp dport 53 accept",
-        "    tcp dport { 53, 443, 9100 } accept",
+        "    tcp dport { 53, 443, 9100, 9101 } accept",
         "    meta l4proto tcp reject with tcp reset",
         "    meta l4proto udp reject with icmp type port-unreachable",
         "    drop",
@@ -193,7 +194,7 @@ def journal_access(user):
 
 
 def units(rec):
-    """systemd units of a VM by file name: proxy and token service on the Host's
+    """systemd units of a VM by file name: proxy, token service and Anthropic route on the Host's
     address in the VM network, logging into the Activity namespace, the Orca port
     and, while the VM has SSH access, its SSH port (ADR 0020), both only on this Host in
     Local-only and on every address in Network mode, where every
@@ -248,6 +249,35 @@ StandardOutput=socket
 StandardError=journal
 SyslogIdentifier=agentbox-gh-{vm}
 LogNamespace={activity.NAMESPACE}
+{hardening}""",
+        # the route serves at most claude_route SLOTS (64) connections at once; the socket lets one
+        # more in, which the route refuses so that Activity shows it (ADR 0023)
+        names["claude.socket"]: f"""[Unit]
+Description=Anthropic route for VM {vm}
+
+[Socket]
+ListenStream={host}:9101
+FreeBind=yes
+Accept=yes
+MaxConnections=65
+
+[Install]
+WantedBy=sockets.target
+""",
+        names["claude@.service"]: f"""[Unit]
+Description=Anthropic request of VM {vm}
+
+[Service]
+ExecStart={paths.CLAUDE_ROUTE} {vm}
+User={activity.CLAUDE_USER}
+{journal_access(activity.CLAUDE_USER)}StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+SyslogIdentifier=agentbox-claude-{vm}
+LogNamespace={activity.NAMESPACE}
+RuntimeDirectory=agentbox-claude/{vm}
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
 {hardening}""",
         names["gui.socket"]: f"""[Unit]
 Description=Orca access to VM {vm}
@@ -310,12 +340,13 @@ def virt_install_args(rec, uuid):
         "--controller", "usb,model=none",
         "--events", "on_poweroff=destroy,on_reboot=restart,on_crash=destroy",
         "--features", "acpi=on,apic=on",
-        # the VM learns its name, Orca port, Claude token, the address devices pair with, its
+        # the VM learns its name, Orca port, Claude placeholder, the address devices pair with, its
         # VM variables, its SSH access and its secrets at boot; values that could hold a comma
         # only as files (virt-install splits --sysinfo at commas)
         "--sysinfo", f"type=fwcfg,entry0.name=opt/agentbox/context,entry0={vm},"
                      f"entry1.name=opt/agentbox/orca_port,entry1={rec['orca_port']},"
-                     f"entry2.name=opt/agentbox/claude_token,entry2.file={footprint.claude_token_file(vm)},"
+                     f"entry2.name=opt/agentbox/claude_placeholder,"
+                     f"entry2.file={footprint.claude_placeholder_fw_cfg_file(vm)},"
                      f"entry3.name=opt/agentbox/pairing_address,"
                      f"entry3={hostsetup.pairing_address(hostsetup.load())},"
                      f"entry4.name=opt/agentbox/env,entry4.file={footprint.vm_env_file(vm)},"
@@ -518,20 +549,50 @@ def _data_disk(rec):
     return True
 
 
-def _claude_token(rec):
-    """QEMU refuses empty fw_cfg files, so a VM without token gets "none"."""
-    gid = _qemu()[1]
-    state_files.directory(os.path.dirname(footprint.claude_token_file(rec["name"])), 0o750, gid)
-    if os.path.exists(footprint.claude_token_file(rec["name"])):
-        return False
-    state_files.write_atomic(footprint.claude_token_file(rec["name"]), b"none\n", 0o640, gid)
-    return True
+def _claude(rec):
+    """What the VM's Anthropic route needs (ADR 0023): its placeholder, made once with 32 random
+    bytes and kept until the VM is deleted, and its token file, `none` until a token is stored;
+    both owned by the route's user, mode 0400, in a directory of its group with mode 0750. The
+    placeholder also goes into the file QEMU passes in, where `guest-setup` finds it; the token
+    never does. Whether something was made or written."""
+    from .credentials import claude_route_ids
+    name = rec["name"]
+    uid, gid = claude_route_ids()
+    try:
+        state_files.directory(footprint.CLAUDE_DIR, 0o750, gid)
+    except OSError as e:
+        die(f"{footprint.CLAUDE_DIR}: {e.strerror}", error="action_failed", vm=name)
+    made = False
+    placeholder = _placeholder(name)
+    if placeholder is None:
+        placeholder = b"agentbox-claude-" + base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=")
+        state_files.write_atomic(footprint.claude_placeholder_file(name), placeholder + b"\n", 0o400, gid, uid)
+        made = True
+    if not os.path.exists(footprint.claude_token_file(name)):
+        state_files.write_atomic(footprint.claude_token_file(name), b"none\n", 0o400, gid, uid)
+        made = True
+    return fw_cfg_file(footprint.claude_placeholder_fw_cfg_file(name), placeholder + b"\n") or made
+
+
+PLACEHOLDER = re.compile(rb"agentbox-claude-[A-Za-z0-9_-]{43}")
+
+
+def _placeholder(name):
+    """The VM's placeholder, None when it has none (yet) or the file holds no placeholder."""
+    try:
+        with open(footprint.claude_placeholder_file(name), "rb") as f:
+            data = f.read(200).strip()
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        die(f"{e.filename}: {e.strerror}", error="action_failed", vm=name)
+    return data if PLACEHOLDER.fullmatch(data) else None
 
 
 def fw_cfg_file(path, data):
     """Write a file QEMU passes into a VM as an fw_cfg entry, when its content or mode differ:
-    owner root, group qemu, mode 0640, in a directory of the same group with mode 0750 (the
-    Claude token's way). Whether it was written."""
+    owner root, group qemu, mode 0640, in a directory of the same group with mode 0750. Whether
+    it was written."""
     gid = _qemu()[1]
     state_files.directory(os.path.dirname(path), 0o750, gid)
     return state_files.write_if_changed(path, data, 0o640, gid, fail=False)
@@ -560,7 +621,7 @@ def read_secrets(name):
 
 def vm_secrets(rec):
     """The file of the VM's secrets, the only place their values are kept: created as "none"
-    when it is missing, as the Claude token's placeholder is, else written again only to leave
+    when it is missing, else written again only to leave
     out what the record no longer names or a secret may no longer have (and to fix its mode).
     No value ever comes from the record. Written before the domain is defined, which names it."""
     try:
@@ -588,7 +649,7 @@ def _der(pem):
 def ssh_host_key(rec):
     """The VM's SSH host key, made once and kept (ADR 0020): an Ed25519 key whose secret
     openssl makes, in OpenSSH's own format; owner root, group qemu, mode 0640, beside the
-    Claude token. Made when SSH access is first turned on or a first SSH key is added;
+    VM's secrets. Made when SSH access is first turned on or a first SSH key is added;
     regenerate makes one that is missing while the VM has SSH access or SSH keys. Its public
     half goes beside, readable by everyone (footprint.ssh_host_key_public_file), also for a key
     made before. Whether the key was made."""
@@ -1061,7 +1122,7 @@ def apply():
     for rec in records:
         done = []
         for key, step in (("network", _network), ("units", _units), ("data-disk", _data_disk),
-                          ("claude-token", _claude_token), ("vm-env", vm_env), ("vm-secrets", vm_secrets),
+                          ("claude", _claude), ("vm-env", vm_env), ("vm-secrets", vm_secrets),
                           ("vm-ssh", vm_ssh),
                           ("observer", _observer)):
             got = step(rec)

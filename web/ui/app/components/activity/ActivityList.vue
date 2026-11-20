@@ -6,7 +6,7 @@ const props = defineProps<{ entries: ActivityEntry[] }>()
 const { t, te, locale } = useI18n()
 
 const KIND_COLORS: Record<string, 'error' | 'warning' | 'success' | 'info' | 'neutral' | 'primary' | 'secondary'> = {
-  alert: 'error', github: 'warning', allowlist: 'info', signin: 'neutral', action: 'primary',
+  alert: 'error', github: 'warning', claude: 'info', allowlist: 'info', signin: 'neutral', action: 'primary',
   pairing: 'secondary', build: 'success', reset: 'warning', settings: 'neutral', credentials: 'secondary',
 }
 

@@ -152,10 +152,12 @@ def _free_network(records):
 
 def _leftovers(rec):
     """What an earlier VM of this name left behind; a new VM must not take it over
-    (its Claude token or secrets, its Orca identity on the Data disk, a network with another number)."""
+    (its Claude token, placeholder or secrets, its Orca identity on the Data disk, a network with another
+    number)."""
     name = rec["name"]
     files = [("Data disk", footprint.data_disk(name)), ("System disk", footprint.system_disk(name)),
-             ("Claude token", footprint.claude_token_file(name)), ("VM variables", footprint.vm_env_file(name)),
+             ("Claude token", footprint.claude_token_file(name)), ("Claude token", footprint.claude_placeholder_file(name)),
+             ("Claude token", footprint.claude_placeholder_fw_cfg_file(name)), ("VM variables", footprint.vm_env_file(name)),
              ("secrets", footprint.vm_secrets_file(name)), ("SSH host key", footprint.ssh_host_key_file(name)),
              ("SSH host key", footprint.ssh_host_key_public_file(name)), ("SSH access", footprint.vm_ssh_file(name)),
              ("Observer", footprint.observer_dir(name)),

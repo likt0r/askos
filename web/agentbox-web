@@ -1587,6 +1587,11 @@ def put_claude_token(h, m, url, body):
     return 200, run_json("set-claude-token", m["vm"], "--no-prompt", "--json", stdin=token, secrets_in=(token,))
 
 
+@route("DELETE", VM + "/claude-token")
+def delete_claude_token(h, m, url, body):
+    return 200, run_json("remove-claude-token", m["vm"], "--json")
+
+
 # --- SSH access (ADR 0020) ---
 # A change may wait for the VM's locks and for agentbox-ssh in a running VM (up to 75 s).
 SSH_TIMEOUT = 300

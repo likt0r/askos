@@ -290,6 +290,7 @@ agentbox build-log base             # the running or newest Build's log (--json 
 agentbox set-image priv base --build 20261101-1530   # back to an earlier Build at the next Reset
 agentbox set-image priv rust        # another Image, always its current Build, at the next Reset
 agentbox set-claude-token priv      # store a token from `claude setup-token`, checked first
+agentbox remove-claude-token priv   # priv's next request to Anthropic is refused
 agentbox github-app                 # where each GitHub App is installed, owners without one, install links
 agentbox github-tokens priv         # repositories priv got tokens for, refused requests
 agentbox set-github-app 123456 < key.pem   # add an App or replace its key, checked with GitHub first
@@ -470,13 +471,13 @@ password). The VM gets it like a VM variable, from its next start or Restart, bu
 never shows or logs the value: it is read from stdin (typed without echo on a terminal, or
 piped in), never from an argument, so it stays out of shell history and `ps`; `describe`,
 `agentbox env`, the Control Room and Activity name the secret only. The record holds the
-names, the values live only in `/etc/agentbox/secrets/env-<name>` beside the Claude token.
+names, the values live only in `/etc/agentbox/secrets/env-<name>`.
 `agentbox unset-secret <name> NAME` removes one. Secrets follow the name rules of VM variables,
 the 64 count both together, and no name is both a VM variable and a secret. The Control Room
 lists them as `••••` on the VM's overview and can set, replace or remove one, never read it
 (`PUT` and `DELETE /api/v1/vms/<name>/secrets/<NAME>`). A secret protects the value on the
-Host, not from the agent in the VM: code there can read it as it reads the Claude token, and
-send it out only where the Allowlist lets it.
+Host, not from the agent in the VM: code there can read it, and send it out only where the
+Allowlist lets it. The Claude token is different: it never enters the VM.
 
 `agentbox delete <name> --confirm <name>` stops the VM and removes everything the Host
 had for it. The System disk is deleted; the Data disk is moved to
@@ -499,8 +500,16 @@ above); `POST /api/v1/vms/<name>/pairing-code` reveals the Pairing code only wit
 Credentials are read from stdin by the CLI and from the request body by the Control Room,
 and never shown again: not in output, error messages, logs or Activity.
 `agentbox set-claude-token <vm>` takes the token from `claude setup-token`, checks it with
-one minimal request to Anthropic and replaces the VM's token only if Anthropic accepts it
-(it takes effect at the VM's next start). `agentbox set-github-app <APP_ID>` takes an
+one minimal request to Anthropic and replaces the VM's token only if Anthropic accepts it.
+The token stays on the Host and never enters the VM: the VM's Claude Code sends its requests
+to the Anthropic route of the token service on the Host (`http://host.agentbox:9101`) with a
+placeholder that works nowhere else, and the route adds the real token on its own TLS
+connection to `api.anthropic.com` ([ADR 0023](docs/adr/0023-the-claude-token-stays-on-the-host.md)).
+A new token is used from the VM's next request on, without a restart; a request already
+streaming finishes with the old one. `agentbox remove-claude-token <vm>` removes it the same
+way, so the VM's next request is refused; Anthropic is not asked, so revoke the token there
+too if it should stop working everywhere. Activity shows one line per request (model,
+duration, size, Anthropic's request ID) and every refusal. `agentbox set-github-app <APP_ID>` takes an
 App's private key (`.pem`) the same way, adding the App or replacing its key.
 `agentbox github-app` lists every App's installations with the VMs whose GitHub owners rely
 on each, the owners of VMs where no App is installed, and each App's link for installing it.
@@ -509,7 +518,7 @@ as installed nowhere: its owners show as missing until it is fixed, and the toke
 refuses there too. `agentbox github-tokens <vm>` lists, per
 repository, the tokens the VM got and its refused requests with the reason; it takes
 `--since`, `--until` and `--lines` (default 1000) like `activity`. In the Control Room API,
-`PUT /api/v1/vms/<vm>/claude-token` takes `{"token": "..."}`, `PUT /api/v1/github-app` takes
+`PUT /api/v1/vms/<vm>/claude-token` takes `{"token": "..."}` (`DELETE` removes it), `PUT /api/v1/github-app` takes
 `{"app_id": "123456", "private_key": "-----BEGIN ..."}`, and they, `GET /api/v1/github-app` and
 `GET /api/v1/vms/<vm>/github-tokens?since=-7d&lines=200` answer with the JSON of the command.
 

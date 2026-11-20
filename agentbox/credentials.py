@@ -1,9 +1,11 @@
-"""Credentials a VM gets from the Host: its GitHub owners and its Claude token.
+"""Credentials the Host uses for a VM: its GitHub owners and its Claude token.
 
 owners / set-owners manage the GitHub owners in the VM's registry record, which
 the GitHub token service reads. set-claude-token checks a token from `claude
-setup-token` and stores it in <CONF>/secrets/claude-<vm>, from where the VM
-reads it at start (fw_cfg) as CLAUDE_CODE_OAUTH_TOKEN.
+setup-token` and stores it in <CONF>/claude/token-<vm>, which only root and the
+Anthropic route's user (agentbox-claude) read; remove-claude-token writes `none`
+there. The route reads the file at each request (ADR 0023), so either takes effect
+from the VM's next request on, without a restart; the token never enters the VM.
 
 Checking a token: its form (sk-ant-..., only the characters such tokens have),
 then one minimal request to Anthropic's Messages API with it. Anthropic
@@ -20,7 +22,6 @@ into output or into Activity.
 import json
 import os
 import re
-import stat
 import subprocess
 import sys
 
@@ -31,6 +32,7 @@ from .registry import check
 from .sanitize import clean
 from .footprint import claude_token_file
 
+ROUTE_USER = activity.CLAUDE_USER
 OWNER = re.compile(r"[A-Za-z0-9-]{1,39}")
 ANTHROPIC = "https://api.anthropic.com/v1/messages"
 CHECK_BODY = '{"model":"claude-haiku-5-5","max_tokens":5,"messages":[{"role":"user","content":"hi"}]}'
@@ -104,17 +106,37 @@ def token_verdict(answer):
     return "valid" if kind in TOKEN_ACCEPTED else "unknown"
 
 
-def set_claude_token(args):
-    """agentbox set-claude-token <vm> [--no-prompt] [--json]  (token on stdin)"""
-    ctx = check(args[0] if args else "")
-    as_json = "--json" in args[1:]
+def claude_route_ids():
+    """(uid, gid) of the Anthropic route's user as root, else (-1, -1): its token and placeholder
+    files are owned by it."""
+    return state_files.user_ids(ROUTE_USER, "the package creates it")
+
+
+def _token_file(ctx):
+    """The VM's token file, which `agentbox regenerate` creates; dies when it is missing."""
     f = claude_token_file(ctx)
     try:
-        before = os.stat(f)
+        os.stat(f)
     except FileNotFoundError:
         die(f"{f} is missing, run agentbox setup first", error="not_set_up", vm=ctx)
     except OSError as e:
         die(f"{f}: {e.strerror}", error="action_failed")
+    return f
+
+
+def _store(f, data):
+    """One rename, owner and group the route's user, mode 0400: the route reads the old or the
+    new content, never half of it."""
+    uid, gid = claude_route_ids()
+    with state_files.locked(f):
+        state_files.write_atomic(f, data, 0o400, gid, uid)
+
+
+def set_claude_token(args):
+    """agentbox set-claude-token <vm> [--no-prompt] [--json]  (token on stdin)"""
+    ctx = check(args[0] if args else "")
+    as_json = "--json" in args[1:]
+    f = _token_file(ctx)
     if "--no-prompt" not in args[1:]:
         # with --json stdout carries only the result
         print(f"Paste the token from 'claude setup-token' for {ctx}, then Enter and Ctrl+D:",
@@ -138,15 +160,30 @@ def set_claude_token(args):
             die("Anthropic rejects the token: " + shown, error="claude_token_rejected", vm=ctx)
         die("Anthropic answered unexpectedly, token not stored (try again later): " + shown,
             error="anthropic_unavailable", vm=ctx)
-    with state_files.locked(f):
-        # one rename: a VM starting meanwhile reads the old or the new token, never half of one
-        state_files.write_atomic(f, token + b"\n", stat.S_IMODE(before.st_mode),
-                                 before.st_gid if os.geteuid() == 0 else -1)
+    _store(f, token + b"\n")
     length = len(token.decode("utf-8", "surrogateescape"))
     if as_json:
         print(json.dumps({"vm": ctx, "stored": True, "length": length}))
     else:
-        print(f"Token valid and stored ({length} characters). Takes effect after: agentbox restart {ctx}")
+        print(f"Token valid and stored ({length} characters). {ctx} uses it from its next request on.")
+
+
+def remove_claude_token(args):
+    """agentbox remove-claude-token <vm> [--json]: the VM's Claude token replaced with `none`, so
+    the route refuses its next request; a request already running finishes. Anthropic is not
+    asked: the token stays valid there until it expires or is revoked."""
+    ctx = check(args[0] if args else "")
+    f = _token_file(ctx)
+    had = state_files.claude_token_since(ctx) != 0
+    if had:
+        _store(f, b"none\n")
+    if "--json" in args[1:]:
+        print(json.dumps({"vm": ctx, "removed": had}))
+    elif had:
+        print(f"{ctx}: Claude token removed; the VM's next request is refused. Revoke it with Anthropic "
+              "if it should stop working everywhere.")
+    else:
+        print(f"{ctx}: no Claude token stored")
 
 
 DECLARATIONS = {
@@ -157,4 +194,7 @@ DECLARATIONS = {
     "set-claude-token": declare(set_claude_token, "agentbox set-claude-token <vm> [--no-prompt] [--json]",
                                  options={"no-prompt": False, "json": False}, control_room=True,
                                   kind="credentials", describe=lambda a: activity.said("Set the Claude token")),
+    "remove-claude-token": declare(remove_claude_token, "agentbox remove-claude-token <vm> [--json]",
+                                   options={"json": False}, control_room=True, kind="credentials",
+                                   describe=lambda a: activity.said("Remove the Claude token")),
 }

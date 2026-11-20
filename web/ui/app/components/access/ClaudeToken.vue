@@ -1,7 +1,8 @@
 <script setup lang="ts">
-// Sets or renews the VM's Claude token. The backend checks it with Anthropic before it
-// replaces the old one. The token is never shown again: the field is a password field,
-// emptied as soon as it was sent, whatever the answer.
+// Sets, renews or removes the VM's Claude token. The backend checks a new one with Anthropic
+// before it replaces the old one. The token never enters the VM: its Anthropic route on the Host
+// uses it from the VM's next request on (ADR 0023). It is never shown again: the field is a
+// password field, emptied as soon as it was sent, whatever the answer.
 import type { Vm } from '~/utils/live'
 
 const props = defineProps<{ vm: Vm }>()
@@ -14,6 +15,10 @@ const token = ref('')
 const busy = ref(false)
 const error = ref<unknown>(null)
 const stored = ref<{ length: number } | null>(null)
+const removeOpen = ref(false)
+const removeBusy = ref(false)
+const removeError = ref<string | null>(null)
+const removed = ref(false)
 
 const since = computed(() => (typeof props.vm.claude_token_since === 'string' ? props.vm.claude_token_since : null))
 const looksRight = computed(() => {
@@ -33,6 +38,7 @@ async function submit() {
   busy.value = true
   error.value = null
   stored.value = null
+  removed.value = false
   try {
     const r = await api<{ stored: boolean, length: number }>(`/vms/${props.vm.name}/claude-token`, { method: 'PUT', body: { token: value } })
     stored.value = { length: typeof r?.length === 'number' ? r.length : 0 }
@@ -43,6 +49,31 @@ async function submit() {
   }
   finally {
     busy.value = false
+  }
+}
+
+function askRemove() {
+  removeError.value = null
+  removeOpen.value = true
+}
+
+async function remove() {
+  if (removeBusy.value) return
+  removeBusy.value = true
+  removeError.value = null
+  error.value = null
+  stored.value = null
+  try {
+    await api(`/vms/${props.vm.name}/claude-token`, { method: 'DELETE' })
+    removed.value = true
+    removeOpen.value = false
+    void live.refetchVms()
+  }
+  catch (e) {
+    removeError.value = errorText(e)
+  }
+  finally {
+    removeBusy.value = false
   }
 }
 </script>
@@ -81,7 +112,18 @@ async function submit() {
       <p v-if="!looksRight" class="text-sm text-error">
         {{ t('errors.invalid_claude_token') }}
       </p>
-      <div class="flex justify-end">
+      <div class="flex flex-wrap justify-end gap-2">
+        <UButton
+          v-if="since"
+          type="button"
+          color="error"
+          variant="outline"
+          icon="i-lucide-trash-2"
+          :label="t('access.claude.remove.button')"
+          :disabled="busy || removeBusy"
+          data-testid="claude-remove"
+          @click="askRemove"
+        />
         <UButton type="submit" icon="i-lucide-shield-check" :label="t('access.claude.submit')" :loading="busy" :disabled="!token.trim() || !looksRight" data-testid="claude-submit" />
       </div>
     </form>
@@ -91,8 +133,17 @@ async function submit() {
       variant="subtle"
       icon="i-lucide-circle-check"
       :title="t('access.claude.stored', { length: stored.length })"
-      :description="t('access.claude.restart', { vm: props.vm.name })"
+      :description="t('access.claude.effect', { vm: props.vm.name })"
       data-testid="claude-stored"
+    />
+    <UAlert
+      v-if="removed"
+      color="success"
+      variant="subtle"
+      icon="i-lucide-circle-check"
+      :title="t('access.claude.remove.done', { vm: props.vm.name })"
+      :description="t('access.claude.remove.revoke')"
+      data-testid="claude-removed"
     />
     <UAlert
       v-if="error"
@@ -103,6 +154,15 @@ async function submit() {
       :description="oldStays ? t('access.claude.oldStays') : undefined"
       role="alert"
       data-testid="claude-error"
+    />
+    <AccessConfirmDialog
+      v-model:open="removeOpen"
+      :title="t('access.claude.remove.title', { vm: props.vm.name })"
+      :description="t('access.claude.remove.text', { vm: props.vm.name })"
+      :confirm-label="t('access.claude.remove.confirm')"
+      :busy="removeBusy"
+      :error="removeError"
+      @confirm="remove"
     />
   </section>
 </template>

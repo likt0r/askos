@@ -18,8 +18,9 @@ access its work needs, so that what goes wrong in one VM stays in it. It is buil
    ([ADR 0001](docs/adr/0001-vm-is-the-unit-of-separation.md)).
 2. **Least privilege for agents.** An agent gets what its work needs and no more: the
    destinations on its Allowlist, GitHub tokens for one repository and one hour, nothing of
-   the Host but what the owner brings in (`agentbox import`), and no credential of the owner
-   but its VM's Claude token.
+   the Host but what the owner brings in (`agentbox import`), and no credential of the owner:
+   its VM's Claude token stays on the Host, and the agent can only use it through the Anthropic
+   route of its token service.
 3. **Rogue or manipulated agents.** An agent follows instructions planted in a repository,
    issue or web page, or simply goes wrong, and tries to read credentials, reach other
    machines, send data out or destroy work.
@@ -73,18 +74,23 @@ flowchart LR
     proxy["Resolver and Allowlist proxy per VM<br/>:53 and :443 on the VM network"]
     gh["GitHub token service per VM<br/>:9100 on the VM network"]
     key[("GitHub App keys<br/>readable only by agentbox-gh")]
+    route["Anthropic route per VM<br/>:9101 on the VM network"]
+    ctoken[("Claude tokens<br/>readable only by agentbox-claude")]
     subgraph vmnet["Isolated network per VM (10.77.N.0/24)"]
       vm["VM<br/>orca serve, agents, Docker"]
     end
   end
   internet(("Internet"))
   github(("GitHub"))
+  anthropic(("api.anthropic.com"))
 
   orca --> gui --> vm
   browser --> cr --> cli
   vm -- "every name resolves to the Host;<br/>TLS, destination from the handshake" --> proxy -- "allowlisted domains only" --> internet
   vm -- "owner/repo" --> gh --> key
   gh -- "1-hour token, one repo" --> github
+  vm -- "Claude Code with the VM's placeholder" --> route --> ctoken
+  route -- "the real token, own verified TLS" --> anthropic
 ```
 
 ## Layers
@@ -276,7 +282,7 @@ flowchart LR
   A secret that is added goes into the file before its name goes into the record, and one that
   is removed leaves the record first, so a run that dies in between leaves at most a value no
   name points to, which the next `regenerate` takes out of the file. `regenerate` creates the
-  file as `none` when it is missing, like the Claude token's placeholder, and never writes a
+  file as `none` when it is missing, like the Claude token's file, and never writes a
   value from the record, which has none. A secret whose name a later release refuses stays in
   the record, as such a VM variable does, but the file the VM reads loses its value.
 - `agentbox delete` needs the name typed again (`--confirm`). It moves the record into a
@@ -318,9 +324,10 @@ flowchart LR
   Image have them), and the guest-agent wrappers that run as the agent run only once it has
   finished (`agentbox-inbox` waits up to 60 s, the Container image cleanup skips the VM for
   that hour).
-- A VM learns its name, Orca port, Pairing address, Claude token, VM variables, secrets and
-  SSH access from the Host at boot (QEMU fw_cfg); the token never touches the Data disk. The
-  token, the VM variables and the secrets are files QEMU reads (`root:qemu`, mode 0640, in
+- A VM learns its name, Orca port, Pairing address, Claude placeholder, VM variables, secrets and
+  SSH access from the Host at boot (QEMU fw_cfg); its Claude token never enters it (see
+  Credentials). The placeholder (`/etc/agentbox/secrets/claude-placeholder-<vm>`, entry
+  `opt/agentbox/claude_placeholder`), the VM variables and the secrets are files QEMU reads (`root:qemu`, mode 0640, in
   directories of mode 0750), never values in virt-install's `--sysinfo`, which it splits at commas: the VM variables
   are `/var/lib/agentbox/vm-env/<vm>.env`, entry `opt/agentbox/env`, one line
   `NAME=<base64 of the value>` per variable, or `none` without any (QEMU refuses empty
@@ -340,7 +347,7 @@ flowchart LR
   `opt/agentbox/ssh`: `none` without SSH access, else a line `host_key <base64 of the host
   key>` and a line `key <type> <base64>` per SSH key. The host key is an Ed25519 key the Host
   makes once, when SSH access is first turned on or a first key is added (its secret from
-  `openssl`, written in OpenSSH's own format), and keeps beside the Claude token,
+  `openssl`, written in OpenSSH's own format), and keeps beside the secrets,
   `/etc/agentbox/secrets/ssh-host-key-<vm>` (`root:qemu`, 0640), with its public half in
   `/etc/agentbox/ssh-host-keys/<vm>.pub` (0644, for `ssh-config`), which `regenerate` writes
   again when it is missing; a Reset leaves both, so `ssh` sees the same host key after every
@@ -544,7 +551,8 @@ flowchart LR
 
 ### Network
 - A VM's network reaches only the Host's resolver, proxy and token service on that network
-  ([ADR 0014](docs/adr/0014-the-proxy-is-transparent.md)). It has no route to the internet,
+  ([ADR 0014](docs/adr/0014-the-proxy-is-transparent.md)): ports 53, 443, 9100 (GitHub tokens)
+  and 9101 (the Anthropic route) of the Host's address on it. It has no route to the internet,
   no IPv6, and cannot reach the home network or other VMs (nftables on the Host). The
   resolver is libvirt's dnsmasq on that network: it answers every name with the Host's
   address on it and forwards nothing (the dnsmasq options `address=/#/<host>`, `local=/#/`,
@@ -852,8 +860,19 @@ sees](#what-detection-sees) below).
   request with `github-status`, so a passing failure of one App never lets another App issue
   the token. A key that cannot sign (its file missing or broken) ends it as well, with
   `app-key`; every refusal that stops at an App names its App ID.
-- **Claude:** one **Claude token** per VM from `claude setup-token`, stored on the Host and passed in at
-  boot; revocable per VM. Such tokens cannot load an organisation's managed settings, and
+- **Claude:** one **Claude token** per VM from `claude setup-token`, stored on the Host; it never
+  enters the VM ([ADR 0023](docs/adr/0023-the-claude-token-stays-on-the-host.md)). The token
+  file `/etc/agentbox/claude/token-<vm>` (owner `agentbox-claude`, mode 0400, in a directory of
+  group `agentbox-claude` and mode 0750) holds the token or `none`. The VM gets a
+  **placeholder** instead, `agentbox-claude-` and 32 random bytes, made once by `regenerate` and
+  kept until the VM is deleted, and `guest-setup` writes it as `CLAUDE_CODE_OAUTH_TOKEN` with
+  `ANTHROPIC_BASE_URL=http://host.agentbox:9101` into `/run/agentbox/env` and `agent-env`, only
+  when the placeholder entry exists; both names are reserved for VM variables and secrets. Claude
+  Code then sends its requests to the **Anthropic route** of the VM's token service, on the
+  Host's address on the VM's network, port 9101, plain HTTP on the bridge only that VM is on.
+  The route runs per connection as `agentbox-claude`, its own user, so a flaw in it reaches
+  neither the GitHub App keys nor a flaw in the GitHub part the Claude tokens. Tokens from
+  `claude setup-token` cannot load an organisation's managed settings, and
   cannot fetch the account's claude.ai connectors (Gmail, Drive, Calendar, ...): those would
   let an agent read and write the owner's data through Anthropic's hosts, which are on every
   Allowlist, and the proxy would see nothing but an allowed connection to them. A `/login`
@@ -863,26 +882,52 @@ sees](#what-detection-sees) below).
   not stop code in the VM. Such code can start Claude Code with the variable changed, or
   switch it back in Claude Code's user or project settings (`env` in `~/.claude/settings.json`
   or in a repository's `.claude/settings.json`). Either way, it would still need a claude.ai
-  login in the VM.
+  login in the VM. The Image also sets `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, a plain
+  default and no Safeguard, so Claude Code sends no bootstrap or update requests of its own and
+  every request that carries the placeholder goes through the route.
+- **The Anthropic route** accepts only a request whose `Authorization` is `Bearer` and the VM's
+  placeholder, without `x-api-key`, so it never forwards a login or key brought into the VM.
+  It forwards `POST /v1/messages` and `POST /v1/messages/count_tokens` with their query, answers
+  `HEAD /api/hello` itself with 204, and refuses every other path or method with 404, and
+  `CONNECT`, an `Upgrade` header, `Expect`, a body over 32 MB and an ambiguous request (both
+  `Content-Length` and `Transfer-Encoding`, a repeated `Host`, `Authorization` or
+  `Content-Length`, a target that is not a canonical path) with 400; it closes the connection
+  after a refusal. It reads the token file at each request, so a token set or removed counts
+  from the VM's next request on; a file without a token is a 401 that names `agentbox
+  set-claude-token`. It opens its own TLS connection to `api.anthropic.com:443` with the
+  system's CAs, the certificate and the name verified and no proxy from the environment, and
+  follows no redirect; a TLS failure is a 502, never retried. `Authorization` becomes the real
+  token, and only `anthropic-*`, `x-claude-code-*`, `x-stainless-*`, `content-type`, `accept`,
+  `user-agent` and `x-app` go on, so hop-by-hop headers, `Proxy-*`, `Forwarded`,
+  `X-Forwarded-*`, `Cookie` and `Accept-Encoding` never do and the answer comes back
+  uncompressed. Of the answer only its status, `content-type`, `request-id`, `retry-after`,
+  `x-should-retry` and `anthropic-ratelimit-unified-*` come back. The body goes to the VM chunk
+  by chunk as it arrives, nothing buffered, so an event stream reaches it event by event, and the exact bytes of the
+  real token are taken out of every header and of the body, also when they arrive split across
+  chunks. A VM gets at most 64 connections at once; the socket lets one more in, which the
+  route refuses with 503 so that Activity shows it.
 - **VM secrets** (see VMs): credentials a project needs in one VM, set with `agentbox
   set-secret` or in the Control Room. Their values are kept only in
-  `/etc/agentbox/secrets/env-<vm>` beside the VM's Claude token (`root:qemu`, mode 0640, in the
+  `/etc/agentbox/secrets/env-<vm>` (`root:qemu`, mode 0640, in the
   `root:qemu` directory of mode 0750), and reach the VM at boot like its VM variables. A secret
   protects the value from being shown and logged on the Host; it does not protect it from the
-  agent in the VM, which reads it as it reads the Claude token and can send it out only
-  through the Allowlist ([Credentials in a VM](#credentials-in-a-vm)).
+  agent in the VM, which reads it and can send it out only through the Allowlist
+  ([Credentials in a VM](#credentials-in-a-vm)).
 - No package-publishing tokens exist anywhere on the box.
 
 Replacing a credential never breaks a working one:
 - `agentbox set-claude-token` checks the form (`sk-ant-`, only the characters such tokens
-  have; API keys are refused because the VM uses the token as `CLAUDE_CODE_OAUTH_TOKEN`),
+  have; API keys are refused because the route sends the token as Claude Code sends an OAuth token),
   then sends one minimal Messages API request with it. Anthropic documents no endpoint for
   checking these OAuth tokens, so the documented error type decides: an authentication,
   permission or billing error refuses the token; an answer, or an error that only comes once
   the token was accepted (invalid request, not found, rate limit), accepts it; anything else
   (no answer, overloaded, a page from a proxy) proves nothing and stores nothing. The new
-  token replaces the old one in one rename with the file's mode and group, and takes effect
-  at the VM's next start.
+  token replaces the old one in one rename, owner `agentbox-claude` and mode 0400, and the
+  route uses it from the VM's next request on, without a restart; a request already running
+  finishes with the token it started with. `agentbox remove-claude-token` writes `none` the
+  same way, so the VM's next request is refused; it asks Anthropic nothing, and the token stays
+  valid there until it expires or is revoked.
 - `agentbox set-github-app` reads the App's private key from stdin, lets openssl parse it
   (unencrypted RSA only), signs a JWT with it and asks GitHub `GET /app`, whose answer must
   name the given App ID. Only then is the App's key written to `app-<id>.pem` (owner `agentbox-gh`, mode 0400), and
@@ -1067,7 +1112,7 @@ Host after every Build
   `*HOOKS_PATH`, `*CLAUDEAI*`), what those patterns miss, also in either case
   (`npm_config_before`, which takes npm around the minimum release age), what Agent Box sets
   for the VM or every process reads first (`PATH`, `HOME`, `XDG_RUNTIME_DIR`, `LD_*`, `NODE_OPTIONS`, `BASH_ENV`,
-  `ENV`, `CLAUDE_CODE_OAUTH_TOKEN`, `AGENTBOX_*`, `ORCA_PORT`, `PAIRING_ADDRESS`) and every
+  `ENV`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `AGENTBOX_*`, `ORCA_PORT`, `PAIRING_ADDRESS`) and every
   variable of the Image's `DefaultEnvironment`, held to those files by a test. Neither may a
   VM variable be one bash sets itself (its readonly variables `SHELLOPTS`, `BASHOPTS`, `UID`,
   `EUID`, `PPID`, `BASH_VERSINFO`, on which `export` fails in every login shell, `GROUPS`, and `IFS`, which
@@ -1458,7 +1503,7 @@ One timeline of what happened on the Host and who caused it, kept in journald
   comes from the global option `--actor`, before the command or right after it: the Control
   Room passes device and address after the command, the Maintenance window passes `timer`, a connection to a VM's Orca port that wakes it passes
   `Orca (<address>)`, one to its SSH port `SSH (<address>)`; without it, it is the user who ran `sudo`. `watch` records its
-  entries with the actor `watch`. Setting a Claude token,
+  entries with the actor `watch`. Setting or removing a Claude token,
   GitHub owners or the GitHub App is of kind `credentials`, described without the secret.
 - Other events are recorded where they happen: sign-ins by the Control Room, each step of the
   Maintenance window (`maintenance.<step>`) and the automatic
@@ -1484,10 +1529,16 @@ One timeline of what happened on the Host and who caused it, kept in journald
   while it waited), its own entry says who caused the start. So is every wake that gives up
   while the wakes file cannot be written, as before it existed; `watch` then records no
   entry, since it could not tell that it recorded one already.
-- `agentbox activity` merges those entries with Alerts from the proxy log and GitHub tokens
-  issued or refused from the token service's log, filtered by kind, VM, time and text.
+- `agentbox activity` merges those entries with Alerts from the proxy log, GitHub tokens
+  issued or refused from the token service's log and the requests of the Anthropic route (kind
+  `claude`), filtered by kind, VM, time and text. The route logs one line per request, never
+  the token, the placeholder, a header value or a body: `claude.request` with the method, path,
+  status, model, duration, size and Anthropic's `request-id`, or `claude.refused` with a stable
+  reason (`no-token`, `wrong-placeholder`, `path-not-allowed`, `upgrade`, `too-large`,
+  `invalid-request`, `upstream-tls`, `upstream-error`, `too-many-connections`). `HEAD /api/hello`
+  is not logged.
 - Everything lives in the journald namespace `agentbox`: the CLI and the Control Room write
-  to it, the proxy and the token service run in it (`LogNamespace=`). It keeps entries for
+  to it, the proxy, the token service and its Anthropic route run in it (`LogNamespace=`). It keeps entries for
   a configurable number of days (90 by default, `activity_retention_days` of the Settings,
   applied by `agentbox regenerate`), independent of the
   Host's own logs. Recorded entries count only from that namespace.
@@ -1505,7 +1556,7 @@ One timeline of what happened on the Host and who caused it, kept in journald
   restart that failed is tried again by the next run). Admins need both
   groups; every run of setup makes the members match, and a new membership
   counts from the next login. The Control Room gets the group with
-  `SupplementaryGroups=`; the proxies and token services get it as `Group=`, because
+  `SupplementaryGroups=`; the proxies, token services and Anthropic routes get it as `Group=`, because
   systemd connects a service's stdout and stderr with its user and primary group,
   before it adds supplementary groups, and sends them to `/dev/null` if that fails.
   Someone else's command still runs and says that it was not recorded. Readers never ask
@@ -1518,9 +1569,10 @@ One timeline of what happened on the Host and who caused it, kept in journald
 
   | Identifier | Written by |
   |---|---|
-  | `agentbox-activity` | the CLI (root or a member of `agentbox-journal`): its commands and events, never sign-ins, Alerts or GitHub tokens; `agentbox-alert-watch.service` as root: the Pauses its Alerts made (`alert.paused`), the only entries of kind `alert` here; `agentbox-web.service` as `agentbox-web`: sign-ins and sign-outs without a VM, nothing else; never the proxy or token service users |
+  | `agentbox-activity` | the CLI (root or a member of `agentbox-journal`): its commands and events, never sign-ins, Alerts or GitHub tokens; `agentbox-alert-watch.service` as root: the Pauses its Alerts made (`alert.paused`), the only entries of kind `alert` here; `agentbox-web.service` as `agentbox-web`: sign-ins and sign-outs without a VM, nothing else; never the proxy, token service or Anthropic route users |
   | `agentbox-proxy-<vm>` | `agentbox-proxy-<vm>.service` as `agentbox-proxy` |
   | `agentbox-gh-<vm>` | `agentbox-ghvm-<vm>@<connection>.service` as `agentbox-gh` |
+  | `agentbox-claude-<vm>` | `agentbox-claude-<vm>@<connection>.service` as `agentbox-claude` |
 
   CLI entries count from any `_UID` and without a unit: journald reads the unit from
   `/proc` and misses it when the CLI has already ended. The services' logs are also read
@@ -1554,7 +1606,7 @@ certificate name, owner user) and does the Host steps, in this order
    Release, only where there is neither the record nor its text file nor that file moved aside
    (`*.migrated`); an empty list of Harmless marks.
 5. **Firewall zone `libvirt`**, which holds the bridges of the VM networks: ports 53
-   (resolver), 443 (proxy) and 9100 (token service) open, the service `ssh` removed.
+   (resolver), 443 (proxy), 9100 (token service) and 9101 (its Anthropic route) open, the service `ssh` removed.
 6. **VM network rules**: `agentbox-vmnet.service` enabled, so the rules that let a VM reach
    only the resolver, the proxy and the token service on its network load at every boot;
    started when its rules exist (on a new Host `regenerate` writes and loads them).
@@ -1634,7 +1686,7 @@ need not be there or belong to another Release.
 | --- | --- | --- |
 | CLI starter (`python3 -I`) | `/usr/bin/agentbox` | `CLI` |
 | CLI package and `VERSION` | `/usr/lib/agentbox/` | `VERSION` |
-| Proxy, classifier, Feeds, token service | `/usr/libexec/agentbox-{proxy,suspicious,feeds,gh-tokend}` | `PROXY`, `SUSPICIOUS`, `FEEDS_PROGRAM`, `TOKEND` |
+| Proxy, classifier, Feeds, token service, Anthropic route | `/usr/libexec/agentbox-{proxy,suspicious,feeds,gh-tokend,claude-route}` | `PROXY`, `SUSPICIOUS`, `FEEDS_PROGRAM`, `TOKEND`, `CLAUDE_ROUTE` |
 | Control Room backend and its readings | `/usr/libexec/agentbox-{web,readings}` | `WEB_BACKEND` |
 | Control Room UI | `/usr/share/agentbox/web/ui/` | `WEB_UI` |
 | Containerfile and guest files ([ADR 0010](docs/adr/0010-images-are-built-from-the-installed-release.md)): `vm/…` and `github-app/…` as in the repository | `/usr/share/agentbox/vm/` | `VM_SOURCE` |
@@ -1767,16 +1819,22 @@ laptops.
 
 ### Credentials in a VM
 
-- **The Claude token is in the VM, and it is long-lived.** It reaches the VM at boot (fw_cfg),
-  and every agent and terminal there has it as `CLAUDE_CODE_OAUTH_TOKEN`
-  ([Credentials](#credentials), [VMs](#vms)). Code in the VM can read it and send it out through
-  any allowed service; it then works from anywhere, on the owner's Claude account, until it
-  expires or is revoked with Anthropic. `agentbox set-claude-token` stores a new token on the
-  Host and revokes nothing. The account's claude.ai connectors stay out of the VM only as long
-  as nobody logs in to claude.ai there: the token cannot fetch them, and
-  `ENABLE_CLAUDEAI_MCP_SERVERS=false`, a Safeguard, is a default that code in the VM can switch
-  back ([Credentials](#credentials)). Mitigation: one token per VM, so a leak is one token to
-  revoke; it never touches the Data disk.
+- **The VM can use the owner's Claude subscription.** The Claude token never enters the VM:
+  it stays on the Host, and the VM has only a placeholder that the Anthropic route of its own
+  token service accepts ([Credentials](#credentials),
+  [ADR 0023](docs/adr/0023-the-claude-token-stays-on-the-host.md)). But any process in the VM
+  can send prompts through the route for as long as a token is stored, use up the plan's
+  limits, and send whatever it reads to Anthropic, which every Allowlist allows. A leak is the
+  placeholder, which works nowhere but on that VM's network. Requests that bypass the base URL
+  (Claude Code's bootstrap request, should the Image's default be changed) carry the
+  placeholder to `api.anthropic.com` and are refused there. A `/login` with someone's
+  claude.ai account still works through the Allowlist; the route refuses that login's token,
+  so Claude Code then needs the base URL removed, which code in the VM can do. The account's
+  claude.ai connectors stay out of the VM only as long as nobody logs in to claude.ai there:
+  the token cannot fetch them, and `ENABLE_CLAUDEAI_MCP_SERVERS=false`, a Safeguard, is a
+  default that code in the VM can switch back ([Credentials](#credentials)). Mitigation:
+  Activity shows every request of the route with its model and size, and `agentbox
+  remove-claude-token` cuts the VM off from its next request on.
 - **GitHub tokens can be taken out of the VM.** Any process in the VM can ask the token service,
   as Git's credential helper and the `gh` wrapper do; the service knows the VM only by the
   network a request comes from ([Credentials](#credentials)). A token taken out works anywhere
@@ -1784,7 +1842,7 @@ laptops.
   permission.
 - **VM secrets are in the VM, readable by its code.** A secret is kept from being shown or
   logged on the Host, not from the VM: every agent and terminal there has it in its
-  environment, as it has the Claude token ([VMs](#vms), [Credentials](#credentials)). Code in
+  environment ([VMs](#vms), [Credentials](#credentials)). Code in
   the VM can read it and send it out through any allowed service, and it then works wherever
   the service it belongs to accepts it, until it is revoked there; `agentbox set-secret`
   replaces the value the VM gets at its next start and revokes nothing. Mitigation: secrets are
@@ -1857,15 +1915,19 @@ laptops.
   boundary. libvirt confines each VM's QEMU process with SELinux (sVirt) where SELinux enforces,
   as on Fedora by default; Agent Box adds no layer of its own and does not check that SELinux
   enforces. Mitigation: the Host's updates of kernel, QEMU and firmware ([The Host](#the-host)).
-- **The services a VM reaches run on the Host.** A VM reaches the proxy and the token service on
-  its network, both Agent Box's own Python, and libvirt's dnsmasq, its resolver and DHCP server
-  ([Network](#network)). A hole in one of them runs code on the Host: the proxies of all VMs run
-  as one user, `agentbox-proxy`, and the token services as `agentbox-gh`, the one user that
-  reads the GitHub Apps' keys; code running as it gets tokens for every repository of every
-  installation of every App, not only for one VM's GitHub owners. Mitigation: small services of
+- **The services a VM reaches run on the Host.** A VM reaches the proxy, the token service and
+  its Anthropic route on its network, all Agent Box's own Python, and libvirt's dnsmasq, its
+  resolver and DHCP server ([Network](#network)). A hole in one of them runs code on the Host:
+  the proxies of all VMs run as one user, `agentbox-proxy`, the token services as `agentbox-gh`,
+  the one user that reads the GitHub Apps' keys, whose code gets tokens for every repository of
+  every installation of every App, not only for one VM's GitHub owners, and the Anthropic routes
+  as `agentbox-claude`, the one user that reads every VM's Claude token. Processes on the Host
+  can connect to a route's address too, but get nothing without that VM's placeholder, which
+  only root, QEMU and `agentbox-claude` read. Mitigation: small services of
   our own instead of large general ones ([ADR 0004](docs/adr/0004-own-security-services.md)),
   without privileges, with `NoNewPrivileges` and a read-only system (`ProtectSystem=strict`);
-  the token service starts per request and reads one line.
+  the token service starts per request and reads one line, the route per connection and
+  speaks a small, strict part of HTTP/1.1.
 - **Services of the Host on ports 53 and 443.** One that listens on all of the Host's addresses
   keeps the resolver or the proxy from binding the Host's address in a VM network, so Agent Box
   refuses to set up the networks while it runs: `regenerate`, `setup`, `create`, `delete` and a
@@ -1959,9 +2021,10 @@ laptops.
 
 ### What no test covers
 
-- **No test runs a VM.** The tests run the real CLI, proxy, token service and Control Room
+- **No test runs a VM.** The tests run the real CLI, proxy, token service, Anthropic route and Control Room
   against fake external programs (`virsh`, `virt-install`, `qemu-img`, `podman`, `firewall-cmd`,
-  `systemctl`, `curl` for GitHub and Anthropic), and CI installs and updates the RPM in a Fedora
+  `systemctl`, `curl` for GitHub and Anthropic) and a local TLS server standing in for
+  `api.anthropic.com`, and CI installs and updates the RPM in a Fedora
   container ([CONTRIBUTING.md](CONTRIBUTING.md)). No test boots a VM (fw_cfg, the guest agent,
   the Safeguards at work), loads the nftables and firewalld rules into a kernel (that a VM
   reaches nothing but the resolver, the proxy and the token service), runs a Build with podman
