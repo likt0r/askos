@@ -502,6 +502,17 @@ class JournalTest(WatchTest):
                          {"vm": "work", "domain": "evil-paste.example:443", "signals": ["paste", "young"]})
         self.assertEqual(self.event("activity")["kind"], "alert")
 
+    def test_held(self):
+        # #39: the proxy holds a connection for an entry; the Control Room notifies at once
+        self.log("[work] HELD new.example (up to 30 s)", "agentbox-proxy-work")
+        self.log("[work] ALERT later.example [exfil]", "agentbox-proxy-work")
+        held = self.event("held")
+        self.assertEqual({k: held[k] for k in ("vm", "domain", "seconds")},
+                         {"vm": "work", "domain": "new.example", "seconds": 30})
+        self.assertRegex(held["time"], r"^\d{4}-\d\d-\d\dT")
+        # no Activity entry of its own: the next one is the Alert's
+        self.assertEqual(self.event("activity")["params"]["domain"], "later.example")
+
     def test_github_tokens(self):
         self.log("[work] token for likt0r/askos until 2026-11-03T13:00:00Z", "agentbox-gh-work")
         self.log("[work] refused: 'evil/repo': owner-not-allowed: evil is not a GitHub owner of the VM work",
@@ -523,6 +534,7 @@ class JournalTest(WatchTest):
         # the Control Room beyond sign-ins: counted, never sent
         self.log("x", "agentbox-activity", by=FORGED, AGENTBOX_KIND="signin", AGENTBOX_ACTION="forged")
         self.log("[work] ALERT forged.example [exfil]", "agentbox-proxy-work", by=proxy("priv"))
+        self.log("[work] HELD forged.example (up to 30 s)", "agentbox-proxy-work", by=FORGED)
         self.log("[work] token for forged/repo until 2026-11-03T13:00:00Z", "agentbox-gh-work", by=FORGED)
         self.log("[work] refused: 'forged/x': invalid-request: no", "agentbox-gh-work", by=token_service("priv"))
         self.log("x", "agentbox-activity", by=CONTROL_ROOM, AGENTBOX_KIND="allowlist", AGENTBOX_ACTION="allow")
@@ -532,7 +544,7 @@ class JournalTest(WatchTest):
         while not events or events[-1]["data"].get("action") != "real":
             events.append({"event": "activity", "data": self.event("activity")})
         self.assertEqual([e["data"]["action"] for e in events], ["signin", "real"])
-        self.assertEqual([e["event"] for e in self.events(0.5) if e["event"] in ("alert", "github-token")], [])
+        self.assertEqual([e["event"] for e in self.events(0.5) if e["event"] in ("alert", "held", "github-token")], [])
         # one warning per poll, with the count only
         deadline = time.monotonic() + 10
         while sum(int(n) for n in re.findall(r"left out: (\d+)", self.stderr())) < 5:

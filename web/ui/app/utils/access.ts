@@ -130,6 +130,14 @@ export interface BlockedDestination {
   params?: Record<string, string>
   /** Signals of its last Alert, empty when unremarkable */
   suspicious: string[]
+  /** when the newest hold of it ends at the latest (epoch seconds), null when it was not held;
+   * a destination only held so far has count 0 */
+  held_until?: number | null
+}
+
+/** Seconds the proxy may still hold a connection to it, 0 when none is held. */
+export function heldFor(r: BlockedDestination, now: number): number {
+  return typeof r.held_until === 'number' ? Math.max(0, Math.ceil(r.held_until - now / 1000)) : 0
 }
 
 /** A VM's Alerts for one destination (last 24 hours). */

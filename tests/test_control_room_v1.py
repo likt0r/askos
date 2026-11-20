@@ -1240,6 +1240,24 @@ class EventsTest(V1Test):
         later = [b for b in (s.block() for _ in range(8)) if b.get("event") == "notification"]
         self.assertEqual(later, [])
 
+    def test_a_held_destination_is_notified_once_in_a_while(self):
+        # #39: at once, and not again for each retry of the same VM
+        self.until_state()
+        s = self.stream()
+        s.event("state")
+        self.watch_lines(("held", {"time": "t", "vm": "work", "domain": "new.example", "seconds": 30}),
+                         ("held", {"time": "t", "vm": "work", "domain": "new.example", "seconds": 30}),
+                         ("held", {"time": "t", "vm": "priv", "domain": "new.example", "seconds": 30}),
+                         ("held", {"time": "t", "vm": "work", "domain": "other.example", "seconds": 30}))
+        got = [json.loads(s.event("notification")["data"]) for _ in range(3)]
+        self.assertEqual([(n["kind"], n["severity"], n["vm"], n["domain"]) for n in got], [
+            ("held", "warning", "work", "new.example"), ("held", "warning", "priv", "new.example"),
+            ("held", "warning", "work", "other.example")])
+        self.assertEqual((got[0]["text"], got[0]["seconds"]),
+                         ("work wants to reach new.example, held for up to 30 s until it is allowed", 30))
+        later = [b for b in (s.block() for _ in range(4)) if b.get("event") == "notification"]
+        self.assertEqual(later, [])
+
     def test_system(self):
         self.until_state()
         status, obj, _ = self.request("GET", "/api/v1/system")

@@ -1,10 +1,14 @@
 """The proxy's log lines (proxy/agentbox-proxy), in one place: the proxy writes them with the
 functions here, and agentbox reads them back with parse(), for the network view, the Allowlist's
-uses and previews and the Alerts of Activity. One line per connection, English (ADR 0012):
+uses and previews, the Alerts of Activity and the held destinations the Control Room notifies
+about. One line per connection, English (ADR 0012), and one per held destination:
   [<vm>] ALLOWED <host> (allowlist <domain> <scope>)   or (allowlist regex <pattern> <scope>),
                                                         or (open web)
   [<vm>] BLOCKED <host> (<reason>)      a client reason names the client's address instead
   [<vm>] ALERT <host> [<signal>,...]
+  [<vm>] HELD <host> (up to <seconds> s) a destination that is not allowed waits for an entry;
+                                        once per host while connections to it are held, each
+                                        of which ends with its own ALLOWED or BLOCKED line
   [<vm>] CLOSED <host> (<reason>)       tunnel closed by the proxy (ADR 0005, ADR 0021)
   [<vm>] ERROR <host> (<error>)         destination unreachable
 Other lines (message()) are no events: parse() returns None for them.
@@ -31,13 +35,16 @@ BLOCK_REASONS = {NOT_ALLOWED: "not-allowed", WATCHLIST_UNREADABLE: "watchlist-un
                  NOT_TLS: "not-tls", NO_SERVER_NAME: "no-server-name"}
 CLIENT_REASONS = (NOT_TLS, NO_SERVER_NAME)
 
-# A parsed line. kind: ALLOWED, BLOCKED, ALERT, CLOSED or ERROR; reason: the text in
-# parentheses of BLOCKED, CLOSED and ERROR; signals: of an ALERT, or of a BLOCKED for
-# `suspicious`; entry: of an ALLOWED, ("domain" or "regex", value, scope), None for Open web.
-Event = collections.namedtuple("Event", "vm kind host reason signals entry", defaults=(None, (), None))
+# A parsed line. kind: ALLOWED, BLOCKED, ALERT, CLOSED, ERROR or HELD; reason: the text in
+# parentheses of BLOCKED, CLOSED, ERROR and HELD; signals: of an ALERT, or of a BLOCKED for
+# `suspicious`; entry: of an ALLOWED, ("domain" or "regex", value, scope), None for Open web;
+# seconds: of a HELD, how long the proxy holds the connection at most.
+Event = collections.namedtuple("Event", "vm kind host reason signals entry seconds",
+                               defaults=(None, (), None, None))
 
-LINE = re.compile(r"\[([a-z0-9-]+)\] (?:(ALLOWED|BLOCKED|CLOSED|ERROR) (\S+) \((.*)\)|(ALERT) (\S+) \[(.*)\])")
+LINE = re.compile(r"\[([a-z0-9-]+)\] (?:(ALLOWED|BLOCKED|CLOSED|ERROR|HELD) (\S+) \((.*)\)|(ALERT) (\S+) \[(.*)\])")
 ENTRY = re.compile(r"allowlist (regex )?(\S+) (\S+)")
+HOLD = re.compile(r"up to ([1-9][0-9]{0,3}) s")
 
 
 def allowed(vm, host, entry=None):
@@ -59,6 +66,10 @@ def suspicious(signals):
 
 def alert(vm, host, signals):
     return f"[{vm}] ALERT {host} [{','.join(signals)}]"
+
+
+def held(vm, host, seconds):
+    return f"[{vm}] HELD {host} (up to {seconds} s)"
 
 
 def closed(vm, host, reason):
@@ -87,6 +98,9 @@ def parse(line):
         if reason != "open web" and not e:
             return None
         return Event(vm, kind, host, entry=e and ("regex" if e.group(1) else "domain", e.group(2), e.group(3)))
+    if kind == "HELD":
+        m = HOLD.fullmatch(reason)
+        return Event(vm, kind, host, reason, seconds=int(m.group(1))) if m else None
     if kind == "BLOCKED" and reason.startswith(SUSPICIOUS):
         return Event(vm, kind, host, reason, _signals(reason[len(SUSPICIOUS):]))
     return Event(vm, kind, host, reason)

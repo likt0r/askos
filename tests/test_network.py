@@ -184,10 +184,10 @@ class NetworkTest(unittest.TestCase):
 
 
 # the Activity namespace the proxy logs into and the default journal it logged into before,
-# Alerts and blocked destinations of the last 24 hours, newest first, by the proxies' user
+# Alerts, blocked and held destinations of the last 24 hours, newest first, by the proxies' user
 def proxy_log_call(vm):
     return ["--namespace=+agentbox", "--output=json", "--no-pager", "--reverse", "--since=@-24h",
-            f"--identifier=agentbox-proxy-{vm}", r"--grep=^\[[a-z0-9-]+\] (ALERT|BLOCKED) ", f"_UID={PROXY}"]
+            f"--identifier=agentbox-proxy-{vm}", r"--grep=^\[[a-z0-9-]+\] (ALERT|BLOCKED|HELD) ", f"_UID={PROXY}"]
 
 
 UNTRUSTED = "agentbox: journal entries without a known writer left out: {}\n"
@@ -212,12 +212,35 @@ class BlockedTest(NetworkTest):
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(out,
                          '[{"domain": "pypi.org", "count": 2, "last": 1793701200, "reason": "not on the Allowlist", '
-                         '"code": "not-allowed", "params": {}, "suspicious": []}, {"domain": "ten.internal", "count": 1, '
+                         '"code": "not-allowed", "params": {}, "held_until": null, "suspicious": []}, {"domain": "ten.internal", "count": 1, '
                          '"last": 1793701100, "reason": "does not resolve to a public address", "code": "not-public", '
-                         '"params": {}, "suspicious": []}, {"domain": "evil.example", "count": 2, "last": 1793700600, '
+                         '"params": {}, "held_until": null, "suspicious": []}, {"domain": "evil.example", "count": 2, "last": 1793700600, '
                          '"reason": "not on the Allowlist", "code": "not-allowed", "params": {}, '
-                         '"suspicious": ["exfil", "young"]}, {"domain": "10.77.1.2", "count": 2, "last": 1793700500, '
-                         '"reason": "not a TLS handshake", "code": "not-tls", "params": {}, "suspicious": []}]\n')
+                         '"held_until": null, "suspicious": ["exfil", "young"]}, {"domain": "10.77.1.2", "count": 2, "last": 1793700500, '
+                         '"reason": "not a TLS handshake", "code": "not-tls", "params": {}, "held_until": null, "suspicious": []}]\n')
+
+    def test_a_held_destination_is_a_row_from_the_moment_it_is_held(self):
+        # #39: the proxy holds it for an entry; the row has Allow... before the hold ends
+        now = int(time.time())
+        self.journal(f"{now - 100}.000001 titan agentbox-proxy-work[812]: [work] HELD late.example (up to 30 s)\n"
+                     f"{now - 70}.000001 titan agentbox-proxy-work[812]: [work] BLOCKED late.example "
+                     "(not on the Allowlist)\n"
+                     f"{now - 5}.000001 titan agentbox-proxy-work[812]: [work] HELD new.example (up to 30 s)\n"
+                     f"{now - 4}.000001 titan agentbox-proxy-work[812]: [work] HELD odd.example (up to x s)\n")
+        code, out, err = self.run_agentbox("blocked", "work", "--json")
+        self.assertEqual((code, err), (0, ""))
+        row = {"reason": "not on the Allowlist", "code": "not-allowed", "params": {}, "suspicious": []}
+        self.assertEqual(json.loads(out), [
+            {"domain": "new.example", "count": 0, "last": now - 5, "held_until": now + 25, **row},
+            {"domain": "late.example", "count": 1, "last": now - 70, "held_until": now - 70, **row}])
+        code, out, err = self.run_agentbox("blocked", "work")
+        def local(epoch, form):     # TZ is UTC+1
+            return time.strftime(form, time.gmtime(epoch + 3600))
+        until = local(now + 25, "%H:%M:%S")
+        self.assertEqual(out.splitlines()[0],
+                         f"new.example                                 0x  last {local(now - 5, '%Y-%m-%d %H:%M')}  "
+                         f"(not on the Allowlist)  HELD until {until}")
+        self.assertNotIn("HELD", out.splitlines()[1])
 
     def test_a_client_address_and_a_destination_of_the_same_text_are_two_rows(self):
         # a VM may also name an address as the server: that is a destination, not the client

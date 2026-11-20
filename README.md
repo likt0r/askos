@@ -255,7 +255,7 @@ agentbox set-secret lab NPM_TOKEN   # a secret, its value typed without echo (or
 agentbox add-ssh-key lab ~/.ssh/id_ed25519.pub   # an SSH key for the VM (or on stdin)
 agentbox set-ssh lab on             # SSH access: ssh -p 22NN agent@127.0.0.1 (agentbox ssh lab)
 agentbox remove-ssh-key lab SHA256:…   # takes the key out at once, ends every SSH session
-agentbox blocked priv               # what a VM tried to reach and was refused
+agentbox blocked priv               # what a VM tried to reach and was refused, or the proxy holds
 agentbox allow priv docs.rs         # add an Allowlist entry for one VM
 agentbox allow all crates.io --for 8h --note "Rust crates"   # for all VMs, for 8 hours
 agentbox allow priv --regex '^mirror[0-9]+\.vendor\.example$'  # a Regex entry: shows what it would allow
@@ -321,7 +321,13 @@ destination that gains one (a Feed update, a new Watchlist entry). So `allow`, `
 lift the Signal instead (below); `agentbox check-domain <domain>` shows where each comes from.
 While the Watchlist cannot be read, they take a destination only with `--force`, unchecked: which
 Signals are strong is unknown then, and the proxy lets nothing through until it is fixed. The
-Control Room never passes `--force`. A new Host starts with entries for all VMs
+Control Room never passes `--force`. A destination that is not allowed is not refused at
+once: the proxy holds the connection for up to `hold_seconds` (30 s by default), the Control
+Room notifies you (“<vm> wants <domain>”), and “Allow…” in the VM's blocked list, or `agentbox
+allow`, lets the waiting connection through; `agentbox blocked <vm>` marks it `HELD until …`.
+A program with a shorter timeout of its own gives up earlier and gets through when it tries
+again. Destinations with strong Signals or on the Watchlist are never held, and in Open web
+nothing is. A new Host starts with entries for all VMs
 (`proxy/allowlist`), among them `claudeusercontent.com`, so claude.ai artifacts load in every VM
 without Open web; a subdomain the threat-intelligence Feed lists there stays blocked, with an
 Alert.
@@ -928,6 +934,7 @@ no longer counts; the next change writes the file without both.
 | `default_memory_mib`, `default_data_disk_gib`, `default_image` | 26624, 300, base | defaults of `create` |
 | `default_container_image_cleanup`, `default_container_image_cleanup_days` | true, 7 | true, false and 1–365: the Container image cleanup a new VM starts with (for new VMs) |
 | `open_web_max_minutes` | 240 | 1–1440, longest Open web |
+| `hold_seconds` | 30 | 0–120, how long the proxy holds a connection to a destination that is not allowed, so you can allow it meanwhile (see [Day to day](#day-to-day)); 0 refuses it at once |
 | `alert_action` | pause | pause, none: what an Alert with a strong Signal does to its VM; `pause` pauses it within seconds (weak Signals never do), `none` only blocks the destination (see [Day to day](#day-to-day)) |
 | `temporary_entry_default` | 1h | 15min, 1h, 8h, 7d (`allow --temporary`, and `duration: default` in the API) |
 | `young_domain_days` | 14 | 7, 14, 21, 28, 35 (days of the newly-registered list) |

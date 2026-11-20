@@ -1,7 +1,8 @@
 """The list records (GLOSSARY: List record): the Allowlist, the Watchlist, the Legitimate
 domains, the Harmless marks and Open web as files on the Host, and the rules for their
 entries, in one place for agentbox, the proxy (agentbox-proxy) and the classifier
-(agentbox-suspicious), which import this module (ADR 0013).
+(agentbox-suspicious), which import this module (ADR 0013). Also the one Setting the proxy
+reads, the hold time (hold_seconds).
 
 A record is the file {"entries": [...]}; an entry names a domain or, as a Regex entry, a
 pattern ("regex") in place of the domain, with fields of its own besides. A broken or
@@ -504,3 +505,27 @@ def open_until(path):
     except OSError:
         return 0
     return int(u) if re.fullmatch(r"\d+", u) and int(u) > time.time() else 0
+
+
+# --- Hold --------------------------------------------------------------------------
+
+# the Setting hold_seconds (settings.py, in /etc/agentbox/settings.json): how long the proxy
+# holds a connection to a destination that is not allowed, so the owner can allow it meanwhile;
+# 0 refuses it at once. The proxy reads the one key itself, as it changes, without the rest of
+# the Settings
+SETTINGS = "settings.json"
+HOLD_KEY = "hold_seconds"
+HOLD_SECONDS = 30
+MAX_HOLD_SECONDS = 120
+
+
+def hold_seconds(text):
+    """The hold time in the text of settings.json: its hold_seconds, the default without one.
+    ValueError for a file that is no JSON object or holds an invalid hold_seconds."""
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise ValueError("a JSON object expected")
+    value = data.get(HOLD_KEY, HOLD_SECONDS)
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= MAX_HOLD_SECONDS:
+        raise ValueError(f"{HOLD_KEY}: invalid value (allowed: whole number from 0 to {MAX_HOLD_SECONDS})")
+    return value

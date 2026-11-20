@@ -2,7 +2,8 @@
 // What a VM tried to reach in the last 24 hours and was refused, newest first, with the
 // Signals of its last Alert; "Allow…" adds an Allowlist entry for a chosen time, except on a
 // row that names the VM's own address (a connection with no destination). Marks destinations
-// an active entry covers by now.
+// an active entry covers by now, and those the proxy holds for an entry (#39), which appear
+// the moment it holds them.
 import type { AllowlistEntry, BlockedDestination } from '~/utils/access'
 
 const props = defineProps<{ vm: string, entries: AllowlistEntry[] }>()
@@ -11,7 +12,7 @@ const { t } = useI18n()
 const tr = useTranslator()
 const errorText = useErrorText()
 const when = useWhen()
-const now = useNow(30000)
+const now = useNow(1000)
 
 const rows = ref<BlockedDestination[]>([])
 const loaded = ref(false)
@@ -53,6 +54,9 @@ onMounted(load)
 useLiveEvent('alert', (a) => {
   if (a?.vm === props.vm) void load()
 }, 1000)
+useLiveEvent('held', (h) => {
+  if (h?.vm === props.vm) void load()
+}, 1000)
 </script>
 
 <template>
@@ -85,9 +89,13 @@ useLiveEvent('alert', (a) => {
             <span class="break-all font-mono text-sm text-highlighted">{{ r.domain }}</span>
             <WatchlistSignalBadges v-if="r.suspicious.length" :names="r.suspicious" />
             <UBadge v-if="allowedBy(r.domain)" color="success" variant="soft" size="sm" icon="i-lucide-check" :label="t('webTab.blocked.allowedNow')" data-testid="blocked-allowed" />
+            <UBadge v-else-if="heldFor(r, now)" color="warning" variant="soft" size="sm" icon="i-lucide-hourglass" :label="t('webTab.blocked.held', { seconds: heldFor(r, now) })" :title="t('webTab.blocked.heldHint')" data-testid="blocked-held" />
           </div>
           <p class="text-xs text-muted">
-            {{ t('webTab.blocked.times', r.count) }} · {{ t('webTab.blocked.last', { when: when.ago(r.last, now) }) }} · <span data-testid="blocked-reason" :title="reason(r) !== r.reason ? r.reason : undefined">{{ reason(r) }}</span>
+            <template v-if="r.count">
+              {{ t('webTab.blocked.times', r.count) }} ·
+            </template>
+            {{ t('webTab.blocked.last', { when: when.ago(r.last, now) }) }} · <span data-testid="blocked-reason" :title="reason(r) !== r.reason ? r.reason : undefined">{{ reason(r) }}</span>
           </p>
         </div>
         <UButton

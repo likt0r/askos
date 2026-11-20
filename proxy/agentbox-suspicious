@@ -907,9 +907,11 @@ def self_test():
         own = sorted(d for d in listed.domains if d != domain)
         if own:
             cases.insert(1, (f"selftest.{own[0]}", {listed.domains[own[0]][0]}, False))
-        # nothing is allowed, so nothing is resolved
+        # nothing is allowed, so nothing is resolved; and refused at once, without a hold
         with open(os.path.join(conf, "allowlist.json"), "w") as f:
             f.write('{"entries": []}\n')
+        with open(os.path.join(conf, records.SETTINGS), "w") as f:
+            f.write(json.dumps({records.HOLD_KEY: 0}) + "\n")
         with open(os.path.join(conf, "harmless"), "w") as f:
             f.write("".join(d + "\n" for d in SELFTEST_HARMLESS))
         for name, entries in SELFTEST_FEEDS.items():

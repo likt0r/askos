@@ -4,7 +4,8 @@ Every value has a built-in default, so a missing file means all defaults; a file
 that is not JSON, holds an unknown key or an invalid value is a clear error for
 every consumer (load() is the only reader on the Host: the Control Room backend,
 which runs unprivileged, imports it too; agentbox-feeds gets its values from the
-generated unit). The file is world-readable and holds nothing secret.
+generated unit; the proxies read only hold_seconds, with list_records.hold_seconds). The
+file is world-readable and holds nothing secret.
 
 `agentbox settings` shows the values, `agentbox set-settings KEY=VALUE...` validates
 all of them, saves nothing when one is invalid, and otherwise saves and applies what
@@ -19,7 +20,7 @@ import json
 import os
 import re
 
-from . import durations, paths, state_files
+from . import durations, list_records, paths, state_files
 from .commands import declare
 from .errors import Fail, die
 from .sanitize import clean
@@ -125,6 +126,10 @@ SPEC = {
     "default_container_image_cleanup": Setting(True, _bool(), NEW_VMS),
     "default_container_image_cleanup_days": Setting(7, _int(1, 365), NEW_VMS),
     "open_web_max_minutes": Setting(240, _int(1, 1440)),
+    # how long the proxy holds a connection to a destination that is not allowed, so the owner
+    # can allow it meanwhile (0: refused at once); each proxy reads it itself as it changes,
+    # with list_records.hold_seconds, which owns the default and the range
+    "hold_seconds": Setting(list_records.HOLD_SECONDS, _int(0, list_records.MAX_HOLD_SECONDS)),
     # what an Alert with a strong Signal does to its VM (ADR 0022): pause it, or nothing (none);
     # agentbox alert-watch reads it at every such Alert
     "alert_action": Setting(ALERT_PAUSE, _choice(ALERT_PAUSE, ALERT_NONE)),

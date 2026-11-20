@@ -786,6 +786,16 @@ def alert_entry(e):
             "_domain": event.host, "_signals": signals}
 
 
+def held_event(e):
+    """A proxy line of a held destination (HELD) as the event `held` of agentbox watch,
+    {"time", "vm", "domain", "seconds"}, or None. No Activity entry: the destination shows in the
+    VM's blocked list while it is held, and its outcome is the proxy's ALLOWED or BLOCKED line."""
+    event, base, name = proxy_log.parse(_text(e, "MESSAGE") or ""), _base(e), _per_vm(e, "agentbox-proxy")
+    if not (event and event.kind == "HELD" and base and name):
+        return None
+    return {"time": base["time"], "vm": name, "domain": event.host, "seconds": event.seconds}
+
+
 def _token_request(action, rest):
     """What a token service line says, as entry fields that the timeline does not
     show (leading "_"), for `agentbox github-tokens`: the repository (owner/repo)
