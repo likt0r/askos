@@ -1,3 +1,5 @@
+import { VM_NAME } from './vmRules'
+
 // Browser notifications (#21): which event kinds a browser shows is a per-browser
 // preference (localStorage); the browser's permission is asked once, by a click.
 
@@ -77,7 +79,7 @@ export function notificationKey(n: NotificationEvent): string {
  * "Allow…" lets it through. */
 export function notificationUrl(n: NotificationEvent): string {
   if (n.kind === 'host-reboot' || n.kind === 'temperature') return '/system'
-  if (n.kind === 'held' && typeof n.vm === 'string' && /^[a-z][a-z0-9-]{1,15}$/.test(n.vm)) return `/vms/${n.vm}/web`
+  if (n.kind === 'held' && typeof n.vm === 'string' && VM_NAME.test(n.vm)) return `/vms/${n.vm}/web`
   return '/activity'
 }
 

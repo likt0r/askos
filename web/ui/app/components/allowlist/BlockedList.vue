@@ -51,12 +51,25 @@ function allowedBy(domain: string) {
 
 watch(() => props.vm, load)
 onMounted(load)
+// one reload a second at most, for this VM's events only: a burst gathered across VMs would
+// keep only its last event and miss this VM's
+let reloading: ReturnType<typeof setTimeout> | null = null
+function reloadSoon() {
+  if (reloading) clearTimeout(reloading)
+  reloading = setTimeout(() => {
+    reloading = null
+    void load()
+  }, 1000)
+}
+onBeforeUnmount(() => {
+  if (reloading) clearTimeout(reloading)
+})
 useLiveEvent('alert', (a) => {
-  if (a?.vm === props.vm) void load()
-}, 1000)
+  if (a?.vm === props.vm) reloadSoon()
+}, 0)
 useLiveEvent('held', (h) => {
-  if (h?.vm === props.vm) void load()
-}, 1000)
+  if (h?.vm === props.vm) reloadSoon()
+}, 0)
 </script>
 
 <template>
