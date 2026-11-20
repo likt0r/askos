@@ -1,5 +1,5 @@
-"""The list records (GLOSSARY: List record): the Allowlist, the Watchlist, the Legitimate
-domains, the Harmless marks and Open web as files on the Host, and the rules for their
+"""The list records (GLOSSARY: List record): the Allowlist, the Forbids, the Watchlist, the
+Legitimate domains, the Harmless marks and Open web as files on the Host, and the rules for their
 entries, in one place for agentbox, the proxy (agentbox-proxy) and the classifier
 (agentbox-suspicious), which import this module (ADR 0013). Also the one Setting the proxy
 reads, the hold time (hold_seconds).
@@ -19,6 +19,7 @@ import warnings
 # the files, in the configuration directory (/etc/agentbox, paths.CONF)
 ALLOWLIST = "allowlist.json"
 LEGACY_ALLOWLIST = ("allowlist", "allowlist-{}")     # before allowlist.json: every VM, one VM
+FORBIDS = "forbids.json"
 WATCHLIST = "watchlist.json"
 LEGITIMATE = "legitimate.json"
 LEGACY_WATCHLIST = "suspicious-domains"
@@ -434,6 +435,28 @@ def allowlist_entries(text):
     """The entries of allowlist.json's text; a broken or second entry makes the whole record
     broken (ValueError), for the proxy as for agentbox."""
     return checked(entries(text), allowlist_problem, allowlist_key, allowlist_twice)
+
+
+def forbid_problem(e, shown=printable):
+    """What is wrong with a Forbid, else None: an Allowlist entry's checks, but it names a domain
+    (no pattern) and its scope is one VM (never all)."""
+    if isinstance(e, dict) and "regex" in e:
+        return "a forbid names a domain, not a pattern"
+    why = allowlist_problem(e, shown)
+    if why is None and e["scope"] == ALL:
+        return "a forbid is for one VM, not all"
+    return why
+
+
+def forbid_entries(text):
+    """The entries of forbids.json's text; a broken or second entry makes the whole record broken
+    (ValueError), for the proxy as for agentbox."""
+    return checked(entries(text), forbid_problem, allowlist_key, allowlist_twice)
+
+
+def covers(domain, host):
+    """Whether a domain entry covers host: the domain itself or one of its subdomains."""
+    return host == domain or host.endswith("." + domain)
 
 
 def checked(items, check, key=key, twice=lambda e: f"{printable(key(e)[1], MAX_HOST)} listed twice"):

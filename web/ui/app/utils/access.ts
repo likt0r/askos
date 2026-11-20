@@ -117,6 +117,34 @@ export function coveredBy(domain: string, entries: AllowlistEntry[], nowMs: numb
     && (e.expires == null || e.expires * 1000 > nowMs))
 }
 
+/** A Forbid as `GET /vms/<vm>/forbids` returns it (times in epoch seconds): a domain (with its
+ * subdomains) the proxy refuses the VM at once, for a while or for good, unless an Allowlist
+ * entry allows it (ADR 0024). */
+export interface ForbidEntry {
+  domain: string
+  /** the VM */
+  scope: string
+  expires: number | null
+  note: string
+  added_by: string
+  added: number
+  expired: boolean
+  remaining: number | null
+  /** connections the proxy refused for it in the last 24 hours, null when unknown */
+  refused_24h: number | null
+}
+
+/** The API path of a VM's Forbid (`/vms/<vm>/forbids/<domain>`), with an action after it. */
+export function forbidPath(e: Pick<ForbidEntry, 'domain' | 'scope'>, action = ''): string {
+  return `/vms/${encodeURIComponent(e.scope)}/forbids/${encodeURIComponent(e.domain)}${action ? `/${action}` : ''}`
+}
+
+/** The Forbid in force that covers the domain (its own domain or a parent), as the proxy matches it. */
+export function forbiddenBy(domain: string, forbids: ForbidEntry[], nowMs: number): ForbidEntry | undefined {
+  return forbids.find(f => (domain === f.domain || domain.endsWith('.' + f.domain))
+    && (f.expires == null || f.expires * 1000 > nowMs))
+}
+
 /** A destination a VM tried to reach and was refused (last 24 hours). */
 export interface BlockedDestination {
   domain: string

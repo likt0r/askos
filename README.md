@@ -257,6 +257,7 @@ agentbox set-ssh lab on             # SSH access: ssh -p 22NN agent@127.0.0.1 (a
 agentbox remove-ssh-key lab SHA256:…   # takes the key out at once, ends every SSH session
 agentbox blocked priv               # what a VM tried to reach and was refused, or the proxy holds
 agentbox allow priv docs.rs         # add an Allowlist entry for one VM
+agentbox forbid priv ads.example --for 7d   # refuse it at once for a week: no hold, no notification
 agentbox allow all crates.io --for 8h --note "Rust crates"   # for all VMs, for 8 hours
 agentbox allow priv --regex '^mirror[0-9]+\.vendor\.example$'  # a Regex entry: shows what it would allow
 agentbox allow priv --regex '^mirror[0-9]+\.vendor\.example$' --confirm-pattern   # ... and adds it
@@ -327,7 +328,16 @@ Room notifies you (“<vm> wants <domain>”), and “Allow…” in the VM's bl
 allow`, lets the waiting connection through; `agentbox blocked <vm>` marks it `HELD until …`.
 A program with a shorter timeout of its own gives up earlier and gets through when it tries
 again. Destinations with strong Signals or on the Watchlist are never held, and in Open web
-nothing is. A new Host starts with entries for all VMs
+nothing is. A destination you do not want gets a **Forbid** instead: “Forbid…” next to “Allow…”,
+or `agentbox forbid <vm> <domain> [--for D|--temporary] [--note TEXT]`, refuses it and its
+subdomains for that VM at once, with no hold and no notification, also in Open web, for the
+durations an entry has or permanently ([ADR 0024](docs/adr/0024-an-allowlist-entry-wins-over-a-forbid.md)).
+`agentbox forbids [<vm>]` lists them with the connections refused in 24 hours; `forbid-extend`,
+`forbid-make-permanent`, `forbid-set-note` and `unforbid` change or remove one, as for an entry,
+and once it expires or is removed the destination is held and notified again. An Allowlist entry
+wins over a Forbid, and the two never overlap: forbidding replaces the VM's own entry of that
+domain and is refused while another entry (for all VMs, of a parent domain, a pattern) allows
+it; allowing lifts the Forbids the entry covers. A new Host starts with entries for all VMs
 (`proxy/allowlist`), among them `claudeusercontent.com`, so claude.ai artifacts load in every VM
 without Open web; a subdomain the threat-intelligence Feed lists there stays blocked, with an
 Alert.

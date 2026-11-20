@@ -1,6 +1,6 @@
 // A VM's Web tab against a fake backend: Open web (open for a time within the Settings'
-// limit, close), blocked destinations with their Signals and "allow for <duration>", the
-// entries that apply to the VM.
+// limit, close), blocked destinations with their Signals and "allow for <duration>" or "forbid
+// for <duration>", the entries that apply to the VM and its Forbids.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resetSessionForTests } from '~/composables/useSession'
 import { resetLiveForTests } from '~/composables/useLive'
@@ -17,6 +17,13 @@ function blocked() {
     { domain: 'pypi.org', count: 7, last: now() - 7200, reason: 'something new', code: null, params: {}, suspicious: [] },
     // a connection the proxy took no destination from: the VM's own address
     { domain: '10.77.1.2', count: 2, last: now() - 9000, reason: 'not a TLS handshake', code: 'not-tls', params: {}, suspicious: [] },
+  ]
+}
+
+function vmForbids() {
+  return [
+    { domain: 'ads.example', scope: 'work', expires: null, note: 'tracking', added_by: 'root', added: now() - 60, expired: false, remaining: null, refused_24h: 2 },
+    { domain: 'telemetry.example', scope: 'work', expires: now() + 600, note: '', added_by: 'root', added: now() - 60, expired: false, remaining: 600, refused_24h: 0 },
   ]
 }
 
@@ -45,6 +52,7 @@ const ROUTES = {
   'GET /settings': SETTINGS,
   'GET /vms/work/blocked': ok(blocked()),
   'GET /vms/work/allowlist': ok(vmEntries()),
+  'GET /vms/work/forbids': ok([]),
   'GET /vms': ok({ vms: [vm('work')], problems: [] }),
 }
 
@@ -91,6 +99,71 @@ describe('Web tab', () => {
     await click('[data-testid="add-submit"]')
     expect(changes(api.calls)).toEqual([{ method: 'POST', path: '/allowlist', csrf: '1', body: { scope: 'work', domain: 'pypi.org', duration: '15min' } }])
     await waitFor(() => expect(blockedRow('pypi.org').querySelector('[data-testid="blocked-allowed"]')).not.toBeNull())
+  })
+
+  it('forbids a blocked destination for the VM for a chosen time', async () => {
+    let forbids: ReturnType<typeof vmForbids> = []
+    const { api } = await openApp('/vms/work/web', {
+      ...ROUTES,
+      'GET /vms/work/forbids': () => ok(forbids),
+      'POST /vms/work/forbids': (call) => {
+        const b = call.body as { domain: string }
+        forbids = [{ ...vmForbids()[1]!, domain: b.domain, expires: now() + 8 * 3600 }]
+        return { status: 201, body: { ...forbids[0], allowlist_removed: false } }
+      },
+    })
+    expect(must('[data-testid="forbids-empty"]').textContent).toContain('Nothing is forbidden for this VM.')
+    // not where an entry allows it already, nor for the VM's own address
+    expect(blockedRow('static.docs.rs').querySelector('[data-testid="blocked-forbid"]')).toBeNull()
+    expect(blockedRow('10.77.1.2').querySelector('[data-testid="blocked-forbid"]')).toBeNull()
+    await click(blockedRow('pypi.org').querySelector('[data-testid="blocked-forbid"]')!)
+    expect(must('[data-testid="forbid-domain"]').textContent).toContain('pypi.org')
+    // the durations of an Allowlist entry, permanent included
+    expect([...must('[data-testid="forbid-duration"]').querySelectorAll('[data-duration]')].map(b => (b as HTMLElement).dataset.duration))
+      .toEqual(['15min', '1h', '8h', '7d', 'permanent'])
+    await click('[data-testid="forbid-duration"] [data-duration="8h"]')
+    await click('[data-testid="forbid-submit"]')
+    expect(changes(api.calls)).toEqual([{ method: 'POST', path: '/vms/work/forbids', csrf: '1', body: { domain: 'pypi.org', duration: '8h' } }])
+    await waitFor(() => expect(blockedRow('pypi.org').querySelector('[data-testid="blocked-forbidden"]')).not.toBeNull())
+    expect(blockedRow('pypi.org').querySelector('[data-testid="blocked-forbid"]')).toBeNull()
+    // still Allow…: an entry wins over the Forbid and lifts it
+    expect(blockedRow('pypi.org').querySelector('[data-testid="blocked-allow"]')).not.toBeNull()
+    expect($$('[data-testid="vm-forbids"] [data-testid="forbid-entry"]').map(r => r.dataset.domain)).toEqual(['pypi.org'])
+  })
+
+  it('shows the refusal of a Forbid an Allowlist entry overrules', async () => {
+    await openApp('/vms/work/web', { ...ROUTES, 'POST /vms/work/forbids': fail(409, 'forbid_overruled') })
+    await click(blockedRow('pypi.org').querySelector('[data-testid="blocked-forbid"]')!)
+    await click('[data-testid="forbid-submit"]')
+    expect(must('[data-testid="forbid-error"]').textContent).toContain('wins over a Forbid')
+  })
+
+  it('lists the VM\'s Forbids, marks the destinations they cover, extends and removes one', async () => {
+    const blockedForbidden = { domain: 'eu.ads.example', count: 4, last: now() - 30, reason: 'forbidden', code: 'forbidden', params: {}, suspicious: [] }
+    const { api } = await openApp('/vms/work/web', {
+      ...ROUTES,
+      'GET /vms/work/blocked': ok([blockedForbidden, ...blocked()]),
+      'GET /vms/work/forbids': ok(vmForbids()),
+      'POST /vms/work/forbids/telemetry.example/extend': ok({}),
+      'DELETE /vms/work/forbids/ads.example': ok({ scope: 'work', domain: 'ads.example', removed: true, message: 'x' }),
+    })
+    const row = blockedRow('eu.ads.example')
+    expect(row.querySelector('[data-testid="blocked-reason"]')!.textContent).toBe('forbidden for this VM')
+    expect(row.querySelector('[data-testid="blocked-forbidden"]')).not.toBeNull()
+    expect(row.querySelector('[data-testid="blocked-forbid"]')).toBeNull()
+    const rows = $$('[data-testid="forbid-entry"]')
+    expect(rows.map(r => r.dataset.domain)).toEqual(['ads.example', 'telemetry.example'])
+    expect(rows[0]!.querySelector('[data-testid="forbid-left"]')!.textContent).toBe('Permanent')
+    expect(rows[0]!.querySelector('[data-testid="forbid-refused"]')!.textContent).toBe('refused 2 times in 24 h')
+    expect(rows[0]!.querySelector('[data-testid="forbid-extend"]')).toBeNull()
+    await click(rows[1]!.querySelector('[data-testid="forbid-extend"]')!)
+    await click('[data-testid="forbid-extend-choices"] [data-duration="1h"]')
+    await click(must('[data-testid="forbid-entry"][data-domain="ads.example"] [data-testid="forbid-remove"]'))
+    await click('[data-testid="confirm-action"]')
+    expect(changes(api.calls)).toEqual([
+      { method: 'POST', path: '/vms/work/forbids/telemetry.example/extend', csrf: '1', body: { duration: '1h' } },
+      { method: 'DELETE', path: '/vms/work/forbids/ads.example', csrf: '1', body: undefined },
+    ])
   })
 
   it('opens the web for a time within the longest Open web, then closes it', async () => {

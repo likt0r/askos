@@ -29,8 +29,12 @@ NO_SERVER_NAME = "no server name"
 SUSPICIOUS = "suspicious: "
 OPEN_WEB_ENDED = "Open web ended"
 REMOVED = "removed from the Allowlist"
+# a Forbid of the VM covers the destination: refused at once, never held, also in Open web; and
+# why a tunnel only Open web allowed closes when a Forbid comes to cover it
+FORBIDDEN = "forbidden"
 # the reasons of BLOCKED as stable codes the Control Room words (docs/control-room-api.md)
 BLOCK_REASONS = {NOT_ALLOWED: "not-allowed", WATCHLIST_UNREADABLE: "watchlist-unreadable", NOT_PUBLIC: "not-public",
+                 FORBIDDEN: "forbidden",
                  # a connection the proxy took no destination from: the line names the client
                  NOT_TLS: "not-tls", NO_SERVER_NAME: "no-server-name"}
 CLIENT_REASONS = (NOT_TLS, NO_SERVER_NAME)

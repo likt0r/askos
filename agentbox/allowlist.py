@@ -37,6 +37,11 @@ strong cannot be told (the hand-maintained Watchlist cannot be read, or the clas
 not answer) they refuse every domain without --force; with it they store the entry unchecked,
 and the proxy, which lets nothing through while the Watchlist cannot be read, checks it once
 it can. The Control Room never passes --force.
+
+Forbids (forbids.py, ADR 0024). An entry wins over a Forbid, and the two never overlap: allow,
+extend and make-permanent lift the Forbids the entry covers within its scope (after the entry
+is written), and `agentbox expire-allowlist` removes expired Forbids too. A VM's Forbids come
+and go with its entries (start_vm, drop_vm).
 """
 import json
 import os
@@ -93,7 +98,7 @@ def _no_force(ref, opts):
             error="invalid_argument", option="--force")
 
 
-def _seconds(opts):
+def duration_seconds(opts):
     """The duration asked for, in seconds, or None for permanent."""
     if "for" in opts and "temporary" in opts:
         die("--for and --temporary not together", error="invalid_duration")
@@ -107,7 +112,7 @@ def _seconds(opts):
     return None
 
 
-def _note(value):
+def note_arg(value):
     return entry_store.text(value, "note", MAX_NOTE)
 
 
@@ -142,7 +147,7 @@ def scope_text(scope):
     return "all VMs" if scope == ALL else scope
 
 
-def _until(t):
+def until_text(t):
     """End of a temporary entry for people: the time, with the day unless it is today."""
     today = time.strftime("%Y-%m-%d ", time.localtime())
     text = times.local(t)
@@ -248,8 +253,10 @@ def _remove_legacy(name):
 
 def start_vm(name, source=None):
     """A new VM starts without entries of its own, or with a one-time copy of the
-    current entries of `source` (ADR 0001); nothing of an earlier VM of this
-    name carries over. Returns the number of entries copied."""
+    current entries of `source` (ADR 0001), and without Forbids; nothing of an earlier VM of
+    this name carries over. Returns the number of entries copied."""
+    from . import forbids
+    forbids.drop_vm(name)
     now = int(time.time())
     with changing() as entries:
         entries[:] = [e for e in entries if e["scope"] != name]
@@ -261,11 +268,13 @@ def start_vm(name, source=None):
 
 
 def drop_vm(name):
-    """The VM's own entries go with it; whether there were any."""
+    """The VM's own entries and its Forbids go with it; whether there were any."""
+    from . import forbids
+    dropped = forbids.drop_vm(name)
     with changing() as entries:
         before = len(entries)
         entries[:] = [e for e in entries if e["scope"] != name]
-        gone = len(entries) != before
+        gone = len(entries) != before or dropped
     legacy = footprint.legacy_allowlist_file(name)
     gone = gone or os.path.exists(legacy)
     _remove_legacy(name)
@@ -381,7 +390,7 @@ def show(args):
         print(json.dumps(rows, ensure_ascii=False))
         return
     for r in rows:
-        left = "permanent" if r["expires"] is None else "expired" if r["expired"] else "until " + _until(r["expires"])
+        left = "permanent" if r["expires"] is None else "expired" if r["expired"] else "until " + until_text(r["expires"])
         used = "?" if r["uses_24h"] is None else f"{r['uses_24h']}x"
         what = r["domain"] or f"regex {clean(r['regex'], False)}"
         note = f"[{r['refused']}; it allows nothing] {r['note']}" if r["refused"] else r["note"]
@@ -395,11 +404,12 @@ def allow(args):
     Signals, and while they cannot be told only with --force (_signals). With --regex PATTERN
     in place of the domain a Regex entry: refused unless it keeps the rules (patterns.py), and
     without --confirm-pattern it only shows which hosts of the proxy log it would allow
-    (preview)."""
+    (preview). It lifts the Forbids the entry covers within its scope (forbids.lift)."""
+    from . import forbids
     positional, opts = options.parse(args)
     scope, ref = _target(positional, opts)
-    seconds = _seconds(opts)
-    note = _note(opts.get("note"))
+    seconds = duration_seconds(opts)
+    note = note_arg(opts.get("note"))
     if ref[0] == "regex":
         _no_force(ref, opts)
         patterns.checked(ref[1])
@@ -423,8 +433,10 @@ def allow(args):
                 e["expires"] = None if expires is None else max(e["expires"], expires)
             if note is not None:
                 e["note"] = note
-    until = f" until {_until(e['expires'])}" if e["expires"] is not None else ""
-    done("json" in opts, f"{scope_text(scope)}: {entry_store.label(ref)} allowed{until}", **patterns.both(e))
+    lifted = forbids.lift(e)
+    until = f" until {until_text(e['expires'])}" if e["expires"] is not None else ""
+    done("json" in opts, f"{scope_text(scope)}: {entry_store.label(ref)} allowed{until}{forbids.lifted_text(lifted)}",
+         **patterns.both(e), forbids_lifted=lifted)
 
 
 def disallow(args):
@@ -451,12 +463,14 @@ def disallow(args):
 
 def extend(args):
     """agentbox extend <vm|all> <domain>|--regex PATTERN --for 15min|1h|8h|7d [--force]
-    [--json]: a temporary entry runs that much longer (from now, if it has expired)"""
+    [--json]: a temporary entry runs that much longer (from now, if it has expired); it lifts the
+    Forbids it covers, as allow does"""
+    from . import forbids
     positional, opts = options.parse(args)
     scope, ref = _target(positional, opts)
     if "for" not in opts:
         die("extend needs --for 15min, 1h, 8h or 7d", error="invalid_duration")
-    seconds = _seconds(opts)
+    seconds = duration_seconds(opts)
     _no_force(ref, opts)
     if _existing(read()[0], ref, scope)["expires"] is None:
         die(f"{scope_text(scope)}: {entry_store.label(ref)} is allowed permanently", error="allowlist_entry_permanent",
@@ -469,13 +483,15 @@ def extend(args):
             die(f"{scope_text(scope)}: {entry_store.label(ref)} is allowed permanently", error="allowlist_entry_permanent",
                 scope=scope, **entry_store.param(ref))
         e["expires"] = max(e["expires"], int(time.time())) + seconds
-    done("json" in opts, f"{scope_text(scope)}: {entry_store.label(ref)} allowed until {_until(e['expires'])}",
-         **patterns.both(e))
+    lifted = forbids.lift(e)
+    done("json" in opts, f"{scope_text(scope)}: {entry_store.label(ref)} allowed until {until_text(e['expires'])}"
+         f"{forbids.lifted_text(lifted)}", **patterns.both(e), forbids_lifted=lifted)
 
 
 def make_permanent(args):
     """agentbox make-permanent <vm|all> <domain>|--regex PATTERN [--force] [--json]: a
-    temporary entry no longer expires"""
+    temporary entry no longer expires; it lifts the Forbids it covers, as allow does"""
+    from . import forbids
     positional, opts = options.parse(args)
     scope, ref = _target(positional, opts)
     _no_force(ref, opts)
@@ -485,9 +501,11 @@ def make_permanent(args):
         e = _existing(entries, ref, scope)
         was = e["expires"]
         e["expires"] = None
-    if was is None:
+    lifted = forbids.lift(e)
+    if was is None and not lifted:
         activity.unchanged()
-    done("json" in opts, f"{scope_text(scope)}: {entry_store.label(ref)} allowed permanently", **patterns.both(e))
+    done("json" in opts, f"{scope_text(scope)}: {entry_store.label(ref)} allowed permanently"
+         f"{forbids.lifted_text(lifted)}", **patterns.both(e), forbids_lifted=lifted)
 
 
 def set_note(args):
@@ -497,7 +515,7 @@ def set_note(args):
     scope, ref = _target(positional, opts)
     if "note" not in opts:
         die("set-note needs --note TEXT", error="invalid_argument", option="--note")
-    note = _note(opts["note"])
+    note = note_arg(opts["note"])
     with changing() as entries:
         e = _existing(entries, ref, scope)
         e["note"] = note
@@ -506,7 +524,8 @@ def set_note(args):
 
 def expire(args):
     """agentbox expire-allowlist [--json] (timer, every minute): removes expired
-    entries and records each expiry in Activity"""
+    entries and expired Forbids and records each expiry in Activity"""
+    from . import forbids
     positional, opts = options.parse(args)
     if positional:
         die("too many arguments: " + clean(positional[0], False)[:60], error="invalid_argument")
@@ -521,11 +540,15 @@ def expire(args):
                         f"Temporary Allowlist entry {patterns.shown(e)}{' for all VMs' if everywhere else ''} "
                         f"expired ({times.local(e['expires'])})", None if everywhere else e["scope"],
                         params={kind: value, "scope": e["scope"]}, expired=e["expires"])
+    forbids_gone = forbids.expire(now)
     if "json" in opts:
-        print(json.dumps({"expired": [patterns.both(e) for e in _order(gone)]}, ensure_ascii=False))
+        print(json.dumps({"expired": [patterns.both(e) for e in _order(gone)], "forbids_expired": forbids_gone},
+                         ensure_ascii=False))
         return
     for e in _order(gone):
         print(f"{scope_text(e['scope'])}: {patterns.shown(e)} expired")
+    for e in forbids_gone:
+        print(f"{e['scope']}: Forbid {e['domain']} expired")
 
 
 def check_regex(args):
