@@ -163,8 +163,9 @@ class RouteTest(unittest.TestCase):
             f.write(data)
         os.replace(tmp, self.path(f"etc/agentbox/claude/{name}"))
 
-    def env(self, ca="ca.pem", port=None):
-        return {"PATH": os.environ["PATH"], "AGENTBOX_ROOT": self.root, "LANG": "C.UTF-8",
+    def env(self, ca="ca.pem", port=None, request_seconds=None):
+        extra = {"AGENTBOX_CLAUDE_TEST_REQUEST_SECONDS": str(request_seconds)} if request_seconds else {}
+        return {**extra, "PATH": os.environ["PATH"], "AGENTBOX_ROOT": self.root, "LANG": "C.UTF-8",
                 "AGENTBOX_CLAUDE_TEST_UPSTREAM": f"127.0.0.1:{port or self.upstream.port}",
                 "AGENTBOX_CLAUDE_TEST_CA": cert(ca),
                 # no proxy is taken from the environment: these would lead nowhere
@@ -553,6 +554,16 @@ class RefusalTest(RouteTest):
     def test_a_body_over_32_mb(self):
         raw = self.request(headers=[b"Content-Length: %d" % (32 * 1024 * 1024 + 1)], body=None)
         self.assert_refused(raw, 400, "too-large")
+
+    def test_a_non_ascii_byte_in_the_target(self):
+        _, line = self.assert_refused(b"POST /v1/\xff HTTP/1.1\r\nHost: h\r\n\r\n", 400, "invalid-request")
+        self.assertEqual(line, "[priv] refused: invalid-request: not an HTTP/1.1 request line")
+
+    def test_a_refused_hello_is_logged(self):
+        self.assert_refused(self.request(method="HEAD", target="/api/hello", headers=[], body=None, auth=b"wrong"),
+                            401, "wrong-placeholder")
+        self.assert_refused(self.request(method="HEAD", target="/api/hello", headers=[b"Content-Length: 1"],
+                                         body=None, auth=PLACEHOLDER + b"x"), 401, "wrong-placeholder")
 
     def test_a_chunked_body_over_32_mb(self):
         conn = self.route()

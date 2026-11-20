@@ -185,7 +185,8 @@ class Reader:
             if end != -1:
                 if end + 1 > limit:
                     raise Refused("invalid-request", "a line of the request is too long")
-                line, self.buf = self.buf[:end + 1], self.buf[end + 1:]
+                line = bytes(self.buf[:end + 1])
+                del self.buf[:end + 1]
                 return line
             if len(self.buf) > limit:
                 raise Refused("invalid-request", "a line of the request is too long")
