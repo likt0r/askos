@@ -33,14 +33,15 @@ At most SLOTS connections of one VM are served at once (a lock per slot in the r
 directory); the socket lets one more in, which is refused with 503 so that Activity shows it.
 
 One journal line per request (agentbox/activity.py reads them), never the token, the placeholder,
-a header value or a body; HEAD /api/hello is not logged:
+a header value or a body; a successful HEAD /api/hello is not logged (its refusals are):
   [<vm>] claude <method> <path> <status> model=<model> <seconds>s <bytes>B request-id=<id>[ interrupted]
   [<vm>] refused: <reason>[ <name>=<value>...]: <English text>
 <reason> is one of REASONS; `interrupted` marks an answer that broke off on either side.
 
 Only in tests (AGENTBOX_ROOT set): AGENTBOX_CLAUDE_TEST_UPSTREAM (host:port to connect to instead
 of api.anthropic.com:443; the certificate must still be for api.anthropic.com) and
-AGENTBOX_CLAUDE_TEST_CA (the CA file the certificate is verified against).
+AGENTBOX_CLAUDE_TEST_CA (the CA file the certificate is verified against) and
+AGENTBOX_CLAUDE_TEST_REQUEST_SECONDS (the total time for the head and body of one request).
 """
 import fcntl
 import hmac
@@ -456,7 +457,6 @@ def serve(sock, vm):
             return
         started = time.monotonic()
         path = target.split("?", 1)[0]
-        hello = (method, path) == HELLO
         try:
             path, size = check(method, target, headers)
             if not placeholder_ok(vm, headers):
@@ -479,7 +479,7 @@ def serve(sock, vm):
                                           f"agentbox set-claude-token {vm}")
             status, sent, request_id, broke = forward(sock, vm, method, path, target, headers, body, token, close)
         except Refused as e:
-            refuse(sock, vm, e, hello)
+            refuse(sock, vm, e)
             return
         except OSError:
             return

@@ -611,7 +611,7 @@ reason and an error by its `message`.
 
 The Anthropic route of the token service (ADR 0023) writes one English line per request,
 never the token, the placeholder, a header value or a body (`github-app/agentbox-claude-route`);
-`HEAD /api/hello` is not logged:
+a successful `HEAD /api/hello` is not logged (its refusals are):
 
 ```text
 [<vm>] claude <method> <path> <status> model=<model> <seconds>s <bytes>B request-id=<id>[ interrupted]
