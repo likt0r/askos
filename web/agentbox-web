@@ -611,7 +611,7 @@ WATCH_STABLE = 60       # ran this long: the pause starts over
 WATCH_FORWARD = {"activity": False, "alert": False, "held": False, "github-token": False, "build": False,
                  "build-log": False, "services": True, "host-reboot": True}
 # a held destination of a VM is notified about once in this time, however often the VM tries again
-HELD_REPEAT_SECONDS = 300
+HELD_REPEAT_SECONDS = 60
 # and at most this many held destinations of a VM are notified in HELD_WINDOW seconds, so a VM
 # trying endless names cannot drown the critical notifications; the dict of them stays below
 # HELD_MAX_KEPT entries whatever the VMs do

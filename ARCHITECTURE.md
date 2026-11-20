@@ -1372,7 +1372,7 @@ not libvirt's; Activity, Alerts, held destinations and GitHub tokens from follow
 whether updates need a reboot (`dnf -C needs-restarting -r`, every six hours). It cleans
 entries like `agentbox activity` does and passes every string through the token, key and
 Pairing-code patterns once more. It ends when the backend closes its stdin. The backend
-turns Alerts, held destinations (once in five minutes per VM and destination, however often
+turns Alerts, held destinations (once a minute per VM and destination, however often
 the VM tries again, and at most three a minute per VM), refused GitHub tokens, failed or rejected Builds, a needed reboot and
 temperatures reaching their threshold into `notification` events (kind, severity, VM, short
 English text); which of them a browser shows is its own choice.

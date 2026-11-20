@@ -772,7 +772,7 @@ translation. Which kinds a browser shows is a per-browser preference kept by the
 | `kind` | `severity` | Extra fields | When |
 |---|---|---|---|
 | `alert` | critical | `domain`, `signals`; `paused: true` when the Alert paused the VM | every Alert, and again when it paused its VM (`alert_action`) |
-| `held` | warning | `domain`, `seconds` | the proxy holds a connection to a destination that is not allowed (`held` event); once in five minutes per VM and destination, at most 3 a minute per VM. The VM's blocked list has its "Allow…" |
+| `held` | warning | `domain`, `seconds` | the proxy holds a connection to a destination that is not allowed (`held` event); once a minute per VM and destination, at most 3 a minute per VM. The VM's blocked list has its "Allow…" |
 | `github-refused` | warning | `request`, `detail` (the token service's reason, English) | a GitHub token request was refused |
 | `build-failed` | warning | `image`, `build`, `detail` | a Build failed; the previous one stays in use |
 | `build-rejected` | critical | `image`, `build`, `detail` | a Build was discarded because a Safeguard was missing or weakened |
