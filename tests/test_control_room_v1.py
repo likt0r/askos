@@ -27,6 +27,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from fake_journald import Journald  # noqa: E402
@@ -1031,6 +1032,19 @@ class HeldBoundTest(unittest.TestCase):
         notified = [watch.first_hold("work", f"a{i}.example") for i in range(1000)]
         self.assertEqual(notified.count(True), web.HELD_PER_VM)
         self.assertEqual(len(watch.held), web.HELD_PER_VM)
+
+
+    def test_a_held_destination_is_notified_again_after_a_minute(self):
+        """#39: the owner chose a minute, so a program retrying after a missed hold asks again."""
+        web = server_module()
+        self.assertEqual(web.HELD_REPEAT_SECONDS, 60)
+        watch, now = web.Watch(), [1000.0]
+        with mock.patch.object(web.time, "monotonic", lambda: now[0]):
+            self.assertTrue(watch.first_hold("work", "new.example"))
+            now[0] += 59
+            self.assertFalse(watch.first_hold("work", "new.example"))
+            now[0] += 2
+            self.assertTrue(watch.first_hold("work", "new.example"))
 
 
 class ErrorTableTest(unittest.TestCase):
