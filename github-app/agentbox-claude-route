@@ -317,11 +317,22 @@ def read_body(reader, size):
         raise Refused("invalid-request", "the request did not arrive in time")
 
 
+PARSED_BODY = 1024 * 1024              # bytes: a larger body is not parsed for its model, only scanned
+MODEL_FIELD = re.compile(rb'"model"\s*:\s*"([^"\\]{1,100})"')
+
+
 def model_of(body):
-    try:
-        model = json.loads(body).get("model")
-    except (ValueError, AttributeError, RecursionError):
-        return "-"
+    """The model a request names, for its Activity line; "-" when it names none Agent Box shows.
+    A large body is scanned, not parsed: parsing 32 MB of nested JSON takes more memory than the
+    unit may use, and the line would be lost."""
+    if len(body) > PARSED_BODY:
+        found = MODEL_FIELD.search(body, 0, 64 * 1024)
+        model = found.group(1).decode("ascii", "replace") if found else None
+    else:
+        try:
+            model = json.loads(body).get("model")
+        except (ValueError, AttributeError, RecursionError):
+            return "-"
     return model if isinstance(model, str) and MODEL.fullmatch(model) else "-"
 
 

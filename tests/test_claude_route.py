@@ -565,6 +565,16 @@ class RefusalTest(RouteTest):
         self.assert_refused(self.request(method="HEAD", target="/api/hello", headers=[b"Content-Length: 1"],
                                          body=None, auth=PLACEHOLDER + b"x"), 401, "wrong-placeholder")
 
+    def test_a_large_body_is_logged_with_its_model_and_never_parsed_whole(self):
+        """Parsing 32 MB of nested JSON would take more memory than the unit may use, and the
+        forwarded request would leave no Activity line."""
+        for body, model in ((b'{"model":"claude-opus-5-5","messages":[' + b'{},' * 600000 + b'{}]}', "claude-opus-5-5"),
+                            (b"[" + b"{}," * 600000 + b"{}]", "-")):
+            with self.subTest(model=model):
+                status, _, _, log = self.ask(self.request(body=body))
+                self.assertEqual(status, 200)
+                self.assertEqual(LINE.fullmatch(log[0]).group(2), model)
+
     def test_a_large_chunked_body_in_many_small_chunks_is_read_in_linear_time(self):
         conn = self.route()
         conn.send(self.request(headers=[b"Transfer-Encoding: chunked"], body=None))
