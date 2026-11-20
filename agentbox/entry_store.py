@@ -1,5 +1,5 @@
-"""The storage the Allowlist (allowlist.py) and the Watchlist and the Legitimate domains
-(lists.py) share: records of entries that each name a domain or, as a Regex entry (ADR 0013,
+"""The storage the Allowlist (allowlist.py), the Forbids (forbids.py), and the Watchlist and the
+Legitimate domains (lists.py) share: records of entries that each name a domain or, as a Regex entry (ADR 0013,
 patterns.py), a pattern, with fields of their own besides.
 
 An entry asked for is a ref, ("domain", domain) or ("regex", pattern). A record is the file

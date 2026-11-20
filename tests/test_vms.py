@@ -81,6 +81,17 @@ class VmsTest(RegistryTest):
             {"domain": d, "scope": s, "expires": e, "note": n, "added": 1793700000, "added_by": "bewr"}
             for d, s, e, n in entries]}))
 
+    def forbids(self, *entries):
+        """Write the Forbids (forbids.json) with these (domain, vm)."""
+        self.write("etc/agentbox/forbids.json", json.dumps({"entries": [
+            {"domain": d, "scope": s, "expires": None, "note": "", "added": 1793700000, "added_by": "bewr"}
+            for d, s in entries]}))
+
+    def forbidden(self):
+        """(domain, vm) of every Forbid in forbids.json."""
+        with open(self.path("etc/agentbox/forbids.json")) as f:
+            return sorted((e["domain"], e["scope"]) for e in json.load(f)["entries"])
+
     def entries(self, scope):
         """(domain, expires, note) of the scope's entries in allowlist.json."""
         with open(self.path("etc/agentbox/allowlist.json")) as f:
@@ -253,6 +264,11 @@ class CreateTest(VmsTest):
         self.assertEqual(self.entries("priv"), [("docs.rs", None, "")])
         self.assertFalse(self.exists("etc/agentbox/allowlist-lab"))
         self.assertFalse(self.exists("etc/agentbox/open-lab"))
+
+    def test_forbids_of_an_earlier_vm_of_the_name_are_not_taken_over(self):
+        self.forbids(("evil.example", "lab"), ("ads.example", "priv"))
+        self.ok("create", "lab", "--copy-allowlist-from", "priv")
+        self.assertEqual(self.forbidden(), [("ads.example", "priv")])
 
     def test_copy_from_unknown_vm_is_refused(self):
         for source in ("nope", "lab", "../priv"):
@@ -493,7 +509,8 @@ class DeleteTest(VmsTest):
     def others(self):
         """Every file that belongs to work, priv or all VMs (the Allowlist: test_allowlist_entries_go)."""
         return {k: v for k, v in self.files().items()
-                if "lab" not in k and not k.endswith(("vm-input.nft", "allowlist.json")) and "/pending/" not in k}
+                if "lab" not in k and not k.endswith(("vm-input.nft", "allowlist.json", "forbids.json"))
+                and "/pending/" not in k}
 
     def test_a_service_on_the_resolver_port_of_all_addresses_stops_it_before_any_change(self):
         self.listening(udp6=[("0" * 32 + ":0035", "07")])
@@ -510,6 +527,11 @@ class DeleteTest(VmsTest):
         self.assertEqual(self.entries("lab"), [])
         self.assertEqual(self.entries("priv"), [("docs.rs", None, "")])
         self.assertEqual(self.entries("all"), [("github.com", None, "")])
+
+    def test_forbids_go_with_the_vm(self):
+        self.forbids(("ads.example", "lab"), ("ads.example", "priv"))
+        self.ok("delete", "lab", "--confirm", "lab")
+        self.assertEqual(self.forbidden(), [("ads.example", "priv")])
 
     def test_seen_alerts_go_with_the_vm(self):
         self.write("var/lib/agentbox/alerts-seen-lab.json", '{"*": 1761732000}\n')

@@ -131,6 +131,9 @@ else `500 action_failed`, with the message in `detail`:
 | 409 | `domain_suspicious` | strong Signals, which block the destination whatever the Allowlist says ([ADR 0021](adr/0021-strong-signals-always-block.md)): no entry, also not one with `--force`, lets it through; only lifting the Signal on the Host does |
 | 404 | `allowlist_entry_not_found` | no such Allowlist entry |
 | 409 | `allowlist_entry_permanent` | extending a permanent entry |
+| 409 | `forbid_overruled` | forbidding a destination an Allowlist entry in force allows for the VM (one for all VMs, of a parent domain, a pattern), which wins over a Forbid; `params`: `vm`, `domain`, and the entry's `scope` and `entry` (its domain, or `pattern <regex>`) |
+| 404 | `forbid_not_found` | no such Forbid |
+| 409 | `forbid_permanent` | extending a permanent Forbid |
 | 409 | `force_required` | the change would lift strong Signals: only the CLI can make it (`--force`) |
 | 409 | `watchlist_recreate_force_required` | adding an entry would create a missing Watchlist again, which lets the proxy pass connections again: only the CLI can do it (`--force`) |
 | 409 | `builtin_entry` | a built-in Legitimate domain cannot be changed |
@@ -384,10 +387,16 @@ the Actor); without it no link is made.
 | `POST /vms/<vm>/open-web` | `{"minutes": 30}` | `open-web`; while the Watchlist cannot be read: `409 watchlist_unreadable` |
 | `DELETE /vms/<vm>/open-web` | | `close-web` |
 | `GET /vms/<vm>/logs` | `?unit&priority&since&until&boot&grep&lines&after_cursor` | `logs`: `{"vm", "entries": [{"time", "unit", "identifier", "priority", "message", "boot", "cursor"}], "cursor", "truncated"}`; poll with `after_cursor=<cursor>` for new lines |
-| `GET /vms/<vm>/blocked` | | `blocked`: `[{"domain", "count", "first", "last", "reason", "code", "params", "suspicious", "held_until"}]` (last 24 hours, epoch seconds). `reason`: why the proxy blocked it, English; `code`: the same as a stable code, `null` for a reason agentbox does not know: `not-allowed` (not on the Allowlist), `suspicious` (strong Signals, which block it whatever would allow it; `params.signals`, joined with `", "`), `watchlist-unreadable` (nothing passes while the Watchlist cannot be read), `not-public` (no public address), `not-tls` and `no-server-name` (a connection the proxy took no destination from: what the VM sent was no TLS handshake, or a ClientHello without a server name; `domain` is the client's address then, in effect the VM's); `suspicious`: the Signals of its last Alert; `held_until`: when the newest Hold of it ends at the latest (epoch seconds; a time in the past: it ended), `null` when it was not held. A destination the proxy holds is listed from the moment it is held (`not-allowed`), with `count` 0 until a connection to it is refused |
+| `GET /vms/<vm>/blocked` | | `blocked`: `[{"domain", "count", "first", "last", "reason", "code", "params", "suspicious", "held_until"}]` (last 24 hours, epoch seconds). `reason`: why the proxy blocked it, English; `code`: the same as a stable code, `null` for a reason agentbox does not know: `not-allowed` (not on the Allowlist), `suspicious` (strong Signals, which block it whatever would allow it; `params.signals`, joined with `", "`), `forbidden` (a Forbid of the VM covers it: refused at once, never held), `watchlist-unreadable` (nothing passes while the Watchlist cannot be read), `not-public` (no public address), `not-tls` and `no-server-name` (a connection the proxy took no destination from: what the VM sent was no TLS handshake, or a ClientHello without a server name; `domain` is the client's address then, in effect the VM's); `suspicious`: the Signals of its last Alert; `held_until`: when the newest Hold of it ends at the latest (epoch seconds; a time in the past: it ended), `null` when it was not held. A destination the proxy holds is listed from the moment it is held (`not-allowed`), with `count` 0 until a connection to it is refused |
 | `GET /vms/<vm>/alerts` | | `alerts`: `[{"domain", "tags", "count", "first", "last", "seen", ...}]` |
 | `POST /vms/<vm>/alerts/seen` | `{"domain"?}` | `mark-seen`: all Alerts of the VM, or those of one destination |
 | `GET /vms/<vm>/allowlist` | | `allowlist <vm>`: the entries that apply to the VM (see Allowlist) |
+| `GET /vms/<vm>/forbids` | | `forbids <vm>`: the VM's Forbids (see Forbids) |
+| `POST /vms/<vm>/forbids` | `{"domain", "duration"?, "note"?}` | `forbid`: `201` (see Forbids) |
+| `DELETE /vms/<vm>/forbids/<domain>` | | `unforbid` |
+| `POST /vms/<vm>/forbids/<domain>/extend` | `{"duration": "1h"}` | `forbid-extend` |
+| `POST /vms/<vm>/forbids/<domain>/make-permanent` | | `forbid-make-permanent` |
+| `PUT /vms/<vm>/forbids/<domain>/note` | `{"note"}` | `forbid-set-note` |
 | `GET /vms/<vm>/github-tokens` | `?since&until&lines` | `github-tokens`: `{"vm", "repositories": [{"repository", "tokens", "last_token", "refused", "last_refused"}], "requests": [{"time", "outcome": "issued"\|"refused"\|"error", "repository", "request", "reason", "reason_code", "reason_params", "expires_at"}], "truncated", "retention_days"}`: repositories the VM got tokens for and refused requests. `reason`: why, as the token service said it (English); `reason_code`: a refusal's reason as a stable code, else `null`, and `reason_params` its parameters, `{}` without (see [GitHub tokens in Activity](#github-tokens-in-activity)) |
 | `GET /vms/<vm>/pairings` | | `pairings`: `{"vm", "devices": [...], "observer_known", "single_removal": false}` |
 | `POST /vms/<vm>/pairing-code` | `{"confirm": true}` | `pair`: `{"vm", "code": "orca://pair?code=..."}`; starts the VM if needed |
@@ -422,6 +431,23 @@ domain, in every list: in a body `regex` instead of `domain`, in a path the segm
 the pattern as the query parameter `regex` (percent-encoded; a domain is never the bare label
 `regex`). The pattern is taken as given, not lowercased; only leading and trailing spaces, tabs, CR and LF are dropped, and anything but printable ASCII without spaces is `400 invalid_field` (`field`: `regex`). It matches the whole host name, no
 subdomains of its own accord; the rules it has to follow are in the ADR.
+
+### Forbids
+
+A Forbid ([ADR 0024](adr/0024-an-allowlist-entry-wins-over-a-forbid.md)) is a domain, with its
+subdomains, that the proxy refuses one VM at once: no Hold, so no `held` event, also in Open web
+(`BLOCKED <host> (forbidden)`, code `forbidden`). Durations as for Allowlist entries. When it
+expires or is removed, the destination is held and notified again.
+
+- `GET /vms/<vm>/forbids`: `[{"domain", "scope", "expires", "note", "added_by", "added", "expired",
+  "remaining", "refused_24h"}]` (`scope` is the VM; `refused_24h`: connections the proxy refused for
+  it in the last 24 hours, `null` when unknown).
+- `POST /vms/<vm>/forbids`: the Forbid's fields and `allowlist_removed` (whether the VM's own
+  Allowlist entry of the domain gave way to it). An existing Forbid is widened, never shortened.
+  An Allowlist entry in force that still allows the domain for the VM: `409 forbid_overruled`.
+- An Allowlist entry wins over a Forbid, so the two never overlap: `POST /allowlist`, `extend` and
+  `make-permanent` answer with `forbids_lifted`, `[{"domain", "scope"}]`, the Forbids the entry
+  covers within its scope, which it removed.
 
 ## Watchlist
 
@@ -528,6 +554,11 @@ first:
 | `extend` | `domain`, `scope`, `duration`, `force` |
 | `make-permanent` | `domain`, `scope`, `force` |
 | `disallow`, `set-note`, `allowlist.expired` | `domain`, `scope` |
+| `forbid` | `domain`, `scope` (the VM), `duration` (`15min`, `1h`, `8h`, `7d`) or `temporary` |
+| `forbid-extend` | `domain`, `scope`, `duration` |
+| `unforbid`, `forbid-make-permanent`, `forbid-set-note`, `allowlist.forbid-expired` | `domain`, `scope` |
+| `allowlist.forbid-lifted` | `domain`, `scope` of the Forbid an Allowlist entry lifted |
+| `allowlist.entry-forbidden` | `domain`, `scope` of the VM's Allowlist entry a Forbid took the place of |
 | `open-web` | `minutes` |
 | `mark-seen` | `domain` (when one) |
 | `mark-harmless`, `unmark-harmless`, `watch-set-note`, `legitimate-remove`, `legitimate-set-note` | `domain` |
