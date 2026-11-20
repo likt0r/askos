@@ -612,6 +612,12 @@ WATCH_FORWARD = {"activity": False, "alert": False, "held": False, "github-token
                  "build-log": False, "services": True, "host-reboot": True}
 # a held destination of a VM is notified about once in this time, however often the VM tries again
 HELD_REPEAT_SECONDS = 300
+# and at most this many held destinations of a VM are notified in HELD_WINDOW seconds, so a VM
+# trying endless names cannot drown the critical notifications; the dict of them stays below
+# HELD_MAX_KEPT entries whatever the VMs do
+HELD_PER_VM = 3
+HELD_WINDOW = 60
+HELD_MAX_KEPT = 200
 
 
 class Watch:
@@ -695,12 +701,18 @@ class Watch:
             self.notice(name, data)
 
     def first_hold(self, vm, domain):
-        """Whether a hold of domain by vm is to be notified: not within HELD_REPEAT_SECONDS."""
+        """Whether a hold of domain by vm is to be notified: not within HELD_REPEAT_SECONDS, and not
+        when vm had HELD_PER_VM notified in the last HELD_WINDOW seconds already. Only what is
+        notified is remembered, and at most HELD_MAX_KEPT of it."""
         now = time.monotonic()
         with self.lock:
             self.held = {k: t for k, t in self.held.items() if now - t < HELD_REPEAT_SECONDS}
             if (vm, domain) in self.held:
                 return False
+            if sum(1 for (v, _), t in self.held.items() if v == vm and now - t < HELD_WINDOW) >= HELD_PER_VM:
+                return False
+            while len(self.held) >= HELD_MAX_KEPT:      # the oldest first (a dict keeps the order)
+                del self.held[next(iter(self.held))]
             self.held[(vm, domain)] = now
             return True
 

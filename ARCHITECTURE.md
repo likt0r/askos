@@ -662,12 +662,16 @@ flowchart LR
   default 30 s; 0 refuses at once) instead of being refused at once. The proxy decides again
   at every check (once a second): an Allowlist entry added meanwhile, or Open web, lets the
   held connection through (`ALLOWED`). It logs `HELD <host> (up to <seconds> s)` once per host
-  while connections to it are held, the Control Room notifies about it at once, and the
-  destination shows in the VM's blocked list from that moment, with its "Allow…". Destinations
+  while connections to it are held, at most 10 new lines a minute per VM (a VM trying endless
+  names holds them all, but only the first ten of a minute announce themselves; their `BLOCKED`
+  or `ALLOWED` lines are unchanged), the Control Room notifies about it at once, at most 3 a
+  minute per VM, and the destination shows in the VM's blocked list from that moment, with its
+  "Allow…". Destinations
   with strong Signals or on the Watchlist are never held and are refused at once, so a phishing
   domain never invites a click; a strong Signal gained during the hold, or a Watchlist that
-  becomes unreadable, refuses the held connection at once. When the time runs out or the client
-  gives up, the connection is refused as without a hold (`BLOCKED <host> (not on the
+  becomes unreadable, refuses the held connection at once. When the time runs out, the client
+  gives up or sends more than 4096 bytes while it waits (a TLS client only waits for the answer
+  to its ClientHello), the connection is refused as without a hold (`BLOCKED <host> (not on the
   Allowlist)`); a client with a shorter timeout of its own gives up earlier and tries again once
   the destination is allowed. In Open web nothing is held: everything without a strong Signal
   passes. At most 32 connections of a VM are held at once, and more are refused at once; a held
@@ -1367,7 +1371,7 @@ whether updates need a reboot (`dnf -C needs-restarting -r`, every six hours). I
 entries like `agentbox activity` does and passes every string through the token, key and
 Pairing-code patterns once more. It ends when the backend closes its stdin. The backend
 turns Alerts, held destinations (once in five minutes per VM and destination, however often
-the VM tries again), refused GitHub tokens, failed or rejected Builds, a needed reboot and
+the VM tries again, and at most three a minute per VM), refused GitHub tokens, failed or rejected Builds, a needed reboot and
 temperatures reaching their threshold into `notification` events (kind, severity, VM, short
 English text); which of them a browser shows is its own choice.
 

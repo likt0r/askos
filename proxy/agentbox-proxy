@@ -43,11 +43,14 @@ Hold: a connection to a destination that nothing allows, that has no strong Sign
 the Watchlist (no Signal of a Watchlist category) waits up to the hold time (the Setting
 hold_seconds in /etc/agentbox/settings.json, read again when it changes; 0 refuses at once), so
 the owner can allow it meanwhile. The proxy logs it once per host while connections to it are
-held, the Control Room notifies about it:
+held (at most MAX_ANNOUNCED new lines in HELD_WINDOW seconds: a VM trying endless names must not
+drown the Control Room; further holds still hold, they only stay unannounced), the Control Room
+notifies about it:
   [<vm>] HELD <host> (up to <seconds> s)
 It decides again every check (CHECK_SECONDS): an entry added meanwhile, or Open web, lets the
 connection through (ALLOWED), a strong Signal it gains meanwhile or a Watchlist that becomes
-unreadable refuses it at once, and when the hold time runs out or the client leaves it is refused
+unreadable refuses it at once, and when the hold time runs out, the client leaves or sends more
+than HOLD_EXTRA_LIMIT bytes (it only waits for the answer to its ClientHello) it is refused
 as without a hold (BLOCKED not on the Allowlist). In Open web nothing is held: it lets through
 whatever has no strong Signal. At most MAX_HELD connections are held at once; more are refused at
 once. Holding costs the event loop nothing: each held connection sleeps between its checks.
@@ -150,6 +153,15 @@ LINGER_SECONDS = 2              # how long a refused client's further bytes are 
 CHECK_SECONDS = _seconds(os.environ.get("AGENTBOX_PROXY_CHECK_SECONDS"), 1.0)
 # how many connections are held at once at most (Hold); more are refused at once
 MAX_HELD = 32
+# how many new HELD lines the proxy of a VM writes in HELD_WINDOW seconds at most: the VM can open
+# connections to endless distinct names, and each line is a notification and a reload of the
+# blocked list in the Control Room; a hold beyond it still holds, it only does not announce itself
+# (the BLOCKED or ALLOWED line it ends with is written as always)
+MAX_ANNOUNCED = 10
+HELD_WINDOW = 60
+# how many bytes a client may send during a hold at most: a TLS client says nothing after its
+# ClientHello until the server answers (a ChangeCipherSpec of 6 bytes apart), so more ends the hold
+HOLD_EXTRA_LIMIT = 4096
 TEST_UPSTREAM = _test_upstream()
 TEST_RESOLVE = _test_resolve()
 OPEN = "open"            # a tunnel only Open web allows
@@ -567,6 +579,18 @@ async def watch(ctx, lists):
 # the Signals of a Watchlist hit: its categories, weak ones (payload) too
 WATCHLIST_SIGNALS = frozenset(records.CATEGORIES)
 held = collections.Counter()        # host: the connections to it held now
+announced = collections.deque()     # when the latest HELD lines were written (monotonic)
+
+
+def may_announce():
+    """Whether another HELD line fits into the budget (MAX_ANNOUNCED in HELD_WINDOW seconds); uses it."""
+    now = time.monotonic()
+    while announced and now - announced[0] >= HELD_WINDOW:
+        announced.popleft()
+    if len(announced) >= MAX_ANNOUNCED:
+        return False
+    announced.append(now)
+    return True
 
 
 def holdable(tags):
@@ -575,28 +599,35 @@ def holdable(tags):
     return not strong(tags) and not WATCHLIST_SIGNALS & set(tags)
 
 
-def client_left(reader):
-    """The client closed or reset the connection; what it sent meanwhile stays unread."""
-    return reader.at_eof() or reader.exception() is not None
-
-
-async def hold(ctx, lists, host, tags, key, reader, seconds):
+async def hold(ctx, lists, host, tags, key, reader, head, seconds):
     """Holds a connection that nothing allows yet (Hold) for up to seconds: (grant, reason for
     the log, tags, key) as decide gives them once something allows it, its Signals or an
-    unreadable Watchlist refuse it, or the time runs out (None, NOT_ALLOWED). The Signals are
-    classified again when a file they come from changes (signals_key), as for tunnels."""
+    unreadable Watchlist refuse it, or the time runs out, the client leaves or sends more than
+    HOLD_EXTRA_LIMIT bytes (None, NOT_ALLOWED). What the client sends meanwhile is read here (that
+    is also how its leaving is noticed, whatever the size of the reader's buffer) and appended to
+    head, the bytes that go to the destination first. The Signals are classified again when a
+    file they come from changes (signals_key), as for tunnels."""
     if held.total() >= MAX_HELD:
         return None, lines.NOT_ALLOWED, tags, key
-    if not held[host]:
+    if not held[host] and may_announce():
         log(lines.held(ctx, host, seconds))
     held[host] += 1
     try:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + seconds
+        extra = 0
         while (left := deadline - loop.time()) > 0:
-            await asyncio.sleep(min(CHECK_SECONDS, left))
-            if client_left(reader):
+            try:
+                data = await asyncio.wait_for(reader.read(HOLD_EXTRA_LIMIT + 1), min(CHECK_SECONDS, left))
+            except asyncio.TimeoutError:
+                data = None
+            except OSError:         # the client reset the connection
                 break
+            if data is not None:
+                extra += len(data)
+                if not data or extra > HOLD_EXTRA_LIMIT:
+                    break           # the client left, or says more than a client waiting does
+                head += data
             now_key = signals_key()
             fresh = now_key != key
             if fresh:
@@ -710,6 +741,7 @@ async def handle(ctx, lists, hold_time, reader, writer):
     hello = Hello()
     try:
         head, host = await asyncio.wait_for(read_hello(reader, hello), HELLO_SECONDS)
+        head = bytearray(head)
     except Refused as e:
         log(lines.blocked(ctx, client, e.reason))
         await refuse(reader, writer, e.alert)
@@ -736,7 +768,7 @@ async def handle(ctx, lists, hold_time, reader, writer):
     if grant is None and why == lines.NOT_ALLOWED and holdable(tags):
         seconds = hold_time.current()
         if seconds:
-            grant, why, tags, key = await hold(ctx, lists, host, tags, key, reader, seconds)
+            grant, why, tags, key = await hold(ctx, lists, host, tags, key, reader, head, seconds)
             now = time.time()
     if grant is None:
         log(lines.blocked(ctx, host, why))
@@ -772,7 +804,7 @@ async def handle(ctx, lists, hold_time, reader, writer):
     tunnel = Tunnel(host, tags, key, grant, (writer, up_writer))
     tunnels.add(tunnel)
     try:
-        up_writer.write(head)       # the ClientHello goes to the destination first
+        up_writer.write(bytes(head))       # the ClientHello goes to the destination first
         await up_writer.drain()
         await asyncio.gather(pipe(reader, up_writer), pipe(up_reader, writer))
     except ConnectionError:

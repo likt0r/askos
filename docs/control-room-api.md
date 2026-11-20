@@ -749,7 +749,7 @@ and, after a drop, `Last-Event-ID`.
 | `vm` | `<VM>` | one VM's object changed (state, agents, devices, System disk, Image, ...); replace that VM |
 | `activity` | an Activity entry as in `GET /activity`, with its `code` and `params` | a new entry (actions, sign-ins, Allowlist changes, Alerts, GitHub tokens, Builds, Resets, ...) |
 | `alert` | `{"time", "vm", "domain", "signals": [..]}` | a VM tried to reach a suspicious destination |
-| `held` | `{"time", "vm", "domain", "seconds"}` | the proxy holds a connection of the VM to a destination that is not allowed, for up to `seconds` (`hold_seconds`): an Allowlist entry added meanwhile lets it through. Once per destination while connections to it are held; reload the VM's `blocked` list |
+| `held` | `{"time", "vm", "domain", "seconds"}` | the proxy holds a connection of the VM to a destination that is not allowed, for up to `seconds` (`hold_seconds`): an Allowlist entry added meanwhile lets it through. Once per destination while connections to it are held, and the proxy announces at most 10 new holds a minute per VM (more are held without an event); reload the VM's `blocked` list, at most once a second |
 | `github-token` | `{"time", "vm", "action": "issued"\|"refused"\|"error", "outcome", "repository", "request", "reason", "reason_code", "reason_params", "expires"}` | the token service issued or refused a GitHub token (the token itself never); `reason` English, `reason_code` and `reason_params` as in `github-tokens` |
 | `build` | `{"image", "build", "status": "running"\|"ok"\|"failed"\|"rejected", "step", "started", "finished", "release", "commit", "base_build", "recipe_sha256", "error", "problems", "actor", "unit"}` (`release` and `commit` as in `GET /images`) | a Build started, moved to its next step (`build`, `check`, `disk`, `done`) or ended |
 | `build-log` | `{"unit", "target", "image", "build", "entries": [{"time", "priority", "message", "cursor"}], "cursor", "truncated"}` | new lines of a running Build, gathered for half a second; `truncated`: lines were skipped (fetch them with the log endpoint and `after_cursor`) |
@@ -772,7 +772,7 @@ translation. Which kinds a browser shows is a per-browser preference kept by the
 | `kind` | `severity` | Extra fields | When |
 |---|---|---|---|
 | `alert` | critical | `domain`, `signals`; `paused: true` when the Alert paused the VM | every Alert, and again when it paused its VM (`alert_action`) |
-| `held` | warning | `domain`, `seconds` | the proxy holds a connection to a destination that is not allowed (`held` event); once in five minutes per VM and destination. The VM's blocked list has its "Allow…" |
+| `held` | warning | `domain`, `seconds` | the proxy holds a connection to a destination that is not allowed (`held` event); once in five minutes per VM and destination, at most 3 a minute per VM. The VM's blocked list has its "Allow…" |
 | `github-refused` | warning | `request`, `detail` (the token service's reason, English) | a GitHub token request was refused |
 | `build-failed` | warning | `image`, `build`, `detail` | a Build failed; the previous one stays in use |
 | `build-rejected` | critical | `image`, `build`, `detail` | a Build was discarded because a Safeguard was missing or weakened |
