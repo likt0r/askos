@@ -68,7 +68,10 @@ MAX_LINE = 8192                    # request line, a header line, a chunk size l
 MAX_HEADERS = 100
 SLOTS = 64                         # connections served at once (the socket's MaxConnections is one more)
 IDLE_SECONDS = 120                 # for the next request on a connection
-READ_SECONDS = 60                  # for the rest of a request once it began
+READ_SECONDS = 60                  # for each read of the rest of a request once it began
+REQUEST_SECONDS = 120              # for the whole head and body of one request, however slowly they drip in
+if ROOT and os.environ.get("AGENTBOX_CLAUDE_TEST_REQUEST_SECONDS", "").isdigit():
+    REQUEST_SECONDS = int(os.environ["AGENTBOX_CLAUDE_TEST_REQUEST_SECONDS"])      # only in tests
 UPSTREAM_SECONDS = 600             # Anthropic's answer, and each piece of a stream
 CHUNK = 65536
 
@@ -84,7 +87,7 @@ ANSWER_PREFIXES = ("anthropic-ratelimit-unified-",)
 
 TOKEN = re.compile(rb"sk-ant-[A-Za-z0-9_-]{1,500}")         # as agentbox/credentials.py
 PLACEHOLDER = re.compile(rb"agentbox-claude-[A-Za-z0-9_-]{40,100}")
-REQUEST_LINE = re.compile(rb"([A-Z]{1,16}) (\S{1,8000}) HTTP/1\.1\r\n")
+REQUEST_LINE = re.compile(rb"([A-Z]{1,16}) ([!-~]{1,8000}) HTTP/1\.1\r\n")
 HEADER = re.compile(rb"([!#$%&'*+.^_`|~0-9A-Za-z-]{1,64}):[ \t]*([^\x00-\x08\x0a-\x1f\x7f]*?)[ \t]*\r\n")
 # a path in origin form without dot segments, empty segments or escapes, and an optional query
 TARGET = re.compile(r"(/(?:[A-Za-z0-9_~!$&'()*+,;=:@-][A-Za-z0-9._~!$&'()*+,;=:@-]*"
@@ -171,9 +174,15 @@ class Reader:
     """The VM's side of the connection, read in pieces with a timeout."""
 
     def __init__(self, sock):
-        self.sock, self.buf = sock, b""
+        self.sock, self.buf = sock, bytearray()      # a bytearray: appending and cutting stay linear
+        self.deadline = None                          # monotonic time by which the request must be complete
 
     def _more(self):
+        if self.deadline is not None:
+            left = self.deadline - time.monotonic()
+            if left <= 0:
+                raise socket.timeout
+            self.sock.settimeout(min(READ_SECONDS, left))
         data = self.sock.recv(CHUNK)
         if not data:
             raise EOFError
@@ -195,13 +204,15 @@ class Reader:
     def exactly(self, n):
         while len(self.buf) < n:
             self._more()
-        data, self.buf = self.buf[:n], self.buf[n:]
+        data = bytes(self.buf[:n])
+        del self.buf[:n]
         return data
 
 
 def read_head(reader):
     """(method, target, [(name in lower case, value)]) of the next request; Closed when the VM
     closes the connection or sends nothing in time."""
+    reader.deadline = None
     reader.sock.settimeout(IDLE_SECONDS)
     try:
         while not reader.buf:
@@ -209,6 +220,7 @@ def read_head(reader):
     except (EOFError, OSError):
         raise Closed()
     reader.sock.settimeout(READ_SECONDS)
+    reader.deadline = time.monotonic() + REQUEST_SECONDS      # the body is read under it too
     try:
         first = reader.line()
         m = REQUEST_LINE.fullmatch(first)
@@ -282,7 +294,7 @@ def read_body(reader, size):
     try:
         if size is not None:
             return reader.exactly(size)
-        body = b""
+        body = bytearray()
         while True:
             m = re.fullmatch(rb"([0-9A-Fa-f]{1,8})(?:;[^\r\n]*)?\r\n", reader.line())
             if not m:
@@ -293,7 +305,7 @@ def read_body(reader, size):
             if n == 0:
                 while reader.line() != b"\r\n":      # trailers are dropped
                     pass
-                return body
+                return bytes(body)
             body += reader.exactly(n)
             if reader.exactly(2) != b"\r\n":
                 raise Refused("invalid-request", "a chunk of the body is malformed")
@@ -338,7 +350,7 @@ def status_line(status):
     return f"HTTP/1.1 {status} {phrase}\r\n".encode()
 
 
-def refuse(sock, vm, e, hello=False):
+def refuse(sock, vm, e):
     """The refusal as Anthropic words errors, so Claude Code shows the text; then the connection
     closes."""
     status, kind = ANSWERS[e.reason]
@@ -346,9 +358,8 @@ def refuse(sock, vm, e, hello=False):
     retry = b"x-should-retry: true\r\nretry-after: 2\r\n" if status == 503 else b"x-should-retry: false\r\n"
     head = (status_line(status) + b"content-type: application/json\r\n" + retry
             + b"connection: close\r\ncontent-length: " + str(len(body)).encode() + b"\r\n\r\n")
-    if not hello:
-        params = "".join(f" {k}={v}" for k, v in e.params.items())
-        log(f"[{vm}] refused: {e.reason}{params}: {e}")
+    params = "".join(f" {k}={v}" for k, v in e.params.items())
+    log(f"[{vm}] refused: {e.reason}{params}: {e}")
     try:
         sock.settimeout(10)
         sock.sendall(head + body)

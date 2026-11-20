@@ -565,6 +565,35 @@ class RefusalTest(RouteTest):
         self.assert_refused(self.request(method="HEAD", target="/api/hello", headers=[b"Content-Length: 1"],
                                          body=None, auth=PLACEHOLDER + b"x"), 401, "wrong-placeholder")
 
+    def test_a_large_chunked_body_in_many_small_chunks_is_read_in_linear_time(self):
+        conn = self.route()
+        conn.send(self.request(headers=[b"Transfer-Encoding: chunked"], body=None))
+        big = b"x" * (8 * 1024 * 1024)
+        conn.send(b"%x\r\n" % len(big) + big + b"\r\n")
+        small = b"1\r\ny\r\n" * 20000
+        started = time.monotonic()
+        conn.send(small + b"0\r\n\r\n")
+        status, _, _ = conn.response()
+        self.assertEqual(status, 200)
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertEqual(len(self.upstream.requests[0][3]), len(big) + 20000)
+
+    def test_a_request_that_drips_in_is_refused_after_the_total_time(self):
+        conn = self.route(request_seconds=2)
+        conn.send(self.request(headers=[b"Content-Length: 1000"], body=None))
+        started = time.monotonic()
+        try:
+            for _ in range(60):
+                conn.send(b"x")
+                time.sleep(0.2)
+        except OSError:
+            pass                    # the route refused and closed
+        status, _, _ = conn.response()
+        self.assertEqual(status, 400)
+        self.assertLess(time.monotonic() - started, 6)
+        self.assertRegex(conn.finish()[0], r"^\[priv\] refused: invalid-request: the request did not arrive in time")
+        self.assertEqual(self.upstream.requests, [])
+
     def test_a_chunked_body_over_32_mb(self):
         conn = self.route()
         conn.send(self.request(headers=[b"Transfer-Encoding: chunked"], body=None))
@@ -632,6 +661,11 @@ class TestOnlyTest(unittest.TestCase):
         route = load_route({**override, "AGENTBOX_ROOT": "/tmp/root"})
         with mock.patch.dict(os.environ, override, clear=True):
             self.assertEqual(route._test_upstream(), ("127.0.0.1", 1, "/tmp/ca.pem"))
+
+    def test_the_total_request_time_changes_only_under_a_test_root(self):
+        override = {"AGENTBOX_CLAUDE_TEST_REQUEST_SECONDS": "3"}
+        self.assertEqual(load_route(override).REQUEST_SECONDS, 120)
+        self.assertEqual(load_route({**override, "AGENTBOX_ROOT": "/tmp/root"}).REQUEST_SECONDS, 3)
 
     def test_the_route_runs_isolated_and_asks_for_verified_tls(self):
         with open(ROUTE) as f:

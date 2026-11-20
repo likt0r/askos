@@ -321,7 +321,7 @@ class RegenerateTest(RegistryTest):
         for line in ("ExecStart=/usr/libexec/agentbox-claude-route priv\n", "User=agentbox-claude\n",
                      "StandardInput=socket\n", "SyslogIdentifier=agentbox-claude-priv\n", "LogNamespace=agentbox\n",
                      "RuntimeDirectory=agentbox-claude/priv\n", "RuntimeDirectoryPreserve=yes\n",
-                     "NoNewPrivileges=yes\n", "ProtectSystem=strict\n"):
+                     "NoNewPrivileges=yes\n", "ProtectSystem=strict\n", "MemoryMax=256M\n", "TasksMax=8\n"):
             self.assertIn(line, service)
 
     def test_no_explicit_proxy_port_and_dns_switched_on(self):

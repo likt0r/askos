@@ -251,7 +251,9 @@ SyslogIdentifier=agentbox-gh-{vm}
 LogNamespace={activity.NAMESPACE}
 {hardening}""",
         # the route serves at most claude_route SLOTS (64) connections at once; the socket lets one
-        # more in, which the route refuses so that Activity shows it (ADR 0023)
+        # more in, which the route refuses so that Activity shows it (ADR 0023). Each connection is its
+        # own instance with its own cgroup: a body of up to 32 MB is held (twice, while it is cut
+        # into the request), so 256M each; the route is one thread, 8 tasks are ample
         names["claude.socket"]: f"""[Unit]
 Description=Anthropic route for VM {vm}
 
@@ -278,6 +280,8 @@ LogNamespace={activity.NAMESPACE}
 RuntimeDirectory=agentbox-claude/{vm}
 RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=yes
+MemoryMax=256M
+TasksMax=8
 {hardening}""",
         names["gui.socket"]: f"""[Unit]
 Description=Orca access to VM {vm}
