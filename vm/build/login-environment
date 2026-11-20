@@ -6,8 +6,8 @@
 
 Every service of the VM has systemd's DefaultEnvironment (agentbox.conf in vm/files and the
 agentbox-packages.conf package-safeguards writes), the one place the image-wide variables
-are set. sshd builds a fresh environment for each login, and bash reads no profile for
-`ssh <vm> 'cmd'`; PAM's pam_env gives every login, SSH included, the variables of
+are set. sshd builds a fresh environment for each login, and no profile.d script sets them;
+PAM's pam_env gives every login, SSH sessions and `ssh <vm> 'cmd'` included, the variables of
 /etc/environment. This writes the merged DefaultEnvironment, read as systemd reads it (the
 main configuration, then every drop-in in name order, one in /etc replacing one of the same
 name further down, an empty DefaultEnvironment= clearing what came before), into
