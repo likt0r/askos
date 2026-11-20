@@ -163,12 +163,12 @@ describe('settings (units)', () => {
 describe('Settings page', () => {
   useFreshApp()
 
-  it('shows all 21 settings with label, current value and default, and when a change applies', async () => {
+  it('shows all 22 settings with label, current value and default, and when a change applies', async () => {
     const { wrapper } = await openPage('/settings', {
       'GET /settings': ok(settingsBody({ reset_age_days: 14, rebuild_day: 'fri', temporary_entry_default: '8h', young_domain_days: 28, default_language: 'en' })),
     })
     const rows = wrapper.findAll('[data-testid="setting"]')
-    expect(rows).toHaveLength(21)
+    expect(rows).toHaveLength(22)
     expect(new Set(rows.map(r => r.attributes('data-key')))).toEqual(new Set(Object.keys(DEFAULTS)))
     expect(wrapper.find('[data-testid="settings-load-error"]').exists()).toBe(false)
 
@@ -626,7 +626,7 @@ describe('Settings page', () => {
       'PATCH /settings': ok(changedBody),
     })
     const rows = wrapper.findAll('[data-testid="setting"]')
-    expect(rows).toHaveLength(22)
+    expect(rows).toHaveLength(23)
     expect(rows.at(-1)!.attributes('data-key')).toBe('future_key')
     expect(rows.at(-1)!.text()).toContain('future_key')
     expect(rows.at(-1)!.find('[data-testid="setting-later"]').text()).toBe('beim naechsten Mal')
@@ -788,7 +788,7 @@ describe('Notifications preferences', () => {
     expect(checked(first.wrapper, 'temperature')).toBe('false')
     expect(checked(first.wrapper, 'alert')).toBe('true')
     expect(JSON.parse(localStorage.getItem('agentbox-notifications')!)).toEqual({
-      alert: true, 'github-refused': true, 'build-failed': false, 'build-rejected': true, 'host-reboot': true, temperature: false,
+      alert: true, held: true, 'github-refused': true, 'build-failed': false, 'build-rejected': true, 'host-reboot': true, temperature: false,
     })
     first.wrapper.unmount()
 
