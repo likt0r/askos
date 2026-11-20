@@ -211,7 +211,7 @@ class Reader:
 
 def read_head(reader):
     """(method, target, [(name in lower case, value)]) of the next request; Closed when the VM
-    closes the connection or sends nothing in time."""
+    closes or resets the connection or sends nothing in time."""
     reader.deadline = None
     reader.sock.settimeout(IDLE_SECONDS)
     try:
@@ -243,6 +243,8 @@ def read_head(reader):
         raise Refused("invalid-request", "the request ended early")
     except socket.timeout:
         raise Refused("invalid-request", "the request did not arrive in time")
+    except OSError:
+        raise Closed()        # a reset in the middle of the head: as quiet as one before it
     return m.group(1).decode("ascii"), m.group(2).decode("ascii"), headers
 
 
@@ -355,7 +357,10 @@ def refuse(sock, vm, e):
     closes."""
     status, kind = ANSWERS[e.reason]
     body = json.dumps({"type": "error", "error": {"type": kind, "message": f"Agent Box: {e}"}}).encode()
-    retry = b"x-should-retry: true\r\nretry-after: 2\r\n" if status == 503 else b"x-should-retry: false\r\n"
+    if status == 503:
+        retry = b"x-should-retry: true\r\nretry-after: 2\r\n"
+    else:      # a connection that cannot be made may be tried again; a TLS failure never
+        retry = b"x-should-retry: " + (b"true" if e.reason == "upstream-error" else b"false") + b"\r\n"
     head = (status_line(status) + b"content-type: application/json\r\n" + retry
             + b"connection: close\r\ncontent-length: " + str(len(body)).encode() + b"\r\n\r\n")
     params = "".join(f" {k}={v}" for k, v in e.params.items())

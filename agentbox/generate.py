@@ -23,6 +23,7 @@ import base64
 import json
 import os
 import re
+import stat
 import tempfile
 import time
 
@@ -38,6 +39,15 @@ DEFAULT_DATA_DISK_GIB = 300
 VCPUS = 24
 VMNET = "agentbox-vmnet.service"     # loads VM_RULES (enabled by agentbox setup)
 VM_RULES = os.path.join(paths.CONF, "vm-input.nft")
+# More for the Anthropic route's unit: its process holds every VM's Claude token (ADR 0023), and
+# needs only its inherited connection, files, the journal and TCP to api.anthropic.com (glibc's
+# resolver may use AF_UNIX and AF_NETLINK). MemoryDenyWriteExecute stays out: not every Python
+# build runs with it.
+CLAUDE_HARDENING = ("CapabilityBoundingSet=\nAmbientCapabilities=\n"
+                    "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK\n"
+                    "ProtectKernelTunables=yes\nProtectKernelModules=yes\nProtectKernelLogs=yes\n"
+                    "ProtectControlGroups=yes\nRestrictNamespaces=yes\nLockPersonality=yes\nRestrictRealtime=yes\n"
+                    "SystemCallFilter=@system-service\nSystemCallArchitectures=native\n")
 POOL = "agentbox-vms"
 JOURNALD = f"systemd-journald@{activity.NAMESPACE}"     # journald instance of the Activity namespace
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -282,7 +292,8 @@ RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=yes
 MemoryMax=256M
 TasksMax=8
-{hardening}""",
+CPUQuota=50%
+{hardening}{CLAUDE_HARDENING}""",
         names["gui.socket"]: f"""[Unit]
 Description=Orca access to VM {vm}
 
@@ -553,6 +564,26 @@ def _data_disk(rec):
     return True
 
 
+def _claude_file(path, data, uid, gid):
+    """One of the route's files, written when missing, with owner and mode 0400 applied every
+    time, its content kept. Whether something was done."""
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        state_files.write_atomic(path, data, 0o400, gid, uid)
+        return True
+    except OSError as e:
+        die(f"{path}: {e.strerror}", error="action_failed")
+    if uid in (-1, st.st_uid) and gid in (-1, st.st_gid) and stat.S_IMODE(st.st_mode) == 0o400:
+        return False
+    try:
+        os.chown(path, uid, gid)      # -1: unchanged (not root)
+        os.chmod(path, 0o400)
+    except OSError as e:
+        die(f"{path}: {e.strerror}", error="action_failed")
+    return True
+
+
 def _claude(rec):
     """What the VM's Anthropic route needs (ADR 0023): its placeholder, made once with 32 random
     bytes and kept until the VM is deleted, and its token file, `none` until a token is stored;
@@ -566,15 +597,14 @@ def _claude(rec):
         state_files.directory(footprint.CLAUDE_DIR, 0o750, gid)
     except OSError as e:
         die(f"{footprint.CLAUDE_DIR}: {e.strerror}", error="action_failed", vm=name)
-    made = False
     placeholder = _placeholder(name)
     if placeholder is None:
         placeholder = b"agentbox-claude-" + base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=")
         state_files.write_atomic(footprint.claude_placeholder_file(name), placeholder + b"\n", 0o400, gid, uid)
         made = True
-    if not os.path.exists(footprint.claude_token_file(name)):
-        state_files.write_atomic(footprint.claude_token_file(name), b"none\n", 0o400, gid, uid)
-        made = True
+    else:
+        made = _claude_file(footprint.claude_placeholder_file(name), b"", uid, gid)
+    made = _claude_file(footprint.claude_token_file(name), b"none\n", uid, gid) or made
     return fw_cfg_file(footprint.claude_placeholder_fw_cfg_file(name), placeholder + b"\n") or made
 
 

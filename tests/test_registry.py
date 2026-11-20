@@ -321,8 +321,15 @@ class RegenerateTest(RegistryTest):
         for line in ("ExecStart=/usr/libexec/agentbox-claude-route priv\n", "User=agentbox-claude\n",
                      "StandardInput=socket\n", "SyslogIdentifier=agentbox-claude-priv\n", "LogNamespace=agentbox\n",
                      "RuntimeDirectory=agentbox-claude/priv\n", "RuntimeDirectoryPreserve=yes\n",
-                     "NoNewPrivileges=yes\n", "ProtectSystem=strict\n", "MemoryMax=256M\n", "TasksMax=8\n"):
+                     "NoNewPrivileges=yes\n", "ProtectSystem=strict\n", "MemoryMax=256M\n", "TasksMax=8\n",
+                     "CPUQuota=50%\n", "CapabilityBoundingSet=\n", "AmbientCapabilities=\n",
+                     "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK\n", "ProtectKernelTunables=yes\n",
+                     "ProtectKernelModules=yes\n", "ProtectKernelLogs=yes\n", "ProtectControlGroups=yes\n",
+                     "RestrictNamespaces=yes\n", "LockPersonality=yes\n", "RestrictRealtime=yes\n",
+                     "SystemCallFilter=@system-service\n", "SystemCallArchitectures=native\n",
+                     "ProtectHome=yes\n", "PrivateTmp=yes\n"):
             self.assertIn(line, service)
+        self.assertNotIn("MemoryDenyWriteExecute", service)
 
     def test_no_explicit_proxy_port_and_dns_switched_on(self):
         self.assertEqual(self.run_agentbox("regenerate")[0], 0)
@@ -441,6 +448,19 @@ class RegenerateTest(RegistryTest):
         self.assertEqual(self.read("etc/agentbox/claude/placeholder-priv"), placeholder)
         self.assertEqual(self.read("etc/agentbox/secrets/claude-placeholder-priv"), placeholder)
         self.assertEqual(self.mode("etc/agentbox/secrets/claude-placeholder-priv"), 0o640)
+
+    def test_claude_files_get_their_mode_again_and_keep_their_content(self):
+        self.run_agentbox("regenerate")
+        placeholder = self.read("etc/agentbox/claude/placeholder-priv")
+        os.chmod(self.path("etc/agentbox/claude/placeholder-priv"), 0o644)
+        os.chmod(self.path("etc/agentbox/claude/token-priv"), 0o600)
+        self.write("etc/agentbox/claude/token-priv", "sk-ant-x\n", mode=0o666)
+        self.assertEqual(self.json("regenerate")["vms"]["priv"], ["claude"])
+        self.assertEqual(self.json("regenerate")["vms"]["priv"], [])
+        for name in ("placeholder-priv", "token-priv"):
+            self.assertEqual(self.mode(f"etc/agentbox/claude/{name}"), 0o400)
+        self.assertEqual(self.read("etc/agentbox/claude/placeholder-priv"), placeholder)
+        self.assertEqual(self.read("etc/agentbox/claude/token-priv"), "sk-ant-x\n")
 
     def test_keeps_existing_data_disk_and_token(self):
         self.write("var/lib/agentbox/vms/priv-data.qcow2", '{"mine": true}')

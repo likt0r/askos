@@ -635,6 +635,35 @@ class RefusalTest(RouteTest):
         with socket.create_server(("127.0.0.1", 0)) as s:
             port = s.getsockname()[1]            # closed again: nothing listens there
         self.assert_refused(self.request(), 502, "upstream-error", port=port)
+        conn = self.route(port=port)
+        conn.send(self.request())
+        self.assertIn(("x-should-retry", "true"), conn.response()[1])
+        conn.finish()
+
+    def test_a_tls_failure_is_not_to_be_retried(self):
+        conn = self.route(ca="other-ca.pem")
+        conn.send(self.request())
+        self.assertIn(("x-should-retry", "false"), conn.response()[1])
+        conn.finish()
+
+    def test_a_reset_in_the_middle_of_the_head_leaves_no_line(self):
+        route = load_route({"AGENTBOX_ROOT": self.root})
+
+        class Resetting:
+            def __init__(self):
+                self.chunks = [b"POST /v1/mess"]
+
+            def settimeout(self, t):
+                pass
+
+            def recv(self, n):
+                if self.chunks:
+                    return self.chunks.pop()
+                raise ConnectionResetError
+
+        with mock.patch.object(route, "log") as log:
+            route.serve(Resetting(), "priv")
+        log.assert_not_called()
 
     def test_an_invalid_vm_name(self):
         r = subprocess.run([sys.executable, "-I", ROUTE, "../x"], stdin=subprocess.DEVNULL, capture_output=True,
