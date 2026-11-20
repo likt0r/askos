@@ -13,6 +13,8 @@ Each line is {"event": <name>, "time": <ISO time>, "data": {...}}:
                `status --json` names them); first, and on every change
   activity     a new Activity entry, as `agentbox activity --json` shows it
   alert        a VM tried to reach a suspicious destination (the proxy's ALERT line)
+  held         the proxy holds a VM's connection to a destination that is not allowed, for up
+               to `seconds`, so the owner can allow it meanwhile (the proxy's HELD line)
   github-token the token service issued, refused or failed a GitHub token
   build        a Build's record changed (started, next step, done, failed, rejected)
   build-log    new lines in a running Build's journal, gathered for a moment
@@ -27,7 +29,7 @@ that) goes into the VM's wakes file for its start, where describe, a watch start
 and the wakes find it, so `starting` and `not_responding` (responding.py) follow the time
 limit, not a single failed look. The first to find a VM not responding, watch or a wake,
 records the incident's Activity entry (actor `watch` for watch); a VM that starts is asked
-at once. Activity, Alerts and GitHub tokens come from following
+at once. Activity, Alerts, held destinations and GitHub tokens come from following
 the journald namespace agentbox, Build lines from following the agentbox-build@ units'
 journal; after a follower restarts it continues after the last entry it saw.
 
@@ -307,9 +309,9 @@ def _follow(argv, handle, name):
 
 
 def on_namespace(e):
-    """Activity, Alerts, GitHub tokens and the Anthropic route's requests from the namespace
-    agentbox, each only from the writer known for its identifier; the others are counted
-    (activity.trusted)."""
+    """Activity, Alerts, held destinations, GitHub tokens and the Anthropic route's requests
+    from the namespace agentbox, each only from the writer known for its identifier; the others
+    are counted (activity.trusted)."""
     ident = field(e, "SYSLOG_IDENTIFIER") or ""
     if not (ident == activity.IDENTIFIER or ident.startswith(("agentbox-proxy-", "agentbox-gh-", "agentbox-claude-"))):
         return
@@ -321,6 +323,10 @@ def on_namespace(e):
         if entry:
             emit("activity", _public(entry))
     elif ident.startswith("agentbox-proxy-"):
+        held = activity.held_event(e)
+        if held:
+            emit("held", held)
+            return
         entry = activity.alert_entry(e)
         if entry:
             emit("alert", {"time": entry["time"], "vm": entry["vm"], "domain": entry["_domain"],

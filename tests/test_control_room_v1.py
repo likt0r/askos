@@ -1018,6 +1018,21 @@ class PackageTest(unittest.TestCase):
         self.assertLessEqual(loaded, self.LEAVES)
 
 
+class HeldBoundTest(unittest.TestCase):
+    def test_what_is_remembered_of_held_destinations_stays_bounded(self):
+        web = server_module()
+        watch = web.Watch()
+        # many VMs, each with its own budget: the dict still never outgrows its bound
+        for i in range(web.HELD_MAX_KEPT * 3):
+            watch.first_hold(f"vm{i}", "x.example")
+            self.assertLessEqual(len(watch.held), web.HELD_MAX_KEPT)
+        # one VM's endless names add nothing beyond its budget
+        watch = web.Watch()
+        notified = [watch.first_hold("work", f"a{i}.example") for i in range(1000)]
+        self.assertEqual(notified.count(True), web.HELD_PER_VM)
+        self.assertEqual(len(watch.held), web.HELD_PER_VM)
+
+
 class ErrorTableTest(unittest.TestCase):
     """The codes agentbox raises, the web service's table, the UI's translations and the
     API docs name the same codes."""
@@ -1238,6 +1253,37 @@ class EventsTest(V1Test):
             self.assertRegex(n["time"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
         # the second host-reboot (still needed) is no new notification
         later = [b for b in (s.block() for _ in range(8)) if b.get("event") == "notification"]
+        self.assertEqual(later, [])
+
+    def test_a_held_destination_is_notified_once_in_a_while(self):
+        # #39: at once, and not again for each retry of the same VM
+        self.until_state()
+        s = self.stream()
+        s.event("state")
+        self.watch_lines(("held", {"time": "t", "vm": "work", "domain": "new.example", "seconds": 30}),
+                         ("held", {"time": "t", "vm": "work", "domain": "new.example", "seconds": 30}),
+                         ("held", {"time": "t", "vm": "priv", "domain": "new.example", "seconds": 30}),
+                         ("held", {"time": "t", "vm": "work", "domain": "other.example", "seconds": 30}))
+        got = [json.loads(s.event("notification")["data"]) for _ in range(3)]
+        self.assertEqual([(n["kind"], n["severity"], n["vm"], n["domain"]) for n in got], [
+            ("held", "warning", "work", "new.example"), ("held", "warning", "priv", "new.example"),
+            ("held", "warning", "work", "other.example")])
+        self.assertEqual((got[0]["text"], got[0]["seconds"]),
+                         ("work wants to reach new.example, held for up to 30 s until it is allowed", 30))
+        later = [b for b in (s.block() for _ in range(4)) if b.get("event") == "notification"]
+        self.assertEqual(later, [])
+
+    def test_many_distinct_held_destinations_notify_at_most_3_a_minute_per_vm(self):
+        self.until_state()
+        s = self.stream()
+        s.event("state")
+        self.watch_lines(*[("held", {"time": "t", "vm": "work", "domain": f"a{i}.x.example", "seconds": 30})
+                           for i in range(40)],
+                         ("held", {"time": "t", "vm": "priv", "domain": "p.example", "seconds": 30}))
+        got = [json.loads(s.event("notification")["data"]) for _ in range(4)]
+        self.assertEqual([(n["vm"], n["domain"]) for n in got], [
+            ("work", "a0.x.example"), ("work", "a1.x.example"), ("work", "a2.x.example"), ("priv", "p.example")])
+        later = [b for b in (s.block() for _ in range(4)) if b.get("event") == "notification"]
         self.assertEqual(later, [])
 
     def test_system(self):

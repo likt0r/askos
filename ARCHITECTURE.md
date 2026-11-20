@@ -655,6 +655,31 @@ flowchart LR
   **Signals** stay blocked, which includes **Watchlist** entries of a strong category and
   those of the threat-intelligence list; a `payload` entry only raises an Alert. While the
   hand-maintained Watchlist cannot be read, Open web lets nothing through.
+- A **Hold** gives the owner a moment to allow a destination while the program waits
+  ([#39](https://github.com/likt0r/askos/issues/39)): a connection to a destination that
+  nothing allows, with no strong Signal and not on the Watchlist (no Signal of a Watchlist
+  category, a weak `payload` hit included), is held for up to `hold_seconds` (a Setting,
+  default 30 s; 0 refuses at once) instead of being refused at once. The proxy decides again
+  at every check (once a second): an Allowlist entry added meanwhile, or Open web, lets the
+  held connection through (`ALLOWED`). It logs `HELD <host> (up to <seconds> s)` once per host
+  while connections to it are held, at most 10 new lines a minute per VM (a VM trying endless
+  names holds them all, but only the first ten of a minute announce themselves; their `BLOCKED`
+  or `ALLOWED` lines are unchanged), the Control Room notifies about it at once, at most 3 a
+  minute per VM, and the destination shows in the VM's blocked list from that moment, with its
+  "Allow…". The caps are per VM: a VM that tries many names in one minute uses up its own
+  announcements, and its later holds of that minute show only in its blocked list, once refused.
+  Destinations
+  with strong Signals or on the Watchlist are never held and are refused at once, so a phishing
+  domain never invites a click; a strong Signal gained during the hold, or a Watchlist that
+  becomes unreadable, refuses the held connection at once. When the time runs out, the client
+  gives up or sends more than 4096 bytes while it waits (a TLS client only waits for the answer
+  to its ClientHello), the connection is refused as without a hold (`BLOCKED <host> (not on the
+  Allowlist)`); a client with a shorter timeout of its own gives up earlier and tries again once
+  the destination is allowed. In Open web nothing is held: everything without a strong Signal
+  passes. At most 32 connections of a VM are held at once, and more are refused at once; a held
+  connection costs the proxy's event loop nothing, it sleeps between its checks. The proxy reads
+  `hold_seconds` itself from `settings.json` when the file changes, so a change applies without
+  a restart, and a file it cannot use leaves the hold time it had.
 - Tunnels follow [ADR 0005](docs/adr/0005-ending-access-closes-only-disallowed-tunnels.md):
   the proxy remembers what allowed each tunnel (entries, or only Open web) and checks once
   a second whether access was withdrawn. An entry that disappears before its expiry was
@@ -672,7 +697,9 @@ flowchart LR
   `(open web)` (of several entries the most specific domain, else a pattern),
   `BLOCKED <host> (<reason>)` (`suspicious: <signals>` for strong Signals, whatever would
   allow the destination, `Watchlist unreadable` while the Watchlist cannot be read),
-  `ALERT <host> [<signals>]`, `CLOSED <host> (<reason>)` for a tunnel the proxy closed, and
+  `ALERT <host> [<signals>]`, `HELD <host> (up to <seconds> s)` for a destination it holds (each
+  held connection ends with its own `ALLOWED` or `BLOCKED` line), `CLOSED <host> (<reason>)`
+  for a tunnel the proxy closed, and
   `BLOCKED <client address> (not a TLS handshake)` or `(no server name)` for a connection
   it took no destination from. `agentbox allowlist` counts each entry's uses of the last 24
   hours from the `ALLOWED` lines.
@@ -1340,12 +1367,13 @@ System disk and its Build, Image and pin, SSH access, devices on the Orca port a
 port from the `agentbox-gui-<vm>@` and `agentbox-ssh-<vm>@` instances, by address and kind)
 when one changes, polled every 3 s (agents and whether Orca
 answers every 15 s) rather than taken from libvirt's events, because most of the object is
-not libvirt's; Activity, Alerts and GitHub tokens from following the journald namespace
+not libvirt's; Activity, Alerts, held destinations and GitHub tokens from following the journald namespace
 `agentbox`; Build records and the build unit's journal; the Host's agentbox units; and
 whether updates need a reboot (`dnf -C needs-restarting -r`, every six hours). It cleans
 entries like `agentbox activity` does and passes every string through the token, key and
 Pairing-code patterns once more. It ends when the backend closes its stdin. The backend
-turns Alerts, refused GitHub tokens, failed or rejected Builds, a needed reboot and
+turns Alerts, held destinations (once in five minutes per VM and destination, however often
+the VM tries again, and at most three a minute per VM), refused GitHub tokens, failed or rejected Builds, a needed reboot and
 temperatures reaching their threshold into `notification` events (kind, severity, VM, short
 English text); which of them a browser shows is its own choice.
 
@@ -1468,7 +1496,9 @@ reloaded and its timer restarted (a restarted Feeds timer fetches the lists at o
 other readers take the file at the moment they need it: `create` (defaults for new VMs),
 `agentbox alert-watch` (`alert_action`, at every Alert with a strong Signal; a file agentbox
 refuses counts as `pause`, the stricter choice),
-`open-web` (longest Open web), the Maintenance window (`rebuild_day`; its Reset check
+`open-web` (longest Open web), the proxies (`hold_seconds`, read again when the file changes,
+with `agentbox/list_records.py`; a file they cannot use leaves the hold time they had), the
+Maintenance window (`rebuild_day`; its Reset check
 `reset_age_days`, `auto_update`), `check-versions` (`auto_update`) and the Control Room
 (`session_hours`, read at every sign-in, 12 hours without the file or the key;
 `default_language`, read at every `GET` and `POST /session` and passed to the UI, which

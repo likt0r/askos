@@ -384,7 +384,7 @@ the Actor); without it no link is made.
 | `POST /vms/<vm>/open-web` | `{"minutes": 30}` | `open-web`; while the Watchlist cannot be read: `409 watchlist_unreadable` |
 | `DELETE /vms/<vm>/open-web` | | `close-web` |
 | `GET /vms/<vm>/logs` | `?unit&priority&since&until&boot&grep&lines&after_cursor` | `logs`: `{"vm", "entries": [{"time", "unit", "identifier", "priority", "message", "boot", "cursor"}], "cursor", "truncated"}`; poll with `after_cursor=<cursor>` for new lines |
-| `GET /vms/<vm>/blocked` | | `blocked`: `[{"domain", "count", "first", "last", "reason", "code", "params", "suspicious"}]` (last 24 hours, epoch seconds). `reason`: why the proxy blocked it, English; `code`: the same as a stable code, `null` for a reason agentbox does not know: `not-allowed` (not on the Allowlist), `suspicious` (strong Signals, which block it whatever would allow it; `params.signals`, joined with `", "`), `watchlist-unreadable` (nothing passes while the Watchlist cannot be read), `not-public` (no public address), `not-tls` and `no-server-name` (a connection the proxy took no destination from: what the VM sent was no TLS handshake, or a ClientHello without a server name; `domain` is the client's address then, in effect the VM's); `suspicious`: the Signals of its last Alert |
+| `GET /vms/<vm>/blocked` | | `blocked`: `[{"domain", "count", "first", "last", "reason", "code", "params", "suspicious", "held_until"}]` (last 24 hours, epoch seconds). `reason`: why the proxy blocked it, English; `code`: the same as a stable code, `null` for a reason agentbox does not know: `not-allowed` (not on the Allowlist), `suspicious` (strong Signals, which block it whatever would allow it; `params.signals`, joined with `", "`), `watchlist-unreadable` (nothing passes while the Watchlist cannot be read), `not-public` (no public address), `not-tls` and `no-server-name` (a connection the proxy took no destination from: what the VM sent was no TLS handshake, or a ClientHello without a server name; `domain` is the client's address then, in effect the VM's); `suspicious`: the Signals of its last Alert; `held_until`: when the newest Hold of it ends at the latest (epoch seconds; a time in the past: it ended), `null` when it was not held. A destination the proxy holds is listed from the moment it is held (`not-allowed`), with `count` 0 until a connection to it is refused |
 | `GET /vms/<vm>/alerts` | | `alerts`: `[{"domain", "tags", "count", "first", "last", "seen", ...}]` |
 | `POST /vms/<vm>/alerts/seen` | `{"domain"?}` | `mark-seen`: all Alerts of the VM, or those of one destination |
 | `GET /vms/<vm>/allowlist` | | `allowlist <vm>`: the entries that apply to the VM (see Allowlist) |
@@ -695,10 +695,13 @@ Progress arrives live as `build` and `build-log` events; the log endpoint fills 
 Settings keys the Control Room may change: `reset_age_days`, `maintenance_time`, `rebuild_day`,
 `builds_kept`, `default_memory_mib`, `default_data_disk_gib`,
 `default_image`, `default_container_image_cleanup`, `default_container_image_cleanup_days`,
-`open_web_max_minutes`, `alert_action`, `temporary_entry_default`, `young_domain_days`,
+`open_web_max_minutes`, `hold_seconds`, `alert_action`, `temporary_entry_default`, `young_domain_days`,
 `feed_interval_hours`, `package_min_age_days`, `orca_version`, `playwright_version`, `activity_retention_days`,
 `session_hours`, `default_language`, `auto_update`. The password, home network and ports are
 not among them.
+`hold_seconds` (0 to 120, default 30): how long the proxy holds a connection to a destination
+that is not allowed, so an entry added meanwhile lets it through; 0 refuses at once. Each proxy
+reads it when it changes, so it applies at once.
 `alert_action` (`pause`, the default, or `none`): whether an Alert with a strong Signal pauses
 its VM (`agentbox alert-watch`, [ADR 0022](adr/0022-a-root-watcher-pauses-a-vm-on-a-strong-alert.md)).
 `maintenance_time` (`HH:MM`, default `"02:00"`) is when the daily **Maintenance window** starts:
@@ -746,6 +749,7 @@ and, after a drop, `Last-Event-ID`.
 | `vm` | `<VM>` | one VM's object changed (state, agents, devices, System disk, Image, ...); replace that VM |
 | `activity` | an Activity entry as in `GET /activity`, with its `code` and `params` | a new entry (actions, sign-ins, Allowlist changes, Alerts, GitHub tokens, Builds, Resets, ...) |
 | `alert` | `{"time", "vm", "domain", "signals": [..]}` | a VM tried to reach a suspicious destination |
+| `held` | `{"time", "vm", "domain", "seconds"}` | the proxy holds a connection of the VM to a destination that is not allowed, for up to `seconds` (`hold_seconds`): an Allowlist entry added meanwhile lets it through. Once per destination while connections to it are held, and the proxy announces at most 10 new holds a minute per VM (more are held without an event); reload the VM's `blocked` list, at most once a second |
 | `github-token` | `{"time", "vm", "action": "issued"\|"refused"\|"error", "outcome", "repository", "request", "reason", "reason_code", "reason_params", "expires"}` | the token service issued or refused a GitHub token (the token itself never); `reason` English, `reason_code` and `reason_params` as in `github-tokens` |
 | `build` | `{"image", "build", "status": "running"\|"ok"\|"failed"\|"rejected", "step", "started", "finished", "release", "commit", "base_build", "recipe_sha256", "error", "problems", "actor", "unit"}` (`release` and `commit` as in `GET /images`) | a Build started, moved to its next step (`build`, `check`, `disk`, `done`) or ended |
 | `build-log` | `{"unit", "target", "image", "build", "entries": [{"time", "priority", "message", "cursor"}], "cursor", "truncated"}` | new lines of a running Build, gathered for half a second; `truncated`: lines were skipped (fetch them with the log endpoint and `after_cursor`) |
@@ -768,6 +772,7 @@ translation. Which kinds a browser shows is a per-browser preference kept by the
 | `kind` | `severity` | Extra fields | When |
 |---|---|---|---|
 | `alert` | critical | `domain`, `signals`; `paused: true` when the Alert paused the VM | every Alert, and again when it paused its VM (`alert_action`) |
+| `held` | warning | `domain`, `seconds` | the proxy holds a connection to a destination that is not allowed (`held` event); once in five minutes per VM and destination, at most 3 a minute per VM. The VM's blocked list has its "Allow…" |
 | `github-refused` | warning | `request`, `detail` (the token service's reason, English) | a GitHub token request was refused |
 | `build-failed` | warning | `image`, `build`, `detail` | a Build failed; the previous one stays in use |
 | `build-rejected` | critical | `image`, `build`, `detail` | a Build was discarded because a Safeguard was missing or weakened |

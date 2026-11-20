@@ -91,7 +91,7 @@ export interface LiveState {
 }
 
 /** Events that carry no state of their own: views subscribe with `on()`. */
-export const STREAM_EVENTS = ['activity', 'alert', 'github-token', 'build', 'build-log', 'notification'] as const
+export const STREAM_EVENTS = ['activity', 'alert', 'held', 'github-token', 'build', 'build-log', 'notification'] as const
 export type Listener = (data: any) => void
 
 interface EventSourceLike {

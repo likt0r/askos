@@ -134,6 +134,8 @@ export default {
       count: 'keine | ein Ziel | {n} Ziele',
       empty: 'In den letzten 24 Stunden wurde nichts gesperrt.',
       allowedNow: 'jetzt freigegeben',
+      held: 'noch {seconds} s gehalten',
+      heldHint: 'Der Proxy hält die Verbindung: jetzt freigeben lässt sie durch.',
       times: 'nie | einmal | {n}-mal',
       last: 'zuletzt {when}',
       allow: 'Freigeben…',

@@ -17,6 +17,7 @@ export default {
       section: 'Benachrichtigungen in diesem Browser',
       alert: 'Alert: {vm}',
       'alert-paused': 'Wegen Verdacht pausiert: {vm}',
+      held: '{vm} will {domain}',
       'github-refused': 'GitHub-Token abgelehnt: {vm}',
       'build-failed': 'Build gescheitert: {image}',
       'build-rejected': 'Build verworfen: {image}',
@@ -27,6 +28,7 @@ export default {
     text: {
       alert: '{vm} wollte {domain} erreichen ({signals})',
       'alert-paused': '{vm} wollte {domain} erreichen ({signals}) und wurde pausiert',
+      held: 'Die Verbindung wird bis zu {seconds} s gehalten. „Freigeben…“ unter den gesperrten Zielen der VM lässt sie durch.',
       'github-refused': '{vm}: Die Anfrage nach einem GitHub-Token für {request} wurde abgelehnt',
       'build-failed': 'Build {image}-{build} ist gescheitert. Der vorherige Build bleibt in Gebrauch.',
       'build-rejected': 'Build {image}-{build} wurde verworfen: eine Schutzmaßnahme fehlt oder ist abgeschwächt. Der vorherige Build bleibt in Gebrauch.',
@@ -35,6 +37,7 @@ export default {
     },
     kind: {
       alert: { label: 'Alerts', help: 'Eine VM wollte ein verdächtiges Ziel erreichen.' },
+      held: { label: 'Gehaltene Ziele', help: 'Eine VM will ein Ziel, das nicht erlaubt ist; der Proxy hält es einen Moment, damit du es freigeben kannst.' },
       'github-refused': { label: 'Abgelehnte GitHub-Tokens', help: 'Der Token-Dienst hat eine Anfrage einer VM abgelehnt.' },
       'build-failed': { label: 'Gescheiterte Builds', help: 'Ein Build ist gescheitert; der vorherige bleibt in Gebrauch.' },
       'build-rejected': { label: 'Verworfene Builds', help: 'Ein Build wurde verworfen, weil eine Schutzmaßnahme fehlte.' },

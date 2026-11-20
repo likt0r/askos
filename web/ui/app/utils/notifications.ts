@@ -1,9 +1,11 @@
+import { VM_NAME } from './vmRules'
+
 // Browser notifications (#21): which event kinds a browser shows is a per-browser
 // preference (localStorage); the browser's permission is asked once, by a click.
 
 /** `kind` of the `notification` event (docs/control-room-api.md "Notifications"). */
 export const NOTIFICATION_KINDS = [
-  'alert', 'github-refused', 'build-failed', 'build-rejected', 'host-reboot', 'temperature',
+  'alert', 'held', 'github-refused', 'build-failed', 'build-rejected', 'host-reboot', 'temperature',
 ] as const
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number]
 
@@ -71,6 +73,14 @@ export function isNotificationEvent(data: unknown): data is NotificationEvent {
  * two notifications; it also serves as the notification's `tag`. */
 export function notificationKey(n: NotificationEvent): string {
   return JSON.stringify(Object.keys(n).sort().map(k => [k, n[k]]))
+}
+
+/** Where a click on the notification leads: a held destination to its VM's blocked list, whose
+ * "Allow…" lets it through. */
+export function notificationUrl(n: NotificationEvent): string {
+  if (n.kind === 'host-reboot' || n.kind === 'temperature') return '/system'
+  if (n.kind === 'held' && typeof n.vm === 'string' && VM_NAME.test(n.vm)) return `/vms/${n.vm}/web`
+  return '/activity'
 }
 
 export type Support = 'unsupported' | NotificationPermission

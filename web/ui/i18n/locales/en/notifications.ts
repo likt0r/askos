@@ -17,6 +17,7 @@ export default {
       section: 'Notifications in this browser',
       alert: 'Alert: {vm}',
       'alert-paused': 'Paused by an Alert: {vm}',
+      held: '{vm} wants {domain}',
       'github-refused': 'GitHub token refused: {vm}',
       'build-failed': 'Build failed: {image}',
       'build-rejected': 'Build rejected: {image}',
@@ -27,6 +28,7 @@ export default {
     text: {
       alert: '{vm} tried to reach {domain} ({signals})',
       'alert-paused': '{vm} tried to reach {domain} ({signals}) and was paused',
+      held: 'The connection is held for up to {seconds} s. “Allow…” in the VM\'s blocked list lets it through.',
       'github-refused': '{vm}: the GitHub token request for {request} was refused',
       'build-failed': 'Build {image}-{build} failed. The previous Build stays in use.',
       'build-rejected': 'Build {image}-{build} was rejected: a safeguard is missing or weakened. The previous Build stays in use.',
@@ -35,6 +37,7 @@ export default {
     },
     kind: {
       alert: { label: 'Alerts', help: 'A VM tried to reach a suspicious destination.' },
+      held: { label: 'Held destinations', help: 'A VM wants a destination that is not allowed; the proxy holds it for a moment so you can allow it.' },
       'github-refused': { label: 'Refused GitHub tokens', help: 'The token service refused a request of a VM.' },
       'build-failed': { label: 'Failed Builds', help: 'A Build failed; the previous one stays in use.' },
       'build-rejected': { label: 'Rejected Builds', help: 'A Build was discarded because a safeguard was missing.' },

@@ -135,6 +135,8 @@ export default {
       count: 'none | one destination | {n} destinations',
       empty: 'Nothing was blocked in the last 24 hours.',
       allowedNow: 'allowed now',
+      held: 'held for {seconds} s more',
+      heldHint: 'The proxy holds the connection: allowing it now lets it through.',
       times: 'never | once | {n} times',
       last: 'last {when}',
       allow: 'Allow…',

@@ -126,6 +126,27 @@ describe('Web tab', () => {
     expect(must('[data-testid="open-web"]').dataset.open).toBe('true')
   })
 
+  it('shows a held destination at once, with Allow…, and reloads when one is held', async () => {
+    // #39: the proxy holds it for an entry; the row comes with the HELD line, before any block
+    const held = { domain: 'new.example', count: 0, last: now() - 2, reason: 'not on the Allowlist', code: 'not-allowed', params: {}, suspicious: [], held_until: now() + 28 }
+    const over = { ...blocked()[1]!, held_until: now() - 60 }
+    const { api, es } = await openApp('/vms/work/web', { ...ROUTES, 'GET /vms/work/blocked': ok([held, over]) })
+    const row = blockedRow('new.example')
+    const left = Number(row.querySelector('[data-testid="blocked-held"]')!.textContent!.match(/held for (\d+) s more/)![1])
+    expect(left).toBeGreaterThanOrEqual(20)
+    expect(left).toBeLessThanOrEqual(28)
+    expect(row.querySelector('[data-testid="blocked-allow"]')).not.toBeNull()
+    expect(row.textContent).not.toContain('never')
+    // a hold that is over shows no badge
+    expect(blockedRow('static.docs.rs').querySelector('[data-testid="blocked-held"]')).toBeNull()
+    const loads = () => api.calls.filter(c => c.path === '/vms/work/blocked').length
+    expect(loads()).toBe(1)
+    // this VM's event first, another VM's right after: the reload still comes
+    es.emit('held', { time: '2026-11-03T12:00:00Z', vm: 'work', domain: 'other.example', seconds: 30 })
+    es.emit('held', { time: '2026-11-03T12:00:00Z', vm: 'priv', domain: 'x.example', seconds: 30 })
+    await waitFor(() => expect(loads()).toBe(2))
+  })
+
   it('reloads the blocked list on an Alert of this VM', async () => {
     const { api, es } = await openApp('/vms/work/web', ROUTES)
     const loads = () => api.calls.filter(c => c.path === '/vms/work/blocked').length

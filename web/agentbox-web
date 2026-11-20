@@ -608,8 +608,16 @@ WATCH_RETRY_SECONDS = max(0.05, float(os.environ.get("AGENTBOX_WEB_WATCH_RETRY_S
 WATCH_RETRY_MAX = 60
 WATCH_STABLE = 60       # ran this long: the pause starts over
 # Events of watch that go on unchanged (as state: new connections get the latest)
-WATCH_FORWARD = {"activity": False, "alert": False, "github-token": False, "build": False, "build-log": False,
-                 "services": True, "host-reboot": True}
+WATCH_FORWARD = {"activity": False, "alert": False, "held": False, "github-token": False, "build": False,
+                 "build-log": False, "services": True, "host-reboot": True}
+# a held destination of a VM is notified about once in this time, however often the VM tries again
+HELD_REPEAT_SECONDS = 300
+# and at most this many held destinations of a VM are notified in HELD_WINDOW seconds, so a VM
+# trying endless names cannot drown the critical notifications; the dict of them stays below
+# HELD_MAX_KEPT entries whatever the VMs do
+HELD_PER_VM = 3
+HELD_WINDOW = 60
+HELD_MAX_KEPT = 200
 
 
 class Watch:
@@ -622,6 +630,7 @@ class Watch:
         self.reboot = None
         self.services = None
         self.warnings = None        # what the Host needs for its maintenance (services event)
+        self.held = {}              # (vm, domain): when its hold was last notified (monotonic)
 
     def start(self):
         self.set_status(running=False)
@@ -691,6 +700,22 @@ class Watch:
             events.publish(name, data, state=WATCH_FORWARD[name])
             self.notice(name, data)
 
+    def first_hold(self, vm, domain):
+        """Whether a hold of domain by vm is to be notified: not within HELD_REPEAT_SECONDS, and not
+        when vm had HELD_PER_VM notified in the last HELD_WINDOW seconds already. Only what is
+        notified is remembered, and at most HELD_MAX_KEPT of it."""
+        now = time.monotonic()
+        with self.lock:
+            self.held = {k: t for k, t in self.held.items() if now - t < HELD_REPEAT_SECONDS}
+            if (vm, domain) in self.held:
+                return False
+            if sum(1 for (v, _), t in self.held.items() if v == vm and now - t < HELD_WINDOW) >= HELD_PER_VM:
+                return False
+            while len(self.held) >= HELD_MAX_KEPT:      # the oldest first (a dict keeps the order)
+                del self.held[next(iter(self.held))]
+            self.held[(vm, domain)] = now
+            return True
+
     def public_state(self):
         snap = self.snapshot()
         return {"vms": snap["vms"], "problems": snap["problems"]}
@@ -719,6 +744,12 @@ class Watch:
             notify("alert", "critical", f"{vm} paused: it tried to reach {params.get('domain')}"
                    + (f" ({params['signals']})" if params.get("signals") else ""), vm=vm, domain=params.get("domain"),
                    signals=[s for s in str(params.get("signals") or "").split(", ") if s], paused=True)
+        elif name == "held" and vm and isinstance(data.get("domain"), str) and self.first_hold(vm, data["domain"]):
+            # the proxy holds it, so the owner can allow it at once: Allow... in the VM's blocked list
+            seconds = data.get("seconds") if isinstance(data.get("seconds"), int) else None
+            notify("held", "warning", f"{vm} wants to reach {data['domain']}"
+                   + (f", held for up to {seconds} s until it is allowed" if seconds else ""),
+                   vm=vm, domain=data["domain"], seconds=seconds)
         elif name == "github-token" and data.get("action") == "refused":
             notify("github-refused", "warning", f"{vm}: GitHub token refused for {data.get('request') or '?'}",
                    vm=vm, request=data.get("request"), detail=data.get("reason"))

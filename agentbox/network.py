@@ -3,7 +3,7 @@ Open web. The Allowlist itself is in allowlist.py.
 
 The proxy writes one journal line per event under the identifier
 agentbox-proxy-<vm>, into the journald namespace of Activity, in the format of
-proxy_log (ALLOWED, BLOCKED, ALERT, CLOSED, ERROR). Lines the VM's proxy did not
+proxy_log (ALLOWED, BLOCKED, ALERT, CLOSED, ERROR, HELD). Lines the VM's proxy did not
 write are ignored (activity.trusted).
 """
 import json
@@ -42,9 +42,9 @@ def done(as_json, message, **fields):
 # --- proxy log ---------------------------------------------------------------
 
 def proxy_journal(ctx):
-    """The VM's Alerts and blocked destinations of the last 24 hours, oldest first, as
+    """The VM's Alerts, blocked and held destinations of the last 24 hours, oldest first, as
     (epoch seconds, proxy_log.Event)."""
-    lines = activity.proxy_lines((time.time() - LOG_WINDOW, None), [ctx], ("ALERT", "BLOCKED"))
+    lines = activity.proxy_lines((time.time() - LOG_WINDOW, None), [ctx], ("ALERT", "BLOCKED", "HELD"))
     return [(usec // 10**6, event) for usec, event in ((times.journal_usec(e), event) for e, event in reversed(lines))
             if usec is not None and event]
 
@@ -58,21 +58,28 @@ def block_reason(why):
 
 
 def blocked_rows(log):
-    """Blocked domains, newest first, with the Signals of their last Alert."""
+    """Blocked domains, newest first, with the Signals of their last Alert. A held destination
+    (HELD) is one too, not on the Allowlist, from the moment the proxy holds it: held_until says
+    when its newest hold ends at the latest (epoch seconds, else None); count counts the
+    connections refused, so one only held so far counts 0."""
     signals = {}
     for _, event in log:
         if event.kind == "ALERT":
             signals[event.host] = list(event.signals)
     seen = {}
     for t, event in log:
-        if event.kind != "BLOCKED":
+        if event.kind not in ("BLOCKED", "HELD"):
             continue
-        host, why = event.host, event.reason
+        host, why = event.host, event.reason if event.kind == "BLOCKED" else proxy_log.NOT_ALLOWED
         # the reason stays the one of the first block; a line naming the client's address is a
         # row apart from a destination of the same text
         e = seen.setdefault((host, why in proxy_log.CLIENT_REASONS),
-                            {"domain": host, "count": 0, "last": 0, "reason": why, **block_reason(why)})
-        e["count"] += 1
+                            {"domain": host, "count": 0, "last": 0, "reason": why, **block_reason(why),
+                             "held_until": None})
+        if event.kind == "HELD":
+            e["held_until"] = max(e["held_until"] or 0, t + event.seconds)
+        else:
+            e["count"] += 1
         e["last"] = max(e["last"], t)
     rows = sorted(seen.values(), key=lambda e: -e["last"])
     for e in rows:
@@ -94,14 +101,17 @@ def alert_rows(log):
 
 
 def blocked(args):
-    """agentbox blocked <vm> [--json]: blocked domains of the last 24 hours"""
+    """agentbox blocked <vm> [--json]: blocked domains of the last 24 hours, held ones too"""
     ctx = check(args[0] if args else "")
     rows = blocked_rows(proxy_journal(ctx))
     if "--json" in args[1:]:
         print(json.dumps(rows))
         return
+    now = time.time()
     for e in rows:
         flag = ("  ALERT: " + ",".join(e["suspicious"])) if e["suspicious"] else ""
+        if (e["held_until"] or 0) > now:
+            flag += f"  HELD until {time.strftime('%H:%M:%S', time.localtime(e['held_until']))}"
         print("%-40s %4dx  last %s  (%s)%s" % (e["domain"], e["count"], times.local(e["last"]), e["reason"], flag))
 
 

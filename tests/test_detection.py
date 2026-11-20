@@ -71,6 +71,7 @@ class ProxyTest(unittest.TestCase):
         write(os.path.join(self.conf, "suspicious-domains"), WATCHLIST)
         write(os.path.join(self.conf, "legitimate-domains"), LEGITIMATE)
         write(os.path.join(self.conf, "allowlist.json"), '{"entries": []}\n')     # nothing allowed
+        write(os.path.join(self.conf, "settings.json"), '{"hold_seconds": 0}\n')  # refused at once
         self.feed("threat-intelligence", ["bad.example", "registry.example", "cdn.registry.example", "vendor.example"])
         self.feed("newly-registered", ["fresh.example", "npmjs.com", "mirror.registry.example"])
         self.sock = os.path.join(self.dir, "proxy.sock")

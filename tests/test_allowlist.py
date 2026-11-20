@@ -82,6 +82,7 @@ class ProxyTest(unittest.TestCase):
         self.conf = os.path.join(self.dir, "conf")
         write(os.path.join(self.conf, "suspicious-domains"), "exfil.example exfil # Test\n")
         write(os.path.join(self.conf, "legitimate-domains"), "# leer\n")
+        self.hold(0)             # refused at once, as without a hold; HoldTest holds
         self.sock = os.path.join(self.dir, "proxy.sock")
         self.log_path = os.path.join(self.dir, "proxy.log")
         self.echo = EchoServer(("127.0.0.1", 0), Echo)
@@ -93,6 +94,10 @@ class ProxyTest(unittest.TestCase):
     def store(self, *entries, raw=None):
         write(os.path.join(self.conf, "allowlist.json"),
               raw if raw is not None else json.dumps({"entries": list(entries)}))
+
+    def hold(self, seconds):
+        """The Setting hold_seconds in settings.json."""
+        write(os.path.join(self.conf, "settings.json"), json.dumps({"hold_seconds": seconds}))
 
     def open_web(self, seconds=600):
         write(os.path.join(self.conf, "open-work"), f"{int(time.time()) + seconds}\n")
@@ -332,6 +337,285 @@ class RemovalTest(ProxyTest):
         self.close_web()
         self.assertTrue(self.closed(t))
         self.assertIn("[work] CLOSED a.example (Open web ended)\n", self.log())
+
+
+class HoldTest(ProxyTest):
+    """A destination that is not allowed is held for up to hold_seconds, so the owner can allow it
+    meanwhile (#39); destinations with strong Signals or on the Watchlist never are. The
+    Watchlist here is the text file from before: exfil.example (exfil)."""
+
+    def setUp(self):
+        super().setUp()
+        self.hellos = {}            # held socket: the ClientHello it sent
+
+    def held(self, host, check=True, announced=True):
+        """A socket whose ClientHello for host the proxy holds: logged as HELD (the first
+        connection to host; not with announced False, the VM's budget of HELD lines being used
+        up), and with check unanswered for a moment."""
+        before = self.log().count(f"] HELD {host} (")
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.addCleanup(s.close)
+        s.connect(self.sock)
+        self.hellos[s] = client_hello(host)
+        s.sendall(self.hellos[s])
+        deadline = time.monotonic() + 5
+        while announced and self.log().count(f"] HELD {host} (") == before and host not in self.holding():
+            self.assertLess(time.monotonic(), deadline, self.log())
+            time.sleep(0.02)
+        check = check or not announced      # unannounced, only the silence shows the hold
+        if check:
+            s.settimeout(3 * CHECK)
+            with self.assertRaises(socket.timeout):
+                s.recv(1)
+        return s
+
+    def holding(self):
+        """Hosts the log shows held, for a second connection to the same host (one HELD line)."""
+        return {line.split()[2] for line in self.log().splitlines() if " HELD " in line}
+
+    def answered(self, s):
+        """What the proxy answered the held socket s at last (client_hello.answer)."""
+        s.settimeout(10)
+        return answer(s, self.hellos[s])
+
+    def at_once(self, host):
+        """The proxy refuses host without holding it."""
+        started = time.monotonic()
+        self.assertTrue(self.refused(host))
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.assertNotIn(f"HELD {host} ", self.log())
+
+    def test_an_entry_added_during_the_hold_lets_the_connection_through(self):
+        self.hold(30)
+        self.start()
+        s = self.held("new.example")
+        self.store(entry("new.example", "work"))
+        self.assertEqual(self.answered(s), "open")
+        self.assertTrue(self.alive(s))
+        log = self.log()
+        self.assertIn("[work] HELD new.example (up to 30 s)\n[work] ALLOWED new.example (allowlist new.example work)\n",
+                      log)
+        self.assertNotIn("BLOCKED", log)
+
+    def test_without_the_setting_the_hold_is_30_seconds(self):
+        os.remove(os.path.join(self.conf, "settings.json"))
+        self.start()
+        s = self.held("new.example")
+        self.assertIn("[work] HELD new.example (up to 30 s)\n", self.log())
+        self.open_web()             # Open web lets a held connection through too
+        self.assertEqual(self.answered(s), "open")
+        self.assertIn("[work] ALLOWED new.example (open web)\n", self.log())
+
+    def test_a_hold_that_runs_out_is_blocked_as_without_one(self):
+        self.hold(1)
+        self.start()
+        started = time.monotonic()
+        self.assertTrue(self.refused("late.example"))
+        self.assertGreater(time.monotonic() - started, 0.9)
+        log = self.log()
+        self.assertIn("[work] HELD late.example (up to 1 s)\n[work] BLOCKED late.example (not on the Allowlist)\n", log)
+        self.assertNotIn("ALLOWED", log)
+
+    def test_strong_signals_and_the_watchlist_are_refused_at_once(self):
+        self.hold(30)
+        write(os.path.join(self.dir, "feeds", "threat-intelligence"), "bad.example\n")
+        write(os.path.join(self.conf, "watchlist.json"),
+              watch_record(("exfil.example", "exfil"), ("drop.example", "payload")))
+        write(os.path.join(self.dir, "feeds", "newly-registered"), "young.example\n")
+        self.start()
+        for host, why in (("upload.exfil.example", "suspicious: exfil"), ("bad.example", "suspicious: threat"),
+                          # payload is a weak Signal, but a Watchlist hit all the same
+                          ("drop.example", "not on the Allowlist")):
+            with self.subTest(host=host):
+                self.at_once(host)
+                self.assertIn(f"[work] BLOCKED {host} ({why})\n", self.log())
+        # a weak Signal outside the Watchlist does not keep a destination from being held
+        s = self.held("young.example")
+        self.assertIn("[work] ALERT young.example [young]\n[work] HELD young.example (up to 30 s)\n", self.log())
+        s.close()
+
+    def test_while_the_watchlist_cannot_be_read_nothing_is_held(self):
+        self.hold(30)
+        write(os.path.join(self.conf, "watchlist.json"), "{broken")
+        self.start()
+        self.at_once("new.example")
+        self.assertIn("[work] BLOCKED new.example (Watchlist unreadable)\n", self.log())
+
+    def test_a_strong_signal_or_an_unreadable_watchlist_during_the_hold_refuses_at_once(self):
+        self.hold(30)
+        self.start()
+        s = self.held("turns.example")
+        started = time.monotonic()
+        write(os.path.join(self.dir, "feeds", "threat-intelligence"), "turns.example\n")
+        self.assertEqual(self.answered(s), ACCESS_DENIED)
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertIn("[work] ALERT turns.example [threat]\n[work] BLOCKED turns.example (suspicious: threat)\n",
+                      self.log())
+        # and a Watchlist that becomes unreadable: which Signals are strong is unknown then
+        s = self.held("waits.example")
+        write(os.path.join(self.conf, "watchlist.json"), "{broken")
+        self.assertEqual(self.answered(s), ACCESS_DENIED)
+        self.assertIn("[work] BLOCKED waits.example (Watchlist unreadable)\n", self.log())
+
+    def test_open_web_holds_nothing(self):
+        self.hold(30)
+        self.open_web()
+        self.start()
+        started = time.monotonic()
+        self.tunnel("anything.example")
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.at_once("upload.exfil.example")
+        log = self.log()
+        self.assertIn("[work] ALLOWED anything.example (open web)\n", log)
+        self.assertNotIn("HELD", log)
+
+    def test_other_connections_keep_flowing_while_one_is_held(self):
+        self.hold(30)
+        self.store(entry("ok.example", "work"))
+        self.start()
+        s = self.held("waiting.example")
+        t = self.tunnel("ok.example")
+        self.at_once("upload.exfil.example")
+        other = self.held("other.example")
+        self.assertTrue(self.alive(t))
+        # a client that gives up ends its hold: blocked as without one
+        s.close()
+        deadline = time.monotonic() + 5
+        while "BLOCKED waiting.example" not in self.log():
+            self.assertLess(time.monotonic() - deadline, 0, self.log())
+            time.sleep(0.02)
+        self.assertIn("[work] BLOCKED waiting.example (not on the Allowlist)\n", self.log())
+        self.store(entry("ok.example", "work"), entry("other.example", "work"))
+        self.assertEqual(self.answered(other), "open")
+
+    def test_a_vm_trying_many_names_announces_at_most_10_holds_a_minute(self):
+        self.hold(30)
+        self.start()
+        hosts = [f"a{i}.x.example" for i in range(25)]
+        socks = [self.held(host, announced=i < 10) for i, host in enumerate(hosts)]
+        log = self.log()
+        self.assertEqual(log.count("] HELD "), 10)
+        self.assertEqual([h for h in hosts if f"HELD {h} " in log], hosts[:10])
+        # the others are held all the same, and end as always
+        self.store(*[entry(host, "work") for host in hosts])
+        for s, host in zip(socks, hosts):
+            self.assertEqual(self.answered(s), "open", host)
+        log = self.log()
+        self.assertEqual(log.count("] ALLOWED "), 25)
+        self.assertEqual(log.count("] HELD "), 10)
+
+    def test_a_hold_beyond_the_announcements_ends_with_its_blocked_line(self):
+        self.hold(1)
+        self.start()
+        hosts = [f"b{i}.x.example" for i in range(12)]
+        socks = [self.held(host, announced=i < 10) for i, host in enumerate(hosts)]
+        for s, host in zip(socks, hosts):
+            self.assertEqual(self.answered(s), ACCESS_DENIED, host)
+        log = self.log()
+        self.assertEqual(log.count("] HELD "), 10)
+        for host in hosts:
+            self.assertIn(f"[work] BLOCKED {host} (not on the Allowlist)\n", log)
+
+    def test_a_client_sending_more_than_a_waiting_client_does_ends_the_hold(self):
+        # the proxy reads while it holds: nothing a client sends piles up unread, so neither its
+        # leaving nor its flooding goes unseen
+        self.hold(30)
+        self.start()
+        s = self.held("flood.example")
+        started = time.monotonic()
+        s.settimeout(10)
+        try:
+            s.sendall(b"x" * 1_000_000)
+        except OSError:
+            pass
+        self.assertEqual(self.answered(s), ACCESS_DENIED)
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertIn("[work] HELD flood.example (up to 30 s)\n[work] BLOCKED flood.example (not on the Allowlist)\n",
+                      self.log())
+
+    def test_a_client_that_leaves_after_a_flood_frees_its_slot(self):
+        self.hold(30)
+        self.start()
+        s = self.held("gone.example")
+        s.sendall(b"x" * 300_000)
+        s.close()
+        deadline = time.monotonic() + 5
+        while "BLOCKED gone.example" not in self.log():
+            self.assertLess(time.monotonic(), deadline, self.log())
+            time.sleep(0.02)
+
+    def test_what_a_client_sends_during_the_hold_goes_on_after_the_allow(self):
+        # a ChangeCipherSpec after the ClientHello is what TLS 1.3 clients send at once
+        self.hold(30)
+        self.start()
+        s = self.held("late.example")
+        s.sendall(b"\x14\x03\x03\x00\x01\x01")
+        time.sleep(3 * CHECK)
+        self.store(entry("late.example", "work"))
+        s.settimeout(10)
+        want = self.hellos[s] + b"\x14\x03\x03\x00\x01\x01"
+        data = b""
+        while len(data) < len(want):
+            chunk = s.recv(len(want) - len(data))
+            self.assertTrue(chunk, self.log())
+            data += chunk
+        self.assertEqual(data, want)
+
+    def test_a_weak_watchlist_hit_during_the_hold_ends_it(self):
+        # payload raises an Alert only, but a Watchlist hit is never held, nor kept held
+        self.hold(30)
+        self.start()
+        s = self.held("drop.example")
+        write(os.path.join(self.conf, "watchlist.json"), watch_record(("drop.example", "payload")))
+        self.assertEqual(self.answered(s), ACCESS_DENIED)
+        log = self.log()
+        self.assertIn("[work] ALERT drop.example [payload]\n[work] BLOCKED drop.example (not on the Allowlist)\n", log)
+        self.assertEqual(log.count("HELD drop.example"), 1)
+
+    def test_open_web_lets_everything_without_a_strong_signal_through_as_before(self):
+        self.hold(30)
+        self.open_web()
+        write(os.path.join(self.conf, "watchlist.json"), watch_record(("exfil.example", "exfil"), ("drop.example", "payload")))
+        self.start()
+        started = time.monotonic()
+        self.tunnel("drop.example")             # a weak Signal does not block in Open web
+        self.tunnel("anything.example")
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.at_once("upload.exfil.example")
+        self.assertNotIn("HELD", self.log())
+
+    def test_hold_time_0_refuses_at_once_and_changes_apply_without_restart(self):
+        self.hold(0)
+        self.start()
+        self.at_once("new.example")
+        self.assertIn("[work] BLOCKED new.example (not on the Allowlist)\n", self.log())
+        self.hold(5)
+        time.sleep(SETTLE)
+        s = self.held("new.example")
+        self.assertIn("[work] HELD new.example (up to 5 s)\n", self.log())
+        s.close()
+        # a broken file keeps the last good value
+        write(os.path.join(self.conf, "settings.json"), json.dumps({"hold_seconds": 121}))
+        s = self.held("next.example")
+        self.assertIn("[work] HELD next.example (up to 5 s)\n", self.log())
+        self.assertIn("settings.json unreadable (hold_seconds: invalid value (allowed: whole number from 0 to 120)), "
+                      "the hold time stays 5 s\n", self.log())
+        s.close()
+
+    def test_at_most_32_connections_are_held_at_once(self):
+        self.hold(30)
+        self.start()
+        # several to one host: one HELD line for them
+        hosts = ["one.example"] * 4 + [f"h{i}.example" for i in range(28)]
+        held = [self.held(host, check=host == "one.example", announced=i < 9) for i, host in enumerate(hosts)]
+        self.assertEqual(self.log().count("HELD one.example"), 1)
+        self.at_once("more.example")
+        self.assertIn("[work] BLOCKED more.example (not on the Allowlist)\n", self.log())
+        # entries added meanwhile let all of them through
+        self.store(*[entry(host, "work") for host in sorted(set(hosts))])
+        for s, host in zip(held, hosts):
+            self.assertEqual(self.answered(s), "open")
+        self.assertEqual(self.log().count("ALLOWED one.example"), 4)
 
 
 class OpenWebTest(ProxyTest):

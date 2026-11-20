@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { flushPromises } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
-import { SETTING_SPECS, settingProblem, settingValue, toSend, settingChanged } from '~/utils/settings'
+import { SETTING_GROUPS, SETTING_SPECS, settingProblem, settingValue, toSend, settingChanged } from '~/utils/settings'
 import { resetNotificationsForTests } from '~/composables/useNotifications'
 import { LANGUAGE_KEY } from '~/utils/language'
 import { useSession } from '~/composables/useSession'
@@ -33,7 +33,7 @@ const LATER = {
 const DEFAULTS: Record<string, string | number | boolean> = {
   maintenance_time: '02:00', reset_age_days: 7, auto_update: true, rebuild_day: 'sun', builds_kept: 3,
   default_memory_mib: 26624, default_data_disk_gib: 300, default_image: 'base', default_container_image_cleanup: true, default_container_image_cleanup_days: 7, open_web_max_minutes: 240,
-  alert_action: 'pause',
+  hold_seconds: 30, alert_action: 'pause',
   temporary_entry_default: '1h', young_domain_days: 14, feed_interval_hours: 12, package_min_age_days: 2,
   orca_version: '', playwright_version: '', activity_retention_days: 90, session_hours: 12, default_language: 'browser',
 }
@@ -69,7 +69,7 @@ describe('settings (units)', () => {
   const listed = [...section.slice(0, section.indexOf('The password')).matchAll(/`([a-z_]+)`/g)].map(m => m[1]!)
 
   it('knows the keys of docs/control-room-api.md, no more and no fewer', () => {
-    expect(listed.length).toBe(21)
+    expect(listed.length).toBe(22)
     expect([...listed].sort()).toEqual(Object.keys(SETTING_SPECS).sort())
     expect(Object.keys(SETTING_SPECS).sort()).toEqual(Object.keys(DEFAULTS).sort())
   })
@@ -105,6 +105,10 @@ describe('settings (units)', () => {
     expect(settingProblem('default_image', 'a'.repeat(33))).toEqual({ code: 'name' })
     expect(settingProblem('default_image', 'a'.repeat(32))).toBeNull()
     expect(settingProblem('some_new_key', 'anything')).toBeNull()
+    // hold_seconds (#39): 0 refuses at once, up to 120 s
+    for (const ok of ['0', '30', '120']) expect(settingProblem('hold_seconds', ok), ok).toBeNull()
+    for (const bad of ['-1', '121', '1.5']) expect(settingProblem('hold_seconds', bad), bad).toEqual({ code: 'int', min: 0, max: 120 })
+    expect(SETTING_GROUPS.find(g => g.id === 'access')!.keys).toContain('hold_seconds')
     for (const lang of ['browser', 'en', 'de']) expect(settingProblem('default_language', lang)).toBeNull()
     expect(settingProblem('default_language', 'fr')).toEqual({ code: 'choice', options: 'browser, en, de' })
     expect(settingProblem('default_container_image_cleanup_days', '366')).toEqual({ code: 'int', min: 1, max: 365 })
@@ -159,12 +163,12 @@ describe('settings (units)', () => {
 describe('Settings page', () => {
   useFreshApp()
 
-  it('shows all 21 settings with label, current value and default, and when a change applies', async () => {
+  it('shows all 22 settings with label, current value and default, and when a change applies', async () => {
     const { wrapper } = await openPage('/settings', {
       'GET /settings': ok(settingsBody({ reset_age_days: 14, rebuild_day: 'fri', temporary_entry_default: '8h', young_domain_days: 28, default_language: 'en' })),
     })
     const rows = wrapper.findAll('[data-testid="setting"]')
-    expect(rows).toHaveLength(21)
+    expect(rows).toHaveLength(22)
     expect(new Set(rows.map(r => r.attributes('data-key')))).toEqual(new Set(Object.keys(DEFAULTS)))
     expect(wrapper.find('[data-testid="settings-load-error"]').exists()).toBe(false)
 
@@ -622,7 +626,7 @@ describe('Settings page', () => {
       'PATCH /settings': ok(changedBody),
     })
     const rows = wrapper.findAll('[data-testid="setting"]')
-    expect(rows).toHaveLength(22)
+    expect(rows).toHaveLength(23)
     expect(rows.at(-1)!.attributes('data-key')).toBe('future_key')
     expect(rows.at(-1)!.text()).toContain('future_key')
     expect(rows.at(-1)!.find('[data-testid="setting-later"]').text()).toBe('beim naechsten Mal')
@@ -687,7 +691,7 @@ describe('Notifications preferences', () => {
 
   const prefs = (w: Page) => w.find('[data-testid="notification-prefs"]')
   const switches = (w: Page) => w.findAll('[data-testid="notify-kind"]')
-  const kinds = ['alert', 'github-refused', 'build-failed', 'build-rejected', 'host-reboot', 'temperature']
+  const kinds = ['alert', 'held', 'github-refused', 'build-failed', 'build-rejected', 'host-reboot', 'temperature']
   const toggle = (w: Page, kind: string) => w.find(`[data-testid="notify-kind"][data-kind="${kind}"] [role="switch"]`)
   const checked = (w: Page, kind: string) => toggle(w, kind).attributes('aria-checked')
 
@@ -784,7 +788,7 @@ describe('Notifications preferences', () => {
     expect(checked(first.wrapper, 'temperature')).toBe('false')
     expect(checked(first.wrapper, 'alert')).toBe('true')
     expect(JSON.parse(localStorage.getItem('agentbox-notifications')!)).toEqual({
-      alert: true, 'github-refused': true, 'build-failed': false, 'build-rejected': true, 'host-reboot': true, temperature: false,
+      alert: true, held: true, 'github-refused': true, 'build-failed': false, 'build-rejected': true, 'host-reboot': true, temperature: false,
     })
     first.wrapper.unmount()
 

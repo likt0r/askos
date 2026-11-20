@@ -56,6 +56,7 @@ export function useNotificationText() {
       value: String(n.value ?? ''),
       threshold: String(n.threshold ?? ''),
       sensor: String(n.device ?? n.reading ?? ''),
+      seconds: String(n.seconds ?? ''),
     }
     return {
       title: te(`notifications.title.${kind}`) ? t(`notifications.title.${kind}`, params) : t('notifications.title.other'),
@@ -78,7 +79,7 @@ export function useNotificationListener() {
     shown.push(key)
     if (shown.length > 200) shown.shift()
     const { title, body } = words(data)
-    void showBrowserNotification({ title, body, tag: key, url: data.kind === 'host-reboot' || data.kind === 'temperature' ? '/system' : '/activity' })
+    void showBrowserNotification({ title, body, tag: key, url: notificationUrl(data) })
       .then((done) => {
         if (!done) forget(key)
       })

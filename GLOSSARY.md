@@ -162,6 +162,10 @@ _Avoid_: snooze, pass, temporary exception
 A time-limited mode in which a VM may reach any public domain except suspicious ones.
 _Avoid_: unblock, web mode
 
+**Hold**:
+The proxy keeping a connection to a destination that is not allowed waiting for up to `hold_seconds` (default 30 s), so the owner can allow it while the program waits; never for destinations with strong Signals or on the Watchlist, and not in Open web (German UI: gehalten).
+_Avoid_: queue, pending request, park
+
 ## Detection
 
 **Alert**:
