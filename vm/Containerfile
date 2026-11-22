@@ -121,8 +121,7 @@ RUN /usr/lib/agentbox/package-safeguards "$PACKAGE_MIN_AGE_DAYS"
 # live in one place, systemd's DefaultEnvironment (system.conf.d: agentbox.conf and what
 # package-safeguards wrote), which every service has. login-environment writes it into
 # /etc/environment, which PAM (pam_env) reads for every login, so SSH sessions and
-# `ssh <vm> 'cmd'` (bash reads no profile there) get the same variables; a value pam_env would
-# read differently fails the Build.
+# `ssh <vm> 'cmd'` get the same variables; a value pam_env would read differently fails the Build.
 COPY vm/build/login-environment /tmp/login-environment
 RUN python3 -I /tmp/login-environment && rm -f /tmp/login-environment
 

@@ -1085,7 +1085,10 @@ Host after every Build
   live in one place, systemd's `DefaultEnvironment`: `vm/files/usr/lib/systemd/system.conf.d/agentbox.conf`
   and the `agentbox-packages.conf` that `package-safeguards` writes. Every service has them,
   `orca serve`, the agents and the terminals it starts among them. sshd builds a fresh
-  environment for each login, and bash reads no profile for `ssh <vm> 'cmd'`, so the Build
+  environment for each login. For `ssh <vm> 'cmd'` Fedora's bash reads `/etc/bashrc`, which runs
+  `/etc/profile.d/*.sh`, so the VM's own values (VM variables, secrets, the Claude placeholder
+  from `/run/agentbox/agent-env`) arrive through `agentbox.sh` as in a login shell; the image-wide
+  variables are in no profile script, so the Build
   writes the merged `DefaultEnvironment`, read as systemd reads it, into `/etc/environment`
   (`vm/build/login-environment`, after `package-safeguards`), which PAM's `pam_env` gives every
   login, SSH sessions and commands included. A value `pam_env` would read differently (empty,
