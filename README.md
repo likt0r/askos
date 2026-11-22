@@ -778,10 +778,12 @@ A **Build** runs as the systemd unit `agentbox-build@<image>.service`; its journ
 log (`agentbox build-log <image>`, or `journalctl -u agentbox-build@<image>`). It takes
 the installed Release's Containerfiles and guest files, records which Release they came
 from (`agentbox images` and the Control Room show it), builds the container image with
-podman (`package_min_age_days`, `orca_version` and `playwright_version` of the Settings go
-into the Base image), checks every
-Safeguard in the built filesystem, makes the disk with bootc-image-builder and only then
-makes it the Image's current Build. A Build that fails or whose check finds a Safeguard
+podman (from the pinned digest of `quay.io/fedora/fedora-bootc:44`; `package_min_age_days`,
+`orca_version` and `playwright_version` of the Settings go into the Base image), checks every
+Safeguard in the built filesystem, makes the disk with bootc-image-builder (by its pinned
+digest, with the untouched fedora-bootc the Image is built on as its buildroot, so the
+`bootc` that installs the Image is not the Image's) and only then makes it the Image's
+current Build. A Build that fails or whose check finds a Safeguard
 missing or weakened is discarded: the previous Build stays in use, and the failure is in
 the log and in Activity (kind `build`). Builds run one at a time; `agentbox build --all`
 (and the Maintenance window on `rebuild_day` of the Settings) builds the Base image first,
@@ -842,10 +844,15 @@ agentbox-versions`) the Host checks what a new Build would
 bring: for the npm tools the version the Build would pick now, from the npm registry (for
 Playwright the pinned one, if set); for Orca the release the Build would take now, from GitHub
 (by the same rule, or the pinned one); for the Base image the number of Fedora package updates for its
-current Build, counted with `dnf check-update` in a container from it. The questions to the
-npm registry and GitHub run as the unprivileged service user `agentbox-feeds`
-(`agentbox fetch-versions`); root only checks its answer and counts the packages
-(`agentbox check-versions`). `agentbox images` and the
+current Build, counted with `dnf check-update` in a container from it. It also pins the
+digests of the two images a Build takes from quay.io, `quay.io/fedora/fedora-bootc:44` and
+`quay.io/centos-bootc/bootc-image-builder:latest`: a Build never pulls them by their tags.
+bootc-image-builder's is the digest its tag pointed to `package_min_age_days` ago;
+fedora-bootc's is the tag's current digest, because quay.io no longer serves one the tag has
+left, and it moves daily. A new fedora-bootc digest counts as an update of the Images. The
+questions to the npm registry, GitHub and quay.io run as the unprivileged service user
+`agentbox-feeds` (`agentbox fetch-versions`); root only checks its answer, pulls the new
+digests and pins them, and counts the packages (`agentbox check-versions`). `agentbox images` and the
 Control Room (System page, and each VM's page for the Build it runs) show the versions next
 to what is available and mark an Image a new Build would update. A check that fails shows
 "unknown" and never blocks a Build or a Reset.

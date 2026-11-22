@@ -8,6 +8,7 @@ Environment:
   podman build [--pull=..] [--no-cache] [--build-arg K=V].. [-v ..].. -t TAG -f FILE CONTEXT
       builds TAG by reading FILE as a Containerfile, as far as tests need it:
         FROM ${BASE} / $BASE   the rootfs and layers of the image named by --build-arg BASE
+        FROM ${NAME}           the reference in --build-arg NAME (none: fails, as podman does)
         FROM <anything else>   an empty rootfs (a distribution image) with the files run.json
                                names under a key in its reference ("fedora-bootc")
         COPY <src>... <dest>   from CONTEXT, as podman does (a directory's content, files into a
@@ -27,6 +28,8 @@ Environment:
   podman image inspect TAG     [{"Id": ..., "RootFS": {"Layers": [...]}}]
   podman image exists TAG      exit 0 or 1
   podman rmi [--ignore] TAG..  removes them
+  podman pull [--quiet] REF    makes REF exist (an empty image); fails for REF prefixes in
+                               podman_fails "pull"
   podman run ... bootc-image-builder ... TAG
                                writes <dir of -v ..:/output>/qcow2/disk.qcow2, a fake disk naming TAG
   podman run --rm --name=N ... TAG dnf -q check-update
@@ -42,7 +45,7 @@ run.json (optional): {"<text in a RUN line>": {"<path in the image>": "<content>
                        {"base64": "<binary content>"}}}
 
 scenario.json:
-  podman_fails       {"build": [TAG prefixes], "run": [...], "mount": [...]}: those calls fail
+  podman_fails       {"build": [TAG prefixes], "run": [...], "mount": [...], "pull": [...]}: those calls fail
   check_update       {"<TAG prefix>": {"exit": 100, "stdout": "<dnf's lines>", "stderr": "...", "sleep": <seconds>}}
 """
 import base64
@@ -199,6 +202,12 @@ def build(argv, call):
     for verb, rest in instructions(file):
         if verb == "FROM":
             ref = rest.split()[0]
+            m = re.fullmatch(r"\$\{?(\w+)\}?", ref)
+            if m and m.group(1) != "BASE":
+                if not args.get(m.group(1)):
+                    print(f"Error: base name ({ref}) should not be blank", file=sys.stderr)
+                    return 125
+                ref = args[m.group(1)]
             if ref in ("${BASE}", "$BASE"):
                 base = image_dir(args["BASE"])
                 if not os.path.isdir(base):
@@ -332,6 +341,16 @@ def main(argv):
         print(json.dumps([{"Id": hashlib.sha256(argv[2].encode()).hexdigest(), "RootFS": {"Layers": layers}}]))
         return 0
     if argv[:1] == ["rm"]:
+        return 0
+    if argv[:1] == ["pull"]:
+        ref = argv[-1]
+        if fails("pull", ref):
+            print(f"Error: initializing source docker://{ref}: reading manifest: manifest unknown", file=sys.stderr)
+            return 125
+        os.makedirs(os.path.join(image_dir(ref), "rootfs"), exist_ok=True)
+        with open(os.path.join(image_dir(ref), "layers.json"), "w") as f:
+            json.dump(["sha256:" + hashlib.sha256(ref.encode()).hexdigest()], f)
+        print("sha256:" + hashlib.sha256(ref.encode()).hexdigest())
         return 0
     if argv[:1] == ["rmi"]:
         for tag in (a for a in argv[1:] if not a.startswith("-")):

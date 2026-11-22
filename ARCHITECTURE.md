@@ -1077,19 +1077,50 @@ Host after every Build
   is marked failed by the next.
 - Steps: `agentbox` copies `VM_SOURCE` once for the whole run, so a package update during
   `build --all` cannot mix two Releases, and names the installed Release (`VERSION`) in each
-  Build's record. `agentbox` fetches nothing and no GitHub token is involved. Then podman
+  Build's record. `agentbox` fetches nothing and no GitHub token is involved. It reads the
+  pinned digests (see Pinned digests below) once for the whole run. Then podman
   builds the container image (`--no-cache`, so agents and packages are fresh; the Base image
-  with the build arguments `PACKAGE_MIN_AGE_DAYS`, `ORCA_VERSION` and `PLAYWRIGHT_VERSION` of
+  with `--pull=missing` and the build arguments `FEDORA_BOOTC` (the pinned
+  `quay.io/fedora/fedora-bootc@sha256:…`, which `vm/Containerfile` starts `FROM`; without it
+  the Build fails), `PACKAGE_MIN_AGE_DAYS`, `ORCA_VERSION` and `PLAYWRIGHT_VERSION` of
   the Settings, nothing mounted from the Host). The run also takes each Recipe's checked tar once, as one snapshot
   for all its Builds. For a Recipe, `agentbox` checks that tar again and passes it to podman
   with `--pull=missing --no-cache --build-arg BASE=<Base Build> -t <tag> -` on stdin, never as
   a path and never unpacked on the Host. `agentbox` then checks the Safeguards unchanged, including
   the comparison with the Base Build, reads the versions of the tools from the same mounted files,
-  and records the Recipe's SHA-256 in the Build. bootc-image-builder makes the qcow2, and the link
+  and records the Recipe's SHA-256 in the Build. bootc-image-builder, by its pinned digest
+  (`--pull=missing`, never a tag), makes the qcow2 with `--build-container` set to the
+  pristine `fedora-bootc` digest the Image is built on (a derived Image: its Base Build's).
+  That image, not the Image, is osbuild's buildroot: the `bootc` that runs `bootc install
+  to-filesystem`, the Python that runs osbuild's stages and the tools that make the
+  partitions and filesystems come from it; only bootc-image-builder's configuration
+  directories of the Image (`/usr/lib/bootc/install`, `/usr/lib/ostree`) are copied into it.
+  What still runs from the Image is under [Agent Box's own code](#agent-boxs-own-code). The link
   `images/<image>.qcow2` moves to `images/<image>-<build>.qcow2` in one rename. Each step is
   recorded in the Build's record under `/var/lib/agentbox/builds`, with the package minimum
-  age and the pins of Orca and Playwright it was built with (a derived Image has its Base
-  Build's).
+  age, the pins of Orca and Playwright and the digests of fedora-bootc
+  (`fedora_bootc_digest`) and bootc-image-builder (`builder_digest`) it was built with (a
+  derived Image has its Base Build's age, pins and fedora-bootc).
+- **Pinned digests** (#144, `agentbox/digests.py`): a Build takes two images from quay.io,
+  `quay.io/fedora/fedora-bootc:44` (what the Base image starts from, and the disk step's
+  buildroot) and `quay.io/centos-bootc/bootc-image-builder:latest` (the disk step), and
+  never by their tags: it uses the digests pinned in `/var/lib/agentbox/digests.json`
+  (root's), which only the version check moves (below). The check takes, from quay.io's
+  history of the tag (every digest it pointed to, since when and until when):
+  bootc-image-builder's digest the tag pointed to `package_min_age_days` ago, as npm
+  `--before` takes a version; fedora-bootc's current digest, with no minimum age, because
+  quay.io keeps a digest of `fedora/fedora-bootc` only while a tag points to it and the tag
+  moves every day, so no older digest can be pulled (Fedora's packages, which the Build
+  installs with dnf on top, have no minimum age either). Root pulls a new digest by its digest
+  (`podman pull quay.io/<repository>@sha256:…`, which checks the content against it) and pins
+  it only after the pull succeeded; a pinned image missing from the Host's container storage
+  is pulled again by the next check. A failed fetch or pull leaves the pin as it is. The digest
+  a pin replaces is retired: the next Build run removes its image under the run lock
+  (`podman rmi`), unless the current Base Build is built on it (its derived Images' disk steps
+  still use it). With a digest not pinned yet (a new Host), a run first runs the version
+  check as Update now does, and fails when that pins none. A new fedora-bootc digest counts
+  as an update of every Image built on another one (`updates`: `fedora-bootc`); a new
+  bootc-image-builder digest does not, the next Build simply uses it.
 - What the Base image downloads, it downloads inside the Build container, where Fedora's
   packages, the npm tools and Orca are chosen, fetched and checked; no root process on the
   Host parses what the internet answers (#113). Orca comes from its GitHub release
@@ -1238,13 +1269,19 @@ Host after every Build
     x86_64 RPM GitHub lists with a SHA-256; nothing is downloaded. For Playwright with
     `playwright_version` set it takes exactly that version, if the registry has it and it is
     at least `package_min_age_days` old. Like the minimum age it gets `orca_version` and
-    `playwright_version` from its unit; it records the pins it used.
+    `playwright_version` from its unit; it records the pins it used. For fedora-bootc and
+    bootc-image-builder it asks quay.io's API for the tag's history
+    (`quay.io/api/v1/repository/<repository>/tag/?specificTag=<tag>`, one page of 100) and
+    picks the digest by the rule under Pinned digests; nothing is pulled here.
   - The root part, `agentbox check-versions`, reads that file as untrusted input: never
     through a link, a regular file of at most 64 KiB, JSON of the expected shape, written in
     the last three days; every version and the pins of Orca and Playwright are checked again
-    against the patterns the Builds use and an error must be one the fetch reports. Anything
+    against the patterns the Builds use and an error must be one the fetch reports; a digest
+    must be `sha256:` and 64 hex digits, the time its tag moved to it no later than the fetch,
+    and bootc-image-builder's at least `package_min_age_days` before it. Anything
     else is unknown (so is Orca in a file or `versions.json` from before #113, which named the Host's `/opt/Orca` and
-    the newest release instead). It adds, for each Image
+    the newest release instead). It pulls and pins the digests (Pinned digests above), without
+    a lock a Build waits for: a Build reads the pins once at its start. It adds, for each Image
     whose current Build's container image is kept (the Base image), the Fedora package updates
     counted with `dnf check-update` in a container from that Build (podman, out to the Fedora
     mirrors), named `agentbox-check-<image>`, with no capabilities, `no-new-privileges` and a
@@ -1310,10 +1347,14 @@ Host after every Build
 - `agentbox images` and `GET /api/v1/images` show both: each Build's `tools` and the tools a new
   Build would change (`updates`: an npm tool with a newer version, Orca with another one,
   which a pinned `orca_version` may make an older one, Playwright with another one while
-  `playwright_version` pins it, so never one beyond the pin), per Image the package updates of
+  `playwright_version` pins it, so never one beyond the pin, and `fedora-bootc` when its
+  pinned digest is another than the one the Build is built on), each Build's
+  `fedora_bootc_digest` and `builder_digest`, per Image the package updates of
   its current Build and whether a new Build would bring anything (`update`), and what the
   check found (`available`, with the pins of the Settings; Orca or Playwright there is unknown
-  while the last check took it with another pin, until the check a changed pin starts). The
+  while the last check took it with another pin, until the check a changed pin starts; and
+  `available.digests`, the pinned digests the next Build uses, with the time each tag moved to
+  it). The
   Control Room shows them on the System page for each Image's current Build, and on a VM's
   page for the Build its System disk came from.
 - The Control Room reads `GET /api/v1/images` and a Build's log with `GET
@@ -2092,16 +2133,26 @@ laptops.
   install scripts): it runs in a rootful container on the Host, with the internet open and no
   Allowlist, and a container escape there is root on the Host, which ADR 0002 keeps agents away
   from by giving them VMs. The disk step goes further: bootc-image-builder runs privileged and
-  unconfined, pulled unpinned from quay.io, and installs the Image with the Image's own `bootc`,
-  so a tool a Build planted in the Image can run as root on the Host without any escape. The
-  Base image's own base, `quay.io/fedora/fedora-bootc:44`, is pulled by its tag as well, and it
-  brings dnf with its repositories and keys and the `bootc` the disk step runs. pnpm and Bun have
+  unconfined. Its buildroot is the pristine fedora-bootc, so the Image's `bootc`, Python and
+  filesystem tools no longer run there, but bootc (since 1.13, by design, to install the
+  bootloader the Image ships) runs the Image's own `bootupctl` chroot'ed into the installed
+  Image, as root, and with it whatever that runs (`grub2-install` for BIOS boot): a tool a
+  Build planted there can still run as root on the Host without any escape. bootc offers no
+  way to use another `bootupctl`. Before that, bootc-image-builder runs `bootc install
+  print-configuration`, `bootc container inspect` and `lsinitrd` of the Image in a container
+  of its own inside the privileged one, as podman runs a Build's `RUN` lines. Both images
+  come from quay.io by pinned digest ([Pinned digests](#images-and-builds)): bootc-image-builder
+  only once its digest is `package_min_age_days` old, fedora-bootc
+  (`quay.io/fedora/fedora-bootc:44`, which brings dnf with its repositories and keys) on the
+  day its tag moves, with no minimum age. pnpm and Bun have
   no minimum age in a Build (theirs is set for the VM's services and the agent's home), Fedora's
   packages none at all. A Recipe an agent drafted and the owner saved unread reaches as far.
   Mitigation: the owner reads a Recipe before saving it; the minimum age where a Build installs
-  through npm or uv, and for Orca; the Release's Containerfile pins the JDK and Orca's Node
+  through npm or uv, and for Orca and bootc-image-builder; fedora-bootc and bootc-image-builder
+  by digest; the Release's Containerfile pins the JDK and Orca's Node
   runtime by SHA-256 and cargo-ndk by version, a Recipe what its author pins; Fedora's packages
-  are signed, with the keys that come in the base image. Containing Builds further is #144.
+  are signed, with the keys that come in the base image. Containing Builds further (a build
+  VM) is #144.
 
 ### What no test covers
 
@@ -2112,7 +2163,10 @@ laptops.
   container ([CONTRIBUTING.md](CONTRIBUTING.md)). No test boots a VM (fw_cfg, the guest agent,
   the Safeguards at work), loads the nftables and firewalld rules into a kernel (that a VM
   reaches nothing but the resolver, the proxy and the token service), runs a Build with podman
-  and bootc-image-builder, shuts down or reboots a Host with `libvirt-guests`, or lets the proxy
+  and bootc-image-builder (that `--build-container` makes the pristine fedora-bootc osbuild's
+  buildroot, and what bootc still runs from the Image, is known from their source and
+  documentation, not from a test), asks quay.io or pulls by digest (the fake answers as quay.io's
+  tag API did when it was written), shuts down or reboots a Host with `libvirt-guests`, or lets the proxy
   resolve a real name (the proxy's tests give it the addresses a name resolves to, and allowed
   tunnels go to a local server instead). What GitHub and Anthropic enforce, such as a token's
   scope, is checked only as the request Agent Box sends.

@@ -1,12 +1,15 @@
 <script setup lang="ts">
 // The versions of the tools in a Build next to what is available (#104): one row per tool,
 // marked where a new Build would change it, Orca and Playwright marked when the Settings pin
-// their version (#113, #162); and the Fedora package updates when they were counted for this
-// Build.
-import type { Available, ToolRow } from '~/utils/images'
+// their version (#113, #162); the digests of fedora-bootc and bootc-image-builder the Build was
+// made with next to the pinned ones (#144); and the Fedora package updates when they were
+// counted for this Build.
+import type { Available, DigestRow, ToolRow } from '~/utils/images'
 
 const props = defineProps<{
   rows: ToolRow[]
+  /** the digests the Build was made with; undefined: no such rows */
+  digests?: DigestRow[]
   available: Available | null | undefined
   /** heading of the column of the Build's versions */
   installedLabel: string
@@ -57,6 +60,26 @@ const playwrightPinned = computed(() => props.available?.playwright_version ?? n
                 <span v-if="r.tool === 'orca' && orcaPinned" class="text-muted" data-testid="orca-pinned">{{ t('system.versions.pinned') }}</span>
                 <span v-if="r.tool === 'playwright' && playwrightPinned" class="text-muted" data-testid="playwright-pinned">{{ t('system.versions.pinned') }}</span>
                 <UBadge v-if="r.update" color="warning" variant="subtle" size="sm" :label="t('system.versions.update')" />
+              </span>
+            </td>
+          </tr>
+          <tr
+            v-for="d in props.digests ?? []"
+            :key="d.image"
+            data-testid="digest-row"
+            :data-image="d.image"
+            :data-update="d.update ? 'true' : 'false'"
+          >
+            <td class="py-0.5 pe-4">
+              {{ d.image }}
+            </td>
+            <td class="py-0.5 pe-4 font-mono text-xs" data-testid="digest-installed">
+              {{ d.installed ?? t('system.versions.unknown') }}
+            </td>
+            <td class="py-0.5 text-xs" data-testid="digest-available">
+              <span class="inline-flex flex-wrap items-center gap-x-2">
+                <span class="font-mono">{{ d.available ?? t('system.versions.unknown') }}</span>
+                <UBadge v-if="d.update" color="warning" variant="subtle" size="sm" :label="t('system.versions.update')" />
               </span>
             </td>
           </tr>

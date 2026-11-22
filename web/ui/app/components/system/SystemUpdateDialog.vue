@@ -48,7 +48,13 @@ const rows = computed(() => props.images.map((image) => {
   const current = image.builds.find(b => b.build === image.current) ?? null
   return {
     image,
-    changes: toolRows(current, props.available).filter(r => r.update),
+    changes: [
+      ...toolRows(current, props.available).filter(r => r.update)
+        .map(r => ({ key: r.tool, name: r.name, installed: r.installed, available: r.available })),
+      // a new fedora-bootc digest (#144)
+      ...digestRows(current, props.available).filter(d => d.update)
+        .map(d => ({ key: d.image, name: d.image, installed: d.installed, available: d.available })),
+    ],
     packages: image.package_updates ?? null,
   }
 }))
@@ -91,7 +97,7 @@ function vmNote(c: { image: string, pin: string | null }) {
           {{ r.image.name }}
         </p>
         <ul v-if="r.changes.length || r.packages" class="list-disc ps-5">
-          <li v-for="c in r.changes" :key="c.tool">
+          <li v-for="c in r.changes" :key="c.key">
             {{ t('system.update.change', { tool: c.name, from: c.installed ?? t('system.versions.unknown'), to: c.available ?? t('system.versions.unknown') }) }}
           </li>
           <li v-if="r.packages">

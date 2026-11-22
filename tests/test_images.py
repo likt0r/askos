@@ -44,6 +44,12 @@ with open(os.path.join(REPO, "VERSION")) as f:
 COMMIT = "abcdef0123456789abcdef0123456789abcdef01"     # of main, named by Builds from before ADR 0010
 OLD = "20261101"                       # the Build of the Base image the harness starts with
 IMAGES = "var/lib/agentbox/images"
+DIGESTS = "var/lib/agentbox/digests.json"
+# the digests the harness pins (digests.py): fedora-bootc:44 and bootc-image-builder
+FEDORA_DIGEST = "sha256:" + "f" * 63 + "1"
+BUILDER_DIGEST = "sha256:" + "b" * 63 + "1"
+FEDORA_REF = "quay.io/fedora/fedora-bootc@" + FEDORA_DIGEST
+BUILDER_REF = "quay.io/centos-bootc/bootc-image-builder@" + BUILDER_DIGEST
 VM_SOURCE = "usr/share/agentbox/vm"    # where the Release a checkout's CLI names installs them
 GUEST_TOOLS = ("agentbox-gh-token", "git-credential-agentbox", "gh")    # what vm/Containerfile copies
 # what quay.io/fedora/fedora-bootc:44 brings that the safeguard check reads (the fake's FROM
@@ -113,6 +119,17 @@ class ImagesTest(VmsTest):
         install_release(REPO, self.source)
         with open(os.path.join(self.dir, "run.json"), "w") as f:
             json.dump(RUN_EFFECTS, f)
+        self.pin(FEDORA_DIGEST, BUILDER_DIGEST)
+
+    def pin(self, fedora, builder, retired=()):
+        """The digests the version check pinned (digests.py), as it leaves them; None: no pin."""
+        now = int(time.time())
+        rec = {"retired": list(retired)}
+        if fedora:
+            rec["fedora-bootc"] = {"digest": fedora, "since": now - 3600, "pinned": now}
+        if builder:
+            rec["bootc-image-builder"] = {"digest": builder, "since": now - 9 * 86400, "pinned": now}
+        self.write(DIGESTS, json.dumps(rec))
 
     def write(self, rel, content, mode=0o644):
         os.makedirs(os.path.dirname(self.path(rel)), exist_ok=True)
@@ -189,8 +206,13 @@ class BaseBuildTest(ImagesTest):
         new = self.newest()["build"]
         self.assertEqual(build[build.index("-t") + 1], f"localhost/agentbox/base:{new}")
         self.assertEqual([build[i + 1] for i, a in enumerate(build) if a == "--build-arg"],
-                         ["PACKAGE_MIN_AGE_DAYS=5", "ORCA_VERSION=", "PLAYWRIGHT_VERSION="])
+                         [f"FEDORA_BOOTC={FEDORA_REF}", "PACKAGE_MIN_AGE_DAYS=5", "ORCA_VERSION=",
+                          "PLAYWRIGHT_VERSION="])
         self.assertIn("--no-cache", build)
+        # FROM the pinned digest, which the version check pulled: nothing newer by a tag
+        self.assertIn("--pull=missing", build)
+        self.assertNotIn("--pull=newer", build)
+        self.assertEqual(self.newest()["fedora_bootc_digest"], FEDORA_DIGEST)
         src = build[-1]
         self.assertEqual(build[build.index("-f") + 1], os.path.join(src, "vm", "Containerfile"))
         self.assertEqual(self.newest()["package_min_age_days"], 5)
@@ -208,7 +230,8 @@ class BaseBuildTest(ImagesTest):
         out = self.built()
         build = self.podman("build")[0]["argv"]
         self.assertEqual([build[i + 1] for i, a in enumerate(build) if a == "--build-arg"],
-                         ["PACKAGE_MIN_AGE_DAYS=2", "ORCA_VERSION=1.4.250", "PLAYWRIGHT_VERSION="])
+                         [f"FEDORA_BOOTC={FEDORA_REF}", "PACKAGE_MIN_AGE_DAYS=2", "ORCA_VERSION=1.4.250",
+                          "PLAYWRIGHT_VERSION="])
         self.assertNotIn("-v", build)
         self.assertNotIn("--volume", build)
         self.assertIn("Orca: 1.4.250, pinned in orca_version", out)
@@ -221,13 +244,31 @@ class BaseBuildTest(ImagesTest):
         self.assertIn("ORCA_VERSION=", build)
         self.assertEqual(self.newest()["orca_version"], None)
 
+    def test_the_containerfile_takes_fedora_bootc_only_by_the_pinned_digest(self):
+        """vm/Containerfile starts FROM the build argument FEDORA_BOOTC, which has no default, so
+        a Build without the pinned digest fails; it names fedora-bootc by no tag."""
+        with open(os.path.join(REPO, "vm", "Containerfile")) as f:
+            lines = [l for l in f.read().splitlines() if l.strip() and not l.lstrip().startswith("#")]
+        self.assertEqual(lines[:2], ["ARG FEDORA_BOOTC", "FROM ${FEDORA_BOOTC}"])
+        self.assertEqual([l for l in lines if l.startswith("FROM")], ["FROM ${FEDORA_BOOTC}"])
+        self.assertFalse([l for l in lines if "fedora-bootc:" in l])
+
     def test_bootc_image_builder_makes_the_disk_from_the_checked_image(self):
         self.built()
-        new = self.newest()["build"]
+        new = self.newest()
         run = self.podman("run")[0]["argv"]
-        self.assertIn("quay.io/centos-bootc/bootc-image-builder:latest", run)
-        self.assertEqual(run[-1], f"localhost/agentbox/base:{new}")
+        # the builder by its pinned digest, never by a tag, and never pulled newer
+        self.assertIn(BUILDER_REF, run)
+        self.assertIn("--pull=missing", run)
+        self.assertNotIn("--pull=newer", run)
+        self.assertFalse([a for a in run if "bootc-image-builder:" in a], run)
+        self.assertEqual(run[-1], f"localhost/agentbox/base:{new['build']}")
         self.assertEqual(run[run.index("--type") + 1], "qcow2")
+        # its buildroot (the bootc that installs the Image, osbuild's stages, mkfs) is the pristine
+        # fedora-bootc the Image is built on, not the Image
+        self.assertEqual(run[run.index("--build-container") + 1], FEDORA_REF)
+        self.assertLess(run.index(BUILDER_REF), run.index("--build-container"))
+        self.assertEqual((new["fedora_bootc_digest"], new["builder_digest"]), (FEDORA_DIGEST, BUILDER_DIGEST))
         verbs = [c["argv"][:2] for c in self.podman()]
         self.assertLess(verbs.index(["image", "mount"]), verbs.index(["run", "--rm"]))
         # the work directory is gone
@@ -2050,7 +2091,8 @@ class PlaywrightTest(ImagesTest):
         out = self.built()
         build = self.podman("build")[0]["argv"]
         self.assertEqual([build[i + 1] for i, a in enumerate(build) if a == "--build-arg"],
-                         ["PACKAGE_MIN_AGE_DAYS=2", "ORCA_VERSION=", "PLAYWRIGHT_VERSION=1.64.1"])
+                         [f"FEDORA_BOOTC={FEDORA_REF}", "PACKAGE_MIN_AGE_DAYS=2", "ORCA_VERSION=",
+                          "PLAYWRIGHT_VERSION=1.64.1"])
         self.assertIn("Playwright: 1.64.1, pinned in playwright_version", out)
         self.assertEqual(self.newest()["playwright_version"], "1.64.1")
         self.image("rust", DERIVED)

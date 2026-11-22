@@ -5,7 +5,11 @@
 # disk with bootc-image-builder; agentbox/images.py). Build context: the directory above
 # vm/, with github-app/. Only these files and the build arguments come from the Host;
 # what is downloaded from the internet is chosen and checked by this container.
-FROM quay.io/fedora/fedora-bootc:44
+# FEDORA_BOOTC: quay.io/fedora/fedora-bootc:44 by the digest the version check pinned
+# (quay.io/fedora/fedora-bootc@sha256:..., agentbox/digests.py), set by agentbox build;
+# without it the Build fails, it never takes the tag.
+ARG FEDORA_BOOTC
+FROM ${FEDORA_BOOTC}
 
 # The Orca binary (Electron) needs its GUI libraries in Node mode too.
 # nodejs-full-i18n: Node's ICU data (otherwise only a weak dependency); without it
