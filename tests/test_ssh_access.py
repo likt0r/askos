@@ -19,6 +19,7 @@ Run from the repo root: python3 -m unittest discover -s tests
 import base64
 import fcntl
 import hashlib
+import html
 import importlib.machinery
 import importlib.util
 import json
@@ -45,6 +46,7 @@ from agentbox import sshkeys  # noqa: E402
 HOST_KEY = "etc/agentbox/secrets/ssh-host-key-{}"
 PUBLIC_KEY = "etc/agentbox/ssh-host-keys/{}.pub"
 SSH_FILE = "var/lib/agentbox/vm-ssh/{}.ssh"
+DOMAIN = "var/lib/agentbox/domains/{}.xml"
 SOCKET = "etc/systemd/system/agentbox-ssh-{}.socket"
 SERVICE = "etc/systemd/system/agentbox-ssh-{}@.service"
 FWCFG_SSH = os.path.join(REPO, "vm", "files", "usr", "lib", "agentbox", "fwcfg-ssh")
@@ -1567,6 +1569,53 @@ class LiveTest(SshTest):
         self.assertEqual([c["cmd"] for c in self.virsh("start")], ["start"])
         self.assertFalse(self.exists(PENDING.format("work")))
         self.assertEqual(self.applied(), [])
+
+    def defined(self, vm="work"):
+        """The arguments of the domain as last defined (fake_virt_install puts them into it)."""
+        return json.loads(html.unescape(re.search(r"<args>(.*)</args>", self.read(DOMAIN.format(vm))).group(1)))
+
+    def option(self, name, vm="work"):
+        argv = self.defined(vm)
+        return argv[argv.index(name) + 1]
+
+    def boot(self, vm="work"):
+        """What the VM's boot does with SSH access: the real fwcfg-ssh, as guest-setup runs it, on
+        the file its domain names for the fw_cfg entry opt/agentbox/ssh (QEMU reads it when its
+        process starts), into the VM's own root."""
+        entry = re.search(r"entry\d+\.name=opt/agentbox/ssh,entry\d+\.file=([^,]+)",
+                          self.option("--sysinfo", vm)).group(1)
+        r = subprocess.run([FWCFG_SSH, entry, self.guest("run/agentbox/ssh", vm)], capture_output=True, text=True,
+                           timeout=30, env={"PATH": self.guest("usr/bin", vm) + ":" + os.environ["PATH"],
+                                            "LANG": "C.UTF-8"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_a_reboot_inside_the_vm_leaves_it_off_and_its_next_start_has_no_removed_key(self):
+        """#160: QEMU reads the fw_cfg file only when its process starts, so a reboot that kept the
+        process would bring back a key removed while the VM ran. The domain ends it at a reboot
+        (on_reboot=destroy): the VM is off, as libvirt then reports it, and is not started by
+        itself; the next connection or `start` starts it anew, and its boot reads the current keys."""
+        self.assertIn("on_reboot=destroy", self.option("--events").split(","))
+        self.on_with_two_keys()
+        laptop, phone = LAPTOP.rsplit(" ", 1)[0], self.PHONE.rsplit(" ", 1)[0]
+        for gone, start in ((laptop, lambda: self.wake("Orca (192.0.2.7)")),
+                            (phone, lambda: self.run_agentbox("start", "work"))):
+            with self.subTest(start=start):
+                self.ok("remove-ssh-key", "work", fingerprint(gone))
+                self.assertNotIn(gone, self.authorized())          # the running VM took it at once
+                self.assertFalse(self.exists(PENDING.format("work")))
+                self.turned_off("work")                             # `reboot` inside the VM
+                self.forget_calls()
+                self.assertEqual(json.loads(self.ok("status", "--json"))["work"]["state"], "shut off")
+                self.assertEqual(self.json("describe", "work")["state"], "stopped")
+                self.assertEqual(self.virsh("start"), [])
+                code, _, err = start()
+                self.assertEqual(code, 0, err)
+                self.assertEqual([c["cmd"] for c in self.virsh("start")], ["start"])
+                self.assertEqual(self.applied(), [])               # nothing pending to hand over
+                self.boot()
+                self.assertNotIn(gone, self.authorized())
+        self.assertEqual(self.authorized(), "")
+        self.assertNotIn(laptop, self.read(SSH_FILE.format("work")))
 
     def unwritable(self, vm="work"):
         """The file the VM reads its SSH access from cannot be written: a directory in its place.

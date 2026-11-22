@@ -458,11 +458,18 @@ folder holds, the VM gets.
 cleanup on or off and sets its days (1 to 365), in any state of the VM; `describe` shows both. A
 record without them means on and 7 days.
 
+A reboot inside a VM (`sudo reboot` in a terminal there) turns the VM off instead of booting
+it again: the next Orca or SSH connection, `agentbox start` or `agentbox pair` starts it, and
+`agentbox status` shows it as shut off until then. The VM reads its SSH keys, VM variables,
+secrets and Claude placeholder from the Host only when it starts, so a reboot that kept it
+running would bring back what it started with, a key removed meanwhile among it; a start
+always reads the current ones.
+
 `agentbox set-memory <name> <mib>` changes the memory limit later, within the same bounds
 as `create` (1024 MiB up to the Host's memory). It writes the record and the VM's libvirt
 definition at once and says when the limit applies: a VM that is off gets it at its next
 start; a running VM keeps running with its current memory until its next Restart or Reset
-(`agentbox restart <name>`; a reboot inside the VM is not enough). A paused VM is refused,
+(`agentbox restart <name>`), or until a reboot inside it turns it off (above). A paused VM is refused,
 because its saved memory belongs to the old definition: start it first. The Control Room
 changes it on the VM's overview (`PUT /api/v1/vms/<name>/memory`).
 
@@ -472,8 +479,8 @@ in that VM (a `DATABASE_URL`, a tool's mode). `--replace` makes the given ones t
 (`set-env <name> --replace` alone removes them all), `agentbox unset-env <name> NAME ...`
 removes some, `agentbox env <name>` shows them. They are not secret: `describe`, the Control
 Room and Activity show them. Like the memory limit they apply when the VM starts next; a
-running or paused VM keeps the variables it started with until its next Restart or Reset (a
-reboot inside the VM is not enough). Names a Safeguard or Agent Box itself reads are refused
+running or paused VM keeps the variables it started with until its next Restart or Reset, or
+a running one until a reboot inside it turns it off. Names a Safeguard or Agent Box itself reads are refused
 (`npm_config_ignore_scripts`, `PATH`, `NODE_OPTIONS`, `LD_*`, `AGENTBOX_*`, everything in the
 Image's `DefaultEnvironment`, ...), so a VM variable never switches a Safeguard off; other
 names, `npm_config_registry`, `UV_INDEX_URL` or proxy variables such as `HTTPS_PROXY` among
@@ -618,7 +625,8 @@ The host key is made by the Host once per VM and
 stays the same across every Reset, so `ssh` never asks you to answer "yes" or warns about a
 changed host key. Every change applies at once: a running VM takes a new key, a removed key or
 SSH access turned off without a Restart, a paused VM when it resumes, a VM that is off at its
-next start. Removing a key ends every open SSH session of the VM (the Host cannot tell which
+next start. A reboot inside a VM turns it off, so a key removed while it ran cannot come
+back with that reboot: the next start reads the current keys. Removing a key ends every open SSH session of the VM (the Host cannot tell which
 session used which key), and so does `set-ssh <name> off`, which also closes the port at once
 and keeps the keys. A VM whose Build lacks the wrapper that applies a change in the VM
 (`agentbox-ssh`) cannot take one while it runs: the command saves it and fails with

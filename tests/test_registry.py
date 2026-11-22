@@ -737,6 +737,21 @@ class RegenerateTest(RegistryTest):
         self.assertEqual([c["dom"] for c in self.calls("define")], ["agentbox-priv"])
         self.assertIn("16384", self.virt_install("priv"))
 
+    def test_a_reboot_inside_the_vm_ends_it_also_for_a_vm_defined_before(self):
+        """#160: on_reboot=destroy, so a VM's next start reads the current fw_cfg files; a domain
+        that still restarts at a reboot is defined again by the next regenerate."""
+        self.run_agentbox("regenerate")
+        argv = self.virt_install("priv")
+        self.assertEqual(argv[argv.index("--events") + 1], "on_poweroff=destroy,on_reboot=destroy,on_crash=destroy")
+        saved = "var/lib/agentbox/domains/priv.xml"
+        self.write(saved, self.read(saved).replace("on_reboot=destroy", "on_reboot=restart"), 0o600)
+        self.forget_calls()
+        self.assertEqual(self.json("regenerate")["vms"], {"work": [], "priv": ["domain"]})
+        defined = [c["xml"] for c in self.calls("define") if c["dom"] == "agentbox-priv"]
+        self.assertEqual(len(defined), 1)
+        self.assertIn("on_reboot=destroy", defined[0])
+        self.assertNotIn("on_reboot=restart", self.read(saved))
+
     def test_paused_vm_keeps_its_definition_until_it_runs_again(self):
         self.scenario(vms={"priv": {"uuid": PRIV_UUID, "managed_save": True, "state": "shut off"}})
         self.assertEqual(self.json("regenerate")["vms"]["priv"],
