@@ -828,10 +828,11 @@ class SelfTestTest(unittest.TestCase):
             with open(PROXY) as f:
                 source = f.read()
             old = ("    why = refusal(tags)\n    if why:\n        return None, why\n"
-                   "    keys = granting(host, lists, now)\n    if keys:\n        return keys, None\n")
+                   "    forbids.current()\n    return allowance(ctx, lists, forbids, host, now)\n")
             self.assertIn(old, source)
-            new = ("    keys = granting(host, lists, now)\n    if keys:\n        return keys, None\n"
-                   "    why = refusal(tags)\n    if why:\n        return None, why\n")
+            new = ("    forbids.current()\n    grant, reason = allowance(ctx, lists, forbids, host, now)\n"
+                   "    if grant is not None and grant != OPEN:\n        return grant, None\n"
+                   "    why = refusal(tags)\n    if why:\n        return None, why\n    return grant, reason\n")
             write(os.path.join(d, "agentbox-proxy"), source.replace(old, new), 0o755)
             shutil.copy(SUSPICIOUS, d)
             code, out = self.run_self_test(os.path.join(d, "agentbox-suspicious"))

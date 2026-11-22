@@ -160,14 +160,14 @@ export default {
     },
     forbids: {
       title: 'Forbidden for this VM',
-      intro: 'The proxy refuses these domains and their subdomains at once, without holding them and also in Open web, unless an Allowlist entry allows them. When a Forbid expires or is removed, the destination is held and notified again.',
+      intro: 'The proxy refuses these domains and their subdomains at once, without holding them and also in Open web. Of a Forbid and an Allowlist entry the more specific one wins: a longer domain, then an entry for this VM over one for all VMs, a domain over a pattern. When a Forbid expires or is removed, the destination is held and notified again.',
       empty: 'Nothing is forbidden for this VM.',
     },
   },
   forbid: {
     add: {
       title: 'Forbid {domain}',
-      description: 'For {vm}: the proxy refuses it and its subdomains at once, without holding them, also in Open web. An Allowlist entry of the VM for this domain gives way to the Forbid.',
+      description: 'For {vm}: the proxy refuses it and its subdomains at once, without holding them, also in Open web. It wins over entries of a parent domain and over entries for all VMs; an entry of a subdomain still wins over it. The VM\'s own entry of this domain gives way to the Forbid.',
       notePlaceholder: 'Why, e.g. telemetry',
       submit: 'Forbid',
       done: '{domain} forbidden for {vm}.',

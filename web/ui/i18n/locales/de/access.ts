@@ -158,14 +158,14 @@ export default {
     },
     forbids: {
       title: 'Verboten für diese VM',
-      intro: 'Der Proxy lehnt diese Domains und ihre Subdomains sofort ab, ohne sie zu halten und auch im offenen Web, sofern keine Freigabe sie erlaubt. Läuft ein Verbot ab oder wird es entfernt, wird das Ziel wieder gehalten und gemeldet.',
+      intro: 'Der Proxy lehnt diese Domains und ihre Subdomains sofort ab, ohne sie zu halten und auch im offenen Web. Von einem Verbot und einer Freigabe gilt die genauere: eine längere Domain, dann eine für diese VM vor einer für alle VMs, eine Domain vor einem Ausdruck. Läuft ein Verbot ab oder wird es entfernt, wird das Ziel wieder gehalten und gemeldet.',
       empty: 'Für diese VM ist nichts verboten.',
     },
   },
   forbid: {
     add: {
       title: '{domain} verbieten',
-      description: 'Für {vm}: der Proxy lehnt es und seine Subdomains sofort ab, ohne sie zu halten, auch im offenen Web. Eine Freigabe der VM für diese Domain weicht dem Verbot.',
+      description: 'Für {vm}: der Proxy lehnt es und seine Subdomains sofort ab, ohne sie zu halten, auch im offenen Web. Es geht Freigaben einer übergeordneten Domain und Freigaben für alle VMs vor; eine Freigabe einer Subdomain geht ihm vor. Die eigene Freigabe der VM für diese Domain weicht dem Verbot.',
       notePlaceholder: 'Warum, z. B. Telemetrie',
       submit: 'Verbieten',
       done: '{domain} für {vm} verboten.',

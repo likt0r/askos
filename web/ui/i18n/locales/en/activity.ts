@@ -81,7 +81,7 @@ export default {
       forbidMakePermanent: 'Make the Forbid {entry} permanent',
       forbidSetNote: 'Note on the Forbid {entry}',
       forbidExpired: 'Temporary Forbid {entry} expired',
-      forbidLifted: 'Forbid {entry} lifted: an Allowlist entry allows it',
+      forbidLifted: 'Forbid {entry} lifted: an Allowlist entry takes its place',
       entryForbidden: 'Allowlist entry {entry} removed: a Forbid takes its place',
       migrateAllowlist: 'Take over the old Allowlist files',
       openWeb: 'Open web for {minutes} minutes',

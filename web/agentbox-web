@@ -1037,8 +1037,6 @@ AGENTBOX_ERRORS = {
                                "only lifting the Signal on the Host lets it through"),
     "allowlist_entry_not_found": (404, "No such Allowlist entry"),
     "allowlist_entry_permanent": (409, "This Allowlist entry is permanent"),
-    "forbid_overruled": (409, "An Allowlist entry allows this destination for the VM and wins over a forbid; "
-                              "remove or narrow it first"),
     "forbid_not_found": (404, "No such Forbid"),
     "forbid_permanent": (409, "This Forbid is permanent"),
     "force_required": (409, "This would lift strong Signals; only the CLI on the Host can do it (--force)"),

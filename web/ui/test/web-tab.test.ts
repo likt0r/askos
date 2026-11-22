@@ -113,8 +113,9 @@ describe('Web tab', () => {
       },
     })
     expect(must('[data-testid="forbids-empty"]').textContent).toContain('Nothing is forbidden for this VM.')
-    // not where an entry allows it already, nor for the VM's own address
-    expect(blockedRow('static.docs.rs').querySelector('[data-testid="blocked-forbid"]')).toBeNull()
+    // also where a parent domain's entry allows it (a Forbid of the subdomain is more specific),
+    // never for the VM's own address
+    expect(blockedRow('static.docs.rs').querySelector('[data-testid="blocked-forbid"]')).not.toBeNull()
     expect(blockedRow('10.77.1.2').querySelector('[data-testid="blocked-forbid"]')).toBeNull()
     await click(blockedRow('pypi.org').querySelector('[data-testid="blocked-forbid"]')!)
     expect(must('[data-testid="forbid-domain"]').textContent).toContain('pypi.org')
@@ -126,16 +127,37 @@ describe('Web tab', () => {
     expect(changes(api.calls)).toEqual([{ method: 'POST', path: '/vms/work/forbids', csrf: '1', body: { domain: 'pypi.org', duration: '8h' } }])
     await waitFor(() => expect(blockedRow('pypi.org').querySelector('[data-testid="blocked-forbidden"]')).not.toBeNull())
     expect(blockedRow('pypi.org').querySelector('[data-testid="blocked-forbid"]')).toBeNull()
-    // still Allow…: an entry wins over the Forbid and lifts it
+    // still Allow…: an entry of the domain for the VM takes the Forbid's place
     expect(blockedRow('pypi.org').querySelector('[data-testid="blocked-allow"]')).not.toBeNull()
     expect($$('[data-testid="vm-forbids"] [data-testid="forbid-entry"]').map(r => r.dataset.domain)).toEqual(['pypi.org'])
   })
 
-  it('shows the refusal of a Forbid an Allowlist entry overrules', async () => {
-    await openApp('/vms/work/web', { ...ROUTES, 'POST /vms/work/forbids': fail(409, 'forbid_overruled') })
-    await click(blockedRow('pypi.org').querySelector('[data-testid="blocked-forbid"]')!)
-    await click('[data-testid="forbid-submit"]')
-    expect(must('[data-testid="forbid-error"]').textContent).toContain('wins over a Forbid')
+  it('marks what the more specific of an entry and a Forbid decides (ADR 0024)', async () => {
+    const row = (domain: string) => ({ ...blocked()[1]!, domain })
+    const entries = [
+      { ...vmEntries()[0]!, domain: 'docs.rs', scope: 'all' },
+      { ...vmEntries()[0]!, domain: 'api.static.docs.rs', scope: 'all' },
+      { ...vmEntries()[0]!, domain: 'x.example', scope: 'all' },
+    ]
+    const forbids = [{ ...vmForbids()[0]!, domain: 'static.docs.rs' }, { ...vmForbids()[0]!, domain: 'x.example' }]
+    await openApp('/vms/work/web', {
+      ...ROUTES,
+      'GET /vms/work/blocked': ok([row('static.docs.rs'), row('api.static.docs.rs'), row('x.example'), row('other.docs.rs')]),
+      'GET /vms/work/allowlist': ok(entries),
+      'GET /vms/work/forbids': ok(forbids),
+    })
+    const marks = (domain: string) => ({
+      allowed: !!blockedRow(domain).querySelector('[data-testid="blocked-allowed"]'),
+      forbidden: !!blockedRow(domain).querySelector('[data-testid="blocked-forbidden"]'),
+    })
+    // a Forbid of a subdomain beats the parent's entry; an entry of a subdomain beats the Forbid
+    expect(marks('static.docs.rs')).toEqual({ allowed: false, forbidden: true })
+    expect(marks('api.static.docs.rs')).toEqual({ allowed: true, forbidden: false })
+    // at the same domain the VM's Forbid beats an entry for all VMs
+    expect(marks('x.example')).toEqual({ allowed: false, forbidden: true })
+    expect(marks('other.docs.rs')).toEqual({ allowed: true, forbidden: false })
+    expect(blockedRow('x.example').querySelector('[data-testid="blocked-allow"]')).not.toBeNull()
+    expect(blockedRow('api.static.docs.rs').querySelector('[data-testid="blocked-allow"]')).toBeNull()
   })
 
   it('lists the VM\'s Forbids, marks the destinations they cover, extends and removes one', async () => {

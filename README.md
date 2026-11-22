@@ -331,13 +331,15 @@ again. Destinations with strong Signals or on the Watchlist are never held, and 
 nothing is. A destination you do not want gets a **Forbid** instead: “Forbid…” next to “Allow…”,
 or `agentbox forbid <vm> <domain> [--for D|--temporary] [--note TEXT]`, refuses it and its
 subdomains for that VM at once, with no hold and no notification, also in Open web, for the
-durations an entry has or permanently ([ADR 0024](docs/adr/0024-an-allowlist-entry-wins-over-a-forbid.md)).
+durations an entry has or permanently ([ADR 0024](docs/adr/0024-the-more-specific-of-an-allowlist-entry-and-a-forbid-wins.md)).
 `agentbox forbids [<vm>]` lists them with the connections refused in 24 hours; `forbid-extend`,
 `forbid-make-permanent`, `forbid-set-note` and `unforbid` change or remove one, as for an entry,
-and once it expires or is removed the destination is held and notified again. An Allowlist entry
-wins over a Forbid, and the two never overlap: forbidding replaces the VM's own entry of that
-domain and is refused while another entry (for all VMs, of a parent domain, a pattern) allows
-it; allowing lifts the Forbids the entry covers. A new Host starts with entries for all VMs
+and once it expires or is removed the destination is held and notified again. Of a Forbid and
+an Allowlist entry the more specific one wins: a domain over a pattern, a longer domain over its
+parent, at the same domain one VM's over all VMs'. So `forbid priv gist.github.com` keeps priv
+from it although `github.com` is allowed for all VMs, and an entry `api.gist.github.com` would let
+that one host through again. Forbidding replaces the VM's own entry of the same domain, and
+allowing a domain for one VM lifts its Forbid of that domain. A new Host starts with entries for all VMs
 (`proxy/allowlist`), among them `claudeusercontent.com`, so claude.ai artifacts load in every VM
 without Open web; a subdomain the threat-intelligence Feed lists there stays blocked, with an
 Alert.

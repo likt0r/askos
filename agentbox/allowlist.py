@@ -38,9 +38,9 @@ not answer) they refuse every domain without --force; with it they store the ent
 and the proxy, which lets nothing through while the Watchlist cannot be read, checks it once
 it can. The Control Room never passes --force.
 
-Forbids (forbids.py, ADR 0024). An entry wins over a Forbid, and the two never overlap: allow,
-extend and make-permanent lift the Forbids the entry covers within its scope (after the entry
-is written), and `agentbox expire-allowlist` removes expired Forbids too. A VM's Forbids come
+Forbids (forbids.py, ADR 0024). Of an entry and a Forbid the more specific one wins. The same
+domain for the same VM is never both: allow, extend and make-permanent of an entry for one VM lift
+that VM's Forbid of the domain (after the entry is written), and `agentbox expire-allowlist` removes expired Forbids too. A VM's Forbids come
 and go with its entries (start_vm, drop_vm).
 """
 import json
@@ -404,7 +404,7 @@ def allow(args):
     Signals, and while they cannot be told only with --force (_signals). With --regex PATTERN
     in place of the domain a Regex entry: refused unless it keeps the rules (patterns.py), and
     without --confirm-pattern it only shows which hosts of the proxy log it would allow
-    (preview). It lifts the Forbids the entry covers within its scope (forbids.lift)."""
+    (preview). An entry for one VM lifts the VM's Forbid of the domain (forbids.lift)."""
     from . import forbids
     positional, opts = options.parse(args)
     scope, ref = _target(positional, opts)
@@ -464,7 +464,7 @@ def disallow(args):
 def extend(args):
     """agentbox extend <vm|all> <domain>|--regex PATTERN --for 15min|1h|8h|7d [--force]
     [--json]: a temporary entry runs that much longer (from now, if it has expired); it lifts the
-    Forbids it covers, as allow does"""
+    Forbid of its domain, as allow does"""
     from . import forbids
     positional, opts = options.parse(args)
     scope, ref = _target(positional, opts)
@@ -490,7 +490,7 @@ def extend(args):
 
 def make_permanent(args):
     """agentbox make-permanent <vm|all> <domain>|--regex PATTERN [--force] [--json]: a
-    temporary entry no longer expires; it lifts the Forbids it covers, as allow does"""
+    temporary entry no longer expires; it lifts the Forbid of its domain, as allow does"""
     from . import forbids
     positional, opts = options.parse(args)
     scope, ref = _target(positional, opts)

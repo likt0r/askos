@@ -41,7 +41,7 @@ async function loadForbids() {
   }
 }
 
-// an allow lifts the Forbids it covers, a forbid takes the place of the VM's own entry: both lists
+// an allow for the VM lifts its Forbid of the domain, a forbid takes the place of its entry: both lists
 // change together (ADR 0024)
 function loadBoth() {
   void loadEntries()

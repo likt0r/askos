@@ -2,9 +2,9 @@
 // What a VM tried to reach in the last 24 hours and was refused, newest first, with the
 // Signals of its last Alert; "Allow…" adds an Allowlist entry for a chosen time, "Forbid…" a
 // Forbid for the VM (refused at once from then on, no hold), except on a row that names the VM's
-// own address (a connection with no destination). Marks destinations an active entry covers by
-// now, those a Forbid in force covers, and those the proxy holds for an entry (#39), which appear
-// the moment it holds them.
+// own address (a connection with no destination). Of an entry and a Forbid the more specific wins
+// (ADR 0024): marks destinations an active entry allows by now, those a Forbid wins for, and those
+// the proxy holds for an entry (#39), which appear the moment it holds them.
 import type { AllowlistEntry, BlockedDestination, ForbidEntry } from '~/utils/access'
 
 const props = withDefaults(defineProps<{ vm: string, entries: AllowlistEntry[], forbids?: ForbidEntry[] }>(), { forbids: () => [] })
@@ -51,13 +51,13 @@ function reason(r: BlockedDestination) {
   return blockedReason(r, tr)
 }
 
-function allowedBy(domain: string) {
-  return coveredBy(domain, props.entries, now.value)
+// the more specific of an entry and a Forbid wins (ADR 0024)
+function forbiddenNow(domain: string) {
+  return !!forbidWins(domain, props.entries, props.forbids, now.value)
 }
 
-// an Allowlist entry wins over a Forbid (ADR 0024): only what no entry allows counts as forbidden
-function forbiddenNow(domain: string) {
-  return !allowedBy(domain) && !!forbiddenBy(domain, props.forbids, now.value)
+function allowedBy(domain: string) {
+  return !forbiddenNow(domain) && coveredBy(domain, props.entries, now.value)
 }
 
 watch(() => props.vm, load)
@@ -123,8 +123,9 @@ useLiveEvent('held', (h) => {
             {{ t('webTab.blocked.last', { when: when.ago(r.last, now) }) }} · <span data-testid="blocked-reason" :title="reason(r) !== r.reason ? r.reason : undefined">{{ reason(r) }}</span>
           </p>
         </div>
-        <div v-if="allowable(r) && !allowedBy(r.domain)" class="flex shrink-0 flex-wrap gap-2 self-start sm:self-center">
+        <div v-if="allowable(r)" class="flex shrink-0 flex-wrap gap-2 self-start sm:self-center">
           <UButton
+            v-if="!allowedBy(r.domain)"
             color="neutral"
             variant="outline"
             size="sm"

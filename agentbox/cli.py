@@ -115,9 +115,9 @@ Controls the agent VMs on this Host.
                                                      refused in the last 24 hours
   agentbox forbid <vm> <domain> [--for D|--temporary] [--note TEXT] [--json]
                 Forbid for one VM, permanent or temporary: the proxy refuses the domain and its
-                subdomains at once (no hold, also in Open web) unless an Allowlist entry allows them;
-                takes the place of the VM's own entry of the domain, refused while another entry
-                allows it
+                subdomains at once (no hold, also in Open web); of a Forbid and an Allowlist entry
+                the more specific wins (a longer domain, then one VM's over all VMs', a domain over
+                a pattern); takes the place of the VM's own entry of the domain
   agentbox unforbid <vm> <domain> [--json]           remove a Forbid: the domain is held and notified again
   agentbox forbid-extend <vm> <domain> --for D [--json]
                 extend a temporary one

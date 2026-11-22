@@ -290,7 +290,7 @@ export const SENTENCES: Record<string, Sentence> = {
   'claude.error': plain('claudeError'),
   'allowlist.expired': listed('expired'),
   'allowlist.forbid-expired': listed('forbidExpired'),
-  // an Allowlist entry made or brought back lifts the Forbids it covers; a Forbid takes the place
+  // an Allowlist entry for a VM made or brought back lifts its Forbid of the domain; a Forbid takes the place
   // of the VM's own entry of its domain (ADR 0024)
   'allowlist.forbid-lifted': listed('forbidLifted'),
   'allowlist.entry-forbidden': listed('entryForbidden'),

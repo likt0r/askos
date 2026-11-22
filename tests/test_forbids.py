@@ -1,12 +1,12 @@
 """Forbids (#39, ADR 0024): a domain the proxy refuses one VM at once, for a while or for good.
 
 Seam C: the real proxy (`proxy/agentbox-proxy`) on a Unix socket, as in test_allowlist: a
-forbidden destination is refused at once, never held, also in Open web; an Allowlist entry wins
-over a Forbid; an expired or removed Forbid makes the destination held again.
+forbidden destination is refused at once, never held, also in Open web; of an Allowlist entry and
+a Forbid the more specific wins; an expired or removed Forbid makes the destination held again.
 
 Seam A: the `agentbox` CLI against a temporary root (AGENTBOX_ROOT), as in test_allowlist: forbid,
 unforbid, forbid-extend, forbid-make-permanent, forbid-set-note, forbids, the expiry timer, and the
-rule that keeps the Allowlist and the Forbids from overlapping.
+rule that the same domain for the same VM is never both allowed and forbidden.
 
 Run from the repo root: python3 -m unittest discover -s tests
 """
@@ -97,7 +97,7 @@ class ProxyTest(allowlist_tests.ProxyTest):
         self.forbids(forbid("telemetry.example", "work"))
         self.assertTrue(self.closed(web))
         self.assertIn("[work] CLOSED telemetry.example (forbidden)\n", self.log())
-        # an Allowlist entry wins over a Forbid; Open web still lets the rest through
+        # a more specific entry wins over the Forbid; Open web still lets the rest through
         self.assertTrue(self.alive(allowed))
         self.assertTrue(self.alive(other))
         self.at_once("telemetry.example")
@@ -105,12 +105,61 @@ class ProxyTest(allowlist_tests.ProxyTest):
         self.tunnel("docs.telemetry.example")
         self.assertNotIn("HELD", self.log())
 
-    def test_an_allowlist_entry_wins_over_a_forbid(self):
-        self.store(entry("telemetry.example", "all"))
-        self.forbids(forbid("telemetry.example", "work"))
+    def test_a_forbid_of_a_subdomain_under_an_entry_for_all_vms_blocks_for_that_vm_only(self):
+        self.store(entry("forge.example", "all"))
+        self.forbids(forbid("gist.forge.example", "work"), forbid("raw.forge.example", "priv"))
         self.start()
-        self.tunnel("telemetry.example")
-        self.assertIn("[work] ALLOWED telemetry.example (allowlist telemetry.example all)\n", self.log())
+        for host in ("gist.forge.example", "eu.gist.forge.example"):
+            with self.subTest(host=host):
+                self.at_once(host)
+                self.assertIn(f"[work] BLOCKED {host} (forbidden)\n", self.log())
+        self.tunnel("forge.example")
+        self.tunnel("raw.forge.example")       # priv's Forbid
+        self.assertIn("[work] ALLOWED raw.forge.example (allowlist forge.example all)\n", self.log())
+
+    def test_a_more_specific_entry_under_a_forbid_passes(self):
+        self.forbids(forbid("gist.forge.example", "work"))
+        self.store(entry("api.gist.forge.example", "all"))
+        self.start()
+        self.tunnel("v2.api.gist.forge.example")
+        self.assertIn("[work] ALLOWED v2.api.gist.forge.example (allowlist api.gist.forge.example all)\n",
+                      self.log())
+        self.at_once("gist.forge.example")
+
+    def test_at_the_same_domain_one_vms_beats_all_vms_and_a_full_tie_goes_to_the_forbid(self):
+        self.store(entry("x.example", "all"), entry("y.example", "work"))
+        # agentbox never stores y.example as both for work; a hand edit can
+        self.forbids(forbid("x.example", "work"), forbid("y.example", "work"))
+        self.start()
+        for host in ("x.example", "y.example"):
+            with self.subTest(host=host):
+                self.at_once(host)
+                self.assertIn(f"[work] BLOCKED {host} (forbidden)\n", self.log())
+
+    def test_a_named_domain_beats_a_pattern(self):
+        self.store({k: v for k, v in entry("x.example", "work").items() if k != "domain"}
+                   | {"regex": "^mirror[0-9]+\\.vendor\\.example$"})
+        # a Forbid of a shorter domain still beats the pattern
+        self.forbids(forbid("vendor.example", "work"))
+        self.start()
+        self.at_once("mirror1.vendor.example")
+        self.assertIn("[work] BLOCKED mirror1.vendor.example (forbidden)\n", self.log())
+        self.forbids()
+        time.sleep(allowlist_tests.SETTLE)
+        self.tunnel("mirror1.vendor.example")
+
+    def test_a_forbid_that_comes_to_win_closes_the_tunnels_it_wins_for(self):
+        self.store(entry("forge.example", "all"), entry("api.gist.forge.example", "work"))
+        self.start()
+        gist = self.tunnel("gist.forge.example")
+        api = self.tunnel("api.gist.forge.example")
+        top = self.tunnel("forge.example")
+        self.forbids(forbid("gist.forge.example", "work"))
+        self.assertTrue(self.closed(gist))
+        self.assertIn("[work] CLOSED gist.forge.example (forbidden)\n", self.log())
+        # the more specific entry still wins; the parent is not forbidden
+        self.assertTrue(self.alive(api))
+        self.assertTrue(self.alive(top))
 
     def test_a_forbid_taking_the_place_of_an_entry_closes_its_tunnel_also_in_open_web(self):
         # agentbox forbid removes the VM's own entry: access ends on purpose (ADR 0005), and
@@ -224,79 +273,58 @@ class ForbidTest(CliTest):
             ("allowlist", "forbid", "work", "Forbid telemetry.example"),
         ])
 
-    def test_it_is_refused_while_another_entry_in_force_allows_the_domain_for_the_vm(self):
-        now = int(time.time())
+    def test_it_is_stored_under_a_broader_entry_which_stays(self):
+        # the more specific wins (ADR 0024): a Forbid beats a parent domain's entry, one for all VMs
+        # and a pattern, so they stay where they are
         pattern = {k: v for k, v in entry("x.example", "work").items() if k != "domain"} | {
             "regex": "^eu\\.[a-z]+\\.example$"}
-        for allows, refused in (
-                # for all VMs, of a parent domain, a pattern: each wins over a forbid
-                ([entry("telemetry.example", "all")], "the Allowlist entry telemetry.example for all VMs"),
-                ([entry("telemetry.example", "work", expires=now + 600)], "the Allowlist entry telemetry.example for work"),
-                ([pattern], "the Allowlist entry pattern ^eu\\.[a-z]+\\.example$ for work"),
-                # another VM's, an expired one, an unrelated or narrower one: nothing in the way
-                ([entry("telemetry.example", "priv"), entry("telemetry.example", "all", expires=now - 60),
-                  entry("example.org", "work"), entry("x.eu.telemetry.example", "work")], None)):
-            with self.subTest(allows=allows):
-                self.store(*allows)
-                self.forbids()
-                if refused:
-                    self.assertEqual(self.refused("forbid", "work", "eu.telemetry.example"),
-                                     f"work: eu.telemetry.example is allowed by {refused}, which wins over a forbid; "
-                                     "remove or narrow it first")
-                else:
-                    self.ok("forbid", "work", "eu.telemetry.example")
-                    self.assertEqual(self.forbidden(), [("eu.telemetry.example", "work", None, "")])
-                    self.assertEqual(len(self.stored()), 4)
-
-    def test_the_refusal_names_the_entry_for_the_control_room(self):
-        self.store(entry("example.org", "all"))
-        code, out, err = self.run_agentbox("forbid", "work", "api.example.org", "--json")
-        self.assertEqual((code, out), (1, ""))
-        failure = json.loads(err)
-        self.assertEqual((failure["error"], failure["params"]),
-                         ("forbid_overruled", {"vm": "work", "domain": "api.example.org", "scope": "all", "entry": "example.org"}))
+        self.store(entry("telemetry.example", "work"), entry("eu.telemetry.example", "all"), pattern,
+                   entry("x.eu.telemetry.example", "work"))
+        before = self.stored()
+        result = self.json("forbid", "work", "eu.telemetry.example")
+        self.assertEqual(result["allowlist_removed"], False)
+        self.assertEqual(self.stored(), before)
+        self.assertEqual(self.forbidden(), [("eu.telemetry.example", "work", None, "")])
 
 
 class AllowLiftsTest(CliTest):
-    """An Allowlist entry wins over a Forbid, so allow, extend and make-permanent lift the Forbids the
-    entry covers within its scope (ADR 0024)."""
+    """The same domain for the same VM is never both allowed and forbidden: allow, extend and
+    make-permanent of an entry for one VM lift that VM's Forbid of the domain; an entry for all VMs,
+    a pattern or a parent domain lifts nothing, since the Forbids it meets are more specific and keep
+    winning (ADR 0024)."""
 
     def setUp(self):
         super().setUp()
-        self.forbids(forbid("a.example", "work"), forbid("eu.a.example", "work"), forbid("b.example", "work"),
-                     forbid("a.example", "priv"), forbid("mirror7.example", "work"))
+        self.forbids(forbid("a.example", "work"), forbid("eu.a.example", "work"), forbid("a.example", "priv"),
+                     forbid("mirror7.example", "work"))
 
-    def test_allow_lifts_the_forbids_it_covers_in_its_scope(self):
+    def test_allow_for_a_vm_lifts_only_its_forbid_of_the_same_domain(self):
         self.assertEqual(self.run_agentbox("--actor", FIREFOX, "allow", "work", "a.example"),
-                         (0, "work: a.example allowed; Forbid lifted: a.example (work), eu.a.example (work)\n", ""))
-        self.assertEqual(self.forbidden(), [("a.example", "priv", None, ""), ("b.example", "work", None, ""),
+                         (0, "work: a.example allowed; Forbid lifted: a.example (work)\n", ""))
+        self.assertEqual(self.forbidden(), [("a.example", "priv", None, ""), ("eu.a.example", "work", None, ""),
                                             ("mirror7.example", "work", None, "")])
-        self.assertEqual(self.activity()[:3], [
+        self.assertEqual(self.activity(), [
             ("allowlist", "allowlist.forbid-lifted", "work",
-             "Forbid a.example for work lifted: the Allowlist entry a.example for work allows it"),
-            ("allowlist", "allowlist.forbid-lifted", "work",
-             "Forbid eu.a.example for work lifted: the Allowlist entry a.example for work allows it"),
+             "Forbid a.example for work lifted: an Allowlist entry for work takes its place"),
             ("allowlist", "allow", "work", "Allow a.example"),
         ])
-        # an entry for all VMs lifts every VM's
-        self.assertEqual(self.json("allow", "all", "a.example")["forbids_lifted"], [{"domain": "a.example", "scope": "priv"}])
-        # a Regex entry lifts what its pattern matches
+
+    def test_an_entry_for_all_vms_or_a_pattern_lifts_nothing(self):
+        self.assertEqual(self.json("allow", "all", "a.example")["forbids_lifted"], [])
         self.assertEqual(self.json("allow", "work", "--regex", "^mirror[0-9]+\\.example$", "--confirm-pattern")
-                         ["forbids_lifted"], [{"domain": "mirror7.example", "scope": "work"}])
-        self.assertEqual(self.forbidden(), [("b.example", "work", None, "")])
+                         ["forbids_lifted"], [])
+        self.assertEqual(self.json("allow", "work", "x.eu.a.example")["forbids_lifted"], [])
+        self.assertEqual(len(self.forbidden()), 4)
+        self.assertNotIn("allowlist.forbid-lifted", [a[1] for a in self.activity()])
 
-    def test_extend_or_make_permanent_of_an_expired_entry_lifts_them_too(self):
+    def test_extend_or_make_permanent_of_an_expired_entry_lifts_it_too(self):
         now = int(time.time())
-        self.store(entry("b.example", "work", expires=now - 60), entry("a.example", "work", expires=now - 60))
-        self.assertEqual(self.json("extend", "work", "b.example", "--for", "1h")["forbids_lifted"],
-                         [{"domain": "b.example", "scope": "work"}])
-        self.assertEqual(self.json("make-permanent", "work", "a.example")["forbids_lifted"],
-                         [{"domain": "a.example", "scope": "work"}, {"domain": "eu.a.example", "scope": "work"}])
+        self.store(entry("a.example", "work", expires=now - 60), entry("eu.a.example", "work", expires=now - 60))
+        self.assertEqual(self.json("extend", "work", "a.example", "--for", "1h")["forbids_lifted"],
+                         [{"domain": "a.example", "scope": "work"}])
+        self.assertEqual(self.json("make-permanent", "work", "eu.a.example")["forbids_lifted"],
+                         [{"domain": "eu.a.example", "scope": "work"}])
         self.assertEqual(self.forbidden(), [("a.example", "priv", None, ""), ("mirror7.example", "work", None, "")])
-
-    def test_a_subdomain_allowed_leaves_the_parents_forbid(self):
-        self.assertEqual(self.json("allow", "work", "x.b.example")["forbids_lifted"], [])
-        self.assertIn(("b.example", "work", None, ""), self.forbidden())
 
 
 class ChangeTest(CliTest):

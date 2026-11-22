@@ -12,21 +12,25 @@ always one VM, and it names a domain, never a pattern. expires works as for a Te
 entry (the same durations; --temporary means temporary_entry_default), null for a permanent one;
 there is at most one Forbid per domain and VM.
 
-The proxy refuses a destination a Forbid of its VM covers at once, BLOCKED <host> (forbidden): no
-hold, so no notification, also in Open web, where a tunnel only Open web allows closes when a
-Forbid comes to cover it. An expired Forbid refuses nothing: the destination is unknown again,
-held and notified. `agentbox expire-allowlist` (the timer, every minute) removes expired Forbids
+The proxy refuses a destination a Forbid of its VM wins for at once, BLOCKED <host> (forbidden):
+no hold, so no notification, also in Open web, and closes a tunnel to it when a Forbid comes to
+win for it. An expired Forbid refuses nothing: the destination is unknown again, held and
+notified. `agentbox expire-allowlist` (the timer, every minute) removes expired Forbids
 with the expired Allowlist entries and records each in Activity. Strong Signals block whatever a
 Forbid says (ADR 0021).
 
-Allowlist and Forbids (ADR 0024). An Allowlist entry wins: the proxy asks the Allowlist first. So
-that what is listed is what holds, the two never overlap for a destination:
-- forbid takes the place of the VM's own Allowlist entry of the same domain (it is removed, and the
-  proxy closes its tunnels as for disallow), and is refused (forbid_overruled) while another entry
-  in force still allows the domain for the VM (one for all VMs, of a parent domain, a pattern):
-  that one has to go or be narrowed first. A subdomain allowed on its own stays allowed;
-- allow, extend and make-permanent (the last two can bring an expired entry back) lift the
-  Forbids the entry covers within its scope (lift), each recorded in Activity.
+Allowlist and Forbids (ADR 0024). Of the entries and Forbids that match a destination for a VM
+the more specific one wins (list_records.specificity): any named domain above any pattern, a longer
+domain above its parent, at the same domain one VM's above all VMs'. So a Forbid of
+gist.github.com for work beats an entry github.com, an entry api.gist.github.com beats that
+Forbid, and a Forbid of x.example for work beats an entry x.example for all VMs. The same domain
+for the same VM is never both allowed and forbidden: the newer decision takes the other's place.
+- forbid removes the VM's own Allowlist entry of the same domain (the proxy closes its tunnels as
+  for disallow), recorded in Activity; entries for all VMs, of other domains and patterns stay;
+- allow for one VM, and extend and make-permanent of such an entry (the last two can bring an
+  expired one back), remove that VM's Forbid of the same domain (lift), recorded in Activity. An
+  entry for all VMs, or a pattern, lifts nothing: a VM's Forbid of the domain is more specific and
+  keeps winning, as Forbids of subdomains below any entry do.
 forbid holds the Allowlist's lock while it writes forbids.json under the Forbids' lock, and lift
 runs after the Allowlist was written, so neither waits on the other the other way round.
 """
@@ -105,24 +109,18 @@ def in_force(e, now):
     return e["expires"] is None or e["expires"] > now
 
 
-def _allows(e, domain):
-    """Whether the Allowlist entry e allows domain (Signals aside): its domain covers it, or its
-    pattern matches it (a pattern the rules refuse allows nothing)."""
-    if "regex" not in e:
-        return list_records.covers(e["domain"], domain)
-    compiled = list_records.compile_pattern(e["regex"])
-    return bool(compiled and list_records.pattern_matches(compiled, domain))
-
-
 # --- the Allowlist's side -----------------------------------------------------------
 
 def lift(e):
-    """After the Allowlist entry e was made or brought back in force: the Forbids it covers
-    within its scope go, since it wins over them anyway, each recorded in Activity. Returns them
-    ([] when forbids.json cannot be read: the entry is in place, the message says what stayed)."""
+    """After the Allowlist entry e was made or brought back in force: the Forbid of its domain for
+    its VM goes (the same domain for the same VM is never both), recorded in Activity. An entry for
+    all VMs or a pattern lifts nothing. Returns what went ([] when forbids.json cannot be read: the
+    entry is in place, the message says what stayed)."""
+    if e["scope"] == ALL or "regex" in e:
+        return []
     try:
         with changing() as entries:
-            gone = [f for f in entries if e["scope"] in (ALL, f["scope"]) and _allows(e, f["domain"])]
+            gone = [f for f in entries if f["scope"] == e["scope"] and f["domain"] == e["domain"]]
             entries[:] = [f for f in entries if f not in gone]
     except Fail as f:
         print(f"agentbox: Forbids the entry covers stay: {f.message}", file=sys.stderr)
@@ -130,8 +128,8 @@ def lift(e):
     shown = allowlist.scope_text(e["scope"])
     for f in _order(gone):
         activity.record("allowlist", "allowlist.forbid-lifted",
-                        f"Forbid {f['domain']} for {f['scope']} lifted: the Allowlist entry "
-                        f"{entry_store.label(list_records.key(e))} for {shown} allows it", f["scope"],
+                        f"Forbid {f['domain']} for {f['scope']} lifted: an Allowlist entry for {shown} takes its "
+                        "place", f["scope"],
                         params={"domain": f["domain"], "scope": f["scope"]})
     return [{"domain": f["domain"], "scope": f["scope"]} for f in _order(gone)]
 
@@ -220,8 +218,8 @@ def show(args):
 def forbid(args):
     """agentbox forbid <vm> <domain> [--for 15min|1h|8h|7d | --temporary] [--note TEXT] [--json]:
     a new Forbid, or an existing one widened but never shortened (a permanent one stays
-    permanent); it takes the place of the VM's own Allowlist entry of the domain, and is refused
-    while another entry still allows the domain for the VM (forbid_overruled)."""
+    permanent); it takes the place of the VM's own Allowlist entry of the domain. A more specific
+    entry (of a subdomain) still wins over it."""
     positional, opts = options.parse(args)
     vm, domain = _target(positional)
     seconds = allowlist.duration_seconds(opts)
@@ -230,14 +228,6 @@ def forbid(args):
     expires = None if seconds is None else now + seconds
     with allowlist.changing() as allows:
         own = allowlist.find(allows, ("domain", domain), vm)
-        others = [a for a in allows if a is not own and a["scope"] in (ALL, vm) and in_force(a, now)
-                  and _allows(a, domain)]
-        if others:
-            a = others[0]
-            shown = entry_store.label(list_records.key(a))
-            die(f"{vm}: {domain} is allowed by the Allowlist entry {shown} for {allowlist.scope_text(a['scope'])}, "
-                "which wins over a forbid; remove or narrow it first",
-                error="forbid_overruled", vm=vm, domain=domain, scope=a["scope"], entry=shown)
         with changing() as entries:
             e = find(entries, vm, domain)
             if e is None:

@@ -167,7 +167,7 @@ The proxy keeping a connection to a destination that is not allowed waiting for 
 _Avoid_: queue, pending request, park
 
 **Forbid**:
-A domain (with its subdomains) that the proxy refuses one VM at once, for one of the durations of a Temporary allowlist entry or permanently: no Hold, no notification, also in Open web. An Allowlist entry wins over it, and the two never overlap: a Forbid takes the place of the VM's own entry of its domain, and an entry lifts the Forbids it covers (German UI: Verbot).
+A domain (with its subdomains) that the proxy refuses one VM at once, for one of the durations of a Temporary allowlist entry or permanently: no Hold, no notification, also in Open web. Of a Forbid and an Allowlist entry the more specific one wins: a named domain over a pattern, a longer domain over its parent, at the same domain one VM's over all VMs'. The same domain for the same VM is never both allowed and forbidden: the newer replaces the older (German UI: Verbot).
 _Avoid_: block, deny rule, blacklist entry
 
 ## Detection

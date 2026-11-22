@@ -459,6 +459,16 @@ def covers(domain, host):
     return host == domain or host.endswith("." + domain)
 
 
+def specificity(regex, value, scope):
+    """How specific an Allowlist entry or a Forbid that matches a host is, for the VM it applies
+    to (ADR 0024: the more specific one wins): any named domain above any pattern; of two domains
+    the longer (more labels: the domains that cover one host are its suffixes, so the longer is a
+    subdomain of the other); at the same domain one VM's above all VMs'. Comparable tuples; where
+    an entry and a Forbid tie (the same domain for the same VM, which agentbox never stores) the
+    Forbid wins."""
+    return (0, 0, scope != ALL) if regex else (1, value.count(".") + 1, scope != ALL)
+
+
 def checked(items, check, key=key, twice=lambda e: f"{printable(key(e)[1], MAX_HOST)} listed twice"):
     """The entries; at the first broken one (check(e) says why) or one whose key(e) came before
     (twice(e) says so) the record is broken: ValueError "broken entry (...)" or the text of

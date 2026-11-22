@@ -139,10 +139,23 @@ export function forbidPath(e: Pick<ForbidEntry, 'domain' | 'scope'>, action = ''
   return `/vms/${encodeURIComponent(e.scope)}/forbids/${encodeURIComponent(e.domain)}${action ? `/${action}` : ''}`
 }
 
-/** The Forbid in force that covers the domain (its own domain or a parent), as the proxy matches it. */
-export function forbiddenBy(domain: string, forbids: ForbidEntry[], nowMs: number): ForbidEntry | undefined {
-  return forbids.find(f => (domain === f.domain || domain.endsWith('.' + f.domain))
-    && (f.expires == null || f.expires * 1000 > nowMs))
+/** How specific a domain entry or a Forbid that covers a host is (ADR 0024): more labels (a
+ * subdomain of the other), then one VM's above all VMs'. */
+function rank(e: { domain: string | null, scope: string }): [number, number] {
+  return [(e.domain ?? '').split('.').length, e.scope === 'all' ? 0 : 1]
+}
+const covers = (e: { domain: string | null, expires: number | null }, domain: string, nowMs: number) =>
+  e.domain != null && (domain === e.domain || domain.endsWith('.' + e.domain)) && (e.expires == null || e.expires * 1000 > nowMs)
+const above = (a: [number, number], b: [number, number]) => a[0] > b[0] || (a[0] === b[0] && a[1] > b[1])
+
+/** The Forbid that wins for the domain, as the proxy decides (ADR 0024): the most specific Forbid in
+ * force that covers it, unless an active domain entry is more specific; a full tie goes to the
+ * Forbid. Regex entries are left out: a named Forbid is more specific than any pattern. */
+export function forbidWins(domain: string, entries: AllowlistEntry[], forbids: ForbidEntry[], nowMs: number): ForbidEntry | undefined {
+  const forbid = forbids.filter(f => covers(f, domain, nowMs)).sort((a, b) => rank(b)[0] - rank(a)[0])[0]
+  if (!forbid) return undefined
+  const beats = entries.some(e => covers(e, domain, nowMs) && above(rank(e), rank(forbid)))
+  return beats ? undefined : forbid
 }
 
 /** A destination a VM tried to reach and was refused (last 24 hours). */

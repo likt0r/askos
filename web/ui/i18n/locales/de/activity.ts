@@ -81,7 +81,7 @@ export default {
       forbidMakePermanent: 'Verbot {entry} dauerhaft',
       forbidSetNote: 'Notiz zu Verbot {entry}',
       forbidExpired: 'Vorübergehendes Verbot {entry} abgelaufen',
-      forbidLifted: 'Verbot {entry} aufgehoben: eine Freigabe erlaubt es',
+      forbidLifted: 'Verbot {entry} aufgehoben: eine Freigabe tritt an seine Stelle',
       entryForbidden: 'Freigabe {entry} entfernt: ein Verbot tritt an ihre Stelle',
       migrateAllowlist: 'Alte Allowlist-Dateien übernehmen',
       openWeb: 'Offenes Web für {minutes} Minuten',

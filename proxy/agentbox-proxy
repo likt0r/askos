@@ -28,15 +28,17 @@ whenever the file is read again; one that breaks the pattern rules (list_records
 left out.
 
 While /etc/agentbox/open-<vm> holds a time in the future, every public domain is allowed
-(Open web for a while) that no Forbid covers.
+(Open web for a while) that no Forbid wins for.
 
 Forbids: /etc/agentbox/forbids.json (agentbox forbid/unforbid/...), entries as the Allowlist's,
-a domain (covering its subdomains too) for one VM with an optional expiry. A destination a Forbid
-of this VM covers and that no Allowlist entry allows is refused at once, never held, also in Open
-web, and a tunnel only Open web allows closes when a Forbid comes to cover it:
+a domain (covering its subdomains too) for one VM with an optional expiry. Of the Allowlist entries
+and the Forbids of this VM that match a destination the more specific one wins (ADR 0024,
+list_records.specificity): any named domain above any pattern, a longer domain above its parent,
+at the same domain one VM's above all VMs'; a full tie (a hand edit) goes to the Forbid. A
+destination a Forbid wins for is refused at once, never held, also in Open web, and a tunnel to
+it closes when a Forbid comes to win for it:
   [<vm>] BLOCKED <host> (forbidden)
   [<vm>] CLOSED <host> (forbidden)
-An Allowlist entry wins over a Forbid (agentbox keeps the two from overlapping: forbids.py).
 Expired Forbids refuse nothing. Changes apply without a restart; a broken file keeps the last good
 state, and a proxy that starts with one refuses at once whatever no Allowlist entry allows (no
 hold, no Open web) until it is fixed.
@@ -50,7 +52,7 @@ the text file from before), which Signals are strong is unknown, so nothing pass
 without agentbox-suspicious, which tells them, neither:
   [<vm>] BLOCKED <host> (Watchlist unreadable)
 
-Hold: a connection to a destination that nothing allows and no Forbid covers, that has no strong
+Hold: a connection to a destination that nothing allows and no Forbid wins for, that has no strong
 Signal and is not on the Watchlist (no Signal of a Watchlist category) waits up to the hold time (the Setting
 hold_seconds in /etc/agentbox/settings.json, read again when it changes; 0 refuses at once), so
 the owner can allow it meanwhile. The proxy logs it once per host while connections to it are
@@ -69,7 +71,7 @@ once. Holding costs the event loop nothing: each held connection sleeps between 
 Tunnels (ADR 0005): open tunnels run without a time limit, also once the entry that allowed
 them expires. The proxy closes a tunnel when access to it ends on purpose and nothing else
 allows it any more: an entry is removed before it expired (agentbox disallow, or a Forbid that
-takes its place), Open web ends, or a Forbid comes to cover a tunnel only Open web allows. It also closes a tunnel whose destination gains a strong Signal (a Feed update, a new
+takes its place), Open web ends, or a Forbid comes to win for its destination. It also closes a tunnel whose destination gains a strong Signal (a Feed update, a new
 Watchlist entry), after an Alert, and every tunnel while the Watchlist cannot be read
 (ADR 0021): CLOSED <host> (suspicious: <signals>) or (Watchlist unreadable). It classifies its
 open tunnels again only when a file the Signals come from changes (agentbox-suspicious
@@ -432,10 +434,19 @@ class Forbids:
                 self.good, self.unreadable = True, False
         return self.entries
 
-    def covers(self, host, now):
-        """Whether a Forbid in force covers host, as last read (current)."""
-        return self.unreadable or any((expires is None or expires > now) and records.covers(domain, host)
-                                      for domain, expires in self.entries.items())
+    def strongest(self, host, now, entries=None, unreadable=None):
+        """The specificity (records.specificity) of the most specific Forbid in force that covers
+        host, as last read (current) or in entries, else None; LOWEST while the file has not been
+        read since the start: every destination counts as forbidden, below any Allowlist entry."""
+        if self.unreadable if unreadable is None else unreadable:
+            return LOWEST
+        return max((records.specificity(False, domain, self.ctx)
+                    for domain, expires in (self.entries if entries is None else entries).items()
+                    if (expires is None or expires > now) and records.covers(domain, host)), default=None)
+
+
+# below every Allowlist entry: a Forbid of every destination, while forbids.json cannot be read
+LOWEST = (-1,)
 
 
 class HoldTime:
@@ -505,24 +516,33 @@ def strong(tags):
     return bool(suspicious and suspicious.is_strong(tags))
 
 
+def allowance(ctx, lists, forbids, host, now, is_open=None):
+    """(grant, reason for the log) as the lists decide, the Signals aside: the entries that allow
+    host when the most specific of them beats the most specific Forbid in force that covers it
+    (ADR 0024, records.specificity; a full tie goes to the Forbid), else FORBIDDEN while a Forbid
+    covers it, also in Open web, else OPEN in Open web (is_open, else open_until), else
+    NOT_ALLOWED. The Forbids as last read (Forbids.current)."""
+    keys = granting(host, lists, now)
+    forbid = forbids.strongest(host, now)
+    if keys and (forbid is None or max(records.specificity(k.regex, k.value, k.scope) for k in keys) > forbid):
+        return keys, None
+    if forbid is not None:
+        return None, lines.FORBIDDEN
+    if open_until(ctx) if is_open is None else is_open:
+        return OPEN, None
+    return None, lines.NOT_ALLOWED
+
+
 def decide(ctx, lists, forbids, host, tags, now):
     """(grant, reason for the log). Grant: the entries that allow host, OPEN (only Open web)
     or None (blocked, with the reason). The Signals come first (ADR 0021): strong ones block
     whatever would allow host, and while the Watchlist cannot be read nothing passes. Then the
-    Allowlist, which wins over a Forbid (ADR 0024); a Forbid refuses what no entry allows, also
-    in Open web."""
+    more specific of the Allowlist entries and the Forbids (allowance)."""
     why = refusal(tags)
     if why:
         return None, why
-    keys = granting(host, lists, now)
-    if keys:
-        return keys, None
     forbids.current()
-    if forbids.covers(host, now):
-        return None, lines.FORBIDDEN
-    if open_until(ctx):
-        return OPEN, None
-    return None, lines.NOT_ALLOWED
+    return allowance(ctx, lists, forbids, host, now)
 
 
 def logged(ctx, grant):
@@ -555,20 +575,19 @@ tunnels = set()
 
 def withdraw(ctx, lists, forbids, now, revoked, web_ended, is_open):
     """Access ends on purpose (entries removed, or Open web closed): the tunnels it allowed stay
-    when their destination is still allowed now (by Open web only without a Forbid), else they
-    close."""
+    when their destination is still allowed now (allowance; its Signals were checked just before,
+    recheck), else they close."""
     for t in list(tunnels):
         if not (web_ended if t.grant == OPEN else t.grant & revoked):
             continue
-        keys = granting(t.host, lists, now)
-        if keys:
-            t.grant = keys
-        elif is_open and not forbids.covers(t.host, now):   # its Signals were checked just before (recheck)
-            t.grant = OPEN
-        else:
-            log(lines.closed(ctx, t.host, lines.OPEN_WEB_ENDED if t.grant == OPEN else lines.REMOVED))
-            tunnels.discard(t)
-            t.close()
+        grant, why = allowance(ctx, lists, forbids, t.host, now, is_open)
+        if grant is not None:
+            t.grant = grant
+            continue
+        why = why if why == lines.FORBIDDEN else lines.OPEN_WEB_ENDED if t.grant == OPEN else lines.REMOVED
+        log(lines.closed(ctx, t.host, why))
+        tunnels.discard(t)
+        t.close()
 
 
 def signals_key():
@@ -609,23 +628,31 @@ def recheck(ctx):
         t.close()
 
 
-def forbid_open(ctx, forbids, now):
-    """A tunnel only Open web allows closes once a Forbid covers its destination: access to it
-    ended on purpose (ADR 0005)."""
+def forbid_tunnels(ctx, lists, forbids, now, is_open, before):
+    """The Forbids changed (before: their entries and whether they were unreadable then): a tunnel
+    closes when a Forbid wins for its destination now that is more specific than any that covered
+    it before, a new one; access to it ended on purpose (ADR 0005). One whose entry merely expired
+    meanwhile keeps running, as after any expiry."""
     for t in list(tunnels):
-        if t.grant == OPEN and forbids.covers(t.host, now):
-            log(lines.closed(ctx, t.host, lines.FORBIDDEN))
-            tunnels.discard(t)
-            t.close()
+        if allowance(ctx, lists, forbids, t.host, now, is_open)[1] != lines.FORBIDDEN:
+            continue
+        old = forbids.strongest(t.host, now, *before)
+        if old is not None and forbids.strongest(t.host, now) <= old:
+            continue
+        log(lines.closed(ctx, t.host, lines.FORBIDDEN))
+        tunnels.discard(t)
+        t.close()
 
 
 async def watch(ctx, lists, forbids):
     """Checks the open tunnels' Signals (recheck), then compares the entries and Open web with
     their state before. An entry that is gone although it had not expired was removed on
     purpose; expired ones (and those agentbox expire-allowlist then deletes) close nothing.
-    Then the tunnels only Open web allows that a Forbid covers by now close (forbid_open)."""
+    When the Forbids changed, the tunnels a new Forbid wins for close (forbid_tunnels)."""
     known = dict(lists.current())
     was_open = bool(open_until(ctx))
+    forbids.current()
+    forbidden = (forbids.key, forbids.unreadable, dict(forbids.entries))
     while True:
         await asyncio.sleep(CHECK_SECONDS)
         if tunnels:
@@ -643,7 +670,10 @@ async def watch(ctx, lists, forbids):
             forbids.current()
             if revoked or ended:
                 withdraw(ctx, lists, forbids, now, revoked, ended, is_open)
-            forbid_open(ctx, forbids, now)
+            if (forbids.key, forbids.unreadable) != forbidden[:2]:
+                before = (forbidden[2], forbidden[1])
+                forbidden = (forbids.key, forbids.unreadable, dict(forbids.entries))
+                forbid_tunnels(ctx, lists, forbids, now, is_open, before)
         except Exception as e:      # the watcher must never stop
             log(lines.message(ctx, f"ERROR check of open tunnels failed ({type(e).__name__}: {e})"))
 

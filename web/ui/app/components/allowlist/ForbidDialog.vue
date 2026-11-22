@@ -1,9 +1,10 @@
 <script setup lang="ts">
 // Forbids a destination for one VM, from its blocked list: the domain and the VM are fixed, the
 // duration is chosen as for an Allowlist entry (the same durations and permanent), a note is
-// optional. The proxy then refuses it at once, without a hold, also in Open web. An Allowlist
-// entry that still allows it for the VM wins over a forbid: the backend refuses then
-// (forbid_overruled), and the VM's own entry of the same domain gives way to the Forbid (ADR 0024).
+// optional. The proxy then refuses it at once, without a hold, also in Open web. Of a Forbid and an
+// Allowlist entry the more specific wins (ADR 0024): it beats an entry of a parent domain or one
+// for all VMs, an entry of a subdomain beats it, and the VM's own entry of the same domain gives way
+// to it.
 import type { EntryDuration, ForbidEntry } from '~/utils/access'
 
 const props = defineProps<{ domain: string, vm: string }>()
