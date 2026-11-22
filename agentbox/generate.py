@@ -353,7 +353,10 @@ def virt_install_args(rec, uuid):
         "--cpu", "host-passthrough", "--machine", "q35", "--boot", "hd", "--import", "--noautoconsole",
         "--graphics", "none", "--video", "none", "--sound", "none", "--input", "none",
         "--controller", "usb,model=none",
-        "--events", "on_poweroff=destroy,on_reboot=restart,on_crash=destroy",
+        # a reboot inside the VM ends QEMU, which reads the fw_cfg files only when it starts:
+        # the VM is off, and its next start boots with the current SSH keys, VM variables,
+        # secrets and placeholder, never with those its last start read (#160)
+        "--events", "on_poweroff=destroy,on_reboot=destroy,on_crash=destroy",
         "--features", "acpi=on,apic=on",
         # the VM learns its name, Orca port, Claude placeholder, the address devices pair with, its
         # VM variables, its SSH access and its secrets at boot; values that could hold a comma

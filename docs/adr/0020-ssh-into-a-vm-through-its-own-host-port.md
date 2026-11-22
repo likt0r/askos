@@ -22,6 +22,7 @@ The only way into a VM was Orca: its Orca port and a Paired device. An owner who
 - Any connection to the SSH port wakes the VM before sshd checks a key, so in Network mode every device in the home network can wake a VM with SSH access on, as it can through the Orca port.
 - In Network mode a firewall rule accepts the home network on 2201–2454 and rejects the rest. `regenerate` writes it, so an update of Agent Box needs no `setup`.
 - A Build without the wrapper keeps the keys the owner adds and reports `ssh_missing` until a Reset onto a newer Build.
+- A reboot inside a VM ends it (`on_reboot=destroy`, #160): QEMU reads the fw_cfg entry only when its process starts, so a reboot that kept the process would boot with the keys of the VM's last start, and a key removed while it ran could log in again. The VM is off afterwards and is not started again by itself; the next connection, `start` or `pair` starts it with the current keys, VM variables, secrets and placeholder.
 - An open SSH session postpones the automatic Reset like an Orca connection, with its own reason `ssh-connected`. Activity records turning SSH access on or off and adding or removing keys, not each connection.
 - Deleting a VM deletes its keys and host key, even when its Data disk is archived; `create` refuses a name whose earlier VM left them behind.
 
@@ -32,5 +33,6 @@ The only way into a VM was Orca: its Orca port and a Paired device. An owner who
 - A separate `ssh-proxy` command on the Host as `ProxyCommand`: rejected, it adds a second path into the VM, with its own permission check and session tracking, for no gain over a config alias with `HostName` and `Port`.
 - SSH keys for the whole Host, shared by VMs: rejected, a VM is the unit of separation ([ADR 0001](0001-vm-is-the-unit-of-separation.md)); a key that may enter `work` must not also enter `priv`. Keys can be copied from another VM once instead.
 - Keys applied only at the next start, as VM variables are: rejected, a removed key would stay valid until then.
+- After a reboot inside the VM, let `fwcfg-ssh` prefer the key file the wrapper last wrote, or have the Host notice the reboot and hand the keys over again before it forwards a connection: rejected for ending the QEMU process at a reboot, which needs no state in the VM and no watcher, and covers VM variables, secrets and the placeholder as well.
 - A host key made in the VM: rejected, every Reset would make a new one.
 - Running `sshd -T` from the Build for the Safeguard check: rejected, ADR 0008 runs nothing from the Image. Reading the files the way sshd does is more code, and by ADR 0019 it only has to be right for files written in good faith.

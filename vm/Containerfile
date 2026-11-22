@@ -132,6 +132,11 @@ RUN python3 -I /tmp/login-environment && rm -f /tmp/login-environment
 # no links in vm/files). All of it is a Safeguard (agentbox/safeguards.py). guest-setup starts
 # sshd with the host key from the Host (ADR 0020), so sshd-keygen@.service, which sshd.service
 # wants and which would make host keys in /etc/ssh, is masked as well.
+#
+# No update inside a running VM: an Update is a Reset onto a new Build. bootc's
+# bootc-fetch-apply-updates.timer would pull another image and reboot into it, and a reboot
+# inside the VM ends it (on_reboot=destroy, agentbox/generate.py), so it is masked. A default
+# of the Base image, not a Safeguard: no check enforces it.
 RUN useradd -u 1000 -U -M -d /var/home/agent -s /bin/bash agent \
     && chmod 755 /usr/bin/agentbox-gh-token /usr/bin/git-credential-agentbox /usr/lib/agentbox/bin/gh \
     && systemctl enable agentbox-guest-setup.service agentbox-orca.service qemu-guest-agent.service \
@@ -139,6 +144,7 @@ RUN useradd -u 1000 -U -M -d /var/home/agent -s /bin/bash agent \
     && systemctl --global enable podman.socket agentbox-container-image-usage.service \
     && systemctl disable sshd.service sshd.socket \
     && systemctl mask sshd@.service sshd-keygen@.service \
+    && systemctl mask bootc-fetch-apply-updates.timer \
     && mkdir -p /etc/systemd/system-generators \
     && ln -s /dev/null /etc/systemd/system-generators/systemd-ssh-generator \
     && bootc container lint

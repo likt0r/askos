@@ -17,10 +17,10 @@ creates never pick the same network and no regenerate sees half a VM.
 
 `agentbox set-memory` changes a VM's memory limit afterwards: the record, then the
 libvirt definition. libvirt keeps a new definition of a running VM for its next
-start, so the running VM keeps its memory until a Restart or Reset (a reboot inside
-the VM is not enough, QEMU keeps running). Nothing is changed live: QEMU cannot raise
-the maximum of a running VM, and lowering its balloon would take memory away from
-working agents. A paused VM is refused, its saved memory belongs to the old definition.
+start, so the running VM keeps its memory until a Restart or Reset, or until a reboot
+inside it, which ends QEMU and leaves it off for its next start. Nothing is changed
+live: QEMU cannot raise the maximum of a running VM, and lowering its balloon would
+take memory away from working agents. A paused VM is refused, its saved memory belongs to the old definition.
 
 `agentbox set-container-image-cleanup` turns a VM's Container image cleanup on or off
 and sets its days (1 to 365), two separate values in the record, so turning it off and

@@ -729,6 +729,12 @@ class SafeguardTest(ImagesTest):
         # makes none in the VM
         self.assertTrue(safeguards._masked(rootfs, "/etc/systemd/system", "sshd-keygen@.service"))
 
+    def test_the_base_image_never_updates_and_reboots_itself(self):
+        """#160: a reboot inside a VM ends it (on_reboot=destroy), and an Update is a Reset onto a
+        new Build: bootc's timer that pulls another image and reboots into it is masked."""
+        rootfs = self.rootfs("base", self.base)
+        self.assertTrue(safeguards._masked(rootfs, "/etc/systemd/system", "bootc-fetch-apply-updates.timer"))
+
     def sshd_rejected(self, cases):
         """Each (name, Containerfile lines, files, run.json effects, problem) builds a derived Image
         the check discards."""

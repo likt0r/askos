@@ -153,7 +153,9 @@ flowchart LR
   enforce them); at most 16 per VM, together within the 64 KiB the VM reads, and none twice,
   by the SHA256 fingerprint the Host computes itself. A change applies at once: a running VM
   takes it through a guest-agent wrapper, a paused VM when it resumes, a VM that is off at its
-  next start ([VMs](#vms)). Removing a key and turning SSH access off end every open SSH
+  next start ([VMs](#vms)). From a VM's next start after its domain got `on_reboot=destroy`, a
+  reboot inside it leaves it off, so it boots with the current keys at its next start, never
+  with those of its last start. Removing a key and turning SSH access off end every open SSH
   session of the VM: the Host cannot tell which session used which key, so every running
   connection unit of the SSH port stops, before any step that can fail (turning it off closes
   the port first). The same call again ends them also when the record no longer changes, as
@@ -229,7 +231,7 @@ flowchart LR
   while it waits for a Reset or Pause of the VM to finish, create, delete and `regenerate`
   wait as well). libvirt keeps a new definition of a
   running VM for its next start, so the VM keeps running with its memory until a Restart or
-  Reset; a reboot inside the VM keeps the QEMU process and is not enough. Nothing is changed
+  Reset, or until a reboot inside it ends QEMU and leaves it off. Nothing is changed
   live: QEMU cannot raise a running VM's maximum (`virsh setmaxmem --live`), and lowering it
   with the balloon (`setmem --live`) would take memory away from working agents. A paused VM
   is refused, since its saved memory belongs to the old definition; started again, it can be
@@ -241,8 +243,8 @@ flowchart LR
   env`, `set-env <vm> NAME=VALUE... [--replace]`, `unset-env`, and a table on the VM's page
   in the Control Room. They reach `orca serve`, the agents and terminals it starts (all
   inherit its environment) and login shells. A change applies at the VM's next start, so a
-  running or paused VM keeps the variables it started with until a Restart or Reset; a
-  reboot inside the VM keeps the QEMU process and is not enough. The command holds the
+  running or paused VM keeps the variables it started with until a Restart or Reset, or a
+  running one until a reboot inside it switches it off. The command holds the
   registry lock, the record's lock and the VM's lifecycle lock, as `set-memory` does, checks
   everything first and changes nothing on any error; it saves the record, then writes the
   file the VM reads at boot, then defines the VM again when its definition changed (a run
@@ -354,6 +356,20 @@ flowchart LR
   Reset. `set-ssh`, `add-ssh-key` and `remove-ssh-key` define a domain from
   before the entry again, as `set-env` does; without the entry a VM has no SSH access, and so
   does a VM whose Build has no `fwcfg-ssh` until a Reset onto a newer Build.
+- QEMU reads the fw_cfg files only when its process starts, so a reboot inside the VM ends
+  that process (`on_reboot=destroy`, as `on_poweroff` and `on_crash`): a reboot that kept it
+  would boot with the files of the VM's last start, so an SSH key removed while it ran could
+  log in again, and old VM variables, secrets and placeholder came back. Such a VM is off,
+  as after a shutdown from inside, and Agent Box does not start it again by itself: the next
+  connection to its Orca or SSH port, `agentbox start` or `pair` starts it anew, and it reads
+  the current files. `status` says shut off, the Control Room stopped. Activity has no
+  entry for the reboot itself (the Host does not watch the guest's own shutdowns), only the
+  `wake` or `start` that starts it again. Like every changed definition, `on_reboot=destroy`
+  applies from the VM's next start: a VM that was running when `regenerate` defined its
+  domain again still boots again at a reboot inside it until it has been started anew.
+  Nothing of Agent Box reboots a VM from inside: the Base image masks bootc's
+  `bootc-fetch-apply-updates.timer`, which would pull another image and reboot into it (an
+  Update is a Reset onto a new Build); a default of the Base image, not a Safeguard.
 - The Host never mounts a VM's disks. It reads a VM's journal (`agentbox logs`, and the
   Pairing code for `agentbox pair`) by having the VM's guest agent run `journalctl` inside
   the VM, without a shell and under a time limit, through a wrapper in the Image that starts
@@ -464,7 +480,7 @@ flowchart LR
   does not start and the change is not handed over: no VM boots with a removed key that a
   failed write left in the file. A VM that starts anew reads the fw_cfg file, so `start`,
   `wake`, a Restart, a Reset, `import` and `pair` drop the marker once they started it anew (also one
-  shut down from inside or forced off without `stop`). A VM whose Build lacks the wrapper
+  shut down or rebooted from inside or forced off without `stop`). A VM whose Build lacks the wrapper
   keeps the saved change for its next start and the command fails with `ssh_missing`: until a
   Reset onto a newer Build that VM keeps the keys it started with.
 - VMs are reset automatically once their System disk is seven days old, and with automatic
