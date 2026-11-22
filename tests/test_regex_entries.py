@@ -374,7 +374,7 @@ class AllowlistCliTest(allowlist_tests.CliTest):
         self.assertAlmostEqual(expires, self.now + 3600, delta=60)
         self.assertEqual({k: v for k, v in result.items() if k != "added"},
                          {"domain": None, "regex": PATTERN, "scope": "work", "note": "Spiegel",
-                          "added_by": allowlist_tests.FIREFOX, "forbids_lifted": [],
+                          "added_by": allowlist_tests.FIREFOX, "forbids_lifted": [], "forbidden_for": [],
                           "message": f"work: pattern {PATTERN} allowed until {self.until(expires)}"})
         [stored] = self.stored()
         self.assertEqual(set(stored), {"regex", "scope", "expires", "note", "added", "added_by"})

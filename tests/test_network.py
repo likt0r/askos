@@ -245,11 +245,14 @@ class BlockedTest(NetworkTest):
     def test_a_forbidden_destination_is_a_row_with_its_code(self):
         # ADR 0024: refused at once for a Forbid of the VM, never held
         now = int(time.time())
-        self.journal(f"{now - 10}.000001 titan agentbox-proxy-work[812]: [work] BLOCKED ads.example (forbidden)\n")
+        self.journal(f"{now - 10}.000001 titan agentbox-proxy-work[812]: [work] BLOCKED ads.example (forbidden)\n"
+                     f"{now - 5}.000001 titan agentbox-proxy-work[812]: [work] BLOCKED new.example (forbids unreadable)\n")
         code, out, err = self.run_agentbox("blocked", "work", "--json")
         self.assertEqual((code, err), (0, ""))
-        self.assertEqual(json.loads(out), [{"domain": "ads.example", "count": 1, "last": now - 10, "reason": "forbidden",
-                                            "code": "forbidden", "params": {}, "held_until": None, "suspicious": []}])
+        row = {"count": 1, "params": {}, "held_until": None, "suspicious": []}
+        self.assertEqual(json.loads(out), [
+            {"domain": "new.example", "last": now - 5, "reason": "forbids unreadable", "code": "forbids-unreadable", **row},
+            {"domain": "ads.example", "last": now - 10, "reason": "forbidden", "code": "forbidden", **row}])
 
     def test_a_client_address_and_a_destination_of_the_same_text_are_two_rows(self):
         # a VM may also name an address as the server: that is a destination, not the client

@@ -132,6 +132,27 @@ describe('Web tab', () => {
     expect($$('[data-testid="vm-forbids"] [data-testid="forbid-entry"]').map(r => r.dataset.domain)).toEqual(['pypi.org'])
   })
 
+  it('names the VMs whose more specific Forbid still wins over a new entry', async () => {
+    const { api } = await openApp('/vms/work/web', {
+      ...ROUTES,
+      'POST /allowlist': () => ({ status: 201, body: { ...vmEntries()[0]!, domain: 'pypi.org', scope: 'work', forbids_lifted: [], forbidden_for: [{ vm: 'work', domain: 'files.pypi.org' }] } }),
+    })
+    await click(blockedRow('pypi.org').querySelector('[data-testid="blocked-allow"]')!)
+    await click('[data-testid="add-submit"]')
+    expect(changes(api.calls).map(c => c.path)).toEqual(['/allowlist'])
+    // the dialog stays open and says so, with nothing more to submit
+    expect(must('[data-testid="add-still-forbidden"]').textContent).toContain('a more specific Forbid still wins for: work (files.pypi.org)')
+    expect($('[data-testid="add-submit"]')).toBeNull()
+  })
+
+  it('words a block while the Forbids cannot be read', async () => {
+    const unreadable = { domain: 'new.example', count: 1, last: now() - 5, reason: 'forbids unreadable', code: 'forbids-unreadable', params: {}, suspicious: [] }
+    await openApp('/vms/work/web', { ...ROUTES, 'GET /vms/work/blocked': ok([unreadable]) })
+    expect(blockedRow('new.example').querySelector('[data-testid="blocked-reason"]')!.textContent)
+      .toBe('the Forbids cannot be read (the proxy refuses what no entry allows)')
+    expect(blockedRow('new.example').querySelector('[data-testid="blocked-forbidden"]')).toBeNull()
+  })
+
   it('marks what the more specific of an entry and a Forbid decides (ADR 0024)', async () => {
     const row = (domain: string) => ({ ...blocked()[1]!, domain })
     const entries = [

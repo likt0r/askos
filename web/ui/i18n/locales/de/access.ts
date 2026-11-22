@@ -43,6 +43,7 @@ export default {
       noteTooLong: 'Höchstens 200 Zeichen.',
       submit: 'Freigeben',
       done: '{domain} freigegeben.',
+      stillForbidden: 'Freigegeben, aber ein genaueres Verbot geht weiter vor für: {forbids}. Entferne es im Web-Tab dieser VM oder gib die Domain für diese VM frei.',
     },
     entry: {
       permanent: 'Dauerhaft',
@@ -144,6 +145,7 @@ export default {
       reasons: {
         'not-allowed': 'nicht auf der Allowlist',
         'forbidden': 'für diese VM verboten',
+        'forbids-unreadable': 'die Verbote sind nicht lesbar (der Proxy lehnt ab, was keine Freigabe erlaubt)',
         'suspicious': 'starke Merkmale: {signals}',
         'watchlist-unreadable': 'die Watchlist ist nicht lesbar (der Proxy lässt nichts durch)',
         'not-public': 'keine öffentliche Adresse',
@@ -375,6 +377,7 @@ export default {
   access: {
     common: {
       cancel: 'Abbrechen',
+      close: 'Schließen',
       save: 'Speichern',
       refresh: 'Aktualisieren',
       loading: 'Lade…',

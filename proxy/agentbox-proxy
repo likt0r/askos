@@ -39,9 +39,11 @@ destination a Forbid wins for is refused at once, never held, also in Open web, 
 it closes when a Forbid comes to win for it:
   [<vm>] BLOCKED <host> (forbidden)
   [<vm>] CLOSED <host> (forbidden)
-Expired Forbids refuse nothing. Changes apply without a restart; a broken file keeps the last good
-state, and a proxy that starts with one refuses at once whatever no Allowlist entry allows (no
-hold, no Open web) until it is fixed.
+Expired Forbids refuse nothing. Changes apply without a restart; a broken file, or one that cannot
+be read, keeps the last good state, and a proxy that has not read it since it started refuses at
+once whatever no Allowlist entry allows (no hold, no Open web) until it can:
+  [<vm>] BLOCKED <host> (forbids unreadable)
+A missing file is no Forbids.
 
 Strong Signals always block (ADR 0021): every destination is classified on every connection,
 and one with strong Signals is blocked whatever would allow it, a domain entry, a Regex entry
@@ -397,41 +399,53 @@ class Allowlist:
 
 
 class Forbids:
-    """The VM's Forbids, {domain: expiry or None}, read again when forbids.json changes. A broken
-    file changes nothing: the last good state stays; a proxy that starts with one (or whose file
-    was missing until then) takes every destination as forbidden until it is fixed."""
+    """The VM's Forbids, {domain: expiry or None}, read again when forbids.json changes. A missing
+    file is no Forbids. A broken file, or one that cannot be stat'ed or read, changes nothing: the
+    last good state stays; until the proxy has read it once since it started, it takes every
+    destination as forbidden (unreadable: fail closed, as this is a list that refuses). A file that
+    could not be read is tried again at the next check, its error logged once."""
 
     def __init__(self, ctx):
         self.ctx = ctx
-        self.key = None
+        self.key = None         # the state of the file last read well, or found broken
         self.entries = {}
         self.good = False       # whether forbids.json was read once since the proxy started
         self.unreadable = False
+        self.problem = None     # the error last logged, so a lasting one is logged once
+
+    def failed(self, path, why):
+        """forbids.json could not be used: the last good state stays, or before one, nothing passes."""
+        self.unreadable = not self.good
+        if why != self.problem:
+            self.problem = why
+            kept = ("the previous forbids stay" if self.good
+                    else "every destination no entry allows is refused until it is fixed")
+            log(lines.message(self.ctx, f"ERROR {path} unreadable ({why}), {kept}"))
 
     def current(self):
         path = os.path.join(CONF_DIR, records.FORBIDS)
         try:
             st = os.stat(path)
         except FileNotFoundError:
-            self.key, self.entries, self.unreadable = None, {}, False
+            self.key, self.entries, self.unreadable, self.problem = None, {}, False, None
             return self.entries
-        except OSError:
+        except OSError as e:
+            self.failed(path, type(e).__name__)
             return self.entries
         key = (st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size)
         if key != self.key:
-            self.key = key
             try:
                 with open(path, encoding="utf-8") as f:
                     entries = records.forbid_entries(f.read())
-            except (OSError, ValueError) as e:
-                why = records.printable(str(e), 200) if isinstance(e, ValueError) and str(e) else type(e).__name__
-                self.unreadable = not self.good
-                kept = ("the previous forbids stay" if self.good
-                        else "every destination no entry allows is refused until it is fixed")
-                log(lines.message(self.ctx, f"ERROR {path} unreadable ({why}), {kept}"))
+            except ValueError as e:         # broken: the same content stays broken, until it changes
+                self.key = key
+                self.failed(path, records.printable(str(e), 200) if str(e) else type(e).__name__)
+            except OSError as e:            # perhaps for a moment only: tried again at the next check
+                self.failed(path, type(e).__name__)
             else:
+                self.key = key
                 self.entries = {e["domain"]: e["expires"] for e in entries if e["scope"] == self.ctx}
-                self.good, self.unreadable = True, False
+                self.good, self.unreadable, self.problem = True, False, None
         return self.entries
 
     def strongest(self, host, now, entries=None, unreadable=None):
@@ -447,6 +461,8 @@ class Forbids:
 
 # below every Allowlist entry: a Forbid of every destination, while forbids.json cannot be read
 LOWEST = (-1,)
+# the reasons a Forbid refuses with: one that wins, or forbids.json not read since the start
+FORBIDDING = (lines.FORBIDDEN, lines.FORBIDS_UNREADABLE)
 
 
 class HoldTime:
@@ -527,7 +543,7 @@ def allowance(ctx, lists, forbids, host, now, is_open=None):
     if keys and (forbid is None or max(records.specificity(k.regex, k.value, k.scope) for k in keys) > forbid):
         return keys, None
     if forbid is not None:
-        return None, lines.FORBIDDEN
+        return None, lines.FORBIDS_UNREADABLE if forbid == LOWEST else lines.FORBIDDEN
     if open_until(ctx) if is_open is None else is_open:
         return OPEN, None
     return None, lines.NOT_ALLOWED
@@ -584,7 +600,7 @@ def withdraw(ctx, lists, forbids, now, revoked, web_ended, is_open):
         if grant is not None:
             t.grant = grant
             continue
-        why = why if why == lines.FORBIDDEN else lines.OPEN_WEB_ENDED if t.grant == OPEN else lines.REMOVED
+        why = why if why in FORBIDDING else lines.OPEN_WEB_ENDED if t.grant == OPEN else lines.REMOVED
         log(lines.closed(ctx, t.host, why))
         tunnels.discard(t)
         t.close()
@@ -634,12 +650,13 @@ def forbid_tunnels(ctx, lists, forbids, now, is_open, before):
     it before, a new one; access to it ended on purpose (ADR 0005). One whose entry merely expired
     meanwhile keeps running, as after any expiry."""
     for t in list(tunnels):
-        if allowance(ctx, lists, forbids, t.host, now, is_open)[1] != lines.FORBIDDEN:
+        why = allowance(ctx, lists, forbids, t.host, now, is_open)[1]
+        if why not in FORBIDDING:
             continue
         old = forbids.strongest(t.host, now, *before)
         if old is not None and forbids.strongest(t.host, now) <= old:
             continue
-        log(lines.closed(ctx, t.host, lines.FORBIDDEN))
+        log(lines.closed(ctx, t.host, why))
         tunnels.discard(t)
         t.close()
 

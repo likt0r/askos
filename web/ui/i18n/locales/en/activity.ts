@@ -190,6 +190,7 @@ export default {
       by: 'by {duration}',
       temporary: 'temporarily',
       force: 'with --force',
+      allowlistUnreadable: '(the Allowlist could not be read: an entry of the domain for the VM stays, the Forbid wins over it)',
       thenReset: 'then a Reset of {vms}',
       removed: 'old Builds removed: {n}',
       update: 'Update: {text}',

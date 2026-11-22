@@ -433,10 +433,10 @@ def allow(args):
                 e["expires"] = None if expires is None else max(e["expires"], expires)
             if note is not None:
                 e["note"] = note
-    lifted = forbids.lift(e)
+    said, fields = forbids.after_allow(e)
     until = f" until {until_text(e['expires'])}" if e["expires"] is not None else ""
-    done("json" in opts, f"{scope_text(scope)}: {entry_store.label(ref)} allowed{until}{forbids.lifted_text(lifted)}",
-         **patterns.both(e), forbids_lifted=lifted)
+    done("json" in opts, f"{scope_text(scope)}: {entry_store.label(ref)} allowed{until}{said}",
+         **patterns.both(e), **fields)
 
 
 def disallow(args):
@@ -483,9 +483,9 @@ def extend(args):
             die(f"{scope_text(scope)}: {entry_store.label(ref)} is allowed permanently", error="allowlist_entry_permanent",
                 scope=scope, **entry_store.param(ref))
         e["expires"] = max(e["expires"], int(time.time())) + seconds
-    lifted = forbids.lift(e)
+    said, fields = forbids.after_allow(e)
     done("json" in opts, f"{scope_text(scope)}: {entry_store.label(ref)} allowed until {until_text(e['expires'])}"
-         f"{forbids.lifted_text(lifted)}", **patterns.both(e), forbids_lifted=lifted)
+         f"{said}", **patterns.both(e), **fields)
 
 
 def make_permanent(args):
@@ -501,11 +501,11 @@ def make_permanent(args):
         e = _existing(entries, ref, scope)
         was = e["expires"]
         e["expires"] = None
-    lifted = forbids.lift(e)
-    if was is None and not lifted:
+    said, fields = forbids.after_allow(e)
+    if was is None and not fields["forbids_lifted"]:
         activity.unchanged()
-    done("json" in opts, f"{scope_text(scope)}: {entry_store.label(ref)} allowed permanently"
-         f"{forbids.lifted_text(lifted)}", **patterns.both(e), forbids_lifted=lifted)
+    done("json" in opts, f"{scope_text(scope)}: {entry_store.label(ref)} allowed permanently{said}",
+         **patterns.both(e), **fields)
 
 
 def set_note(args):

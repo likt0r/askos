@@ -10,11 +10,14 @@ rule that the same domain for the same VM is never both allowed and forbidden.
 
 Run from the repo root: python3 -m unittest discover -s tests
 """
+import errno
 import json
 import os
 import sys
+import tempfile
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_allowlist as allowlist_tests  # noqa: E402
@@ -186,8 +189,9 @@ class ProxyTest(allowlist_tests.ProxyTest):
         self.start()
         self.assertIn("forbids.json unreadable (not valid JSON), every destination no entry allows is refused until "
                       "it is fixed", self.log())
+        # its own reason: no Forbid names it
         self.at_once("anything.example")
-        self.assertIn("[work] BLOCKED anything.example (forbidden)\n", self.log())
+        self.assertIn("[work] BLOCKED anything.example (forbids unreadable)\n", self.log())
         self.tunnel("ok.example")
         # fixed: Open web again; broken again: the last good state stays
         self.forbids(forbid("telemetry.example", "work"))
@@ -198,6 +202,74 @@ class ProxyTest(allowlist_tests.ProxyTest):
         self.tunnel("anything.example")
         self.at_once("telemetry.example")
         self.assertIn("the previous forbids stay", self.log())
+
+
+class ForbidsFileTest(unittest.TestCase):
+    """How the proxy reads forbids.json, as a module (test_client_hello.load_proxy): an error
+    reading or stat'ing it is tried again at the next check, and before any good read the proxy
+    fails closed, as for a broken file; each lasting error is logged once."""
+
+    def setUp(self):
+        from test_client_hello import load_proxy
+        self.proxy = load_proxy()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = os.path.join(tmp.name, "forbids.json")
+        write(self.path, json.dumps({"entries": [forbid("ads.example", "work")]}))
+        self.said = []
+        for patch in (mock.patch.object(self.proxy, "CONF_DIR", tmp.name),
+                      mock.patch.object(self.proxy, "log", self.said.append)):
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.forbids = self.proxy.Forbids("work")
+
+    def failing(self, call, error):
+        """os.stat or open (call) failing with error for forbids.json, as it does for others."""
+        real = getattr(os, call) if call == "stat" else open
+
+        def fake(path, *args, **kwargs):
+            if str(path) == self.path:
+                raise OSError(error, os.strerror(error), path)
+            return real(path, *args, **kwargs)
+        return mock.patch("os.stat" if call == "stat" else "builtins.open", fake)
+
+    def verdict(self, host="other.example"):
+        return self.proxy.allowance("work", self.proxy.Allowlist("work"), self.forbids, host, time.time(), False)
+
+    def test_a_read_error_is_tried_again_at_the_next_check_failing_closed_meanwhile(self):
+        with self.failing("open", errno.EIO):
+            self.assertEqual(self.forbids.current(), {})
+            self.forbids.current()
+        self.assertTrue(self.forbids.unreadable)
+        self.assertEqual(self.verdict(), (None, "forbids unreadable"))
+        # the file has not changed, yet the next check reads it
+        self.assertEqual(self.forbids.current(), {"ads.example": None})
+        self.assertFalse(self.forbids.unreadable)
+        self.assertEqual(self.verdict(), (None, "not on the Allowlist"))
+        self.assertEqual(self.verdict("ads.example"), (None, "forbidden"))
+        self.assertEqual(self.said, [f"[work] ERROR {self.path} unreadable (OSError), every destination no entry "
+                                     "allows is refused until it is fixed"])
+
+    def test_a_stat_error_before_any_good_read_fails_closed_after_one_keeps_it(self):
+        with self.failing("stat", errno.EACCES):
+            self.forbids.current()
+            self.forbids.current()
+        self.assertTrue(self.forbids.unreadable)
+        self.assertEqual(self.verdict(), (None, "forbids unreadable"))
+        self.assertEqual(len(self.said), 1)
+        self.forbids.current()
+        with self.failing("stat", errno.EACCES), self.failing("open", errno.EACCES):
+            self.assertEqual(self.forbids.current(), {"ads.example": None})
+        self.assertFalse(self.forbids.unreadable)
+        self.assertEqual(self.verdict(), (None, "not on the Allowlist"))
+        self.assertEqual(self.said[1], f"[work] ERROR {self.path} unreadable (PermissionError), the previous "
+                                       "forbids stay")
+
+    def test_a_missing_file_is_no_forbids(self):
+        os.remove(self.path)
+        self.assertEqual(self.forbids.current(), {})
+        self.assertFalse(self.forbids.unreadable)
+        self.assertEqual(self.verdict(), (None, "not on the Allowlist"))
 
 
 # --- Seam A: the CLI ---------------------------------------------------------------------
@@ -224,7 +296,7 @@ class ForbidTest(CliTest):
         expires = result.pop("expires")
         self.assertAlmostEqual(expires, time.time() + 3600, delta=60)
         self.assertEqual(result, {"domain": "telemetry.example", "scope": "priv", "note": "Telemetrie",
-                                  "added_by": result["added_by"], "allowlist_removed": False,
+                                  "added_by": result["added_by"], "allowlist_removed": False, "allowlist_unreadable": None,
                                   "message": f"priv: telemetry.example forbidden until {self.until(expires)}"})
         self.ok("forbid", "work", "ads.example", "--temporary")
         # stored by VM, then domain
@@ -287,6 +359,54 @@ class ForbidTest(CliTest):
         self.assertEqual(self.forbidden(), [("eu.telemetry.example", "work", None, "")])
 
 
+class BrokenAllowlistTest(CliTest):
+    def test_a_forbid_is_stored_while_the_allowlist_cannot_be_read(self):
+        write(os.path.join(self.conf, "allowlist.json"), "{broken")
+        result = self.json("--actor", FIREFOX, "forbid", "work", "ads.example", "--for", "1h")
+        self.assertEqual((result["allowlist_removed"], result["allowlist_unreadable"]),
+                         (False, f"{self.conf}/allowlist.json: not valid JSON"))
+        self.assertIn("; the Allowlist cannot be read (", result["message"])
+        self.assertIn("so an entry of ads.example for work stays where it is: the Forbid wins over it",
+                      result["message"])
+        self.assertEqual([f[:2] for f in self.forbidden()], [("ads.example", "work")])
+        with open(os.path.join(self.conf, "allowlist.json")) as f:
+            self.assertEqual(f.read(), "{broken")
+        [e] = self.journald.entries()
+        self.assertEqual((e["AGENTBOX_ACTION"], e["AGENTBOX_OUTCOME"], e["AGENTBOX_PARAM_ALLOWLIST_UNREADABLE"]),
+                         ("forbid", "ok", "true"))
+
+
+class StillForbiddenTest(CliTest):
+    """allow, extend and make-permanent name the VMs whose more specific Forbid still wins over the
+    entry (forbidden_for), so "allowed" never hides a VM that stays refused."""
+
+    def setUp(self):
+        super().setUp()
+        self.forbids(forbid("x.example", "work"), forbid("eu.x.example", "priv"), forbid("mirror7.example", "work"),
+                     forbid("old.x.example", "work", expires=int(time.time()) - 60))
+
+    def test_an_entry_for_all_vms_a_parent_or_a_pattern(self):
+        self.assertEqual(self.run_agentbox("allow", "all", "x.example"),
+                         (0, "all VMs: x.example allowed; a more specific Forbid still wins for priv (eu.x.example), "
+                             "work (x.example)\n", ""))
+        self.assertEqual(self.json("allow", "all", "x.example")["forbidden_for"],
+                         [{"vm": "priv", "domain": "eu.x.example"}, {"vm": "work", "domain": "x.example"}])
+        # for one VM: its Forbid of the domain is lifted, the other VM's is none of its business
+        result = self.json("allow", "priv", "x.example")
+        self.assertEqual((result["forbids_lifted"], result["forbidden_for"]),
+                         ([], [{"vm": "priv", "domain": "eu.x.example"}]))
+        self.assertEqual(self.json("allow", "work", "--regex", "^mirror[0-9]+\\.example$", "--confirm-pattern")
+                         ["forbidden_for"], [{"vm": "work", "domain": "mirror7.example"}])
+        # a more specific entry wins: nothing to name
+        self.assertEqual(self.json("allow", "priv", "api.eu.x.example")["forbidden_for"], [])
+
+    def test_extend_and_make_permanent_name_them_too(self):
+        self.store(entry("x.example", "all", expires=int(time.time()) + 600))
+        self.assertEqual(self.json("extend", "all", "x.example", "--for", "1h")["forbidden_for"],
+                         [{"vm": "priv", "domain": "eu.x.example"}, {"vm": "work", "domain": "x.example"}])
+        self.assertEqual(len(self.json("make-permanent", "all", "x.example")["forbidden_for"]), 2)
+
+
 class AllowLiftsTest(CliTest):
     """The same domain for the same VM is never both allowed and forbidden: allow, extend and
     make-permanent of an entry for one VM lift that VM's Forbid of the domain; an entry for all VMs,
@@ -300,7 +420,8 @@ class AllowLiftsTest(CliTest):
 
     def test_allow_for_a_vm_lifts_only_its_forbid_of_the_same_domain(self):
         self.assertEqual(self.run_agentbox("--actor", FIREFOX, "allow", "work", "a.example"),
-                         (0, "work: a.example allowed; Forbid lifted: a.example (work)\n", ""))
+                         (0, "work: a.example allowed; Forbid lifted: a.example (work); a more specific Forbid "
+                             "still wins for work (eu.a.example)\n", ""))
         self.assertEqual(self.forbidden(), [("a.example", "priv", None, ""), ("eu.a.example", "work", None, ""),
                                             ("mirror7.example", "work", None, "")])
         self.assertEqual(self.activity(), [

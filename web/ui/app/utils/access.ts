@@ -22,6 +22,9 @@ export interface AllowlistEntry extends Target {
   expired: boolean
   remaining: number | null
   uses_24h: number | null
+  /** in the answer to adding, extending or making it permanent: the VMs whose more specific Forbid
+   * still wins over it (ADR 0024) */
+  forbidden_for?: { vm: string, domain: string }[]
 }
 
 /** Durations of a new entry; `permanent` has no expiry. */

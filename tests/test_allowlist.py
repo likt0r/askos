@@ -965,7 +965,7 @@ class AllowTest(CliTest):
         self.assertAlmostEqual(result.pop("added"), time.time(), delta=60)
         expires = result.pop("expires")
         self.assertEqual(result, {"domain": "example.org", "regex": None, "scope": "all", "note": "Doku",
-                                  "added_by": result["added_by"], "forbids_lifted": [],
+                                  "added_by": result["added_by"], "forbids_lifted": [], "forbidden_for": [],
                                   "message": f"all VMs: example.org allowed until {self.until(expires)}"})
 
     def test_an_existing_entry_is_widened_never_shortened(self):

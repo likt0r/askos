@@ -8,7 +8,7 @@ A Forbid and an Allowlist entry can both match a destination: an entry `github.c
 
 ## Decision
 
-- **A Forbid is stored as an Allowlist entry is.** `/etc/agentbox/forbids.json`, root-owned and readable by the proxies, in the Allowlist's record format (`domain`, `scope`, `expires`, `note`, `added`, `added_by`), checked by the same code for agentbox and the proxy (`agentbox/list_records.py`, `forbid_entries`). Its scope is always one VM, and it names a domain, never a pattern. It covers the domain and its subdomains, as a domain Allowlist entry does. The proxy reads the file again when it changes; a broken file keeps the last good state, and a proxy that starts with one refuses at once whatever no Allowlist entry allows, without a hold and also in Open web, until it is fixed.
+- **A Forbid is stored as an Allowlist entry is.** `/etc/agentbox/forbids.json`, root-owned and readable by the proxies, in the Allowlist's record format (`domain`, `scope`, `expires`, `note`, `added`, `added_by`), checked by the same code for agentbox and the proxy (`agentbox/list_records.py`, `forbid_entries`). Its scope is always one VM, and it names a domain, never a pattern. It covers the domain and its subdomains, as a domain Allowlist entry does. The proxy reads the file again when it changes, a missing file being no Forbids; a broken file, or one it cannot read, keeps the last good state, and a proxy that has not read it since it started refuses at once whatever no Allowlist entry allows, without a hold and also in Open web, with its own reason (`BLOCKED <host> (forbids unreadable)`), until it can: a list that refuses fails closed.
 - **Specificity** (`list_records.specificity`), of the entries and Forbids that match a destination for the VM, from most to least specific:
   1. any named domain above any pattern (a Regex entry); patterns rank among themselves only by scope;
   2. of two domains the longer, counted in labels; the domains that cover one host are all its suffixes, so the longer is a subdomain of the other;
@@ -25,7 +25,8 @@ A Forbid and an Allowlist entry can both match a destination: an entry `github.c
 - What decides is never the order in which entries and Forbids were made, only how specific they are, except for the same domain and VM, where the newer one replaces the older.
 - Allowing a domain for all VMs leaves every VM's Forbid of it in place; to let a VM reach it, remove its Forbid or allow the domain for that VM.
 - The blocked list in the Control Room applies the same rule to domain entries to mark a destination as allowed or forbidden.
-- A broken `forbids.json` (only a hand edit can break it) stops a starting proxy's Hold and Open web until it is repaired; entries keep working.
+- A broken or unreadable `forbids.json` stops a starting proxy's Hold and Open web until it is repaired; entries keep working. `forbid` works while the Allowlist cannot be read, since a Forbid only restricts: the VM's own entry of the domain then stays beside it and loses the tie.
+- `allow`, `extend` and `make-permanent` name the VMs whose more specific Forbid still wins over the entry (`forbidden_for`), so "allowed" never hides a VM that stays refused.
 
 ## Considered Options
 

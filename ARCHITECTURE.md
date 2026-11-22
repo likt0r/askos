@@ -689,10 +689,13 @@ flowchart LR
   removed, the destination is unknown again: held and notified. Forbids are one root-owned file, `/etc/agentbox/forbids.json`, in the Allowlist's
   record format (a domain, the VM as its scope, an optional expiry of the Allowlist's durations, a
   note, who added it when), which only the CLI writes (`forbid`, `unforbid`, `forbid-extend`,
-  `forbid-make-permanent`, `forbid-set-note`) and the proxy re-reads when it changes; a broken file
-  leaves the proxy with the Forbids it read before, and a proxy that starts with one refuses at
-  once whatever no Allowlist entry allows until it is fixed. `agentbox expire-allowlist` removes
-  expired Forbids too. **The more specific of an Allowlist entry and a Forbid wins**: of the
+  `forbid-make-permanent`, `forbid-set-note`) and the proxy re-reads when it changes; a broken file,
+  or one it cannot read, leaves the proxy with the Forbids it read before, and a proxy that has not
+  read it since it started refuses at once whatever no Allowlist entry allows (`BLOCKED <host>
+  (forbids unreadable)`) until it can; a file it could not read is tried again at every check, and
+  a missing file is no Forbids. `forbid` also works while the Allowlist cannot be read: the
+  Forbid is stored, and the VM's own entry of the domain, which it cannot remove then, loses the tie
+  to it. `agentbox expire-allowlist` removes expired Forbids too. **The more specific of an Allowlist entry and a Forbid wins**: of the
   entries in force and the Forbids in force that match a destination for the VM, any named domain
   ranks above any pattern, of two domains the longer (more labels) above its parent, and at the same
   domain one VM's above all VMs' (`list_records.specificity`); the proxy compares the most specific
@@ -703,7 +706,8 @@ flowchart LR
   Forbid takes the place of the VM's own entry of that domain, and `allow` for one VM, `extend` and
   `make-permanent` of such an entry lift the VM's Forbid of that domain, each recorded in Activity;
   nothing else is removed, since what an entry for all VMs, a parent domain or a pattern meets is
-  more specific and keeps winning. In the Control Room "Forbid…" sits next to "Allow…" in the VM's blocked list, with the
+  more specific and keeps winning; `allow`, `extend` and `make-permanent` name the VMs whose more
+  specific Forbid still wins over the entry (`forbidden_for`). In the Control Room "Forbid…" sits next to "Allow…" in the VM's blocked list, with the
   same durations, and the VM's Web tab lists its Forbids to extend, make permanent, note or remove.
 - Tunnels follow [ADR 0005](docs/adr/0005-ending-access-closes-only-disallowed-tunnels.md):
   the proxy remembers what allowed each tunnel (entries, or only Open web) and checks once
@@ -725,7 +729,7 @@ flowchart LR
   `(open web)` (of several entries the most specific domain, else a pattern),
   `BLOCKED <host> (<reason>)` (`suspicious: <signals>` for strong Signals, whatever would
   allow the destination, `Watchlist unreadable` while the Watchlist cannot be read, `forbidden`
-  where a Forbid of the VM wins),
+  where a Forbid of the VM wins, `forbids unreadable` before the proxy could read the Forbids),
   `ALERT <host> [<signals>]`, `HELD <host> (up to <seconds> s)` for a destination it holds (each
   held connection ends with its own `ALLOWED` or `BLOCKED` line), `CLOSED <host> (<reason>)`
   for a tunnel the proxy closed, and

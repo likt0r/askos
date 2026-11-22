@@ -134,11 +134,37 @@ def lift(e):
     return [{"domain": f["domain"], "scope": f["scope"]} for f in _order(gone)]
 
 
-def lifted_text(gone):
-    """The end of an Allowlist command's message for the Forbids lift took away."""
-    if not gone:
-        return ""
-    return "; Forbid lifted: " + ", ".join(f"{f['domain']} ({f['scope']})" for f in gone)
+def still_winning(e, now):
+    """The Forbids in force that keep winning over the Allowlist entry e for a VM it applies to (ADR
+    0024: the more specific wins), as [{"vm", "domain"}]: of a domain e covers that is at least as
+    specific (a subdomain; the domain itself for an entry for all VMs), or for a pattern of a domain
+    it matches (a named Forbid beats any pattern). A Forbid of a subdomain a pattern only matches
+    hosts below is not found. [] when forbids.json cannot be read."""
+    try:
+        entries, _ = read()
+    except Fail:
+        return []
+    mine = list_records.specificity("regex" in e, e.get("domain") or "", e["scope"])
+    if "regex" in e:
+        compiled = list_records.compile_pattern(e["regex"])
+        hit = lambda d: bool(compiled and list_records.pattern_matches(compiled, d))  # noqa: E731
+    else:
+        hit = lambda d: list_records.covers(e["domain"], d)  # noqa: E731
+    return [{"vm": f["scope"], "domain": f["domain"]} for f in _order(entries)
+            if in_force(f, now) and e["scope"] in (ALL, f["scope"]) and hit(f["domain"])
+            and list_records.specificity(False, f["domain"], f["scope"]) >= mine]
+
+
+def after_allow(e):
+    """What an Allowlist command that made the entry e or brought it back says about the Forbids:
+    (the end of its message, its fields forbids_lifted, what lift removed, and forbidden_for, the
+    VMs whose more specific Forbid still wins, still_winning)."""
+    lifted = lift(e)
+    winning = still_winning(e, int(time.time()))
+    text = "; Forbid lifted: " + ", ".join(f"{f['domain']} ({f['scope']})" for f in lifted) if lifted else ""
+    if winning:
+        text += "; a more specific Forbid still wins for " + ", ".join(f"{w['vm']} ({w['domain']})" for w in winning)
+    return text, {"forbids_lifted": lifted, "forbidden_for": winning}
 
 
 # --- for create and delete (allowlist.start_vm and drop_vm) -----------------------------
@@ -219,15 +245,17 @@ def forbid(args):
     """agentbox forbid <vm> <domain> [--for 15min|1h|8h|7d | --temporary] [--note TEXT] [--json]:
     a new Forbid, or an existing one widened but never shortened (a permanent one stays
     permanent); it takes the place of the VM's own Allowlist entry of the domain. A more specific
-    entry (of a subdomain) still wins over it."""
+    entry (of a subdomain) still wins over it. While the Allowlist cannot be read the Forbid is
+    stored all the same, being only more restrictive: an entry of the domain for the VM stays then,
+    and the Forbid wins the tie with it (allowlist_unreadable says why, also in Activity)."""
     positional, opts = options.parse(args)
     vm, domain = _target(positional)
     seconds = allowlist.duration_seconds(opts)
     note = allowlist.note_arg(opts.get("note"))
     now = int(time.time())
     expires = None if seconds is None else now + seconds
-    with allowlist.changing() as allows:
-        own = allowlist.find(allows, ("domain", domain), vm)
+
+    def store():
         with changing() as entries:
             e = find(entries, vm, domain)
             if e is None:
@@ -239,15 +267,34 @@ def forbid(args):
                     e["expires"] = None if expires is None else max(e["expires"], expires)
                 if note is not None:
                     e["note"] = note
-        if own is not None:
-            allows.remove(own)
+        return e
+
+    try:
+        allowlist.read()
+        unreadable = None
+    except Fail as f:
+        unreadable = f.message
+    own = None
+    if unreadable is None:
+        with allowlist.changing() as allows:
+            own = allowlist.find(allows, ("domain", domain), vm)
+            e = store()
+            if own is not None:
+                allows.remove(own)
+    else:
+        e = store()
+        activity.result(allowlist_unreadable=True)
     if own is not None:
         activity.record("allowlist", "allowlist.entry-forbidden",
                         f"Allowlist entry {domain} removed: a Forbid for {vm} takes its place", vm,
                         params={"domain": domain, "scope": vm})
     until = f" until {allowlist.until_text(e['expires'])}" if e["expires"] is not None else ""
     replaced = "; its Allowlist entry removed" if own is not None else ""
-    done("json" in opts, f"{vm}: {domain} forbidden{until}{replaced}", **e, allowlist_removed=own is not None)
+    if unreadable is not None:
+        replaced = (f"; the Allowlist cannot be read ({unreadable}), so an entry of {domain} for {vm} stays where "
+                    "it is: the Forbid wins over it")
+    done("json" in opts, f"{vm}: {domain} forbidden{until}{replaced}", **e, allowlist_removed=own is not None,
+         allowlist_unreadable=unreadable)
 
 
 def unforbid(args):

@@ -44,6 +44,7 @@ export default {
       noteTooLong: 'At most 200 characters.',
       submit: 'Allow',
       done: '{domain} allowed.',
+      stillForbidden: 'Allowed, but a more specific Forbid still wins for: {forbids}. Remove it in that VM\'s Web tab, or allow the domain for that VM.',
     },
     entry: {
       permanent: 'Permanent',
@@ -146,6 +147,7 @@ export default {
       reasons: {
         'not-allowed': 'not on the Allowlist',
         'forbidden': 'forbidden for this VM',
+        'forbids-unreadable': 'the Forbids cannot be read (the proxy refuses what no entry allows)',
         'suspicious': 'strong Signals: {signals}',
         'watchlist-unreadable': 'the Watchlist cannot be read (nothing passes the proxy)',
         'not-public': 'no public address',
@@ -378,6 +380,7 @@ export default {
   access: {
     common: {
       cancel: 'Cancel',
+      close: 'Close',
       save: 'Save',
       refresh: 'Refresh',
       loading: 'Loading…',

@@ -386,7 +386,7 @@ the Actor); without it no link is made.
 | `POST /vms/<vm>/open-web` | `{"minutes": 30}` | `open-web`; while the Watchlist cannot be read: `409 watchlist_unreadable` |
 | `DELETE /vms/<vm>/open-web` | | `close-web` |
 | `GET /vms/<vm>/logs` | `?unit&priority&since&until&boot&grep&lines&after_cursor` | `logs`: `{"vm", "entries": [{"time", "unit", "identifier", "priority", "message", "boot", "cursor"}], "cursor", "truncated"}`; poll with `after_cursor=<cursor>` for new lines |
-| `GET /vms/<vm>/blocked` | | `blocked`: `[{"domain", "count", "first", "last", "reason", "code", "params", "suspicious", "held_until"}]` (last 24 hours, epoch seconds). `reason`: why the proxy blocked it, English; `code`: the same as a stable code, `null` for a reason agentbox does not know: `not-allowed` (not on the Allowlist), `suspicious` (strong Signals, which block it whatever would allow it; `params.signals`, joined with `", "`), `forbidden` (a Forbid of the VM wins for it: refused at once, never held), `watchlist-unreadable` (nothing passes while the Watchlist cannot be read), `not-public` (no public address), `not-tls` and `no-server-name` (a connection the proxy took no destination from: what the VM sent was no TLS handshake, or a ClientHello without a server name; `domain` is the client's address then, in effect the VM's); `suspicious`: the Signals of its last Alert; `held_until`: when the newest Hold of it ends at the latest (epoch seconds; a time in the past: it ended), `null` when it was not held. A destination the proxy holds is listed from the moment it is held (`not-allowed`), with `count` 0 until a connection to it is refused |
+| `GET /vms/<vm>/blocked` | | `blocked`: `[{"domain", "count", "first", "last", "reason", "code", "params", "suspicious", "held_until"}]` (last 24 hours, epoch seconds). `reason`: why the proxy blocked it, English; `code`: the same as a stable code, `null` for a reason agentbox does not know: `not-allowed` (not on the Allowlist), `suspicious` (strong Signals, which block it whatever would allow it; `params.signals`, joined with `", "`), `forbidden` (a Forbid of the VM wins for it: refused at once, never held), `forbids-unreadable` (the proxy has not read the Forbids since it started: what no entry allows is refused at once), `watchlist-unreadable` (nothing passes while the Watchlist cannot be read), `not-public` (no public address), `not-tls` and `no-server-name` (a connection the proxy took no destination from: what the VM sent was no TLS handshake, or a ClientHello without a server name; `domain` is the client's address then, in effect the VM's); `suspicious`: the Signals of its last Alert; `held_until`: when the newest Hold of it ends at the latest (epoch seconds; a time in the past: it ended), `null` when it was not held. A destination the proxy holds is listed from the moment it is held (`not-allowed`), with `count` 0 until a connection to it is refused |
 | `GET /vms/<vm>/alerts` | | `alerts`: `[{"domain", "tags", "count", "first", "last", "seen", ...}]` |
 | `POST /vms/<vm>/alerts/seen` | `{"domain"?}` | `mark-seen`: all Alerts of the VM, or those of one destination |
 | `GET /vms/<vm>/allowlist` | | `allowlist <vm>`: the entries that apply to the VM (see Allowlist) |
@@ -443,12 +443,18 @@ domain over its parent, at the same domain one VM's over all VMs'.
 - `GET /vms/<vm>/forbids`: `[{"domain", "scope", "expires", "note", "added_by", "added", "expired",
   "remaining", "refused_24h"}]` (`scope` is the VM; `refused_24h`: connections the proxy refused for
   it in the last 24 hours, `null` when unknown).
-- `POST /vms/<vm>/forbids`: the Forbid's fields and `allowlist_removed` (whether the VM's own
-  Allowlist entry of the domain gave way to it). An existing Forbid is widened, never shortened.
-  Entries of other domains, for all VMs or patterns stay: the more specific one wins.
+- `POST /vms/<vm>/forbids`: the Forbid's fields, `allowlist_removed` (whether the VM's own
+  Allowlist entry of the domain gave way to it) and `allowlist_unreadable` (why the Allowlist could
+  not be read, else `null`: the Forbid is stored all the same, and an entry of the domain for the VM
+  stays, losing the tie to it). An existing Forbid is widened, never shortened. Entries of other
+  domains, for all VMs or patterns stay: the more specific one wins.
 - The same domain for the same VM is never both allowed and forbidden: `POST /allowlist`, `extend`
   and `make-permanent` answer with `forbids_lifted`, `[{"domain", "scope"}]`: for an entry for one
   VM its Forbid of the same domain, which it removed; empty for an entry for all VMs or a pattern.
+  They also answer with `forbidden_for`, `[{"vm", "domain"}]`: the Forbids in force that still win
+  over the entry, being more specific (of a subdomain, of the domain itself for an entry for all
+  VMs, of a domain a pattern matches), so the entry does not reach those VMs there; the add dialog
+  names them.
 
 ## Watchlist
 
@@ -555,7 +561,7 @@ first:
 | `extend` | `domain`, `scope`, `duration`, `force` |
 | `make-permanent` | `domain`, `scope`, `force` |
 | `disallow`, `set-note`, `allowlist.expired` | `domain`, `scope` |
-| `forbid` | `domain`, `scope` (the VM), `duration` (`15min`, `1h`, `8h`, `7d`) or `temporary` |
+| `forbid` | `domain`, `scope` (the VM), `duration` (`15min`, `1h`, `8h`, `7d`) or `temporary`, `allowlist_unreadable` (`true` when it was stored while the Allowlist could not be read) |
 | `forbid-extend` | `domain`, `scope`, `duration` |
 | `unforbid`, `forbid-make-permanent`, `forbid-set-note`, `allowlist.forbid-expired` | `domain`, `scope` |
 | `allowlist.forbid-lifted` | `domain`, `scope` of the Forbid an Allowlist entry for its VM and domain lifted |

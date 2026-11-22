@@ -32,9 +32,12 @@ REMOVED = "removed from the Allowlist"
 # a Forbid of the VM covers the destination: refused at once, never held, also in Open web; and
 # why a tunnel only Open web allowed closes when a Forbid comes to cover it
 FORBIDDEN = "forbidden"
+# forbids.json has not been read since the proxy started (broken, or no access): every destination
+# no Allowlist entry allows is refused at once, as a Forbid would, though none names it
+FORBIDS_UNREADABLE = "forbids unreadable"
 # the reasons of BLOCKED as stable codes the Control Room words (docs/control-room-api.md)
 BLOCK_REASONS = {NOT_ALLOWED: "not-allowed", WATCHLIST_UNREADABLE: "watchlist-unreadable", NOT_PUBLIC: "not-public",
-                 FORBIDDEN: "forbidden",
+                 FORBIDDEN: "forbidden", FORBIDS_UNREADABLE: "forbids-unreadable",
                  # a connection the proxy took no destination from: the line names the client
                  NOT_TLS: "not-tls", NO_SERVER_NAME: "no-server-name"}
 CLIENT_REASONS = (NOT_TLS, NO_SERVER_NAME)

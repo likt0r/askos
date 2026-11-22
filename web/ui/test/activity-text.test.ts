@@ -290,6 +290,8 @@ describe('Activity text (unit)', () => {
     const part = (key: string, values: Record<string, string>) => `activity.parts.${key} ${JSON.stringify(values)}`
     expect(activityText(coded(0, 'forbid', { domain: 'ads.example', scope: 'work', duration: '8h' }, 'stored'), tr))
       .toBe(`${say('forbid', { entry: 'ads.example' })} ${part('for', { duration: 'allowlist.durations.8h' })}`)
+    expect(activityText(coded(0, 'forbid', { domain: 'ads.example', scope: 'work', allowlist_unreadable: 'true' }, 'stored'), tr))
+      .toBe(`${say('forbid', { entry: 'ads.example' })} activity.parts.allowlistUnreadable`)
     expect(activityText(coded(0, 'unforbid', { domain: 'ads.example', scope: 'work' }, 'stored'), tr))
       .toBe(say('unforbid', { entry: 'ads.example' }))
     expect(activityText(coded(0, 'forbid-extend', { domain: 'ads.example', scope: 'work', duration: '1h' }, 'stored'), tr))

@@ -190,6 +190,7 @@ export default {
       by: 'um {duration}',
       temporary: 'vorübergehend',
       force: 'mit --force',
+      allowlistUnreadable: '(die Allowlist war nicht lesbar: eine Freigabe der Domain für die VM bleibt, das Verbot geht ihr vor)',
       thenReset: 'danach Reset von {vms}',
       removed: 'alte Builds entfernt: {n}',
       update: 'Update: {text}',

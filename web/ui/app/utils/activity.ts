@@ -199,7 +199,11 @@ export const SENTENCES: Record<string, Sentence> = {
   'extend': listed('extend', 'by'),
   'make-permanent': listed('makePermanent'),
   'set-note': listed('setNote'),
-  'forbid': listed('forbid', 'for'),
+  // stored while the Allowlist could not be read: an entry of the domain for the VM may stay beside it
+  'forbid': (p, tr, e) => {
+    const said = listed('forbid', 'for')(p, tr, e)
+    return said && flag(p, 'allowlist_unreadable') ? joined(said, part(tr, 'allowlistUnreadable')) : said
+  },
   'unforbid': listed('unforbid'),
   'forbid-extend': listed('forbidExtend', 'by'),
   'forbid-make-permanent': listed('forbidMakePermanent'),
