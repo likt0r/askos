@@ -199,6 +199,15 @@ export const SENTENCES: Record<string, Sentence> = {
   'extend': listed('extend', 'by'),
   'make-permanent': listed('makePermanent'),
   'set-note': listed('setNote'),
+  // stored while the Allowlist could not be read: an entry of the domain for the VM may stay beside it
+  'forbid': (p, tr, e) => {
+    const said = listed('forbid', 'for')(p, tr, e)
+    return said && flag(p, 'allowlist_unreadable') ? joined(said, part(tr, 'allowlistUnreadable')) : said
+  },
+  'unforbid': listed('unforbid'),
+  'forbid-extend': listed('forbidExtend', 'by'),
+  'forbid-make-permanent': listed('forbidMakePermanent'),
+  'forbid-set-note': listed('forbidSetNote'),
   'migrate-allowlist': plain('migrateAllowlist'),
   'open-web': (p, tr) => (has(p, 'minutes') ? say(tr, 'openWeb', { minutes: p.minutes }) : null),
   'close-web': plain('closeWeb'),
@@ -284,6 +293,11 @@ export const SENTENCES: Record<string, Sentence> = {
   },
   'claude.error': plain('claudeError'),
   'allowlist.expired': listed('expired'),
+  'allowlist.forbid-expired': listed('forbidExpired'),
+  // an Allowlist entry for a VM made or brought back lifts its Forbid of the domain; a Forbid takes the place
+  // of the VM's own entry of its domain (ADR 0024)
+  'allowlist.forbid-lifted': listed('forbidLifted'),
+  'allowlist.entry-forbidden': listed('entryForbidden'),
   'container-image-cleanup.removed': (p, tr) => (has(p, 'removed', 'freed_bytes')
     ? say(tr, Number(p.removed) === 1 ? 'cleanupRemovedOne' : 'cleanupRemoved',
       { removed: p.removed, freed: formatHostBytes(Number(p.freed_bytes)) }) : null),

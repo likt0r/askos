@@ -9,7 +9,8 @@ import json
 import os
 import sys
 
-from . import activity, alert_watch, allowlist, container_images, credentials, describe, detection, generate, github, guest
+from . import activity, alert_watch, allowlist, container_images, credentials, describe, detection, forbids, generate
+from . import github, guest
 from . import images, lifecycle, lists, maintenance, network, options, pairings, paths, recipes, settings, setup, transfer
 from . import sign_in_links, ssh_access, ssh_config, version, versions, vms, watch
 from .errors import Fail
@@ -109,6 +110,19 @@ Controls the agent VMs on this Host.
   agentbox make-permanent <vm|all> <domain> [--regex PATTERN] [--force] [--json]
   agentbox set-note <vm|all> <domain> --note TEXT [--regex PATTERN] [--json]
   agentbox expire-allowlist [--json]                 (timer, every minute) remove expired Allowlist entries
+                                                     and expired Forbids
+  agentbox forbids [<vm>] [--json]                   Forbids (all, a VM's) with time left and connections
+                                                     refused in the last 24 hours
+  agentbox forbid <vm> <domain> [--for D|--temporary] [--note TEXT] [--json]
+                Forbid for one VM, permanent or temporary: the proxy refuses the domain and its
+                subdomains at once (no hold, also in Open web); of a Forbid and an Allowlist entry
+                the more specific wins (a longer domain, then one VM's over all VMs', a domain over
+                a pattern); takes the place of the VM's own entry of the domain
+  agentbox unforbid <vm> <domain> [--json]           remove a Forbid: the domain is held and notified again
+  agentbox forbid-extend <vm> <domain> --for D [--json]
+                extend a temporary one
+  agentbox forbid-make-permanent <vm> <domain> [--json]
+  agentbox forbid-set-note <vm> <domain> --note TEXT [--json]
   agentbox migrate-allowlist [--json]                take over the old Allowlist files once
   agentbox open-web <vm> <minutes> [--json]          allow every public domain for a while (Open web)
   agentbox close-web <vm> [--json]
@@ -204,7 +218,7 @@ With --json, a failure also goes to stderr as one JSON object:
   {"error": "<code>", "message": "<text>", "params": {...}}"""
 
 MODULES = (lifecycle, version, describe, setup, watch, alert_watch, vms, pairings, transfer, guest, credentials, network,
-           allowlist, detection, lists, generate, settings, github, images, recipes, versions, activity, maintenance,
+           allowlist, forbids, detection, lists, generate, settings, github, images, recipes, versions, activity, maintenance,
            container_images, ssh_access, ssh_config, sign_in_links)
 DECLARATIONS = {name: declaration for module in MODULES for name, declaration in module.DECLARATIONS.items()}
 

@@ -43,6 +43,7 @@ export default {
       noteTooLong: 'Höchstens 200 Zeichen.',
       submit: 'Freigeben',
       done: '{domain} freigegeben.',
+      stillForbidden: 'Freigegeben, aber ein genaueres Verbot geht weiter vor für: {forbids}. Entferne es im Web-Tab dieser VM oder gib die Domain für diese VM frei.',
     },
     entry: {
       permanent: 'Dauerhaft',
@@ -139,8 +140,12 @@ export default {
       times: 'nie | einmal | {n}-mal',
       last: 'zuletzt {when}',
       allow: 'Freigeben…',
+      forbid: 'Verbieten…',
+      forbiddenNow: 'verboten',
       reasons: {
         'not-allowed': 'nicht auf der Allowlist',
+        'forbidden': 'für diese VM verboten',
+        'forbids-unreadable': 'die Verbote sind nicht lesbar (der Proxy lehnt ab, was keine Freigabe erlaubt)',
         'suspicious': 'starke Merkmale: {signals}',
         'watchlist-unreadable': 'die Watchlist ist nicht lesbar (der Proxy lässt nichts durch)',
         'not-public': 'keine öffentliche Adresse',
@@ -152,6 +157,32 @@ export default {
       title: 'Freigaben für diese VM',
       all: 'Allowlist',
       empty: 'Für diese VM gilt keine Freigabe.',
+    },
+    forbids: {
+      title: 'Verboten für diese VM',
+      intro: 'Der Proxy lehnt diese Domains und ihre Subdomains sofort ab, ohne sie zu halten und auch im offenen Web. Von einem Verbot und einer Freigabe gilt die genauere: eine längere Domain, dann eine für diese VM vor einer für alle VMs, eine Domain vor einem Ausdruck. Läuft ein Verbot ab oder wird es entfernt, wird das Ziel wieder gehalten und gemeldet.',
+      empty: 'Für diese VM ist nichts verboten.',
+    },
+  },
+  forbid: {
+    add: {
+      title: '{domain} verbieten',
+      description: 'Für {vm}: der Proxy lehnt es und seine Subdomains sofort ab, ohne sie zu halten, auch im offenen Web. Es geht Freigaben einer übergeordneten Domain und Freigaben für alle VMs vor; eine Freigabe einer Subdomain geht ihm vor. Die eigene Freigabe der VM für diese Domain weicht dem Verbot.',
+      notePlaceholder: 'Warum, z. B. Telemetrie',
+      submit: 'Verbieten',
+      done: '{domain} für {vm} verboten.',
+    },
+    entry: {
+      refusedUnknown: 'Ablehnungen unbekannt',
+      refused: 'in 24 Std. nicht abgelehnt | in 24 Std. einmal abgelehnt | in 24 Std. {n}-mal abgelehnt',
+      extendText: 'Verlängert dieses vorübergehende Verbot.',
+      extended: 'Verbot {domain} um {duration} verlängert.',
+      permanentText: 'Das Verbot für {vm} läuft dann nicht mehr ab.',
+      madePermanent: '{domain} ist jetzt dauerhaft verboten.',
+      remove: 'Verbot entfernen',
+      removeTitle: 'Verbot {domain} entfernen?',
+      removeText: 'Das Verbot für {vm} wird entfernt: der Proxy hält das Ziel wieder und meldet es.',
+      removed: 'Verbot {domain} entfernt.',
     },
   },
   signals: {
@@ -346,6 +377,7 @@ export default {
   access: {
     common: {
       cancel: 'Abbrechen',
+      close: 'Schließen',
       save: 'Speichern',
       refresh: 'Aktualisieren',
       loading: 'Lade…',

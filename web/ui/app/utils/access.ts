@@ -22,6 +22,9 @@ export interface AllowlistEntry extends Target {
   expired: boolean
   remaining: number | null
   uses_24h: number | null
+  /** in the answer to adding, extending or making it permanent: the VMs whose more specific Forbid
+   * still wins over it (ADR 0024) */
+  forbidden_for?: { vm: string, domain: string }[]
 }
 
 /** Durations of a new entry; `permanent` has no expiry. */
@@ -115,6 +118,47 @@ export function entrySecondsLeft(e: Pick<AllowlistEntry, 'expires'>, nowMs: numb
 export function coveredBy(domain: string, entries: AllowlistEntry[], nowMs: number): AllowlistEntry | undefined {
   return entries.find(e => e.domain != null && (domain === e.domain || domain.endsWith('.' + e.domain))
     && (e.expires == null || e.expires * 1000 > nowMs))
+}
+
+/** A Forbid as `GET /vms/<vm>/forbids` returns it (times in epoch seconds): a domain (with its
+ * subdomains) the proxy refuses the VM at once, for a while or for good, unless an Allowlist
+ * entry allows it (ADR 0024). */
+export interface ForbidEntry {
+  domain: string
+  /** the VM */
+  scope: string
+  expires: number | null
+  note: string
+  added_by: string
+  added: number
+  expired: boolean
+  remaining: number | null
+  /** connections the proxy refused for it in the last 24 hours, null when unknown */
+  refused_24h: number | null
+}
+
+/** The API path of a VM's Forbid (`/vms/<vm>/forbids/<domain>`), with an action after it. */
+export function forbidPath(e: Pick<ForbidEntry, 'domain' | 'scope'>, action = ''): string {
+  return `/vms/${encodeURIComponent(e.scope)}/forbids/${encodeURIComponent(e.domain)}${action ? `/${action}` : ''}`
+}
+
+/** How specific a domain entry or a Forbid that covers a host is (ADR 0024): more labels (a
+ * subdomain of the other), then one VM's above all VMs'. */
+function rank(e: { domain: string | null, scope: string }): [number, number] {
+  return [(e.domain ?? '').split('.').length, e.scope === 'all' ? 0 : 1]
+}
+const covers = (e: { domain: string | null, expires: number | null }, domain: string, nowMs: number) =>
+  e.domain != null && (domain === e.domain || domain.endsWith('.' + e.domain)) && (e.expires == null || e.expires * 1000 > nowMs)
+const above = (a: [number, number], b: [number, number]) => a[0] > b[0] || (a[0] === b[0] && a[1] > b[1])
+
+/** The Forbid that wins for the domain, as the proxy decides (ADR 0024): the most specific Forbid in
+ * force that covers it, unless an active domain entry is more specific; a full tie goes to the
+ * Forbid. Regex entries are left out: a named Forbid is more specific than any pattern. */
+export function forbidWins(domain: string, entries: AllowlistEntry[], forbids: ForbidEntry[], nowMs: number): ForbidEntry | undefined {
+  const forbid = forbids.filter(f => covers(f, domain, nowMs)).sort((a, b) => rank(b)[0] - rank(a)[0])[0]
+  if (!forbid) return undefined
+  const beats = entries.some(e => covers(e, domain, nowMs) && above(rank(e), rank(forbid)))
+  return beats ? undefined : forbid
 }
 
 /** A destination a VM tried to reach and was refused (last 24 hours). */

@@ -965,7 +965,7 @@ class AllowTest(CliTest):
         self.assertAlmostEqual(result.pop("added"), time.time(), delta=60)
         expires = result.pop("expires")
         self.assertEqual(result, {"domain": "example.org", "regex": None, "scope": "all", "note": "Doku",
-                                  "added_by": result["added_by"],
+                                  "added_by": result["added_by"], "forbids_lifted": [], "forbidden_for": [],
                                   "message": f"all VMs: example.org allowed until {self.until(expires)}"})
 
     def test_an_existing_entry_is_widened_never_shortened(self):
@@ -1283,7 +1283,7 @@ class ExpireTest(CliTest):
     def test_nothing_expired(self):
         self.store(entry("c.example", "work", expires=int(time.time()) + 600))
         before = os.stat(os.path.join(self.conf, "allowlist.json"))
-        self.assertEqual(self.json("--actor=timer", "expire-allowlist"), {"expired": []})
+        self.assertEqual(self.json("--actor=timer", "expire-allowlist"), {"expired": [], "forbids_expired": []})
         self.assertEqual(self.ok("--actor=timer", "expire-allowlist"), "")
         after = os.stat(os.path.join(self.conf, "allowlist.json"))
         self.assertEqual((before.st_ino, before.st_mtime_ns), (after.st_ino, after.st_mtime_ns))

@@ -151,7 +151,7 @@ An entry of the Allowlist, the Watchlist, the Legitimate domains or the Harmless
 _Avoid_: wildcard, glob, pattern rule
 
 **List record**:
-The file on the Host that holds one list, `{"entries": [...]}`: the Allowlist, the Watchlist or the Legitimate domains. A broken or duplicate entry makes the whole record broken, with the same text for agentbox, the proxy and the classifier, which read it with the same code (`agentbox/list_records.py`).
+The file on the Host that holds one list, `{"entries": [...]}`: the Allowlist, the Forbids, the Watchlist or the Legitimate domains. A broken or duplicate entry makes the whole record broken, with the same text for agentbox, the proxy and the classifier, which read it with the same code (`agentbox/list_records.py`).
 _Avoid_: list file, store, database
 
 **Temporary allowlist entry**:
@@ -159,12 +159,16 @@ An Allowlist entry with an expiry time (15 minutes, 1 hour, 8 hours or 7 days, e
 _Avoid_: snooze, pass, temporary exception
 
 **Open web**:
-A time-limited mode in which a VM may reach any public domain except suspicious ones.
+A time-limited mode in which a VM may reach any public domain except suspicious and forbidden ones.
 _Avoid_: unblock, web mode
 
 **Hold**:
 The proxy keeping a connection to a destination that is not allowed waiting for up to `hold_seconds` (default 30 s), so the owner can allow it while the program waits; never for destinations with strong Signals or on the Watchlist, and not in Open web (German UI: gehalten).
 _Avoid_: queue, pending request, park
+
+**Forbid**:
+A domain (with its subdomains) that the proxy refuses one VM at once, for one of the durations of a Temporary allowlist entry or permanently: no Hold, no notification, also in Open web. Of a Forbid and an Allowlist entry the more specific one wins: a named domain over a pattern, a longer domain over its parent, at the same domain one VM's over all VMs'. The same domain for the same VM is never both allowed and forbidden: the newer replaces the older (German UI: Verbot).
+_Avoid_: block, deny rule, blacklist entry
 
 ## Detection
 

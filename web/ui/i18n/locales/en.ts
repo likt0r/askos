@@ -154,6 +154,8 @@ export default {
     domain_suspicious: 'This destination has strong Signals, which block it whatever the Allowlist says; only lifting the Signal on the Host lets it through.',
     allowlist_entry_not_found: 'There is no such Allowlist entry.',
     allowlist_entry_permanent: 'A permanent entry cannot be extended.',
+    forbid_not_found: 'There is no such Forbid.',
+    forbid_permanent: 'A permanent Forbid cannot be extended.',
     force_required: 'This would lift strong Signals; only the CLI on the Host can do it (--force).',
     watchlist_recreate_force_required: 'Creating the Watchlist again would let the proxy pass connections again; only the CLI on the Host can do it (--force).',
     builtin_entry: 'Built-in Legitimate domains cannot be changed.',

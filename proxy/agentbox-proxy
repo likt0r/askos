@@ -28,7 +28,22 @@ whenever the file is read again; one that breaks the pattern rules (list_records
 left out.
 
 While /etc/agentbox/open-<vm> holds a time in the future, every public domain is allowed
-(Open web for a while).
+(Open web for a while) that no Forbid wins for.
+
+Forbids: /etc/agentbox/forbids.json (agentbox forbid/unforbid/...), entries as the Allowlist's,
+a domain (covering its subdomains too) for one VM with an optional expiry. Of the Allowlist entries
+and the Forbids of this VM that match a destination the more specific one wins (ADR 0024,
+list_records.specificity): any named domain above any pattern, a longer domain above its parent,
+at the same domain one VM's above all VMs'; a full tie (a hand edit) goes to the Forbid. A
+destination a Forbid wins for is refused at once, never held, also in Open web, and a tunnel to
+it closes when a Forbid comes to win for it:
+  [<vm>] BLOCKED <host> (forbidden)
+  [<vm>] CLOSED <host> (forbidden)
+Expired Forbids refuse nothing. Changes apply without a restart; a broken file, or one that cannot
+be read, keeps the last good state, and a proxy that has not read it since it started refuses at
+once whatever no Allowlist entry allows (no hold, no Open web) until it can:
+  [<vm>] BLOCKED <host> (forbids unreadable)
+A missing file is no Forbids.
 
 Strong Signals always block (ADR 0021): every destination is classified on every connection,
 and one with strong Signals is blocked whatever would allow it, a domain entry, a Regex entry
@@ -39,8 +54,8 @@ the text file from before), which Signals are strong is unknown, so nothing pass
 without agentbox-suspicious, which tells them, neither:
   [<vm>] BLOCKED <host> (Watchlist unreadable)
 
-Hold: a connection to a destination that nothing allows, that has no strong Signal and is not on
-the Watchlist (no Signal of a Watchlist category) waits up to the hold time (the Setting
+Hold: a connection to a destination that nothing allows and no Forbid wins for, that has no strong
+Signal and is not on the Watchlist (no Signal of a Watchlist category) waits up to the hold time (the Setting
 hold_seconds in /etc/agentbox/settings.json, read again when it changes; 0 refuses at once), so
 the owner can allow it meanwhile. The proxy logs it once per host while connections to it are
 held (at most MAX_ANNOUNCED new lines in HELD_WINDOW seconds: a VM trying endless names must not
@@ -51,14 +66,14 @@ It decides again every check (CHECK_SECONDS): an entry added meanwhile, or Open 
 connection through (ALLOWED), a strong Signal it gains meanwhile or a Watchlist that becomes
 unreadable refuses it at once, and when the hold time runs out, the client leaves or sends more
 than HOLD_EXTRA_LIMIT bytes (it only waits for the answer to its ClientHello) it is refused
-as without a hold (BLOCKED not on the Allowlist). In Open web nothing is held: it lets through
-whatever has no strong Signal. At most MAX_HELD connections are held at once; more are refused at
+as without a hold (BLOCKED not on the Allowlist); a Forbid added meanwhile refuses it at once. In
+Open web nothing is held: it lets through whatever has no strong Signal and no Forbid. At most MAX_HELD connections are held at once; more are refused at
 once. Holding costs the event loop nothing: each held connection sleeps between its checks.
 
 Tunnels (ADR 0005): open tunnels run without a time limit, also once the entry that allowed
 them expires. The proxy closes a tunnel when access to it ends on purpose and nothing else
-allows it any more: an entry is removed before it expired (agentbox disallow), or Open web
-ends. It also closes a tunnel whose destination gains a strong Signal (a Feed update, a new
+allows it any more: an entry is removed before it expired (agentbox disallow, or a Forbid that
+takes its place), Open web ends, or a Forbid comes to win for its destination. It also closes a tunnel whose destination gains a strong Signal (a Feed update, a new
 Watchlist entry), after an Alert, and every tunnel while the Watchlist cannot be read
 (ADR 0021): CLOSED <host> (suspicious: <signals>) or (Watchlist unreadable). It classifies its
 open tunnels again only when a file the Signals come from changes (agentbox-suspicious
@@ -383,6 +398,73 @@ class Allowlist:
         return bool(compiled and records.pattern_matches(compiled, host))
 
 
+class Forbids:
+    """The VM's Forbids, {domain: expiry or None}, read again when forbids.json changes. A missing
+    file is no Forbids. A broken file, or one that cannot be stat'ed or read, changes nothing: the
+    last good state stays; until the proxy has read it once since it started, it takes every
+    destination as forbidden (unreadable: fail closed, as this is a list that refuses). A file that
+    could not be read is tried again at the next check, its error logged once."""
+
+    def __init__(self, ctx):
+        self.ctx = ctx
+        self.key = None         # the state of the file last read well, or found broken
+        self.entries = {}
+        self.good = False       # whether forbids.json was read once since the proxy started
+        self.unreadable = False
+        self.problem = None     # the error last logged, so a lasting one is logged once
+
+    def failed(self, path, why):
+        """forbids.json could not be used: the last good state stays, or before one, nothing passes."""
+        self.unreadable = not self.good
+        if why != self.problem:
+            self.problem = why
+            kept = ("the previous forbids stay" if self.good
+                    else "every destination no entry allows is refused until it is fixed")
+            log(lines.message(self.ctx, f"ERROR {path} unreadable ({why}), {kept}"))
+
+    def current(self):
+        path = os.path.join(CONF_DIR, records.FORBIDS)
+        try:
+            st = os.stat(path)
+        except FileNotFoundError:
+            self.key, self.entries, self.unreadable, self.problem = None, {}, False, None
+            return self.entries
+        except OSError as e:
+            self.failed(path, type(e).__name__)
+            return self.entries
+        key = (st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size)
+        if key != self.key:
+            try:
+                with open(path, encoding="utf-8") as f:
+                    entries = records.forbid_entries(f.read())
+            except ValueError as e:         # broken: the same content stays broken, until it changes
+                self.key = key
+                self.failed(path, records.printable(str(e), 200) if str(e) else type(e).__name__)
+            except OSError as e:            # perhaps for a moment only: tried again at the next check
+                self.failed(path, type(e).__name__)
+            else:
+                self.key = key
+                self.entries = {e["domain"]: e["expires"] for e in entries if e["scope"] == self.ctx}
+                self.good, self.unreadable, self.problem = True, False, None
+        return self.entries
+
+    def strongest(self, host, now, entries=None, unreadable=None):
+        """The specificity (records.specificity) of the most specific Forbid in force that covers
+        host, as last read (current) or in entries, else None; LOWEST while the file has not been
+        read since the start: every destination counts as forbidden, below any Allowlist entry."""
+        if self.unreadable if unreadable is None else unreadable:
+            return LOWEST
+        return max((records.specificity(False, domain, self.ctx)
+                    for domain, expires in (self.entries if entries is None else entries).items()
+                    if (expires is None or expires > now) and records.covers(domain, host)), default=None)
+
+
+# below every Allowlist entry: a Forbid of every destination, while forbids.json cannot be read
+LOWEST = (-1,)
+# the reasons a Forbid refuses with: one that wins, or forbids.json not read since the start
+FORBIDDING = (lines.FORBIDDEN, lines.FORBIDS_UNREADABLE)
+
+
 class HoldTime:
     """The hold time in seconds (records.hold_seconds), read again when settings.json changes. A
     broken file changes nothing: the last good value stays, the default when there was none."""
@@ -450,19 +532,33 @@ def strong(tags):
     return bool(suspicious and suspicious.is_strong(tags))
 
 
-def decide(ctx, lists, host, tags, now):
+def allowance(ctx, lists, forbids, host, now, is_open=None):
+    """(grant, reason for the log) as the lists decide, the Signals aside: the entries that allow
+    host when the most specific of them beats the most specific Forbid in force that covers it
+    (ADR 0024, records.specificity; a full tie goes to the Forbid), else FORBIDDEN while a Forbid
+    covers it, also in Open web, else OPEN in Open web (is_open, else open_until), else
+    NOT_ALLOWED. The Forbids as last read (Forbids.current)."""
+    keys = granting(host, lists, now)
+    forbid = forbids.strongest(host, now)
+    if keys and (forbid is None or max(records.specificity(k.regex, k.value, k.scope) for k in keys) > forbid):
+        return keys, None
+    if forbid is not None:
+        return None, lines.FORBIDS_UNREADABLE if forbid == LOWEST else lines.FORBIDDEN
+    if open_until(ctx) if is_open is None else is_open:
+        return OPEN, None
+    return None, lines.NOT_ALLOWED
+
+
+def decide(ctx, lists, forbids, host, tags, now):
     """(grant, reason for the log). Grant: the entries that allow host, OPEN (only Open web)
     or None (blocked, with the reason). The Signals come first (ADR 0021): strong ones block
-    whatever would allow host, and while the Watchlist cannot be read nothing passes."""
+    whatever would allow host, and while the Watchlist cannot be read nothing passes. Then the
+    more specific of the Allowlist entries and the Forbids (allowance)."""
     why = refusal(tags)
     if why:
         return None, why
-    keys = granting(host, lists, now)
-    if keys:
-        return keys, None
-    if open_until(ctx):
-        return OPEN, None
-    return None, lines.NOT_ALLOWED
+    forbids.current()
+    return allowance(ctx, lists, forbids, host, now)
 
 
 def logged(ctx, grant):
@@ -493,21 +589,21 @@ class Tunnel:
 tunnels = set()
 
 
-def withdraw(ctx, lists, now, revoked, web_ended, is_open):
+def withdraw(ctx, lists, forbids, now, revoked, web_ended, is_open):
     """Access ends on purpose (entries removed, or Open web closed): the tunnels it allowed stay
-    when their destination is still allowed now, else they close."""
+    when their destination is still allowed now (allowance; its Signals were checked just before,
+    recheck), else they close."""
     for t in list(tunnels):
         if not (web_ended if t.grant == OPEN else t.grant & revoked):
             continue
-        keys = granting(t.host, lists, now)
-        if keys:
-            t.grant = keys
-        elif is_open:           # its Signals were checked just before (recheck)
-            t.grant = OPEN
-        else:
-            log(lines.closed(ctx, t.host, lines.OPEN_WEB_ENDED if t.grant == OPEN else lines.REMOVED))
-            tunnels.discard(t)
-            t.close()
+        grant, why = allowance(ctx, lists, forbids, t.host, now, is_open)
+        if grant is not None:
+            t.grant = grant
+            continue
+        why = why if why in FORBIDDING else lines.OPEN_WEB_ENDED if t.grant == OPEN else lines.REMOVED
+        log(lines.closed(ctx, t.host, why))
+        tunnels.discard(t)
+        t.close()
 
 
 def signals_key():
@@ -548,12 +644,32 @@ def recheck(ctx):
         t.close()
 
 
-async def watch(ctx, lists):
+def forbid_tunnels(ctx, lists, forbids, now, is_open, before):
+    """The Forbids changed (before: their entries and whether they were unreadable then): a tunnel
+    closes when a Forbid wins for its destination now that is more specific than any that covered
+    it before, a new one; access to it ended on purpose (ADR 0005). One whose entry merely expired
+    meanwhile keeps running, as after any expiry."""
+    for t in list(tunnels):
+        why = allowance(ctx, lists, forbids, t.host, now, is_open)[1]
+        if why not in FORBIDDING:
+            continue
+        old = forbids.strongest(t.host, now, *before)
+        if old is not None and forbids.strongest(t.host, now) <= old:
+            continue
+        log(lines.closed(ctx, t.host, why))
+        tunnels.discard(t)
+        t.close()
+
+
+async def watch(ctx, lists, forbids):
     """Checks the open tunnels' Signals (recheck), then compares the entries and Open web with
     their state before. An entry that is gone although it had not expired was removed on
-    purpose; expired ones (and those agentbox expire-allowlist then deletes) close nothing."""
+    purpose; expired ones (and those agentbox expire-allowlist then deletes) close nothing.
+    When the Forbids changed, the tunnels a new Forbid wins for close (forbid_tunnels)."""
     known = dict(lists.current())
     was_open = bool(open_until(ctx))
+    forbids.current()
+    forbidden = (forbids.key, forbids.unreadable, dict(forbids.entries))
     while True:
         await asyncio.sleep(CHECK_SECONDS)
         if tunnels:
@@ -568,8 +684,13 @@ async def watch(ctx, lists):
             is_open = bool(open_until(ctx))
             ended = was_open and not is_open
             known, was_open = dict(entries), is_open
+            forbids.current()
             if revoked or ended:
-                withdraw(ctx, lists, now, revoked, ended, is_open)
+                withdraw(ctx, lists, forbids, now, revoked, ended, is_open)
+            if (forbids.key, forbids.unreadable) != forbidden[:2]:
+                before = (forbidden[2], forbidden[1])
+                forbidden = (forbids.key, forbids.unreadable, dict(forbids.entries))
+                forbid_tunnels(ctx, lists, forbids, now, is_open, before)
         except Exception as e:      # the watcher must never stop
             log(lines.message(ctx, f"ERROR check of open tunnels failed ({type(e).__name__}: {e})"))
 
@@ -599,10 +720,10 @@ def holdable(tags):
     return not strong(tags) and not WATCHLIST_SIGNALS & set(tags)
 
 
-async def hold(ctx, lists, host, tags, key, reader, head, seconds):
+async def hold(ctx, lists, forbids, host, tags, key, reader, head, seconds):
     """Holds a connection that nothing allows yet (Hold) for up to seconds: (grant, reason for
     the log, tags, key) as decide gives them once something allows it, its Signals or an
-    unreadable Watchlist refuse it, or the time runs out, the client leaves or sends more than
+    unreadable Watchlist or a Forbid refuse it, or the time runs out, the client leaves or sends more than
     HOLD_EXTRA_LIMIT bytes (None, NOT_ALLOWED). What the client sends meanwhile is read here (that
     is also how its leaving is noticed, whatever the size of the reader's buffer) and appended to
     head, the bytes that go to the destination first. The Signals are classified again when a
@@ -635,7 +756,7 @@ async def hold(ctx, lists, host, tags, key, reader, head, seconds):
                 before, (tags, alert) = tags, classified(host)
                 if alert and tags != before:
                     log(lines.alert(ctx, host, alert))  # Signals gained during the hold, as for a tunnel
-            grant, why = decide(ctx, lists, host, tags, time.time())
+            grant, why = decide(ctx, lists, forbids, host, tags, time.time())
             stop = grant is None and (why != lines.NOT_ALLOWED or not holdable(tags))
             if grant is not None or stop:
                 return grant, why, tags, key
@@ -735,7 +856,7 @@ async def read_hello(reader, hello):
             return bytes(hello.buf), host
 
 
-async def handle(ctx, lists, hold_time, reader, writer):
+async def handle(ctx, lists, forbids, hold_time, reader, writer):
     peer = writer.get_extra_info("peername")
     client = peer[0] if isinstance(peer, tuple) else "unix"
     hello = Hello()
@@ -764,11 +885,11 @@ async def handle(ctx, lists, hold_time, reader, writer):
         # a line of its own, so agentbox and the Control Room can collect Alerts
         log(lines.alert(ctx, host, alert))
     now = time.time()
-    grant, why = decide(ctx, lists, host, tags, now)
+    grant, why = decide(ctx, lists, forbids, host, tags, now)
     if grant is None and why == lines.NOT_ALLOWED and holdable(tags):
         seconds = hold_time.current()
         if seconds:
-            grant, why, tags, key = await hold(ctx, lists, host, tags, key, reader, head, seconds)
+            grant, why, tags, key = await hold(ctx, lists, forbids, host, tags, key, reader, head, seconds)
             now = time.time()
     if grant is None:
         log(lines.blocked(ctx, host, why))
@@ -791,7 +912,7 @@ async def handle(ctx, lists, hold_time, reader, writer):
         return
     # access may have ended while the name was resolved and the connection made: decide
     # again and register the tunnel without an await in between, so watch sees it from now on
-    grant, why = decide(ctx, lists, host, tags, now)
+    grant, why = decide(ctx, lists, forbids, host, tags, now)
     if grant is None:
         up_writer.close()
         log(lines.blocked(ctx, host, why))
@@ -817,6 +938,8 @@ async def handle(ctx, lists, hold_time, reader, writer):
 async def main():
     ctx = sys.argv[1]
     lists = Allowlist(ctx)
+    forbids = Forbids(ctx)
+    forbids.current()       # a broken forbids.json is logged at the start already
     hold_time = HoldTime(ctx)
     hold_time.current()     # a broken settings.json is logged at the start already
     if os.environ.get("LISTEN_FDS") == "1":
@@ -826,8 +949,8 @@ async def main():
         sock.bind(sys.argv[2])
         sock.listen(64)
     start = asyncio.start_unix_server if sock.family == socket.AF_UNIX else asyncio.start_server
-    server = await start(lambda r, w: handle(ctx, lists, hold_time, r, w), sock=sock)
-    watcher = asyncio.create_task(watch(ctx, lists))   # keep a reference, or Python collects it
+    server = await start(lambda r, w: handle(ctx, lists, forbids, hold_time, r, w), sock=sock)
+    watcher = asyncio.create_task(watch(ctx, lists, forbids))   # keep a reference, or Python collects it
     log(lines.message(ctx, "ready"))
     async with server:
         await server.serve_forever()

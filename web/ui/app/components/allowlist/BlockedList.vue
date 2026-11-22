@@ -1,13 +1,14 @@
 <script setup lang="ts">
 // What a VM tried to reach in the last 24 hours and was refused, newest first, with the
-// Signals of its last Alert; "Allow…" adds an Allowlist entry for a chosen time, except on a
-// row that names the VM's own address (a connection with no destination). Marks destinations
-// an active entry covers by now, and those the proxy holds for an entry (#39), which appear
-// the moment it holds them.
-import type { AllowlistEntry, BlockedDestination } from '~/utils/access'
+// Signals of its last Alert; "Allow…" adds an Allowlist entry for a chosen time, "Forbid…" a
+// Forbid for the VM (refused at once from then on, no hold), except on a row that names the VM's
+// own address (a connection with no destination). Of an entry and a Forbid the more specific wins
+// (ADR 0024): marks destinations an active entry allows by now, those a Forbid wins for, and those
+// the proxy holds for an entry (#39), which appear the moment it holds them.
+import type { AllowlistEntry, BlockedDestination, ForbidEntry } from '~/utils/access'
 
-const props = defineProps<{ vm: string, entries: AllowlistEntry[] }>()
-const emit = defineEmits<{ allowed: [] }>()
+const props = withDefaults(defineProps<{ vm: string, entries: AllowlistEntry[], forbids?: ForbidEntry[] }>(), { forbids: () => [] })
+const emit = defineEmits<{ allowed: [], forbidden: [] }>()
 const { t } = useI18n()
 const tr = useTranslator()
 const errorText = useErrorText()
@@ -22,6 +23,11 @@ const allowing = ref<string | null>(null)
 const allowOpen = computed({
   get: () => allowing.value !== null,
   set: (v: boolean) => { if (!v) allowing.value = null },
+})
+const forbidding = ref<string | null>(null)
+const forbidOpen = computed({
+  get: () => forbidding.value !== null,
+  set: (v: boolean) => { if (!v) forbidding.value = null },
 })
 
 async function load() {
@@ -45,8 +51,13 @@ function reason(r: BlockedDestination) {
   return blockedReason(r, tr)
 }
 
+// the more specific of an entry and a Forbid wins (ADR 0024)
+function forbiddenNow(domain: string) {
+  return !!forbidWins(domain, props.entries, props.forbids, now.value)
+}
+
 function allowedBy(domain: string) {
-  return coveredBy(domain, props.entries, now.value)
+  return !forbiddenNow(domain) && coveredBy(domain, props.entries, now.value)
 }
 
 watch(() => props.vm, load)
@@ -102,6 +113,7 @@ useLiveEvent('held', (h) => {
             <span class="break-all font-mono text-sm text-highlighted">{{ r.domain }}</span>
             <WatchlistSignalBadges v-if="r.suspicious.length" :names="r.suspicious" />
             <UBadge v-if="allowedBy(r.domain)" color="success" variant="soft" size="sm" icon="i-lucide-check" :label="t('webTab.blocked.allowedNow')" data-testid="blocked-allowed" />
+            <UBadge v-else-if="forbiddenNow(r.domain)" color="error" variant="soft" size="sm" icon="i-lucide-ban" :label="t('webTab.blocked.forbiddenNow')" data-testid="blocked-forbidden" />
             <UBadge v-else-if="heldFor(r, now)" color="warning" variant="soft" size="sm" icon="i-lucide-hourglass" :label="t('webTab.blocked.held', { seconds: heldFor(r, now) })" :title="t('webTab.blocked.heldHint')" data-testid="blocked-held" />
           </div>
           <p class="text-xs text-muted">
@@ -111,17 +123,28 @@ useLiveEvent('held', (h) => {
             {{ t('webTab.blocked.last', { when: when.ago(r.last, now) }) }} · <span data-testid="blocked-reason" :title="reason(r) !== r.reason ? r.reason : undefined">{{ reason(r) }}</span>
           </p>
         </div>
-        <UButton
-          v-if="allowable(r) && !allowedBy(r.domain)"
-          class="self-start sm:self-center"
-          color="neutral"
-          variant="outline"
-          size="sm"
-          icon="i-lucide-plus"
-          :label="t('webTab.blocked.allow')"
-          data-testid="blocked-allow"
-          @click="allowing = r.domain"
-        />
+        <div v-if="allowable(r)" class="flex shrink-0 flex-wrap gap-2 self-start sm:self-center">
+          <UButton
+            v-if="!allowedBy(r.domain)"
+            color="neutral"
+            variant="outline"
+            size="sm"
+            icon="i-lucide-plus"
+            :label="t('webTab.blocked.allow')"
+            data-testid="blocked-allow"
+            @click="allowing = r.domain"
+          />
+          <UButton
+            v-if="!forbiddenNow(r.domain)"
+            color="error"
+            variant="outline"
+            size="sm"
+            icon="i-lucide-ban"
+            :label="t('webTab.blocked.forbid')"
+            data-testid="blocked-forbid"
+            @click="forbidding = r.domain"
+          />
+        </div>
       </li>
     </ul>
 
@@ -131,6 +154,12 @@ useLiveEvent('held', (h) => {
       :scope="props.vm"
       :vms="[props.vm]"
       @added="emit('allowed')"
+    />
+    <AllowlistForbidDialog
+      v-model:open="forbidOpen"
+      :domain="forbidding ?? ''"
+      :vm="props.vm"
+      @forbidden="emit('forbidden')"
     />
   </section>
 </template>

@@ -44,6 +44,7 @@ export default {
       noteTooLong: 'At most 200 characters.',
       submit: 'Allow',
       done: '{domain} allowed.',
+      stillForbidden: 'Allowed, but a more specific Forbid still wins for: {forbids}. Remove it in that VM\'s Web tab, or allow the domain for that VM.',
     },
     entry: {
       permanent: 'Permanent',
@@ -140,9 +141,13 @@ export default {
       times: 'never | once | {n} times',
       last: 'last {when}',
       allow: 'Allow…',
+      forbid: 'Forbid…',
+      forbiddenNow: 'forbidden',
       // why the proxy blocked it, by its code (utils/access.ts blockedReason)
       reasons: {
         'not-allowed': 'not on the Allowlist',
+        'forbidden': 'forbidden for this VM',
+        'forbids-unreadable': 'the Forbids cannot be read (the proxy refuses what no entry allows)',
         'suspicious': 'strong Signals: {signals}',
         'watchlist-unreadable': 'the Watchlist cannot be read (nothing passes the proxy)',
         'not-public': 'no public address',
@@ -154,6 +159,32 @@ export default {
       title: 'Allowlist entries for this VM',
       all: 'Allowlist',
       empty: 'No entries apply to this VM.',
+    },
+    forbids: {
+      title: 'Forbidden for this VM',
+      intro: 'The proxy refuses these domains and their subdomains at once, without holding them and also in Open web. Of a Forbid and an Allowlist entry the more specific one wins: a longer domain, then an entry for this VM over one for all VMs, a domain over a pattern. When a Forbid expires or is removed, the destination is held and notified again.',
+      empty: 'Nothing is forbidden for this VM.',
+    },
+  },
+  forbid: {
+    add: {
+      title: 'Forbid {domain}',
+      description: 'For {vm}: the proxy refuses it and its subdomains at once, without holding them, also in Open web. It wins over entries of a parent domain and over entries for all VMs; an entry of a subdomain still wins over it. The VM\'s own entry of this domain gives way to the Forbid.',
+      notePlaceholder: 'Why, e.g. telemetry',
+      submit: 'Forbid',
+      done: '{domain} forbidden for {vm}.',
+    },
+    entry: {
+      refusedUnknown: 'refusals unknown',
+      refused: 'not refused in 24 h | refused once in 24 h | refused {n} times in 24 h',
+      extendText: 'Adds time to this temporary Forbid.',
+      extended: 'Forbid {domain} extended by {duration}.',
+      permanentText: 'The Forbid for {vm} will no longer expire.',
+      madePermanent: '{domain} is now forbidden permanently.',
+      remove: 'Remove Forbid',
+      removeTitle: 'Remove the Forbid {domain}?',
+      removeText: 'The Forbid for {vm} is removed: the proxy holds the destination again and notifies about it.',
+      removed: 'Forbid {domain} removed.',
     },
   },
   signals: {
@@ -349,6 +380,7 @@ export default {
   access: {
     common: {
       cancel: 'Cancel',
+      close: 'Close',
       save: 'Save',
       refresh: 'Refresh',
       loading: 'Loading…',

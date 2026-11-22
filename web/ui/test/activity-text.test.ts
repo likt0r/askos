@@ -285,6 +285,25 @@ describe('Activity text (unit)', () => {
       .toBe(`activity.actions.markHarmless ${JSON.stringify({ domain: pattern('^m$') })}`)
   })
 
+  it('words a Forbid and how it meets the Allowlist (ADR 0024)', () => {
+    const say = (key: string, values: Record<string, string>) => `activity.actions.${key} ${JSON.stringify(values)}`
+    const part = (key: string, values: Record<string, string>) => `activity.parts.${key} ${JSON.stringify(values)}`
+    expect(activityText(coded(0, 'forbid', { domain: 'ads.example', scope: 'work', duration: '8h' }, 'stored'), tr))
+      .toBe(`${say('forbid', { entry: 'ads.example' })} ${part('for', { duration: 'allowlist.durations.8h' })}`)
+    expect(activityText(coded(0, 'forbid', { domain: 'ads.example', scope: 'work', allowlist_unreadable: 'true' }, 'stored'), tr))
+      .toBe(`${say('forbid', { entry: 'ads.example' })} activity.parts.allowlistUnreadable`)
+    expect(activityText(coded(0, 'unforbid', { domain: 'ads.example', scope: 'work' }, 'stored'), tr))
+      .toBe(say('unforbid', { entry: 'ads.example' }))
+    expect(activityText(coded(0, 'forbid-extend', { domain: 'ads.example', scope: 'work', duration: '1h' }, 'stored'), tr))
+      .toBe(`${say('forbidExtend', { entry: 'ads.example' })} ${part('by', { duration: 'allowlist.durations.1h' })}`)
+    expect(activityText(coded(0, 'allowlist.forbid-expired', { domain: 'ads.example', scope: 'work' }, 'stored'), tr))
+      .toBe(say('forbidExpired', { entry: 'ads.example' }))
+    expect(activityText(coded(0, 'allowlist.forbid-lifted', { domain: 'ads.example', scope: 'work' }, 'stored'), tr))
+      .toBe(say('forbidLifted', { entry: 'ads.example' }))
+    expect(activityText(coded(0, 'allowlist.entry-forbidden', { domain: 'ads.example', scope: 'work' }, 'stored'), tr))
+      .toBe(say('entryForbidden', { entry: 'ads.example' }))
+  })
+
   it('words VM variables with their values, all of them with replace, and the names removed', () => {
     const say = (key: string, values: Record<string, string>) => `activity.actions.${key} ${JSON.stringify(values)}`
     expect(activityText(coded(0, 'set-env', { env: 'A=1, B=x y' }, 'stored'), tr)).toBe(say('setEnv', { env: 'A=1, B=x y' }))

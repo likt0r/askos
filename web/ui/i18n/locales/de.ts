@@ -154,6 +154,8 @@ export default {
     domain_suspicious: 'Dieses Ziel hat starke Merkmale, die es sperren, was immer die Allowlist sagt; nur wenn das Merkmal auf dem Host aufgehoben wird, kommt es durch.',
     allowlist_entry_not_found: 'Diesen Allowlist-Eintrag gibt es nicht.',
     allowlist_entry_permanent: 'Ein dauerhafter Eintrag kann nicht verlängert werden.',
+    forbid_not_found: 'Dieses Verbot gibt es nicht.',
+    forbid_permanent: 'Ein dauerhaftes Verbot kann nicht verlängert werden.',
     force_required: 'Das höbe starke Merkmale auf; nur die CLI auf dem Host kann das (--force).',
     watchlist_recreate_force_required: 'Die Watchlist neu anzulegen ließe den Proxy wieder Verbindungen durch; nur die CLI auf dem Host kann das (--force).',
     builtin_entry: 'Eingebaute legitime Domains können nicht geändert werden.',

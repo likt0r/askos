@@ -651,7 +651,8 @@ flowchart LR
   sample) counts as nothing while the other entries keep working: it allows, silences or lifts
   nothing; on the Watchlist it makes the proxy let nothing through until it is removed. The CLI
   lists it with the reason (`refused`) and removes it by its pattern.
-- **Open web** lets a VM reach any public domain for a limited time. Destinations with strong
+- **Open web** lets a VM reach any public domain that no **Forbid** of the VM wins for, for a
+  limited time. Destinations with strong
   **Signals** stay blocked, which includes **Watchlist** entries of a strong category and
   those of the threat-intelligence list; a `payload` entry only raises an Alert. While the
   hand-maintained Watchlist cannot be read, Open web lets nothing through.
@@ -675,17 +676,48 @@ flowchart LR
   gives up or sends more than 4096 bytes while it waits (a TLS client only waits for the answer
   to its ClientHello), the connection is refused as without a hold (`BLOCKED <host> (not on the
   Allowlist)`); a client with a shorter timeout of its own gives up earlier and tries again once
-  the destination is allowed. In Open web nothing is held: everything without a strong Signal
-  passes. At most 32 connections of a VM are held at once, and more are refused at once; a held
+  the destination is allowed. In Open web nothing is held: everything without a strong Signal or a
+  Forbid passes. At most 32 connections of a VM are held at once, and more are refused at once; a held
   connection costs the proxy's event loop nothing, it sleeps between its checks. The proxy reads
   `hold_seconds` itself from `settings.json` when the file changes, so a change applies without
   a restart, and a file it cannot use leaves the hold time it had.
+- A **Forbid** settles a destination the owner does not want for one VM
+  ([ADR 0024](docs/adr/0024-the-more-specific-of-an-allowlist-entry-and-a-forbid-wins.md)): it
+  covers its domain and the subdomains, and where it wins (below) the proxy refuses the destination
+  at once, `BLOCKED <host> (forbidden)`, with no hold and so no notification, also in Open web; a
+  held connection a Forbid comes to win for meanwhile is refused at once. When it expires or is
+  removed, the destination is unknown again: held and notified. Forbids are one root-owned file, `/etc/agentbox/forbids.json`, in the Allowlist's
+  record format (a domain, the VM as its scope, an optional expiry of the Allowlist's durations, a
+  note, who added it when), which only the CLI writes (`forbid`, `unforbid`, `forbid-extend`,
+  `forbid-make-permanent`, `forbid-set-note`) and the proxy re-reads when it changes; a broken file,
+  or one it cannot read, leaves the proxy with the Forbids it read before, and a proxy that has not
+  read it since it started refuses at once whatever no Allowlist entry allows (`BLOCKED <host>
+  (forbids unreadable)`) until it can; a file it could not read is tried again at every check, and
+  a missing file is no Forbids. `forbid` also works while the Allowlist cannot be read: the
+  Forbid is stored, and the VM's own entry of the domain, which it cannot remove then, loses the tie
+  to it. `agentbox expire-allowlist` removes expired Forbids too. **The more specific of an Allowlist entry and a Forbid wins**: of the
+  entries in force and the Forbids in force that match a destination for the VM, any named domain
+  ranks above any pattern, of two domains the longer (more labels) above its parent, and at the same
+  domain one VM's above all VMs' (`list_records.specificity`); the proxy compares the most specific
+  entry with the most specific Forbid, and a full tie, which only a hand edit can make, goes to the
+  Forbid. So a Forbid of `gist.github.com` for a VM beats an entry `github.com`, an entry
+  `api.gist.github.com` beats that Forbid, and a Forbid of `x.example` for a VM beats an entry
+  `x.example` for all VMs. The same domain for the same VM is never both allowed and forbidden: a
+  Forbid takes the place of the VM's own entry of that domain, and `allow` for one VM, `extend` and
+  `make-permanent` of such an entry lift the VM's Forbid of that domain, each recorded in Activity;
+  nothing else is removed, since what an entry for all VMs, a parent domain or a pattern meets is
+  more specific and keeps winning; `allow`, `extend` and `make-permanent` name the VMs whose more
+  specific Forbid still wins over the entry (`forbidden_for`). In the Control Room "Forbid…" sits next to "Allow…" in the VM's blocked list, with the
+  same durations, and the VM's Web tab lists its Forbids to extend, make permanent, note or remove.
 - Tunnels follow [ADR 0005](docs/adr/0005-ending-access-closes-only-disallowed-tunnels.md):
   the proxy remembers what allowed each tunnel (entries, or only Open web) and checks once
   a second whether access was withdrawn. An entry that disappears before its expiry was
-  removed on purpose; Open web ends when it is closed or runs out. The tunnels these
+  removed on purpose (also by a Forbid that takes its place); Open web ends when it is closed or
+  runs out. The tunnels these
   allowed are closed unless another valid entry (or Open web still open) allows their
-  destination. An expired entry stops new connections only; tunnels it allowed keep
+  destination. When the Forbids change, a tunnel closes whose destination a Forbid now wins for
+  that is more specific than any that covered it before, whether an entry or Open web allowed it
+  (`CLOSED <host> (forbidden)`). An expired entry stops new connections only; tunnels it allowed keep
   running, also after `agentbox expire-allowlist` (a timer, every minute) removes it and
   records the expiry in Activity. A tunnel whose destination gains a strong Signal (a Feed
   update, a new Watchlist entry) is closed within the same check, after an Alert (`CLOSED <host>
@@ -696,7 +728,8 @@ flowchart LR
   `ALLOWED <host> (allowlist <domain> <scope>)`, `(allowlist regex <pattern> <scope>)` or
   `(open web)` (of several entries the most specific domain, else a pattern),
   `BLOCKED <host> (<reason>)` (`suspicious: <signals>` for strong Signals, whatever would
-  allow the destination, `Watchlist unreadable` while the Watchlist cannot be read),
+  allow the destination, `Watchlist unreadable` while the Watchlist cannot be read, `forbidden`
+  where a Forbid of the VM wins, `forbids unreadable` before the proxy could read the Forbids),
   `ALERT <host> [<signals>]`, `HELD <host> (up to <seconds> s)` for a destination it holds (each
   held connection ends with its own `ALLOWED` or `BLOCKED` line), `CLOSED <host> (<reason>)`
   for a tunnel the proxy closed, and
@@ -1549,7 +1582,9 @@ One timeline of what happened on the Host and who caused it, kept in journald
   each Build and the Resets of
   an Update (`reset.update`, with the actor who asked) by the Build's unit,
   expired Temporary allowlist
-  entries (`allowlist.expired`) by `expire-allowlist`, a Pause by an Alert with a strong Signal
+  entries (`allowlist.expired`) and Forbids (`allowlist.forbid-expired`) by `expire-allowlist`, the
+  Forbid an Allowlist entry for a VM lifts (`allowlist.forbid-lifted`) and the entry a Forbid takes the
+  place of (`allowlist.entry-forbidden`) by the command that does it, a Pause by an Alert with a strong Signal
   (`alert.paused`, kind `alert`, actor `alert-watch`) by `alert-watch`, a VM that stopped responding
   (`wake.not-responding`, with what does not answer) once per incident, by whichever finds
   it first: a `wake` that gives up, or `watch` (actor `watch`), also when no Orca client

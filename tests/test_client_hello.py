@@ -325,7 +325,8 @@ class UnresolvableTest(unittest.TestCase):
                     reader, writer = await asyncio.open_connection(sock=ours)
                     theirs.sendall(client_hello("example.org"))
                     theirs.shutdown(socket.SHUT_WR)
-                    await proxy.handle("work", proxy.Allowlist("work"), proxy.HoldTime("work"), reader, writer)
+                    await proxy.handle("work", proxy.Allowlist("work"), proxy.Forbids("work"), proxy.HoldTime("work"),
+                                       reader, writer)
                     theirs.settimeout(5)
                     return theirs.recv(100)
             with mock.patch.object(proxy, "CONF_DIR", conf), mock.patch.object(proxy, "suspicious", None), \

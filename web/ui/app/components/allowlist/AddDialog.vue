@@ -4,7 +4,8 @@
 // refused by the backend (no entry lets them through, ADR 0021): shown with their Signals and how
 // to lift them. A pattern (a Regex entry, ADR 0013) is added only after its preview, the hosts of
 // the proxy log it would allow, and an explicit confirmation; it never allows a destination with
-// strong Signals either.
+// strong Signals either. Where a VM's more specific Forbid still wins over the new entry (ADR 0024),
+// the dialog stays open and names them.
 import type { AllowlistEntry, EntryDuration, RegexCheck } from '~/utils/access'
 
 const props = withDefaults(defineProps<{
@@ -33,6 +34,7 @@ const error = ref<unknown>(null)
 const refused = ref<string | null>(null)
 const checked = ref<RegexCheck | null>(null)
 const confirmed = ref(false)
+const stillForbidden = ref<{ vm: string, domain: string }[]>([])
 
 const fixedDomain = computed(() => props.domain !== undefined)
 const isRegex = computed(() => kind.value === 'regex')
@@ -66,6 +68,7 @@ watch(open, (isOpen) => {
   refused.value = null
   checked.value = null
   confirmed.value = false
+  stillForbidden.value = []
 }, { immediate: true })
 // a new pattern or scope needs its own preview and confirmation; so does coming back from Domain
 // (the check is not there to drop its preview while the form shows a domain)
@@ -89,7 +92,9 @@ async function submit() {
     const entry = await api<AllowlistEntry>('/allowlist', { method: 'POST', body })
     toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t(isRegex.value ? 'allowlist.add.doneRegex' : 'allowlist.add.done', { domain: what }) })
     emit('added', entry)
-    open.value = false
+    const winning = Array.isArray(entry?.forbidden_for) ? entry.forbidden_for : []
+    if (winning.length) stillForbidden.value = winning
+    else open.value = false
   }
   catch (e) {
     if (e instanceof ApiError && e.code === 'domain_suspicious' && !isRegex.value) refused.value = what
@@ -164,14 +169,22 @@ async function submit() {
         </UFormField>
 
         <AllowlistRefusal v-if="refused" :domain="refused" />
+        <UAlert
+          v-if="stillForbidden.length"
+          color="warning"
+          variant="subtle"
+          icon="i-lucide-ban"
+          :title="t('allowlist.add.stillForbidden', { forbids: stillForbidden.map(f => `${f.vm} (${f.domain})`).join(', ') })"
+          data-testid="add-still-forbidden"
+        />
         <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(error)" role="alert" data-testid="add-error" />
         <button type="submit" class="hidden" />
       </form>
     </template>
     <template #footer>
       <div class="flex w-full flex-wrap justify-end gap-2">
-        <UButton color="neutral" variant="outline" :label="t('access.common.cancel')" @click="open = false" />
-        <UButton icon="i-lucide-check" :label="t('allowlist.add.submit')" :loading="busy" :disabled="!canSubmit" data-testid="add-submit" @click="submit" />
+        <UButton color="neutral" variant="outline" :label="t(stillForbidden.length ? 'access.common.close' : 'access.common.cancel')" @click="open = false" />
+        <UButton v-if="!stillForbidden.length" icon="i-lucide-check" :label="t('allowlist.add.submit')" :loading="busy" :disabled="!canSubmit" data-testid="add-submit" @click="submit" />
       </div>
     </template>
   </UModal>

@@ -86,6 +86,13 @@ class AllowTest(AllowlistTest):
                                         for d in ("15min", "1h", "8h", "7d")]
                          + [["allow", "priv", "blocked.example", "--temporary", "--json"]])
 
+    def test_the_vms_whose_forbid_still_wins_are_passed_on(self):
+        # ADR 0024: the add dialog names them
+        answer = {**ENTRY, "forbids_lifted": [], "forbidden_for": [{"vm": "work", "domain": "docs.rs"}]}
+        self.respond(answer)
+        self.assertEqual(self.allow({"scope": "all", "domain": "docs.rs"}), (201, answer))
+        self.assertEqual(self.calls(), [["allow", "all", "docs.rs", "--json"]])
+
     def test_strong_signals_are_refused_with_the_explanation(self):
         reason = "evil.example has strong Signals (exfil), which block it whatever the Allowlist says, also with --force"
         self.respond("", stderr=failure("domain_suspicious", reason, domain="evil.example"), exitcode=1)
