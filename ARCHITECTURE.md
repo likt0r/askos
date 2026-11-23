@@ -1136,7 +1136,11 @@ Host after every Build
   version check as Update now does, and fails when that pins none. So it does when the image of
   such a pin is not in the Host's container storage (`podman image exists`; after `podman
   system prune`, say, and quay.io no longer serves an old fedora-bootc digest), and fails when
-  the image is still not there. A new digest is no update:
+  the image is still not there. A run without the Base image fails at once, before it builds
+  anything, when the fedora-bootc its Base Build is built on (its disk steps' buildroot) is not
+  there: quay.io no longer serves that digest once the tag moved on, so the run says to build
+  the Base image again. Such a run records one failed Build at the step `pins`, as one without
+  the Release's files does at `source`. A new digest is no update:
   it starts no Build, and the next Build (the weekly rebuild on `rebuild_day`, or an update of
   Orca, the agents or the packages) takes it.
 - What the Base image downloads, it downloads inside the Build container, where Fedora's

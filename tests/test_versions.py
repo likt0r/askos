@@ -835,7 +835,30 @@ class DigestTest(VersionsTest):
         self.assertIn("the image of the pinned digest of quay.io/fedora/fedora-bootc:44 is not on the Host "
                       "and the version check could not pull it", out)
         self.assertEqual(self.podman("build"), [])
-        self.assertEqual(self.newest()["status"], "failed")
+        self.assertEqual((self.newest()["status"], self.newest()["step"]), ("failed", "pins"))
+
+    def test_a_derived_run_fails_at_once_without_its_base_builds_fedora_bootc(self):
+        """Its disk step's buildroot is the fedora-bootc the Base Build is built on, which
+        quay.io no longer serves once the tag moved on: after podman system prune only a new
+        Base Build helps, and the run says so before it builds anything."""
+        self.built()
+        self.image("rust", DERIVED)
+        shutil.rmtree(self.image_store(FEDORA_REF))
+        self.forget_calls()
+        code, out = self.build("rust")
+        self.assertEqual(code, 1, out)
+        base = self.newest()["build"]
+        self.assertIn(f"== Pinned images missing: the fedora-bootc the Base Build {base} is built on "
+                      f"({FEDORA_REF}) is not on the Host", out)
+        self.assertIn("build the Base image again (agentbox build base)", out)
+        self.assertEqual((self.podman("build"), self.podman("run"), self.podman("pull")), ([], [], []))
+        self.assertEqual((self.newest("rust")["status"], self.newest("rust")["step"]), ("failed", "pins"))
+        # a new Base Build is built on the pinned fedora-bootc, and the derived Image on it
+        self.pin(FEDORA_NEW, BUILDER_DIGEST)
+        time.sleep(1.1)
+        self.built()
+        self.built("rust")
+        self.assertEqual(self.newest("rust")["fedora_bootc_digest"], FEDORA_NEW)
 
     def test_a_build_without_pins_runs_the_check_first(self):
         self.pin(None, BUILDER_DIGEST)
@@ -851,10 +874,11 @@ class DigestTest(VersionsTest):
         self.run_agentbox("fetch-versions")
         code, out = self.build()
         self.assertEqual(code, 1, out)
-        self.assertIn("no pinned digest of quay.io/fedora/fedora-bootc:44, "
+        self.assertIn("== Pinned images missing: no pinned digest of quay.io/fedora/fedora-bootc:44, "
                       "quay.io/centos-bootc/bootc-image-builder:latest", out)
+        self.assertNotIn("No sources", out)
         self.assertEqual(self.podman("build"), [])
-        self.assertEqual(self.newest()["status"], "failed")
+        self.assertEqual((self.newest()["status"], self.newest()["step"]), ("failed", "pins"))
 
     def test_a_derived_image_is_built_on_the_base_builds_fedora_bootc(self):
         """Its disk step's buildroot is the fedora-bootc its Base Build is built on, even after

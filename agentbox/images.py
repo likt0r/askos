@@ -86,7 +86,9 @@ RECORD = re.compile(rf"({NAME.pattern})-({BUILD_ID.pattern})\.json")
 USABLE = ("ok", "migrated")
 STATUS = {"ok": "ok", "migrated": "from before", "running": "running", "failed": "failed",
           "rejected": "rejected", "missing": "file missing"}
-STEPS = ("source", "build", "check", "disk", "done")
+# a run that fails before its Builds records one failed Build at "pins" (the pinned images it
+# needs, _pins) or "source" (the Release, the Settings); a Build runs "build" to "done"
+STEPS = ("pins", "source", "build", "check", "disk", "done")
 TEMPLATE = "agentbox-build@.service"
 CONTAINER = "localhost/agentbox/{}:{}"
 STORAGE = "/var/lib/containers/storage"
@@ -874,7 +876,10 @@ def _pins(base, say):
     has pulled it), or whose image is not in the Host's container storage (podman system prune;
     quay.io drops an old fedora-bootc digest, so podman could not pull it by itself), the
     version check runs first, as Update now runs it: it pulls the pinned digest again or pins
-    the tag's current one. Still none, or still not there, fails the run."""
+    the tag's current one. Still none, or still not there, fails the run. A run without the
+    Base image fails at once when the fedora-bootc its Base Build is built on, its disk steps'
+    buildroot, is not there: quay.io no longer serves that digest once the tag moved on, so
+    only a new Base Build helps."""
     needed = [n for n in digests.NAMES if base or n != "fedora-bootc"]
 
     def absent(pins):
@@ -900,6 +905,14 @@ def _pins(base, say):
         die(f"the image of the pinned digest of {', '.join(gone)} is not on the Host and the version check "
             "could not pull it (systemctl start agentbox-versions; journalctl -u agentbox-versions)",
             error="action_failed")
+    if not base:
+        build = current(BASE)
+        digest = digests.valid((builds().get(BASE, {}).get(build) or {}).get("fedora_bootc_digest"))
+        ref = digests.reference("fedora-bootc", digest) if digest else None
+        if ref and not digests.present(ref):
+            die(f"the fedora-bootc the Base Build {build} is built on ({ref}) is not on the Host, and quay.io "
+                "serves a digest of it only while its tag points there: build the Base image again "
+                "(agentbox build base)", error="action_failed")
     for name in needed:
         say(f"{digests.tagged(name)}: pinned {pins[name]['digest']}")
     return {name: pins[name]["digest"] if name in needed else None for name in digests.NAMES}
@@ -925,23 +938,25 @@ def _run(target, actor, say):
         work = os.path.join(paths.IMAGES, f".build-source-{_stamp()}")
         os.makedirs(work)
         try:
+            step = "pins"
             try:
+                pins = _pins(target in ("all", BASE) or BASE in (wanted or []), say)
+                step = "source"
                 values = settings.load()
                 days, orca = values["package_min_age_days"], values["orca_version"]
                 playwright = values["playwright_version"]
-                pins = _pins(target in ("all", BASE) or BASE in (wanted or []), say)
                 src, release = take_source(work, say)
             except Fail as f:
-                # nothing to build from: one failed Build of the Image (the Base image for all)
+                # nothing to build with or from: one failed Build of the Image (the Base image for all)
                 image = BASE if target == "all" else wanted[0] if wanted else target
                 build = _stamp()
-                _save({"image": image, "build": build, "status": "failed", "step": "source", "started": started,
+                _save({"image": image, "build": build, "status": "failed", "step": step, "started": started,
                        "finished": int(time.time()), "release": None, "base_build": None, "recipe_sha256": None,
                        "package_min_age_days": None, "orca_version": None, "playwright_version": None,
                        "fedora_bootc_digest": None, "builder_digest": None, "unit": unit(target), "actor": actor,
                        "agents": None,
                        "tools": None, "problems": [], "error": f.message, "safeguards": None, "container": False})
-                say(f"== No sources: {f.message}")
+                say(f"== {'Pinned images missing' if step == 'pins' else 'No sources'}: {f.message}")
                 say(f"The previous Build stays in use ({current(image) or 'none'})")
                 activity.record("build", "build.failed", ("Update: " if reason else "")
                                 + f"{'Build of all Images' if target == 'all' else f'Build {image}-{build}'} failed: "
