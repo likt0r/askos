@@ -112,6 +112,7 @@ class ImagesTest(VmsTest):
     def setUp(self):
         super().setUp()
         fake(os.path.join(self.dir, "bin", "podman"), "fake_podman.py")
+        fake(os.path.join(self.dir, "bin", "skopeo"), "fake_skopeo.py")
         fake(os.path.join(self.dir, "bin", "journalctl"), "fake_journalctl.py")
         self.journald = Journald(self.path("run/systemd/journal.agentbox/socket"))
         self.addCleanup(self.journald.close)
@@ -270,6 +271,37 @@ class BaseBuildTest(ImagesTest):
         self.assertEqual(lines[:2], ["ARG FEDORA_BOOTC", "FROM ${FEDORA_BOOTC}"])
         self.assertEqual([l for l in lines if l.startswith("FROM")], ["FROM ${FEDORA_BOOTC}"])
         self.assertFalse([l for l in lines if "fedora-bootc:" in l])
+
+    def test_the_buildroot_is_handed_over_by_its_platform_images_digest(self):
+        """A tag's digest names a manifest list; image-builder looks its entry up in the local
+        store by the image's Digest field, which podman set to the list's, and fails. The disk
+        step names the platform image's digest, which podman records beside it."""
+        platform = "sha256:" + "a" * 64
+        self.scenario(manifest_lists={FEDORA_DIGEST: platform})
+        self.built()
+        run = self.podman("run")[0]["argv"]
+        self.assertEqual(run[run.index("--build-container") + 1], "quay.io/fedora/fedora-bootc@" + platform)
+        # the Build still records the pinned (list) digest it is built on
+        self.assertEqual(self.newest()["fedora_bootc_digest"], FEDORA_DIGEST)
+
+    def test_an_older_lists_digest_of_the_same_image_is_no_platform_digest(self):
+        """The same platform image under a newer list (only another architecture changed):
+        podman records both lists; skopeo tells the lists from the platform image."""
+        platform, older = "sha256:" + "a" * 64, "sha256:" + "0" * 64
+        self.scenario(manifest_lists={FEDORA_DIGEST: [platform, "quay.io/fedora/fedora-bootc@" + older],
+                                      older: platform})
+        self.built()
+        run = self.podman("run")[0]["argv"]
+        self.assertEqual(run[run.index("--build-container") + 1], "quay.io/fedora/fedora-bootc@" + platform)
+
+    def test_a_pinned_list_without_a_platform_image_on_the_host_fails_the_build(self):
+        platform = "sha256:" + "a" * 64
+        self.scenario(manifest_lists={FEDORA_DIGEST: platform}, skopeo_fails=[platform])
+        code, out = self.build("base")
+        new = self.newest()
+        self.assertEqual(new["status"], "failed", out)
+        self.assertIn("holds no platform image of it", new["error"])
+        self.assertEqual(self.podman("run"), [])
 
     def test_bootc_image_builder_makes_the_disk_from_the_checked_image(self):
         self.built()

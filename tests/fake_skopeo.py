@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+"""Stand-in for `skopeo` in tests of the Builds (agentbox/digests.py).
+
+  skopeo inspect --raw containers-storage:REF
+      the raw manifest of REF in the fake container storage (fake_podman.image_dir): a manifest
+      list when REF's digest is a key of the scenario's "manifest_lists", else an image manifest;
+      fails when the image is not there, and for digests in the scenario's "skopeo_fails"
+
+Environment: FAKE_DIR (calls in calls.jsonl as {"cmd": "skopeo", "argv": [...]}, scenario.json).
+"""
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import fake_podman  # noqa: E402
+
+
+def main(argv):
+    with open(os.path.join(fake_podman.DIR, "calls.jsonl"), "a") as f:
+        f.write(json.dumps({"cmd": "skopeo", "argv": argv}) + "\n")
+    if argv[:2] != ["inspect", "--raw"] or len(argv) != 3 or not argv[2].startswith("containers-storage:"):
+        print(f"fake skopeo: unsupported: {argv}", file=sys.stderr)
+        return 2
+    ref = argv[2][len("containers-storage:"):]
+    repo, _, digest = ref.partition("@")
+    scenario = fake_podman.scenario()
+    if digest in scenario.get("skopeo_fails", []):
+        print("Error: reading manifest: manifest unknown", file=sys.stderr)
+        return 1
+    lists = scenario.get("manifest_lists", {})
+    known = os.path.isdir(fake_podman.image_dir(ref)) or any(
+        digest in ([p] if isinstance(p, str) else p) and os.path.isdir(fake_podman.image_dir(f"{repo}@{l}"))
+        for l, p in lists.items())
+    if not known:
+        print(f"Error: {ref}: image not known", file=sys.stderr)
+        return 1
+    if digest in lists:
+        print(json.dumps({"mediaType": "application/vnd.oci.image.index.v1+json", "manifests": []}))
+    else:
+        print(json.dumps({"mediaType": "application/vnd.oci.image.manifest.v1+json", "layers": []}))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

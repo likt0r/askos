@@ -38,8 +38,10 @@ as their buildroot. An image podman could not remove stays retired, and the next
 tries again. So the Host keeps at most two fedora-bootc images (the pin and the current Base
 Build's), 1-2 GB each, and one bootc-image-builder.
 """
+import json
 import os
 import re
+import shutil
 import subprocess
 import time
 
@@ -196,6 +198,49 @@ def present(ref):
                               stderr=subprocess.DEVNULL, timeout=60).returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False
+
+
+def _is_list(ref):
+    """Whether the Host's container storage holds a manifest list under ref (skopeo reads the
+    raw manifest from the store, nothing is fetched); None when skopeo cannot tell."""
+    try:
+        r = subprocess.run(["skopeo", "inspect", "--raw", f"containers-storage:{ref}"], stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True, errors="replace", timeout=60)
+        raw = json.loads(r.stdout) if r.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        raw = None
+    return isinstance(raw.get("manifests"), list) if isinstance(raw, dict) else None
+
+
+def instance(name, digest):
+    """The reference to hand bootc-image-builder for the pinned image: by the digest of the
+    Host's own platform image, not of the manifest list a tag's digest names. image-builder looks
+    a list's entry up in the local store by the image's Digest field, which podman sets to the
+    list's digest when it pulled by it, and finds nothing (osbuild/image-builder
+    pkg/container/client.go getLocalImageID). podman records every digest it pulled the image by
+    in RepoDigests; of those of the same repository, the ones that are no list (skopeo reads them
+    from the store) name the platform image, all the same image, so any of them does, the pinned
+    one first. (the reference, None), or (None, why)."""
+    ref = reference(name, digest)
+    try:
+        r = subprocess.run(["podman", "image", "inspect", "--format", "{{json .RepoDigests}}", ref],
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True, errors="replace", timeout=60)
+        found = json.loads(r.stdout) if r.returncode == 0 else None
+        why = clean((r.stderr or "")[-200:], multiline=False).strip()
+    except (OSError, subprocess.TimeoutExpired, ValueError) as e:
+        found, why = None, type(e).__name__
+    if not isinstance(found, list):
+        return None, f"{ref}: podman does not say the image's digests" + (f" ({why})" if why else "")
+    repo = reference(name, "")
+    digests = sorted({d for d in (valid(x[len(repo):]) for x in found if isinstance(x, str) and x.startswith(repo))
+                      if d} | {digest})
+    platform = [d for d in sorted(digests, key=lambda d: d != digest) if _is_list(reference(name, d)) is False]
+    if not platform and not shutil.which("skopeo"):
+        return None, f"{ref}: skopeo is missing, which tells the platform image from the list (dnf install skopeo)"
+    if not platform:
+        return None, (f"{ref}: the Host's container storage holds no platform image of it that skopeo can "
+                      f"read; pull it again (sudo podman rmi {ref}, then sudo agentbox check-versions)")
+    return reference(name, platform[0]), None
 
 
 def gone(ref):

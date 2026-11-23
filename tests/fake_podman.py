@@ -336,6 +336,18 @@ def main(argv):
         return 0
     if argv[:2] == ["image", "exists"]:
         return 0 if os.path.isdir(image_dir(argv[2])) else 1
+    if argv[:2] == ["image", "inspect"] and argv[2:4] == ["--format", "{{json .RepoDigests}}"]:
+        # a reference pulled by a manifest list's digest also carries its platform image's
+        # (scenario "manifest_lists": {list digest: platform digest})
+        ref = argv[4]
+        if not os.path.isdir(image_dir(ref)):
+            print(f"Error: {ref}: image not known", file=sys.stderr)
+            return 125
+        repo, _, digest = ref.partition("@")
+        platform = scenario().get("manifest_lists", {}).get(digest)
+        entries = [platform] if isinstance(platform, str) else (platform or [])
+        print(json.dumps([ref] + [e if "@" in e else f"{repo}@{e}" for e in entries]))
+        return 0
     if argv[:2] == ["image", "inspect"]:
         try:
             with open(os.path.join(image_dir(argv[2]), "layers.json")) as f:

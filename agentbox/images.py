@@ -534,7 +534,9 @@ def _make_disk(image, build, tag, out, rec, say):
     (--build-container), so the bootc that installs the Image, osbuild's stages and the tools
     that make the filesystems do not come from the Image."""
     builder = digests.reference("bootc-image-builder", rec["builder_digest"])
-    buildroot = digests.reference("fedora-bootc", rec["fedora_bootc_digest"])
+    buildroot, why = digests.instance("fedora-bootc", rec["fedora_bootc_digest"])
+    if why:
+        raise _Failed(why)
     say(f"== {image}: all Safeguards present. Creating the disk ({builder}, buildroot {buildroot})")
     with open(os.path.join(out, "config.toml"), "w") as f:
         f.write(DISK_CONFIG)

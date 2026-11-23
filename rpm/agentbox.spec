@@ -40,6 +40,8 @@ Requires:       qemu-img
 Requires:       virt-install
 # Builds of Images (ADR 0010)
 Requires:       podman
+# reads a manifest from the Host's container storage (the disk step's buildroot, agentbox/digests.py)
+Requires:       skopeo
 # the rules of the VM networks (agentbox-vmnet.service) and of Network mode (agentbox setup)
 Requires:       nftables
 Requires:       firewalld
