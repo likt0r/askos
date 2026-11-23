@@ -220,6 +220,29 @@ describe('System page: tool versions (#104)', () => {
     expect(checked).not.toContain('pinned')
   })
 
+  it('shows the digests a Build was made with next to the pinned ones, a new one not as an update (#144)', async () => {
+    const OLD = `sha256:${'f'.repeat(64)}`
+    const NEW = `sha256:${'a'.repeat(64)}`
+    const BUILDER = `sha256:${'b'.repeat(64)}`
+    const pinned = overview([image('base', {
+      base: true, current: '20261107-0300', updates: [], update: false,
+      builds: [build('20261107-0300', {
+        current: true, updates: [], fedora_bootc_digest: OLD, builder_digest: BUILDER,
+        tools: { ...AVAILABLE.tools, fedora: '44' },
+      })],
+    })], { available: { ...AVAILABLE, digests: {
+      'fedora-bootc': { digest: NEW, since: '2026-11-08T10:00:00Z', pinned: '2026-11-08T04:00:00Z', image: 'quay.io/fedora/fedora-bootc:44' },
+      'bootc-image-builder': { digest: BUILDER, since: '2026-11-01T10:00:00Z', pinned: '2026-11-08T04:00:00Z', image: 'quay.io/centos-bootc/bootc-image-builder:latest' },
+    } } })
+    const { wrapper } = await openSystem({ 'GET /images': ok(pinned) })
+    const digests = card(wrapper).findAll('[data-testid="digest-row"]')
+    expect(digests.map(r => r.attributes('data-image'))).toEqual(['fedora-bootc', 'bootc-image-builder'])
+    expect(digests.map(r => r.find('[data-testid="digest-installed"]').text())).toEqual([OLD.slice(0, 19), BUILDER.slice(0, 19)])
+    // the owner (2026-11-23): a new digest alone is no update, the next Build takes it
+    expect(digests[0]!.find('[data-testid="digest-available"]').text()).toBe(NEW.slice(0, 19))
+    expect(digests[1]!.find('[data-testid="digest-available"]').text()).toBe(BUILDER.slice(0, 19))
+  })
+
   it('marks Orca when the Settings pin its version (#113)', async () => {
     const pinned = overview([image('base', {
       base: true, current: '20261107-0300', updates: ['orca'], update: true,

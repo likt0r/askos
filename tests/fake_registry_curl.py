@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stand-in for `curl` asking the npm registry and GitHub what is available
+"""Stand-in for `curl` asking the npm registry, GitHub and quay.io what is available
 (agentbox/versions.py, `agentbox fetch-versions`) and for the downloads of the Build's
 vm/build/orca-release, in tests.
 
@@ -14,6 +14,12 @@ registry.json:
               lists them (GET https://api.github.com/repos/<owner>/<repo>/releases?per_page=N&page=P,
               pages of N), or {"status": 500} for an error. GET .../releases/tags/<tag> answers
               the release with that tag_name unless it is a draft, else 404}
+  quay       {"<namespace>/<repository>": the history of its tags (name, manifest_digest,
+              start_ts, end_ts once the tag left the digest), in the order the API lists
+              them, or {"status": 500} for an error}: GET https://quay.io/api/v1/repository/
+              <namespace>/<repository>/tag/?specificTag=<tag>&limit=N&page=P answers
+              {"tags": [the entries of that tag on page P, pages of N], "page": P,
+              "has_additional": whether a page follows}
   downloads  {"<url>": "<path of a file with its content>" or {"status": 404}}: what curl -o
               writes for that URL (-f: an error status fails with exit 22)
              {"flood": true} instead: a body without length that never ends, whatever
@@ -26,6 +32,7 @@ be =https), --max-filesize (a download larger than that fails with exit 63), -H,
 """
 import json
 import os
+import re
 import shutil
 import sys
 from urllib.parse import parse_qs, unquote, urlparse
@@ -57,6 +64,23 @@ def releases(u, known):
     return 404, {"message": "Not Found"}
 
 
+def tags(u, known):
+    """(status, body) of quay.io's tag API: the history of the tag asked for (specificTag),
+    page `page` of `limit` entries."""
+    m = re.fullmatch(r"/api/v1/repository/([^/]+/[^/]+)/tag/", u.path)
+    found = known.get("quay", {}).get(m.group(1)) if m else None
+    if found is None:
+        return 404, {"error_message": "Not Found"}
+    if isinstance(found, dict) and set(found) == {"status"}:
+        return found["status"], {"error_message": "failed"}
+    query = parse_qs(u.query)
+    tag = query.get("specificTag", [None])[0]
+    history = [t for t in found if tag is None or t.get("name") == tag]
+    limit, page = int(query.get("limit", ["50"])[0]), int(query.get("page", ["1"])[0])
+    return 200, {"tags": history[(page - 1) * limit:page * limit], "page": page,
+                 "has_additional": len(history) > page * limit}
+
+
 def answer(url, known):
     u = urlparse(url)
     if u.scheme != "https":
@@ -65,6 +89,8 @@ def answer(url, known):
         found = known.get("npm", {}).get(unquote(u.path[1:]))
     elif u.netloc == "api.github.com":
         return releases(u, known)
+    elif u.netloc == "quay.io":
+        return tags(u, known)
     else:
         return None
     if found is None:

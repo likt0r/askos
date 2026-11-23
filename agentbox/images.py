@@ -12,15 +12,24 @@ builds the Base image, then every other Image), whose journal is its log
 
   1. the Containerfiles and guest files of the installed Release are copied, so every
      Image of one run is built from the same files even if an update replaces them;
-  2. podman builds the container image: the Base image with package_min_age_days,
-     orca_version and playwright_version of the Settings (its Containerfile downloads Orca
-     from its GitHub release, vm/build/orca-release; nothing of Orca comes from the Host), a
-     derived Image on the Base image's current Build;
+  2. podman builds the container image: the Base image from the pinned digest of
+     quay.io/fedora/fedora-bootc:44 (digests.py, build argument FEDORA_BOOTC) with
+     package_min_age_days, orca_version and playwright_version of the Settings (its
+     Containerfile downloads Orca from its GitHub release, vm/build/orca-release; nothing of
+     Orca comes from the Host), a derived Image on the Base image's current Build;
   3. safeguards.check reads the built filesystem (podman image mount) and discards the
      Build if a safeguard is missing or weakened; then the versions of its tools are read
      from the same files (versions.py);
-  4. bootc-image-builder turns it into a disk, images/<image>-<build>.qcow2;
+  4. bootc-image-builder, by its pinned digest, turns it into a disk,
+     images/<image>-<build>.qcow2, with the fedora-bootc the Image is built on as its
+     buildroot (--build-container): bootc, osbuild's stages and the tools that make the
+     filesystems come from that pristine image, not from the Image (bootc still runs the
+     Image's own bootupctl to install the bootloader, see ARCHITECTURE.md);
   5. the link images/<image>.qcow2 moves to it (one rename) and old Builds go.
+
+The pinned digests are read once at the start of a run; with one it needs not pinned yet
+(fedora-bootc only for a run that builds the Base image) the run first runs the version check,
+as Update now does.
 
 Anything failing leaves the previous Build in use and is recorded in Activity (kind
 build) with the reason. Builds run one at a time.
@@ -62,7 +71,8 @@ import subprocess
 import sys
 import time
 
-from . import activity, footprint, guest, options, paths, programs, registry, safeguards, settings, state_files, times, version
+from . import activity, digests, footprint, guest, options, paths, programs, registry, safeguards, settings
+from . import state_files, times, version
 from . import states, versions
 from .commands import declare
 from .errors import Fail, die
@@ -76,10 +86,11 @@ RECORD = re.compile(rf"({NAME.pattern})-({BUILD_ID.pattern})\.json")
 USABLE = ("ok", "migrated")
 STATUS = {"ok": "ok", "migrated": "from before", "running": "running", "failed": "failed",
           "rejected": "rejected", "missing": "file missing"}
-STEPS = ("source", "build", "check", "disk", "done")
+# a run that fails before its Builds records one failed Build at "pins" (the pinned images it
+# needs, _pins) or "source" (the Release, the Settings); a Build runs "build" to "done"
+STEPS = ("pins", "source", "build", "check", "disk", "done")
 TEMPLATE = "agentbox-build@.service"
 CONTAINER = "localhost/agentbox/{}:{}"
-BUILDER = "quay.io/centos-bootc/bootc-image-builder:latest"
 STORAGE = "/var/lib/containers/storage"
 RUN_LOCK = os.path.join(paths.STATE, "build-run")       # held for a whole Build: one at a time
 REQUEST_LOCK = os.path.join(paths.STATE, "build-request")  # held while a request file is written
@@ -401,13 +412,16 @@ def take_source(work, say):
 
 def _base_for_derived():
     """The Base image's current Build a derived Image builds on: checked, with its
-    container image still there. (build, record)."""
+    container image still there and the digest of the fedora-bootc it is built on, which is
+    the buildroot of the derived Image's disk step too. (build, record)."""
     build = current(BASE)
     rec = builds().get(BASE, {}).get(build) if build else None
     if not rec or rec["status"] != "ok" or not rec.get("safeguards"):
         raise _Failed("the Base image has no checked Build, run agentbox build base first")
     if not image_exists(CONTAINER.format(BASE, build)):
         raise _Failed(f"the container image of the Base Build {build} is missing, run agentbox build base first")
+    if not digests.valid(rec.get("fedora_bootc_digest")):
+        raise _Failed(f"the Base Build {build} records no digest of fedora-bootc, run agentbox build base first")
     return build, rec
 
 
@@ -453,8 +467,9 @@ def _stamp():
     return time.strftime("%Y%m%d-%H%M%S")
 
 
-def _new_build(image, release, days, orca, playwright, actor, unit_name, recipe_sha256=None):
-    """A new Build id and its first, running record."""
+def _new_build(image, release, days, orca, playwright, pins, actor, unit_name, recipe_sha256=None):
+    """A new Build id and its first, running record, with the pinned digests of the run
+    (`pins`: {name: digest}); a derived Image's fedora-bootc is its Base Build's."""
     build = _stamp()
     while os.path.exists(record_file(image, build)) or os.path.exists(build_file(image, build)):
         time.sleep(1)
@@ -462,7 +477,9 @@ def _new_build(image, release, days, orca, playwright, actor, unit_name, recipe_
     rec = {"image": image, "build": build, "status": "running", "step": "build", "started": int(time.time()),
            "finished": None, "release": release, "base_build": None, "recipe_sha256": recipe_sha256,
            "package_min_age_days": days, "orca_version": orca or None,
-           "playwright_version": playwright or None, "unit": unit_name,
+           "playwright_version": playwright or None,
+           "fedora_bootc_digest": pins["fedora-bootc"] if image == BASE else None,
+           "builder_digest": pins["bootc-image-builder"], "unit": unit_name,
            "actor": actor, "agents": None, "tools": None, "problems": [], "error": None, "safeguards": None,
            "container": False}
     _save(rec)
@@ -472,11 +489,14 @@ def _new_build(image, release, days, orca, playwright, actor, unit_name, recipe_
 def _build_container(image, src, release, days, orca, playwright, rec, tag, say, recipe_data=None):
     """Build the Image's container image and return its Base Build record, or None for the Base image."""
     if image == BASE:
-        say(f"== {image}: building the container image (package minimum age: {days} days; Orca: "
+        fedora = digests.reference("fedora-bootc", rec["fedora_bootc_digest"])
+        say(f"== {image}: building the container image from {fedora} (package minimum age: {days} days; Orca: "
             + (f"{orca}, pinned in orca_version" if orca else "the newest release at least that old")
             + "; Playwright: " + (f"{playwright}, pinned in playwright_version)" if playwright
                                   else "the newest version at least that old)"))
-        _podman("build", "--pull=newer", "--no-cache", "--build-arg", f"PACKAGE_MIN_AGE_DAYS={days}",
+        # the version check pulled the pinned digest; never anything by its tag
+        _podman("build", "--pull=missing", "--no-cache", "--build-arg", f"FEDORA_BOOTC={fedora}",
+                "--build-arg", f"PACKAGE_MIN_AGE_DAYS={days}",
                 "--build-arg", f"ORCA_VERSION={orca}", "--build-arg", f"PLAYWRIGHT_VERSION={playwright}",
                 "-t", tag, "-f", os.path.join(src, "vm", "Containerfile"), src,
                 timeout=4 * 3600, what="podman build")
@@ -487,11 +507,11 @@ def _build_container(image, src, release, days, orca, playwright, rec, tag, say,
     if recipe_data is None and not os.path.isfile(os.path.join(context, "Containerfile")):
         raise _Failed(f"Image {image} does not exist in Release {release} (vm/images/{image}/Containerfile)")
     base_build, base = _base_for_derived()
-    # a derived Image keeps the Base Build's safeguards, its package age included, its Orca and
-    # its Playwright
+    # a derived Image keeps the Base Build's safeguards, its package age included, its Orca, its
+    # Playwright and its fedora-bootc
     days = base["package_min_age_days"]
     rec.update(base_build=base_build, package_min_age_days=days, orca_version=base.get("orca_version"),
-               playwright_version=base.get("playwright_version"))
+               playwright_version=base.get("playwright_version"), fedora_bootc_digest=base["fedora_bootc_digest"])
     _save(rec)
     say(f"== {image}: building the container image on the Base Build {base_build}")
     if recipe_data is not None:
@@ -508,15 +528,21 @@ def _build_container(image, src, release, days, orca, playwright, rec, tag, say,
     return base
 
 
-def _make_disk(image, build, tag, out, say):
-    """Create the Image's System disk from its checked container image."""
-    say(f"== {image}: all Safeguards present. Creating the disk (bootc-image-builder)")
+def _make_disk(image, build, tag, out, rec, say):
+    """Create the Image's System disk from its checked container image: bootc-image-builder by
+    its pinned digest, with the pristine fedora-bootc the Image is built on as the buildroot
+    (--build-container), so the bootc that installs the Image, osbuild's stages and the tools
+    that make the filesystems do not come from the Image."""
+    builder = digests.reference("bootc-image-builder", rec["builder_digest"])
+    buildroot = digests.reference("fedora-bootc", rec["fedora_bootc_digest"])
+    say(f"== {image}: all Safeguards present. Creating the disk ({builder}, buildroot {buildroot})")
     with open(os.path.join(out, "config.toml"), "w") as f:
         f.write(DISK_CONFIG)
-    _podman("run", "--rm", "--privileged", "--pull=newer", "--security-opt", "label=type:unconfined_t",
+    _podman("run", "--rm", "--privileged", "--pull=missing", "--security-opt", "label=type:unconfined_t",
             "-v", f"{out}:/output", "-v", f"{os.path.join(out, 'config.toml')}:/config.toml:ro",
-            "-v", f"{STORAGE}:{STORAGE}", BUILDER, "--type", "qcow2", "--rootfs", "xfs",
-            "--config", "/config.toml", tag, timeout=2 * 3600, what="bootc-image-builder")
+            "-v", f"{STORAGE}:{STORAGE}", builder, "--type", "qcow2", "--rootfs", "xfs",
+            "--build-container", buildroot, "--config", "/config.toml", tag,
+            timeout=2 * 3600, what="bootc-image-builder")
     disk = os.path.join(out, "qcow2", "disk.qcow2")
     if not os.path.isfile(disk):
         raise _Failed("bootc-image-builder created no disk")
@@ -587,15 +613,16 @@ def _done(image, build, rec, tag, release, what, actor, reason, say):
     return build
 
 
-def _build_one(image, src, release, days, orca, playwright, actor, unit_name, say, reason=None, recipe_data=None,
-               recipe_sha256=None):
+def _build_one(image, src, release, days, orca, playwright, pins, actor, unit_name, say, reason=None,
+               recipe_data=None, recipe_sha256=None):
     """Build one Image from the Release's files or its Recipe in the unit unit_name, the Base image with
     the package minimum age `days`, Orca's release `orca` (orca_version, "" for the newest old
-    enough) and Playwright's version `playwright` (playwright_version, likewise); the Build's
-    id when it became the current Build, else False. The Activity entries of an update's
-    Builds have the reason "update"."""
+    enough) and Playwright's version `playwright` (playwright_version, likewise), with the
+    pinned digests `pins` ({name: digest}, digests.py); the Build's id when it became the
+    current Build, else False. The Activity entries of an update's Builds have the reason
+    "update"."""
     what = "Update: " if reason == "update" else ""
-    build, rec = _new_build(image, release, days, orca, playwright, actor, unit_name, recipe_sha256)
+    build, rec = _new_build(image, release, days, orca, playwright, pins, actor, unit_name, recipe_sha256)
     tag = CONTAINER.format(image, build)
     out = os.path.join(paths.IMAGES, f".build-{image}-{build}")
     os.makedirs(out)
@@ -608,7 +635,7 @@ def _build_one(image, src, release, days, orca, playwright, actor, unit_name, sa
             manifest, agents, tools = _check(image, tag, rec["package_min_age_days"], base)
             rec.update(step="disk", agents=agents, tools=tools, safeguards=manifest if image == BASE else None)
             _save(rec)
-            _make_disk(image, build, tag, out, say)
+            _make_disk(image, build, tag, out, rec, say)
             rec.update(status="ok", step="done", finished=int(time.time()), container=image == BASE)
             _save(rec)
             with state_files.locked(paths.IMAGES):
@@ -637,6 +664,28 @@ def _cleanup(say):
             _save(rec)
             _rmi(CONTAINER.format(rec["image"], rec["build"]))
             say(f"Interrupted Build {rec['image']}-{rec['build']} marked as failed")
+    _remove_retired(say)
+
+
+def _remove_retired(say):
+    """Holding the run lock: the images of digests the version check no longer pins; the
+    current Base Build's fedora-bootc stays, its derived Images' disk steps use it as their
+    buildroot (digests.remove_retired)."""
+    base = builds().get(BASE, {}).get(current(BASE)) or {}
+    digests.remove_retired(base.get("fedora_bootc_digest"), say)
+
+
+def remove_retired(say):
+    """The version check's, right after it pinned (versions.py): what _remove_retired removes,
+    only when no Build runs, without waiting for one: a running run's Builds may still use a
+    retired image, and the next check or run removes it."""
+    if not digests.load().get("retired"):
+        return
+    with state_files.locked_unless_held(RUN_LOCK) as mine:
+        if not mine:
+            say("A Build is running: the retired images stay until the next check or Build run")
+            return
+        _remove_retired(say)
 
 
 def _request_file(target):
@@ -756,7 +805,7 @@ def _check_versions(say):
     """The version check of Update now, as the Maintenance window runs it: the fetch as
     agentbox-feeds through its unit (systemctl start waits for it), then the root part
     (versions.check). What fails stays unknown and never stops the update."""
-    say(f"== Checking versions: asking npm and GitHub ({versions.FETCH_UNIT}, as agentbox-feeds)")
+    say(f"== Checking versions: asking npm, GitHub and quay.io ({versions.FETCH_UNIT}, as agentbox-feeds)")
     try:
         r = programs.systemctl("start", versions.FETCH_UNIT, timeout=20 * 60, ok=None)
         if r.returncode != 0:
@@ -820,6 +869,55 @@ def _recipe_snapshot(name):
     return data, recipes.check(data)["sha256"]
 
 
+def _pins(base, say):
+    """The pinned digests a run's Builds use ({name: digest or None}, digests.py), read once:
+    bootc-image-builder always, fedora-bootc only for a run that builds the Base image (`base`;
+    a derived Image takes its Base Build's). With one it needs not pinned yet (no version check
+    has pulled it), or whose image is not in the Host's container storage (podman system prune;
+    quay.io drops an old fedora-bootc digest, so podman could not pull it by itself), the
+    version check runs first, as Update now runs it: it pulls the pinned digest again or pins
+    the tag's current one. Still none, or still not there, fails the run. A run without the
+    Base image fails at once when the fedora-bootc its Base Build is built on, its disk steps'
+    buildroot, is not there: quay.io no longer serves that digest once the tag moved on, so
+    only a new Base Build helps."""
+    needed = [n for n in digests.NAMES if base or n != "fedora-bootc"]
+
+    def absent(pins):
+        return [digests.tagged(n) for n in needed
+                if pins[n] and not digests.present(digests.reference(n, pins[n]["digest"]))]
+
+    pins = digests.pinned()
+    unpinned, gone = [digests.tagged(n) for n in needed if not pins[n]], absent(pins)
+    if unpinned:
+        say(f"== No pinned digest of {', '.join(unpinned)} yet: running the version check first")
+    if gone:
+        say(f"== The image of the pinned digest of {', '.join(gone)} is not on the Host: "
+            "running the version check first")
+    if unpinned or gone:
+        _check_versions(say)
+        pins = digests.pinned()
+    missing = [digests.tagged(n) for n in needed if not pins[n]]
+    if missing:
+        die(f"no pinned digest of {', '.join(missing)}: the version check could not pin one "
+            "(systemctl start agentbox-versions; journalctl -u agentbox-versions)", error="action_failed")
+    gone = absent(pins)
+    if gone:
+        die(f"the image of the pinned digest of {', '.join(gone)} is not on the Host and the version check "
+            "could not pull it (systemctl start agentbox-versions; journalctl -u agentbox-versions)",
+            error="action_failed")
+    if not base:
+        build = current(BASE)
+        digest = digests.valid((builds().get(BASE, {}).get(build) or {}).get("fedora_bootc_digest"))
+        ref = digests.reference("fedora-bootc", digest) if digest else None
+        if ref and not digests.present(ref):
+            die(f"the fedora-bootc the Base Build {build} is built on ({ref}) is not on the Host, and quay.io "
+                "serves a digest of it only while its tag points there: build the Base image again "
+                "(agentbox build base)", error="action_failed")
+    for name in needed:
+        say(f"{digests.tagged(name)}: pinned {pins[name]['digest']}")
+    return {name: pins[name]["digest"] if name in needed else None for name in digests.NAMES}
+
+
 def _run(target, actor, say):
     """The Builds of build-run, one at a time (the run lock): [(Image, Build id or False)]. An
     update decides under the lock which Images it builds (update_images), so a Build that
@@ -840,22 +938,25 @@ def _run(target, actor, say):
         work = os.path.join(paths.IMAGES, f".build-source-{_stamp()}")
         os.makedirs(work)
         try:
+            step = "pins"
             try:
+                pins = _pins(target in ("all", BASE) or BASE in (wanted or []), say)
+                step = "source"
                 values = settings.load()
                 days, orca = values["package_min_age_days"], values["orca_version"]
                 playwright = values["playwright_version"]
                 src, release = take_source(work, say)
             except Fail as f:
-                # nothing to build from: one failed Build of the Image (the Base image for all)
+                # nothing to build with or from: one failed Build of the Image (the Base image for all)
                 image = BASE if target == "all" else wanted[0] if wanted else target
                 build = _stamp()
-                _save({"image": image, "build": build, "status": "failed", "step": "source", "started": started,
+                _save({"image": image, "build": build, "status": "failed", "step": step, "started": started,
                        "finished": int(time.time()), "release": None, "base_build": None, "recipe_sha256": None,
                        "package_min_age_days": None, "orca_version": None, "playwright_version": None,
-                       "unit": unit(target), "actor": actor,
+                       "fedora_bootc_digest": None, "builder_digest": None, "unit": unit(target), "actor": actor,
                        "agents": None,
                        "tools": None, "problems": [], "error": f.message, "safeguards": None, "container": False})
-                say(f"== No sources: {f.message}")
+                say(f"== {'Pinned images missing' if step == 'pins' else 'No sources'}: {f.message}")
                 say(f"The previous Build stays in use ({current(image) or 'none'})")
                 activity.record("build", "build.failed", ("Update: " if reason else "")
                                 + f"{'Build of all Images' if target == 'all' else f'Build {image}-{build}'} failed: "
@@ -871,8 +972,8 @@ def _run(target, actor, say):
                 build_images = wanted or [target]
             snapshots = {name: _recipe_snapshot(name) for name in build_images
                          if name != BASE and name not in released and name in recipes.names()}
-            return [(image, _build_one(image, src, release, days, orca, playwright, actor, unit(target), say, reason,
-                                       recipe_data=snapshots.get(image, (None, None))[0],
+            return [(image, _build_one(image, src, release, days, orca, playwright, pins, actor, unit(target), say,
+                                       reason, recipe_data=snapshots.get(image, (None, None))[0],
                                        recipe_sha256=snapshots.get(image, (None, None))[1]))
                     for image in build_images]
         finally:
@@ -1090,13 +1191,15 @@ def update_now_cmd(args):
 def _public(info, cur, used, pins, offered):
     file = info.get("file")
     tools = versions.of_build(info)
+    fedora, builder = digests.valid(info.get("fedora_bootc_digest")), digests.valid(info.get("builder_digest"))
+    updates = versions.updates(tools, offered) if info["status"] in USABLE else []
     return {"build": info["build"], "status": info["status"], "step": info.get("step"),
             "started": times.iso(info.get("started")), "finished": times.iso(info.get("finished")),
             "release": info.get("release"), "commit": info.get("commit"), "base_build": info.get("base_build"),
             "recipe_sha256": info.get("recipe_sha256"),
             "package_min_age_days": info.get("package_min_age_days"), "orca_version": info.get("orca_version"),
-            "playwright_version": info.get("playwright_version"), "agents": info.get("agents"),
-            "tools": tools, "updates": versions.updates(tools, offered) if info["status"] in USABLE else [],
+            "playwright_version": info.get("playwright_version"), "fedora_bootc_digest": fedora,
+            "builder_digest": builder, "agents": info.get("agents"), "tools": tools, "updates": updates,
             "error": info.get("error"), "problems": info.get("problems") or [], "actor": info.get("actor"),
             "current": info["build"] == cur, "file": file, "size": info.get("size"),
             "used_by": sorted(used.get(file, [])) if file and used is not None else ([] if used is not None else None),
@@ -1121,8 +1224,11 @@ def overview():
     VM) and its Builds. A Build's `release` is the Release it was built from; Builds from
     before ADR 0010 name the commit of main they came from instead (`commit`). The versions
     of its tools (`tools`) and those a new Build would change (`updates`), by what the last
-    version check found (`available`, versions.py); an Image's `update`: a new Build would
-    change a tool or bring package updates (None: nothing to tell it by). An Image's
+    version check found (`available`, versions.py), with the pinned digests a new Build would
+    use (`available.digests`, digests.py); a Build's `fedora_bootc_digest` and `builder_digest`
+    are those it was built with. A digest pinned since is no update: the next Build takes it.
+    An Image's `update`: a new Build would change a tool or bring package updates (None:
+    nothing to tell it by). An Image's
     Containerfile (`containerfile`, its path in the repository) links to the repository at the
     tag or commit its current Build came from (`containerfile_url`, None when that is not
     known); `repository` is where the Releases come from. Links only: nothing is fetched."""
@@ -1135,6 +1241,9 @@ def overview():
     values = settings.load()
     checked = versions.load()
     offered = versions.available(checked or {}, values["orca_version"] or None, values["playwright_version"] or None)
+    offered["digests"] = {name: {**pin, "since": times.iso(pin["since"]), "pinned": times.iso(pin["pinned"]),
+                                 "image": digests.tagged(name)} if pin else None
+                          for name, pin in digests.pinned().items()}
     names = set(found) | set(users) | set(available()) | set(defined or []) | active_recipes
     names = sorted((n for n in names if NAME.fullmatch(n)), key=lambda n: (n != BASE, n))
     images = []
@@ -1230,6 +1339,9 @@ def images_cmd(args):
             print(line)
             if b["status"] in USABLE and any(b["tools"].values()):
                 print(" " * 19 + versions.text(b["tools"]))
+            if b["fedora_bootc_digest"] or b["builder_digest"]:
+                print(" " * 19 + f"fedora-bootc {digests.short(b['fedora_bootc_digest'])}, "
+                      f"bootc-image-builder {digests.short(b['builder_digest'])}")
     tools = offered["tools"]
     parts = [f"{versions.NAMES[t]} {tools[t] or '?'}" for t in ("orca", *versions.NPM)]
     if offered["checked"]:
@@ -1241,6 +1353,9 @@ def images_cmd(args):
               + ", ".join(parts))
     else:
         print("Available: not checked yet (daily; now: systemctl start agentbox-versions)")
+    pins = [f"{p['image']} {digests.short(p['digest'])} (since {times.local(times.epoch(p['since']))})"
+            if p else f"{digests.tagged(n)} none yet" for n, p in offered["digests"].items()]
+    print("Pinned for the next Build: " + ", ".join(pins))
     if not result["disks_readable"]:
         print("agentbox: not every System disk is readable, Builds in use unknown", file=sys.stderr)
 

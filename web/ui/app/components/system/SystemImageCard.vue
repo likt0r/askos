@@ -25,6 +25,7 @@ const open = ref(new Set<string>())
 const running = computed(() => props.image.running)
 const currentBuild = computed(() => props.image.builds.find(b => b.build === props.image.current) ?? null)
 const tools = computed(() => toolRows(currentBuild.value, props.available))
+const digests = computed(() => digestRows(currentBuild.value, props.available))
 
 function toggle(build: string) {
   const next = new Set(open.value)
@@ -116,6 +117,7 @@ const log = (b: string) => props.logs[logKey(props.image.name, b)]
     <div v-if="currentBuild" class="px-4 pt-3" data-testid="image-versions">
       <SystemToolVersions
         :rows="tools"
+        :digests="digests"
         :available="available"
         :installed-label="t('system.versions.inBuild', { build: currentBuild.build })"
         :packages="image.package_updates ?? null"

@@ -19,10 +19,11 @@ two parts, so that nothing from the internet is parsed as root:
 
   `agentbox fetch-versions` (agentbox-versions-fetch.service) runs as the service user
   agentbox-feeds, with no access to /etc/agentbox, the VMs or the Builds, and asks the npm
-  registry and GitHub; it writes AVAILABLE (its StateDirectory).
+  registry, GitHub and quay.io; it writes AVAILABLE (its StateDirectory).
   `agentbox check-versions` (agentbox-versions.service, root, after the fetch) reads that
-  file as untrusted input (FETCHED), adds what only root can see (the package count below)
-  and writes /var/lib/agentbox/versions.json, which everything else reads:
+  file as untrusted input (FETCHED), adds what only root can see (the package count below),
+  pins the digests it found (digests.py) and writes /var/lib/agentbox/versions.json, which
+  everything else reads:
 
   npm tools  the version a Build would install now: from the registry's metadata
              (registry.npmjs.org), the newest version published at least
@@ -36,7 +37,11 @@ two parts, so that nothing from the internet is parsed as root:
              orca_version of the Settings when it is set; by the rule of the Build's
              vm/build/orca-release, and only one whose x86_64 RPM GitHub lists with a SHA-256.
              Nothing is downloaded here.
-  packages   per Image whose current Build's container image is kept (the Base image),
+  digests    of quay.io/fedora/fedora-bootc:44 and quay.io/centos-bootc/bootc-image-builder,
+             from quay.io's history of the tag (digests.py): what the next Build uses once
+             check-versions has pulled and pinned it. A new digest is no update and starts
+             no Build; the next Build for another reason takes it.
+  packages  per Image whose current Build's container image is kept (the Base image),
              how many Fedora package updates are available for that Build: `dnf
              check-update` in a container from it (podman as root, like the Build), named
              agentbox-check-<image>, without capabilities and with a read-only root, for
@@ -50,8 +55,9 @@ runs). The Maintenance window waits for those Builds before its Reset check move
 onto them.
 
 Whatever cannot be determined is null, "unknown"; a failed check never blocks a Build or
-a Reset. The fetch needs HTTPS to registry.npmjs.org and api.github.com, the count's
-container the Fedora mirrors. versions.json from before #113 named the Host's Orca and the
+a Reset; a digest that cannot be determined or pulled leaves its pin as it is. The fetch
+needs HTTPS to registry.npmjs.org, api.github.com and quay.io, the count's container the
+Fedora mirrors, the pulls quay.io. versions.json from before #113 named the Host's Orca and the
 newest release instead (orca.host, orca.release): Orca is unknown in it.
 """
 import json
@@ -63,7 +69,7 @@ import subprocess
 import sys
 import time
 
-from . import paths, programs, safeguards, scripts, settings, state_files, times
+from . import digests, paths, programs, safeguards, scripts, settings, state_files, times
 from .commands import declare
 from .errors import Fail, die
 from .sanitize import clean
@@ -93,7 +99,8 @@ FETCH_ERROR = re.compile(r"npm registry not reachable|npm registry answered [1-5
                          r"no x86_64 RPM with a SHA-256 in the release|"
                          r"RPM of the version in orca_version replaced only recently|"
                          r"no release of the version in playwright_version|"
-                         r"version in playwright_version younger than package_min_age_days")
+                         r"version in playwright_version younger than package_min_age_days|"
+                         + digests.ERRORS)
 REGISTRY = "https://registry.npmjs.org/"
 GITHUB_API = "https://api.github.com/repos/"
 MAX_ASAR_HEADER = 64 << 20          # Orca 1.4: 1.1 MiB
@@ -156,23 +163,13 @@ def _version(v):
     return v if isinstance(v, str) and VERSION.fullmatch(v) else None
 
 
-def _os_release(root):
-    values = {}
-    for line in (safeguards.text(root, "/usr/lib/os-release") or safeguards.text(root, "/etc/os-release")
-                 or "").splitlines():
-        key, eq, value = line.partition("=")
-        if eq:
-            values[key.strip()] = value.strip().strip("\"'")
-    return values
-
-
 def in_image(root):
     """{tool: version or None} of the Build whose files are at `root` (mounted)."""
     found = {"orca": None, "fedora": None}
     try:
         package = _orca_package(safeguards.resolve(root, f"{IMAGE_ORCA}/{ASAR}"))
         found["orca"] = _version(package.get("version")) if package else None
-        release = _os_release(root)
+        release = safeguards.os_release(root)
         if release.get("ID") == "fedora":
             found["fedora"] = _version(release.get("VERSION_ID"))
     except (OSError, ValueError):
@@ -510,13 +507,13 @@ def _orca_line(got, days):
 
 
 def fetch(say):
-    """Ask the npm registry and GitHub (as agentbox-feeds) and write AVAILABLE; returns it."""
+    """Ask the npm registry, GitHub and quay.io (as agentbox-feeds) and write AVAILABLE; returns it."""
     days = _min_age_days()
     pin = _orca_pin()
     pins = {"playwright": _playwright_pin()}
     orca_rules()                # without the rule nothing is fetched, not even npm's versions
     now = time.time()
-    rec = {"fetched": int(now), "package_min_age_days": days, "npm": {}, "orca": {}}
+    rec = {"fetched": int(now), "package_min_age_days": days, "npm": {}, "orca": {}, "digests": {}}
     for tool, package in NPM.items():
         version, error = npm_newest(package, now - days * 86400, pins.get(tool))
         rec["npm"][tool] = {"version": version, "error": error, **({"pin": pins[tool]} if tool in pins else {})}
@@ -524,6 +521,10 @@ def fetch(say):
     version, error = orca_newest(now - days * 86400, pin)
     rec["orca"] = {"version": version, "error": error, "pin": pin}
     say(_orca_line(rec["orca"], days))
+    for name in digests.NAMES:
+        digest, since, error = digests.newest(name, now, days, _get)
+        rec["digests"][name] = {"digest": digest, "since": since, "error": error}
+        say(digests.line(name, rec["digests"][name], days))
     os.makedirs(AVAILABLE_DIR, exist_ok=True)
     state_files.write_json(AVAILABLE, rec)
     return rec
@@ -531,7 +532,7 @@ def fetch(say):
 
 def fetch_versions(args):
     """agentbox fetch-versions [--json] (agentbox-versions-fetch.service, as agentbox-feeds):
-    what the npm registry and GitHub offer, for agentbox check-versions."""
+    what the npm registry, GitHub and quay.io offer, for agentbox check-versions."""
     if any(a != "--json" for a in args):
         die("fetch-versions [--json]", error="invalid_argument")
     as_json = "--json" in args
@@ -567,13 +568,16 @@ def _error(v):
 def fetched(now):
     """What agentbox-feeds' fetch found (AVAILABLE), checked as untrusted input: the shape,
     every version against VERSION (Orca's and the pin it was taken with against
-    settings.ORCA_VERSION, Playwright's pin against settings.PLAYWRIGHT_VERSION), errors
-    against FETCH_ERROR, the time; anything else is unknown.
+    settings.ORCA_VERSION, Playwright's pin against settings.PLAYWRIGHT_VERSION), the digests
+    (digests.fetched, with root's package_min_age_days from the Settings), errors against
+    FETCH_ERROR, the time; anything else is unknown.
     A missing, unreadable or stale file makes everything unknown."""
     npm = {t: {"version": None, "error": "not fetched (agentbox-versions-fetch.service)"} for t in NPM}
     npm["playwright"]["pin"] = None
     orca = {"version": None, "error": "not fetched (agentbox-versions-fetch.service)", "pin": None}
-    out = {"fetched": None, "package_min_age_days": None, "npm": npm, "orca": orca}
+    images = {n: {"digest": None, "since": None, "error": "not fetched (agentbox-versions-fetch.service)"}
+              for n in digests.NAMES}
+    out = {"fetched": None, "package_min_age_days": None, "npm": npm, "orca": orca, "digests": images}
     data = _read_untrusted(AVAILABLE)
     try:
         rec = json.loads(data) if data is not None else None
@@ -582,7 +586,7 @@ def fetched(now):
     when = rec.get("fetched") if isinstance(rec, dict) else None
     if not isinstance(when, int) or isinstance(when, bool) or not now - STALE <= when <= now + 300:
         if os.path.lexists(AVAILABLE):
-            for part in (*npm.values(), orca):
+            for part in (*npm.values(), orca, *images.values()):
                 part["error"] = "fetch stale or unreadable"
         return out
     days = rec.get("package_min_age_days")
@@ -600,6 +604,8 @@ def fetched(now):
     version = _orca_version(found.get("version"))
     orca.update(version=version, error=None if version else _error(found.get("error")),
                 pin=_orca_version(found.get("pin")))
+    # the builder's minimum age is root's own Setting, not the file's
+    out["digests"] = digests.fetched(rec.get("digests"), when, settings.load()["package_min_age_days"], _error)
     return out
 
 
@@ -616,10 +622,14 @@ def _check(say):
     found = fetched(now)
     days = found["package_min_age_days"]
     rec = {"checked": int(now), "fetched": found["fetched"], "package_min_age_days": days, "npm": found["npm"],
-           "orca": found["orca"], "packages": {}}
+           "orca": found["orca"], "digests": found["digests"], "packages": {}}
     for tool, got in rec["npm"].items():
         say(_npm_line(tool, got, days))
     say(_orca_line(rec["orca"], days))
+    for name, got in rec["digests"].items():
+        say(digests.line(name, got, days))
+    digests.take(rec["digests"], say)
+    images.remove_retired(say)          # the digests it retired, each fedora-bootc 1-2 GB
     for image in images.available():
         build = images.current(image)
         tag = images.CONTAINER.format(image, build)
@@ -637,7 +647,8 @@ def _check(say):
 
 def check_versions(args):
     """agentbox check-versions [--json] (Maintenance window, root, after fetch-versions): what a new
-    Build would bring and the package updates of each Image's current Build; with auto_update
+    Build would bring, the digests it pins (pulled first) and the package updates of each Image's
+    current Build; with auto_update
     on, then an update of the Images a new Build would update (images.start_automatic)."""
     if any(a != "--json" for a in args):
         die("check-versions [--json]", error="invalid_argument")
@@ -647,7 +658,7 @@ def check_versions(args):
     if as_json:
         print(json.dumps(rec, ensure_ascii=False))
     failed = [t for t in NPM if rec["npm"][t]["error"]] + (["orca"] if rec["orca"]["error"] else []) + \
-        [i for i, p in rec["packages"].items() if p["error"]]
+        [n for n, d in rec["digests"].items() if d["error"]] + [i for i, p in rec["packages"].items() if p["error"]]
     if failed:
         print(f"agentbox: not everything determined ({', '.join(failed)}), stays unknown", file=sys.stderr)
     if settings.load()["auto_update"]:

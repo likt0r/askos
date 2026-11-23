@@ -229,6 +229,17 @@ def text(root, path):
     return None if data is None else data.decode("utf-8", "replace")
 
 
+def os_release(root):
+    """{key: value} of the os-release of the Image at `root` (/usr/lib/os-release, else
+    /etc/os-release); {} when there is none."""
+    values = {}
+    for line in (text(root, "/usr/lib/os-release") or text(root, "/etc/os-release") or "").splitlines():
+        key, eq, value = line.partition("=")
+        if eq:
+            values[key.strip()] = value.strip().strip("\"'")
+    return values
+
+
 def describe(root, path):
     """What is at `path` in the Image, for the manifest: a file with its hash and mode,
     a directory, something else, or nothing."""

@@ -28,6 +28,7 @@ const diskImage = computed(() => props.vm.system_disk?.image ?? props.vm.image ?
 const image = computed(() => overview.value?.images?.find(i => i.name === diskImage.value) ?? null)
 const build = computed(() => image.value?.builds?.find(b => b.build === diskBuild.value) ?? null)
 const rows = computed(() => toolRows(build.value, overview.value?.available))
+const digests = computed(() => digestRows(build.value, overview.value?.available))
 // package updates are counted for an Image's current Build only
 const packages = computed(() => (build.value && build.value.build === image.value?.current
   ? (image.value?.package_updates ?? null)
@@ -46,6 +47,7 @@ const changes = computed(() => (build.value?.updates?.length ?? 0) > 0 || !!pack
     <template v-else>
       <SystemToolVersions
         :rows="rows"
+        :digests="digests"
         :available="overview?.available"
         :installed-label="t('vm.overview.inVm')"
         :packages="packages"

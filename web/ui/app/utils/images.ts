@@ -12,6 +12,22 @@ export const TOOL_NAMES: Record<Tool, string> = {
 /** {tool: version}; null: unknown (not recorded, not checked, or the check failed) */
 export type ToolVersions = Partial<Record<Tool, string | null>>
 
+/** The two images a Build takes from quay.io, only by the digest the version check pinned
+ * (#144): fedora-bootc:44, what the Base image starts from and the disk step's buildroot, and
+ * bootc-image-builder, the disk step. */
+export const DIGEST_IMAGES = ['fedora-bootc', 'bootc-image-builder'] as const
+export type DigestImage = typeof DIGEST_IMAGES[number]
+/** A pinned digest (`available.digests` of GET /images). */
+export interface PinnedDigest {
+  digest: string
+  /** when the tag moved to it */
+  since: string | null
+  /** when the version check pinned it */
+  pinned: string | null
+  /** the image by its tag, e.g. quay.io/fedora/fedora-bootc:44 */
+  image: string
+}
+
 /** What the daily version check found (`available` of GET /images). */
 export interface Available {
   /** when it was checked; null: not yet */
@@ -24,6 +40,8 @@ export interface Available {
   orca_version?: string | null
   /** the Playwright version pinned in the Settings (playwright_version); null: the newest old enough */
   playwright_version?: string | null
+  /** the digests the next Build uses; null: none pinned yet */
+  digests?: Partial<Record<DigestImage, PinnedDigest | null>>
 }
 
 export type BuildStatus = 'running' | 'ok' | 'failed' | 'rejected' | 'migrated' | 'missing' | string
@@ -46,6 +64,10 @@ export interface Build {
   orca_version?: string | null
   /** the Playwright version pinned when the Build was made; null: the newest old enough */
   playwright_version?: string | null
+  /** the digest of fedora-bootc the Build is built on (a derived Image: its Base Build's) */
+  fedora_bootc_digest?: string | null
+  /** the digest of bootc-image-builder that made its disk */
+  builder_digest?: string | null
   agents?: Record<string, string | null> | null
   /** versions of the tools in this Build */
   tools?: ToolVersions
@@ -143,6 +165,29 @@ export function toolRows(build: Pick<Build, 'tools' | 'updates'> | null | undefi
     installed: build?.tools?.[tool] ?? null,
     available: tool === 'fedora' ? null : (available?.tools?.[tool] ?? null),
     update: !!build?.updates?.includes(tool),
+  }))
+}
+
+export interface DigestRow {
+  image: DigestImage
+  /** sha256: and the first 12 hex digits; null: unknown */
+  installed: string | null
+  /** the pinned one; another one than `installed` is no update: the next Build takes it */
+  available: string | null
+}
+
+/** sha256: and the first 12 hex digits of a digest, null for anything else. */
+export function shortDigest(digest: unknown): string | null {
+  return typeof digest === 'string' && /^sha256:[0-9a-f]{64}$/.test(digest) ? digest.slice(0, 19) : null
+}
+
+/** The digests a Build was made with next to the pinned ones a new Build would use. */
+export function digestRows(build: Pick<Build, 'fedora_bootc_digest' | 'builder_digest'> | null | undefined,
+  available: Available | null | undefined): DigestRow[] {
+  return DIGEST_IMAGES.map(image => ({
+    image,
+    installed: shortDigest(image === 'fedora-bootc' ? build?.fedora_bootc_digest : build?.builder_digest),
+    available: shortDigest(available?.digests?.[image]?.digest),
   }))
 }
 
