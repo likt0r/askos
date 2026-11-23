@@ -20,24 +20,30 @@ version check moves (versions.py):
   digest must have the form of one, and the builder's minimum age is root's own
   package_min_age_days (Settings). The time the tag moved to a digest (`since`) is the fetch's
   claim, which root cannot verify. Root pulls a new digest by its digest (podman pull
-  <repository>@<digest>, which checks the content against it) and only then pins it. A failed
-  fetch or pull leaves the pin as it is. A pinned image missing from the Host's container
-  storage is pulled again by the next check.
+  <repository>@<digest>, which checks the content against it) and only then pins it; a
+  fedora-bootc only when the image's os-release names Fedora of the release its tag names
+  (UPSTREAM), since the repository holds every release (43, 45, rawhide...) and the fetch, not
+  root, chose the digest: one of another release is removed again. A failed fetch or pull leaves
+  the pin as it is. A pinned image missing from the Host's container storage is pulled again by
+  the next check, which a Build runs first when it misses one it needs (images._pins).
 
 A new digest is no update by itself: no Build starts for it, the next one (the weekly rebuild
 on rebuild_day, or an update of Orca, the agents or the packages) takes it.
 
-The digest a pin replaces is retired: the next Build run removes its image (podman rmi, under
-the run lock, so no Build is using it), unless it is pinned again or the current Base Build is
-built on it, whose derived Images' disk steps still use it as their buildroot. An image podman
-could not remove stays retired, and the next run tries again.
+The digest a pin replaces is retired: the version check right away, and every Build run
+before its Builds, removes its image (podman rmi, under the run lock, so no Build is using it;
+the check does not wait for the lock and leaves them while a Build runs), unless it is pinned
+again or the current Base Build is built on it, whose derived Images' disk steps still use it
+as their buildroot. An image podman could not remove stays retired, and the next check or run
+tries again. So the Host keeps at most two fedora-bootc images (the pin and the current Base
+Build's), 1-2 GB each, and one bootc-image-builder.
 """
 import os
 import re
 import subprocess
 import time
 
-from . import paths, programs, state_files, times
+from . import paths, programs, safeguards, state_files, times
 from .sanitize import clean
 
 REGISTRY = "quay.io"
@@ -220,10 +226,15 @@ def _pull(ref):
 
 def take(found, say):
     """Pin what the check found (fetched()): pull each new digest, and one pinned but missing
-    from the Host, then pin it and retire the digest it replaces. A failed pull is the
-    image's error (in `found`) and leaves its pin. Pulls run without the record's lock, so a
-    Build reading the pins never waits for one."""
-    pins = pinned()
+    from the Host, check a fedora-bootc's release (_release), then pin it and retire the
+    digest it replaces. A failed pull or check is the image's error (in `found`) and leaves
+    its pin; an image of another release is removed again unless pinned or retired. Pulls run
+    without the record's lock, so a Build reading the pins never waits for one. Whether it
+    pinned anything new."""
+    rec = load()
+    pins = pinned(rec)
+    retired = rec.get("retired") if isinstance(rec.get("retired"), list) else []
+    kept = {reference(n, p["digest"]) for n, p in pins.items() if p} | {r for r in retired if isinstance(r, str)}
     pulled = {}
     for name in NAMES:
         got, pin = found[name], pins[name]
@@ -235,13 +246,17 @@ def take(found, say):
             continue
         say(f"{tagged(name)}: pulling {short(got['digest'])}")
         error = _pull(ref)
+        if not error and name == "fedora-bootc":
+            error = _release(ref)
+            if error and ref not in kept:
+                programs.quietly(["podman", "rmi", "--ignore", ref], 300)
         if error:
             got["error"] = error
             say(f"{tagged(name)}: {error}; pin stays " + (short(pin["digest"]) if pin else "unset"))
             continue
         pulled[name] = got
     if not pulled:
-        return
+        return False
     with state_files.locked(RECORD):
         rec = load()
         retired = [r for r in rec.get("retired", []) if isinstance(r, str)] \
@@ -256,6 +271,32 @@ def take(found, say):
         rec["retired"] = [r for r in dict.fromkeys(retired) if r not in now_pinned]
         os.makedirs(paths.STATE, exist_ok=True)
         state_files.write_json(RECORD, rec)
+    return True
+
+
+def _release(ref):
+    """None when the image `ref` (pulled) is Fedora of the release fedora-bootc's tag names
+    (UPSTREAM), by its os-release, read from the mounted image as the Safeguard check reads an
+    Image (links only inside it, regular files of bounded size); else the error."""
+    wanted = UPSTREAM["fedora-bootc"][1]
+    try:
+        r = subprocess.run(["podman", "image", "mount", ref], stdin=subprocess.DEVNULL, capture_output=True,
+                           text=True, errors="replace", timeout=300)
+    except (OSError, subprocess.TimeoutExpired):
+        return "podman image mount failed"
+    root = r.stdout.strip()
+    try:
+        if r.returncode != 0 or not os.path.isabs(root) or not os.path.isdir(root):
+            return "podman image mount failed"
+        try:
+            release = safeguards.os_release(root)
+        except (OSError, ValueError):
+            release = {}
+    finally:
+        programs.quietly(["podman", "image", "unmount", ref], 120)
+    if release.get("ID") == "fedora" and release.get("VERSION_ID") == wanted:
+        return None
+    return f"the pulled image is not Fedora {wanted} by its os-release"
 
 
 def _ours(ref):
@@ -265,7 +306,7 @@ def _ours(ref):
 
 
 def remove_retired(base_digest, say):
-    """Before the Builds of a run (holding its lock): remove the images of retired digests,
+    """Holding the run lock (images.remove_retired): remove the images of retired digests,
     except one pinned again and the fedora-bootc the current Base Build is built on
     (`base_digest`), which stays retired until a later run; so does one podman did not remove
     (podman image exists does not say it is gone)."""
@@ -285,9 +326,9 @@ def remove_retired(base_digest, say):
                 continue
             programs.quietly(["podman", "rmi", "--ignore", ref], 300)
             if not gone(ref):
-                # e.g. an image still built on it: stays retired, the next run tries again
+                # e.g. an image still built on it: stays retired, the next check or run tries again
                 stay.append(ref)
-                say(f"Could not remove the retired image {ref} yet; the next Build run tries again")
+                say(f"Could not remove the retired image {ref} yet; the next check or Build run tries again")
                 continue
             say(f"Removed the retired image {ref}")
         rec["retired"] = stay

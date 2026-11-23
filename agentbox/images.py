@@ -662,10 +662,28 @@ def _cleanup(say):
             _save(rec)
             _rmi(CONTAINER.format(rec["image"], rec["build"]))
             say(f"Interrupted Build {rec['image']}-{rec['build']} marked as failed")
-    # the images of digests the version check no longer pins; the current Base Build's
-    # fedora-bootc stays, its derived Images' disk steps use it as their buildroot
+    _remove_retired(say)
+
+
+def _remove_retired(say):
+    """Holding the run lock: the images of digests the version check no longer pins; the
+    current Base Build's fedora-bootc stays, its derived Images' disk steps use it as their
+    buildroot (digests.remove_retired)."""
     base = builds().get(BASE, {}).get(current(BASE)) or {}
     digests.remove_retired(base.get("fedora_bootc_digest"), say)
+
+
+def remove_retired(say):
+    """The version check's, right after it pinned (versions.py): what _remove_retired removes,
+    only when no Build runs, without waiting for one: a running run's Builds may still use a
+    retired image, and the next check or run removes it."""
+    if not digests.load().get("retired"):
+        return
+    with state_files.locked_unless_held(RUN_LOCK) as mine:
+        if not mine:
+            say("A Build is running: the retired images stay until the next check or Build run")
+            return
+        _remove_retired(say)
 
 
 def _request_file(target):
@@ -853,19 +871,35 @@ def _pins(base, say):
     """The pinned digests a run's Builds use ({name: digest or None}, digests.py), read once:
     bootc-image-builder always, fedora-bootc only for a run that builds the Base image (`base`;
     a derived Image takes its Base Build's). With one it needs not pinned yet (no version check
-    has pulled it), the version check runs first, as Update now runs it; still none fails the
-    run."""
+    has pulled it), or whose image is not in the Host's container storage (podman system prune;
+    quay.io drops an old fedora-bootc digest, so podman could not pull it by itself), the
+    version check runs first, as Update now runs it: it pulls the pinned digest again or pins
+    the tag's current one. Still none, or still not there, fails the run."""
     needed = [n for n in digests.NAMES if base or n != "fedora-bootc"]
+
+    def absent(pins):
+        return [digests.tagged(n) for n in needed
+                if pins[n] and not digests.present(digests.reference(n, pins[n]["digest"]))]
+
     pins = digests.pinned()
-    if not all(pins[n] for n in needed):
-        say("== No pinned digest of " + ", ".join(digests.tagged(n) for n in needed if not pins[n])
-            + " yet: running the version check first")
+    unpinned, gone = [digests.tagged(n) for n in needed if not pins[n]], absent(pins)
+    if unpinned:
+        say(f"== No pinned digest of {', '.join(unpinned)} yet: running the version check first")
+    if gone:
+        say(f"== The image of the pinned digest of {', '.join(gone)} is not on the Host: "
+            "running the version check first")
+    if unpinned or gone:
         _check_versions(say)
         pins = digests.pinned()
     missing = [digests.tagged(n) for n in needed if not pins[n]]
     if missing:
         die(f"no pinned digest of {', '.join(missing)}: the version check could not pin one "
             "(systemctl start agentbox-versions; journalctl -u agentbox-versions)", error="action_failed")
+    gone = absent(pins)
+    if gone:
+        die(f"the image of the pinned digest of {', '.join(gone)} is not on the Host and the version check "
+            "could not pull it (systemctl start agentbox-versions; journalctl -u agentbox-versions)",
+            error="action_failed")
     for name in needed:
         say(f"{digests.tagged(name)}: pinned {pins[name]['digest']}")
     return {name: pins[name]["digest"] if name in needed else None for name in digests.NAMES}

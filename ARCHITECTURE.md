@@ -1095,6 +1095,10 @@ Host after every Build
   to-filesystem`, the Python that runs osbuild's stages and the tools that make the
   partitions and filesystems come from it; only bootc-image-builder's configuration
   directories of the Image (`/usr/lib/bootc/install`, `/usr/lib/ostree`) are copied into it.
+  bootc-image-builder's own image cannot be that buildroot, although it brings a `bootc` (the
+  one #144 first named): it has neither `xfsprogs` (`mkfs.xfs` for the root filesystem) nor
+  `grub2-tools`, which the disk step needs there; so the buildroot is the fedora-bootc the Image
+  itself starts from, as it left quay.io.
   What still runs from the Image is under [Agent Box's own code](#agent-boxs-own-code). The link
   `images/<image>.qcow2` moves to `images/<image>-<build>.qcow2` in one rename. Each step is
   recorded in the Build's record under `/var/lib/agentbox/builds`, with the package minimum
@@ -1114,13 +1118,25 @@ Host after every Build
   installs with dnf on top, have no minimum age either). Root pulls a new digest by its digest
   (`podman pull quay.io/<repository>@sha256:…`, which checks the content against it) and pins
   it only after the pull succeeded; a pinned image missing from the Host's container storage
-  is pulled again by the next check. A failed fetch or pull leaves the pin as it is. The digest
-  a pin replaces is retired: the next Build run removes its image under the run lock
-  (`podman rmi`), unless the current Base Build is built on it (its derived Images' disk steps
-  still use it). An image podman could not remove stays retired, and the next run tries again.
+  is pulled again by the next check. A failed fetch or pull leaves the pin as it is. Root pins
+  a fedora-bootc digest only when the pulled image's os-release names Fedora of the release
+  its tag names (`VERSION_ID` 44, taken from the tag in `agentbox/digests.py`, so the code
+  names the release once): the repository holds 43, 45 and rawhide as well, and the fetch, not
+  root, chose the digest; an image of another release is removed again and the pin stays. The digest
+  a pin replaces is retired: the version check removes its image right after it pinned, and
+  every Build run before its Builds, both under the run lock (`podman rmi`), unless the current
+  Base Build is built on it (its derived Images' disk steps still use it). An image podman
+  could not remove stays retired, and the next check or run tries again. The check does not
+  wait for the run lock: while a Build runs, the retired images stay until the next check or
+  run. So the Host keeps at most two fedora-bootc images, the pin and the one the current Base
+  Build is built on, 1-2 GB each, and one bootc-image-builder, besides what podman could not
+  remove yet; pinned daily, fedora-bootc means a pull of that size every day.
   With a digest not pinned yet that a run needs (a new Host; fedora-bootc only when the run
   builds the Base image, since a derived Image takes its Base Build's), the run first runs the
-  version check as Update now does, and fails when that pins none. A new digest is no update:
+  version check as Update now does, and fails when that pins none. So it does when the image of
+  such a pin is not in the Host's container storage (`podman image exists`; after `podman
+  system prune`, say, and quay.io no longer serves an old fedora-bootc digest), and fails when
+  the image is still not there. A new digest is no update:
   it starts no Build, and the next Build (the weekly rebuild on `rebuild_day`, or an update of
   Orca, the agents or the packages) takes it.
 - What the Base image downloads, it downloads inside the Build container, where Fedora's
@@ -1285,7 +1301,8 @@ Host after every Build
     must be `sha256:` and 64 hex digits, the time its tag moved to it no later than the fetch,
     and bootc-image-builder's at least `package_min_age_days` before it, by root's own Settings,
     never the file's. That time is the fetch's claim, which root cannot verify; the repository
-    is root's own and the pull checks the content against the digest. Anything
+    is root's own, the pull checks the content against the digest, and a fedora-bootc of
+    another release than its tag's is not pinned. Anything
     else is unknown (so is Orca in a file or `versions.json` from before #113, which named the Host's `/opt/Orca` and
     the newest release instead). It pulls and pins the digests (Pinned digests above), without
     a lock a Build waits for: a Build reads the pins once at its start. It adds, for each Image

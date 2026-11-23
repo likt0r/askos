@@ -164,6 +164,15 @@ class VersionsTest(ImagesTest):
     def curl(self):
         return [c["argv"][-1] for c in self.calls("curl")]
 
+    def run_lock(self):
+        """Hold the run lock of the Builds (as a running Build does) until the file is closed."""
+        lock = self.path("var/lib/agentbox/locks/build-run.lock")
+        os.makedirs(os.path.dirname(lock), exist_ok=True)
+        f = open(lock, "a")
+        self.addCleanup(f.close)
+        fcntl.flock(f, fcntl.LOCK_EX)
+        return f
+
 
 class BuildRecordsTest(VersionsTest):
     def test_a_build_records_the_versions_of_its_tools(self):
@@ -520,6 +529,8 @@ class FetchTest(VersionsTest):
 
 
 BUILDER_NEWER = "sha256:" + "d" * 64
+FEDORA_NEXT = "sha256:" + "9" * 64
+FEDORA_LATER = "sha256:" + "8" * 64
 
 
 class DigestTest(VersionsTest):
@@ -556,7 +567,9 @@ class DigestTest(VersionsTest):
         pins = self.pins()
         self.assertEqual((pins["fedora-bootc"]["digest"], pins["bootc-image-builder"]["digest"]),
                          (FEDORA_NEW, BUILDER_NEWER))
-        self.assertEqual(pins["retired"], [FEDORA_REF, BUILDER_REF])
+        # the check removed the builder's at once; the Base Build is built on the old fedora-bootc
+        self.assertEqual(pins["retired"], [FEDORA_REF])
+        self.assertEqual([c["argv"][-1] for c in self.podman("rmi")], [BUILDER_REF])
         self.assertIn(f"quay.io/fedora/fedora-bootc:44: pinned {FEDORA_NEW[:19]}", out)
         # new digests are no update (the owner, 2026-11-23): the next Build takes them
         base = self.overview()["base"]
@@ -576,9 +589,9 @@ class DigestTest(VersionsTest):
         self.assertEqual(run[run.index("--build-container") + 1], new_fedora)
         new = self.newest()
         self.assertEqual((new["fedora_bootc_digest"], new["builder_digest"]), (FEDORA_NEW, BUILDER_NEWER))
-        # its run removed the retired builder; the old fedora-bootc stayed, the Base Build that
-        # was current then was built on it
-        self.assertEqual([c["argv"][-1] for c in self.podman("rmi") if "quay.io" in c["argv"][-1]], [BUILDER_REF])
+        # the old fedora-bootc stayed: the Base Build that was current at the start of the run
+        # was built on it
+        self.assertEqual([c["argv"][-1] for c in self.podman("rmi") if "quay.io" in c["argv"][-1]], [])
         self.assertEqual(self.pins()["retired"], [FEDORA_REF])
         self.forget_calls()
         time.sleep(1.1)
@@ -677,11 +690,11 @@ class DigestTest(VersionsTest):
         """podman rmi fails while another image is built on it: the next run tries again."""
         self.built()
         self.pin(FEDORA_DIGEST, BUILDER_NEWER, retired=[BUILDER_REF])
-        os.makedirs(os.path.join(self.dir, "podman", re.sub(r"[^A-Za-z0-9_.-]", "_", BUILDER_REF), "rootfs"))
+        self.pulled(BUILDER_REF)
         self.scenario(podman_fails={"rmi": [BUILDER_REF]})
         time.sleep(1.1)
         out = self.built()
-        self.assertIn(f"Could not remove the retired image {BUILDER_REF} yet; the next Build run tries again", out)
+        self.assertIn(f"Could not remove the retired image {BUILDER_REF} yet; the next check or Build run tries again", out)
         self.assertEqual(self.pins()["retired"], [BUILDER_REF])
         self.scenario()
         self.forget_calls()
@@ -729,14 +742,100 @@ class DigestTest(VersionsTest):
         self.assertEqual(self.podman("pull"), [])
 
     def test_a_pinned_image_missing_on_the_host_is_pulled_again(self):
-        self.check()
-        self.assertEqual(len(self.podman("pull")), 2)
         self.forget_calls()
         self.check()
         self.assertEqual(self.podman("pull"), [])
-        shutil.rmtree(os.path.join(self.dir, "podman", re.sub(r"[^A-Za-z0-9_.-]", "_", FEDORA_REF)))
+        shutil.rmtree(self.image_store(FEDORA_REF))
         self.check()
         self.assertEqual([c["argv"][-1] for c in self.podman("pull")], [FEDORA_REF])
+
+    def test_a_fedora_bootc_of_another_release_is_not_pinned(self):
+        """quay.io/fedora/fedora-bootc holds 43, 45 and rawhide too: root pins a digest only
+        when the image it pulled is Fedora of the release the tag names (digests.UPSTREAM)."""
+        self.move()
+        self.scenario(fedora_bootc_release="45")
+        self.forget_calls()
+        out, _ = self.check()
+        new_fedora = "quay.io/fedora/fedora-bootc@" + FEDORA_NEW
+        self.assertEqual([c["argv"][-1] for c in self.podman("pull")],
+                         [new_fedora, "quay.io/centos-bootc/bootc-image-builder@" + BUILDER_NEWER])
+        error = "the pulled image is not Fedora 44 by its os-release"
+        self.assertEqual(self.record()["digests"]["fedora-bootc"]["error"], error)
+        self.assertIn(f"quay.io/fedora/fedora-bootc:44: {error}; pin stays {FEDORA_DIGEST[:19]}", out)
+        self.assertEqual(self.pins()["fedora-bootc"]["digest"], FEDORA_DIGEST)
+        # the image it pulled is removed again; the pinned one stays
+        self.assertFalse(os.path.isdir(self.image_store(new_fedora)))
+        self.assertTrue(os.path.isdir(self.image_store(FEDORA_REF)))
+        self.assertNotIn(new_fedora, self.pins()["retired"])
+        self.assertEqual(self.pins()["bootc-image-builder"]["digest"], BUILDER_NEWER)
+        # Fedora 44 at that digest: pinned
+        self.scenario()
+        self.check()
+        self.assertEqual(self.pins()["fedora-bootc"]["digest"], FEDORA_NEW)
+
+    def test_the_check_removes_retired_images_at_once(self):
+        """fedora-bootc's tag moves every day and each pull is 1-2 GB: the check removes the image
+        of a digest it retires right away, never the current Base Build's, and while a Build
+        runs not at all (the run lock): that run's Builds may use it, the next run removes it."""
+        self.built()
+        self.move()
+        self.forget_calls()
+        out, _ = self.check()
+        # the builder it replaced goes at once; the Base Build is built on the old fedora-bootc
+        self.assertEqual([c["argv"][-1] for c in self.podman("rmi")], [BUILDER_REF])
+        self.assertIn(f"Removed the retired image {BUILDER_REF}", out)
+        self.assertFalse(os.path.isdir(self.image_store(BUILDER_REF)))
+        self.assertEqual(self.pins()["retired"], [FEDORA_REF])
+        self.assertTrue(os.path.isdir(self.image_store(FEDORA_REF)))
+        # the next day: the digest pinned the day before goes at once
+        new_fedora, next_fedora = ("quay.io/fedora/fedora-bootc@" + d for d in (FEDORA_NEW, FEDORA_NEXT))
+        builder = history("latest", (BUILDER_YOUNG, 1), (BUILDER_NEWER, 3), (BUILDER_DIGEST, 9))
+        self.registry({**REGISTRY, "quay": {"centos-bootc/bootc-image-builder": builder, "fedora/fedora-bootc": history(
+            "44", (FEDORA_NEXT, .01), (FEDORA_NEW, .04), (FEDORA_DIGEST, .5))}})
+        self.forget_calls()
+        self.check()
+        self.assertEqual(self.pins()["fedora-bootc"]["digest"], FEDORA_NEXT)
+        self.assertEqual([c["argv"][-1] for c in self.podman("rmi")], [new_fedora])
+        self.assertFalse(os.path.isdir(self.image_store(new_fedora)))
+        self.assertEqual(self.pins()["retired"], [FEDORA_REF])
+        # while a Build runs, nothing is removed: the run does it
+        self.registry({**REGISTRY, "quay": {"centos-bootc/bootc-image-builder": builder, "fedora/fedora-bootc": history(
+            "44", (FEDORA_LATER, .005), (FEDORA_NEXT, .01), (FEDORA_DIGEST, .5))}})
+        self.forget_calls()
+        lock = self.run_lock()
+        out, _ = self.check()
+        lock.close()
+        self.assertEqual(self.pins()["fedora-bootc"]["digest"], FEDORA_LATER)
+        self.assertEqual(self.podman("rmi"), [])
+        self.assertIn("A Build is running: the retired images stay until the next check or Build run", out)
+        self.assertEqual(self.pins()["retired"], [FEDORA_REF, next_fedora])
+        self.assertTrue(os.path.isdir(self.image_store(next_fedora)))
+
+    def test_a_build_pulls_a_pinned_image_missing_on_the_host_first(self):
+        """After podman system prune: the run runs the version check, which pulls the pinned
+        digest again (or pins and pulls the tag's current one), before podman needs it."""
+        self.built()
+        shutil.rmtree(self.image_store(BUILDER_REF))
+        self.run_agentbox("fetch-versions")         # what the fetch's unit leaves (it is not run here)
+        self.forget_calls()
+        time.sleep(1.1)
+        out = self.built()
+        self.assertIn("The image of the pinned digest of quay.io/centos-bootc/bootc-image-builder:latest "
+                      "is not on the Host: running the version check first", out)
+        self.assertEqual([c["argv"][-1] for c in self.podman("pull")], [BUILDER_REF])
+        self.assertIn(BUILDER_REF, self.podman("run")[-1]["argv"])
+        self.assertEqual(self.newest()["status"], "ok")
+
+    def test_a_build_fails_when_a_missing_pinned_image_cannot_be_pulled(self):
+        shutil.rmtree(self.image_store(FEDORA_REF))
+        self.run_agentbox("fetch-versions")
+        self.scenario(podman_fails={"pull": ["quay.io/fedora/"]})
+        code, out = self.build()
+        self.assertEqual(code, 1, out)
+        self.assertIn("the image of the pinned digest of quay.io/fedora/fedora-bootc:44 is not on the Host "
+                      "and the version check could not pull it", out)
+        self.assertEqual(self.podman("build"), [])
+        self.assertEqual(self.newest()["status"], "failed")
 
     def test_a_build_without_pins_runs_the_check_first(self):
         self.pin(None, BUILDER_DIGEST)
@@ -1153,15 +1252,6 @@ class UpdateHarness(VersionsTest):
     def resets(self):
         return [(e["AGENTBOX_VM"], e["AGENTBOX_OUTCOME"], e["AGENTBOX_DESCRIPTION"])
                 for e in self.journald.entries() if e.get("AGENTBOX_ACTION") == "reset.update"]
-
-    def run_lock(self):
-        """Hold the run lock of the Builds (as a running Build does) until the file is closed."""
-        lock = self.path("var/lib/agentbox/locks/build-run.lock")
-        os.makedirs(os.path.dirname(lock), exist_ok=True)
-        f = open(lock, "a")
-        self.addCleanup(f.close)
-        fcntl.flock(f, fcntl.LOCK_EX)
-        return f
 
     def effects(self, orca, claude):
         """What the next Build installs: these versions of Orca and Claude Code."""

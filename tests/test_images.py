@@ -14,6 +14,7 @@ socket under the root, never to the Host's journal.
 Run from the repo root: python3 -m unittest discover -s tests
 """
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -122,14 +123,31 @@ class ImagesTest(VmsTest):
         self.pin(FEDORA_DIGEST, BUILDER_DIGEST)
 
     def pin(self, fedora, builder, retired=()):
-        """The digests the version check pinned (digests.py), as it leaves them; None: no pin."""
+        """The digests the version check pinned (digests.py), as it leaves them: pinned, and
+        their images pulled into the Host's container storage; None: no pin."""
         now = int(time.time())
         rec = {"retired": list(retired)}
         if fedora:
             rec["fedora-bootc"] = {"digest": fedora, "since": now - 3600, "pinned": now}
+            self.pulled("quay.io/fedora/fedora-bootc@" + fedora)
         if builder:
             rec["bootc-image-builder"] = {"digest": builder, "since": now - 9 * 86400, "pinned": now}
+            self.pulled("quay.io/centos-bootc/bootc-image-builder@" + builder)
         self.write(DIGESTS, json.dumps(rec))
+
+    def image_store(self, ref):
+        """Where the fake podman keeps an image (fake_podman.image_dir)."""
+        return os.path.join(self.dir, "podman", re.sub(r"[^A-Za-z0-9_.-]", "_", ref))
+
+    def pulled(self, ref):
+        """An image in the Host's container storage as podman pull leaves it (fake_podman.py):
+        fedora-bootc with Fedora 44's os-release."""
+        os.makedirs(os.path.join(self.image_store(ref), "rootfs", "usr", "lib"), exist_ok=True)
+        if "/fedora-bootc@" in ref:
+            with open(os.path.join(self.image_store(ref), "rootfs", "usr", "lib", "os-release"), "w") as f:
+                f.write('NAME="Fedora Linux"\nID=fedora\nVERSION_ID=44\n')
+        with open(os.path.join(self.image_store(ref), "layers.json"), "w") as f:
+            json.dump(["sha256:" + hashlib.sha256(ref.encode()).hexdigest()], f)
 
     def write(self, rel, content, mode=0o644):
         os.makedirs(os.path.dirname(self.path(rel)), exist_ok=True)
@@ -293,7 +311,8 @@ class BaseBuildTest(ImagesTest):
         time.sleep(1.1)
         self.built()
         new = self.newest()["build"]
-        self.assertEqual(os.listdir(os.path.join(self.dir, "podman")), [f"localhost_agentbox_base_{new}"])
+        self.assertEqual([n for n in os.listdir(os.path.join(self.dir, "podman")) if n.startswith("localhost_")],
+                         [f"localhost_agentbox_base_{new}"])
 
     def test_the_base_image_of_this_repository_passes_the_check(self):
         """vm/Containerfile, vm/files and package-safeguards together carry every safeguard."""
@@ -1098,7 +1117,8 @@ class FailedBuildTest(ImagesTest):
                          ("source", None, f"{self.source}/vm/Containerfile is missing: the Release is not fully "
                                           "installed"))
         self.assertIn("failed: " + new["error"], entry["AGENTBOX_DESCRIPTION"])
-        self.assertEqual(self.podman(), [])
+        # nothing built or pulled: podman was only asked whether the pinned images are there
+        self.assertEqual([c["argv"] for c in self.podman() if c["argv"][:2] != ["image", "exists"]], [])
 
     def test_a_failed_build_shows_in_the_overview(self):
         self.scenario(podman_fails={"build": ["localhost/agentbox/base:"]})

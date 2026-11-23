@@ -29,8 +29,9 @@ Environment:
   podman image exists TAG      exit 0 or 1
   podman rmi [--ignore] TAG..  removes them; fails for TAG prefixes in podman_fails "rmi"
                                (as when another image is built on it) and keeps those
-  podman pull [--quiet] REF    makes REF exist (an empty image); fails for REF prefixes in
-                               podman_fails "pull"
+  podman pull [--quiet] REF    makes REF exist (an empty image; of fedora-bootc, one with the
+                               /usr/lib/os-release of Fedora fedora_bootc_release); fails for
+                               REF prefixes in podman_fails "pull"
   podman run ... bootc-image-builder ... TAG
                                writes <dir of -v ..:/output>/qcow2/disk.qcow2, a fake disk naming TAG
   podman run --rm --name=N ... TAG dnf -q check-update
@@ -49,6 +50,8 @@ scenario.json:
   podman_fails       {"build": [TAG prefixes], "run": [...], "mount": [...], "pull": [...],
                       "rmi": [...]}: those calls fail
   check_update       {"<TAG prefix>": {"exit": 100, "stdout": "<dnf's lines>", "stderr": "...", "sleep": <seconds>}}
+  fedora_bootc_release  the VERSION_ID a pulled fedora-bootc names (default "44", what
+                     quay.io/fedora/fedora-bootc:44 is)
 """
 import base64
 import hashlib
@@ -350,6 +353,11 @@ def main(argv):
             print(f"Error: initializing source docker://{ref}: reading manifest: manifest unknown", file=sys.stderr)
             return 125
         os.makedirs(os.path.join(image_dir(ref), "rootfs"), exist_ok=True)
+        if "/fedora-bootc@" in ref:
+            release = scenario().get("fedora_bootc_release", "44")
+            os.makedirs(os.path.join(image_dir(ref), "rootfs", "usr", "lib"), exist_ok=True)
+            with open(os.path.join(image_dir(ref), "rootfs", "usr", "lib", "os-release"), "w") as f:
+                f.write(f'NAME="Fedora Linux"\nID=fedora\nVERSION_ID={release}\n')
         with open(os.path.join(image_dir(ref), "layers.json"), "w") as f:
             json.dump(["sha256:" + hashlib.sha256(ref.encode()).hexdigest()], f)
         print("sha256:" + hashlib.sha256(ref.encode()).hexdigest())

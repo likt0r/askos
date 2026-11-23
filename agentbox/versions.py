@@ -163,23 +163,13 @@ def _version(v):
     return v if isinstance(v, str) and VERSION.fullmatch(v) else None
 
 
-def _os_release(root):
-    values = {}
-    for line in (safeguards.text(root, "/usr/lib/os-release") or safeguards.text(root, "/etc/os-release")
-                 or "").splitlines():
-        key, eq, value = line.partition("=")
-        if eq:
-            values[key.strip()] = value.strip().strip("\"'")
-    return values
-
-
 def in_image(root):
     """{tool: version or None} of the Build whose files are at `root` (mounted)."""
     found = {"orca": None, "fedora": None}
     try:
         package = _orca_package(safeguards.resolve(root, f"{IMAGE_ORCA}/{ASAR}"))
         found["orca"] = _version(package.get("version")) if package else None
-        release = _os_release(root)
+        release = safeguards.os_release(root)
         if release.get("ID") == "fedora":
             found["fedora"] = _version(release.get("VERSION_ID"))
     except (OSError, ValueError):
@@ -639,6 +629,7 @@ def _check(say):
     for name, got in rec["digests"].items():
         say(digests.line(name, got, days))
     digests.take(rec["digests"], say)
+    images.remove_retired(say)          # the digests it retired, each fedora-bootc 1-2 GB
     for image in images.available():
         build = images.current(image)
         tag = images.CONTAINER.format(image, build)
