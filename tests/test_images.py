@@ -40,6 +40,7 @@ from vm_records import record  # noqa: E402
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 from agentbox import safeguards  # noqa: E402
+from agentbox.images import step_line  # noqa: E402
 with open(os.path.join(REPO, "VERSION")) as f:
     RELEASE = f.read().strip()         # the Release of the CLI under test (a checkout's VERSION)
 COMMIT = "abcdef0123456789abcdef0123456789abcdef01"     # of main, named by Builds from before ADR 0010
@@ -171,6 +172,27 @@ class ImagesTest(VmsTest):
         code, out = self.build(target)
         self.assertEqual(code, 0, out)
         return out
+
+    def build_in_background(self, target="base"):
+        """The unit's build-run, while the test changes things under it."""
+        env = {"PATH": os.path.join(self.dir, "bin") + ":" + os.environ["PATH"], "FAKE_VIRSH_DIR": self.dir,
+               "FAKE_DIR": self.dir, "AGENTBOX_ROOT": self.root, "LANG": "C.UTF-8", "TZ": "UTC"}
+        p = subprocess.Popen([AGENTBOX, "build-run", target], env=env, stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, text=True)
+        self.addCleanup(lambda: p.poll() is None and p.kill())
+        return p
+
+    def wait_for(self, done, what):
+        deadline = time.monotonic() + 30
+        while not done():
+            self.assertLess(time.monotonic(), deadline, what)
+            time.sleep(0.05)
+
+    def build_record(self, image="base", build=None):
+        """A Build's record as build-run saves it (the newest Build by default)."""
+        build = build or self.newest(image)["build"]
+        with open(self.path(f"var/lib/agentbox/builds/{image}-{build}.json")) as f:
+            return json.load(f)
 
     def overview(self):
         return {i["name"]: i for i in self.json("images")["images"]}
@@ -1502,21 +1524,6 @@ class UpdateTest(ImagesTest):
         fcntl.flock(f, fcntl.LOCK_EX)
         return f
 
-    def build_in_background(self):
-        """The unit's build-run, while the test changes things under it."""
-        env = {"PATH": os.path.join(self.dir, "bin") + ":" + os.environ["PATH"], "FAKE_VIRSH_DIR": self.dir,
-               "FAKE_DIR": self.dir, "AGENTBOX_ROOT": self.root, "LANG": "C.UTF-8", "TZ": "UTC"}
-        p = subprocess.Popen([AGENTBOX, "build-run", "base"], env=env, stdout=subprocess.PIPE,
-                             stderr=subprocess.STDOUT, text=True)
-        self.addCleanup(lambda: p.poll() is None and p.kill())
-        return p
-
-    def wait_for(self, done, what):
-        deadline = time.monotonic() + 30
-        while not done():
-            self.assertLess(time.monotonic(), deadline, what)
-            time.sleep(0.05)
-
     def build_ended(self):
         """The Build of the run is recorded as done (then its unit goes on to the Resets)."""
         recs = []
@@ -1777,6 +1784,92 @@ class LogTest(ImagesTest):
         result = self.json("build-log", "base", OLD)
         self.assertEqual((result["status"], result["entries"]), ("migrated", []))
         self.assertEqual(self.calls("journalctl"), [])
+
+
+class ProgressTest(ImagesTest):
+    """#183: a running Build in its step build carries the latest `STEP n/m: <command>` line of its
+    podman build: `images` (also --json, its `running` and its Builds), `build-log` and the `build`
+    event (test_watch.py) say it. The command is untrusted Build output."""
+    RUST = DERIVED + "RUN dnf -y install rust\nRUN echo done\n"
+
+    def paused(self, image, containerfile, step):
+        """A Build of the derived Image, held after podman build's STEP line `step`; its process
+        and a function that lets it go on."""
+        self.built()
+        self.image(image, containerfile)
+        self.scenario(build_waits={"step": step, "file": "go"})
+        p = self.build_in_background(image)
+        self.wait_for(lambda: (self.overview()[image]["running"] or {}).get("progress", {}) and
+                      self.overview()[image]["running"]["progress"]["step"] == step, "no progress")
+
+        def go():
+            open(os.path.join(self.dir, "go"), "w").close()
+            out, _ = p.communicate(timeout=60)
+            self.assertEqual(p.returncode, 0, out)
+            return out
+        return go
+
+    def test_a_running_build_says_its_step_of_podman_build_and_its_command(self):
+        go = self.paused("rust", self.RUST, 2)
+        at = {"step": 2, "steps": 3, "command": "RUN dnf -y install rust"}
+        rust = self.overview()["rust"]
+        build = rust["running"]["build"]
+        self.assertEqual((rust["running"]["step"], rust["running"]["progress"]), ("build", at))
+        self.assertEqual((rust["builds"][0]["build"], rust["builds"][0]["progress"]), (build, at))
+        self.assertRegex(self.ok("images"),
+                         rf"(?m)^  {build} +running .*  build: step 2/3: RUN dnf -y install rust$")
+        with open(os.path.join(self.dir, "journal.json"), "w") as f:
+            json.dump([], f)
+        log = self.json("build-log", "rust")
+        self.assertEqual((log["build"], log["status"], log["progress"]), (build, "running", at))
+        self.assertEqual(self.ok("build-log", "rust").splitlines()[0],
+                         f"Build rust-{build}: running (build: step 2/3: RUN dnf -y install rust)")
+        out = go()
+        # podman's own lines reach the journal unchanged
+        self.assertIn("STEP 1/3: FROM ${BASE}\nSTEP 2/3: RUN dnf -y install rust\nSTEP 3/3: RUN echo done\n", out)
+        # beyond its step build a Build carries none
+        rust = self.overview()["rust"]
+        self.assertEqual((rust["running"], rust["builds"][0]["status"], rust["builds"][0]["progress"]),
+                         (None, "ok", None))
+        self.assertNotIn("step 3/3", self.ok("images"))
+        self.assertEqual(self.json("build-log", "rust")["progress"], None)
+
+    def test_the_base_image_counts_its_steps_the_same_way(self):
+        out = self.built()
+        steps = re.findall(r"(?m)^STEP (\d+)/(\d+): (.*)$", out)
+        self.assertGreater(len(steps), 3)
+        self.assertEqual([int(n) for n, _, _ in steps], list(range(1, len(steps) + 1)))
+        self.assertEqual({int(m) for _, m, _ in steps}, {len(steps)})
+        self.assertTrue(steps[0][2].startswith("FROM "), steps[0])
+        last, saved = steps[-1], self.build_record()["progress"]
+        self.assertEqual((saved["step"], saved["steps"]), (int(last[0]), int(last[1])))
+        # one line, its spaces collapsed; a long one shortened
+        self.assertTrue(" ".join(last[2].split()).startswith(saved["command"].removesuffix("…")), saved)
+
+    def test_the_command_is_cleaned_redacted_and_bounded(self):
+        token = "ghs_" + "a" * 36
+        go = self.paused("odd", DERIVED + f"RUN echo \x1b[1mbold\x1b[0m\x07 \u202eflip {token} done\nRUN true\n", 2)
+        self.assertEqual(self.overview()["odd"]["running"]["progress"],
+                         {"step": 2, "steps": 3, "command": "RUN echo bold flip [hidden] done"})
+        go()
+
+    def test_step_lines(self):
+        token = "ghs_" + "b" * 36
+        for line, expected in (
+                ("STEP 7/19: RUN dnf -y install git\n", (7, 19, "RUN dnf -y install git")),
+                ("[2/2] STEP 3/5: COPY --from=0 /out /usr/bin\n", (3, 5, "COPY --from=0 /out /usr/bin")),
+                ("STEP 1/1: RUN a b\tc   d\r\n", (1, 1, "RUN a b c d")),
+                ("STEP 1/2: RUN orca://pair?code=secret123", (1, 2, "RUN orca://pair?[hidden]")),
+                ("STEP 2/2: RUN curl -H 'Authorization: " + token + "'", (2, 2, "RUN curl -H 'Authorization: [hidden]'")),
+                ("STEP 0/3: RUN x", None), ("STEP 4/3: RUN x", None), ("  STEP 1/3: RUN x", None),
+                ('Error: building at STEP "RUN dnf -y install": exit status 1', None), ("COMMIT tag", None)):
+            with self.subTest(line=line):
+                got = step_line(line)
+                self.assertEqual(got and (got["step"], got["steps"], got["command"]), expected)
+        long = step_line("STEP 1/1: RUN " + "x" * 186 + " " + token + " " + "y" * 300)
+        self.assertEqual(len(long["command"]), 200)
+        self.assertTrue(long["command"].endswith("…"))
+        self.assertNotIn("ghs_", long["command"])       # hidden before it is cut, never half of it shown
 
 
 class OverviewTest(ImagesTest):

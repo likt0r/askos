@@ -46,10 +46,20 @@ export interface Available {
 
 export type BuildStatus = 'running' | 'ok' | 'failed' | 'rejected' | 'migrated' | 'missing' | string
 
+/** Where a running Build's podman build is (#183): step `step` of `steps` of the Containerfile and
+ * its command, from podman's latest `STEP n/m: <command>` line (cleaned, at most 200 characters). */
+export interface BuildProgress {
+  step: number
+  steps: number
+  command: string
+}
+
 export interface Build {
   build: string
   status: BuildStatus
   step: string | null
+  /** while the Build runs its step `build`; null otherwise */
+  progress?: BuildProgress | null
   started: string | null
   finished: string | null
   /** the Release the Build came from; null for Builds from before ADR 0010 */
@@ -94,7 +104,7 @@ export interface Image {
   recipe?: boolean
   current: string | null
   vms: string[]
-  running: { build: string, step: string | null, started: string | null } | null
+  running: { build: string, step: string | null, progress?: BuildProgress | null, started: string | null } | null
   builds: Build[]
   /** Fedora package updates available for the current Build; null: not counted */
   package_updates?: number | null
@@ -230,6 +240,14 @@ export function stepIndex(step: string | null | undefined): number {
   return step ? (BUILD_STEPS as readonly string[]).indexOf(step) : -1
 }
 
+/** The bar of a running Build in its step `build` (#183): podman's step n of m, as a percentage
+ * too, and its command; null in another step or before podman's first STEP line. */
+export function podmanStep(running: Image['running'] | undefined): (BuildProgress & { percent: number }) | null {
+  const p = running?.step === 'build' ? running.progress : null
+  if (!p || !Number.isInteger(p.step) || !Number.isInteger(p.steps) || p.step < 1 || p.step > p.steps) return null
+  return { ...p, percent: Math.round((p.step / p.steps) * 100) }
+}
+
 export function logKey(image: string, build: string) {
   return `${image}/${build}`
 }
@@ -247,6 +265,7 @@ export function applyBuild(overview: ImagesOverview, event: BuildEvent): ImagesO
     build: event.build,
     status: event.status,
     step: event.step ?? null,
+    progress: event.progress ?? null,
     started: event.started ?? null,
     finished: event.finished ?? null,
     release: event.release ?? null,
@@ -261,7 +280,7 @@ export function applyBuild(overview: ImagesOverview, event: BuildEvent): ImagesO
     ? image.builds.map(b => (b.build === event.build ? merged : b))
     : [merged, ...image.builds].sort((a, b) => b.build.localeCompare(a.build))
   const running = event.status === 'running'
-    ? { build: event.build, step: event.step ?? null, started: event.started ?? null }
+    ? { build: event.build, step: event.step ?? null, progress: event.progress ?? null, started: event.started ?? null }
     : image.running?.build === event.build ? null : image.running
   const next = { ...image, builds, running }
   return { ...overview, images: overview.images.map((i, n) => (n === at ? next : i)) }

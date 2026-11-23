@@ -116,6 +116,7 @@ export default {
         done: 'Done',
       },
       running: 'Build {build} is running',
+      podmanStep: 'Step {step} of {steps}',
       current: 'current',
       by: 'by {actor}',
       release: 'Release {release}',

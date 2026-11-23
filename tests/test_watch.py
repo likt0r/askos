@@ -623,6 +623,14 @@ class BuildTest(WatchTest):
         self.assertEqual((b["image"], b["build"], b["status"], b["step"]), ("base", "20261103-120000", "running",
                                                                            "build"))
         self.assertEqual((b["release"], b["commit"]), ("0.1.0", None))      # a commit only from before #96
+        self.assertIsNone(b["progress"])
+        # the latest STEP line of its podman build (#183), while it is in the step build
+        self.record(progress={"step": 7, "steps": 19, "command": "RUN dnf -y install git"})
+        b = self.event("build", lambda b: b["progress"] is not None)
+        self.assertEqual(b["progress"], {"step": 7, "steps": 19, "command": "RUN dnf -y install git"})
+        self.record(step="check", progress={"step": 19, "steps": 19, "command": "RUN true"})
+        b = self.event("build", lambda b: b["step"] == "check")
+        self.assertIsNone(b["progress"])
         self.followers()            # the event may come from the first poll, before them
         for i in range(3):
             self.log(f"STEP {i}/9: RUN dnf install", "agentbox", namespace=None,

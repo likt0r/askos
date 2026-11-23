@@ -2,7 +2,7 @@
 // Host reboot. Mounts the app on /system against a fake backend and a fake event stream.
 import { flushPromises } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
-import { appendLines, applyBuild, stepIndex } from '~/utils/images'
+import { appendLines, applyBuild, podmanStep, stepIndex } from '~/utils/images'
 import type { ImagesOverview } from '~/utils/images'
 import { ok, openPage, useFreshApp } from './system-helpers'
 
@@ -81,6 +81,20 @@ describe('Images and Builds (units)', () => {
     // the other Image is untouched; an unknown Image is not applied
     expect(done.images.find(i => i.name === 'base')).toBe(o.images.find(i => i.name === 'base'))
     expect(applyBuild(o, { ...build('x'), image: 'nope' } as never)).toBeNull()
+  })
+
+  it('carries podman\'s step of a running Build into the overview and shows it only in the step build (#183)', () => {
+    const o = IMAGES as unknown as ImagesOverview
+    const progress = { step: 7, steps: 19, command: 'RUN dnf -y install git' }
+    const next = applyBuild(o, { ...build('20261104-0300', { status: 'running', step: 'build', finished: null, progress }), image: 'ml' } as never)!
+    const ml = next.images.find(i => i.name === 'ml')!
+    expect(ml.running!.progress).toEqual(progress)
+    expect(ml.builds[0]!.progress).toEqual(progress)
+    expect(podmanStep(ml.running)).toEqual({ ...progress, percent: 37 })
+    expect(podmanStep({ ...ml.running!, step: 'check' })).toBeNull()
+    expect(podmanStep({ ...ml.running!, progress: null })).toBeNull()
+    expect(podmanStep({ ...ml.running!, progress: { step: 20, steps: 19, command: 'x' } })).toBeNull()
+    expect(podmanStep(null)).toBeNull()
   })
 
   it('keeps who uses a Build when its record is replaced by an event', () => {
@@ -408,6 +422,46 @@ describe('System page: live progress', () => {
     expect(card(wrapper).find('[data-testid="image-current"]').text()).toBe('20261104-0300')
     expect(rows(wrapper)[0]!.attributes('data-status')).toBe('ok')
     expect(rows(wrapper)[0]!.text()).toContain('current')
+  })
+
+  it('shows a bar of podman\'s steps and the current command while the Build is in its step build (#183)', async () => {
+    const { wrapper, es } = await openSystem({
+      'GET /images/base/log?build=20261104-0300&lines=500': ok({ image: 'base', build: '20261104-0300', status: 'running', step: 'build', error: null, problems: [], entries: [], cursor: null, truncated: false }),
+    })
+    const ev = (step: string, progress: unknown) =>
+      ({ ...build('20261104-0300', { status: 'running', step, finished: null, progress }), image: 'base', unit: 'agentbox-build@base.service' })
+    const podman = () => card(wrapper).find('[data-testid="build-podman-step"]')
+
+    es.emit('build', ev('build', null))
+    await flushPromises()
+    expect(card(wrapper).find('[data-testid="build-progress"]').exists()).toBe(true)
+    expect(podman().exists()).toBe(false)           // before podman's first STEP line
+
+    const long = `RUN dnf -y install ${'pkg '.repeat(45)}…`
+    es.emit('build', ev('build', { step: 7, steps: 19, command: long }))
+    await flushPromises()
+    expect(podman().attributes('data-step')).toBe('7')
+    expect(podman().attributes('data-steps')).toBe('19')
+    expect(podman().text()).toContain('Step 7 of 19')
+    const bar = podman().find('[data-testid="build-podman-bar"]')
+    expect(bar.attributes('role')).toBe('progressbar')
+    expect([bar.attributes('aria-valuenow'), bar.attributes('aria-valuemax')]).toEqual(['7', '19'])
+    expect(bar.find('div').attributes('style')).toContain('width: 37%')
+    const command = podman().find('[data-testid="build-podman-command"]')
+    expect(command.text()).toBe(long)               // as the log has it, one line, cut by the page
+    expect(command.classes()).toContain('truncate')
+    expect(command.attributes('title')).toBe(long)
+
+    es.emit('build', ev('build', { step: 8, steps: 19, command: 'COPY files /' }))
+    await flushPromises()
+    expect(podman().attributes('data-step')).toBe('8')
+    expect(podman().find('[data-testid="build-podman-command"]').text()).toBe('COPY files /')
+
+    // the other steps are as before: no bar
+    es.emit('build', ev('check', null))
+    await flushPromises()
+    expect(card(wrapper).find('[data-testid="build-progress"]').attributes('data-step')).toBe('check')
+    expect(podman().exists()).toBe(false)
   })
 
   it.each([['failed', 'The Build failed'], ['rejected', 'Rejected: a safeguard']])('shows a %s Build with its reasons', async (status, hint) => {

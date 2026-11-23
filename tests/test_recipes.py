@@ -534,10 +534,15 @@ class BuildTest(RecipeTest):
         data = archive([file("Containerfile", b"ARG BASE\nFROM ${BASE}\nCOPY tool /usr/bin/tool\n"),
                         file("tool", "#!/bin/sh\necho from-recipe\n")])
         self.set_recipe(data=data)
-        self.built("dms")
+        out = self.built("dms")
         new = self.newest("dms")
         self.assertEqual((new["status"], new["base_build"], new["recipe_sha256"]),
                          ("ok", self.base, hashlib.sha256(data).hexdigest()))
+        # podman's lines reach the journal, and its steps count as in any Containerfile (#183)
+        self.assertIn("STEP 1/2: FROM ${BASE}\nSTEP 2/2: COPY tool /usr/bin/tool\n", out)
+        self.assertEqual(self.build_record("dms")["progress"],
+                         {"step": 2, "steps": 2, "command": "COPY tool /usr/bin/tool"})
+        self.assertIsNone(new["progress"])          # it ran its step build, and no longer runs
         call = self.podman("build")[-1]
         self.assertEqual(call["argv"][-1], "-")
         self.assertNotIn("-f", call["argv"])

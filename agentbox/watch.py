@@ -121,7 +121,7 @@ def _public(e):
 
 def _build_view(rec):
     return {"image": rec.get("image"), "build": rec.get("build"), "status": rec.get("status"),
-            "step": rec.get("step"), "started": times.iso(rec.get("started")),
+            "step": rec.get("step"), "progress": images.progress(rec), "started": times.iso(rec.get("started")),
             "finished": times.iso(rec.get("finished")), "release": rec.get("release"),
             "commit": rec.get("commit"), "base_build": rec.get("base_build"), "error": rec.get("error"),
             "problems": rec.get("problems") or [], "actor": rec.get("actor"), "unit": rec.get("unit")}
