@@ -102,7 +102,7 @@ TARGETS = ("all", UPDATE)   # targets of agentbox-build@ that are no Image
 COMMIT = re.compile(r"[0-9a-f]{7,40}")      # of main, named by Builds from before ADR 0010
 # the line podman build writes as it begins an instruction of the Containerfile ("[1/2] " in
 # front in a multi-stage one, whose stages count on their own)
-STEP_LINE = re.compile(r"(?:\[\d{1,4}/\d{1,4}\] )?STEP (\d{1,4})/(\d{1,4}): ?(.*)")
+STEP_LINE = re.compile(r"(?:\[(\d{1,4})/(\d{1,4})\] )?STEP (\d{1,4})/(\d{1,4}): ?(.*)")
 COMMAND_MAX = 200                 # characters of a step's command a running Build carries
 CONTAINERFILE_MAX = 64 * 1024     # bytes of a Containerfile `agentbox containerfile` shows at most
 DISK_CONFIG = """\
@@ -338,12 +338,44 @@ def step_line(line):
     untrusted: one line without control characters, redacted as the build log is (tokens, keys
     and Pairing codes hidden), at most COMMAND_MAX characters."""
     m = STEP_LINE.fullmatch(line.rstrip("\r\n"))
-    if not m or not 1 <= int(m[1]) <= int(m[2]):
+    if not m or not 1 <= int(m[3]) <= int(m[4]):
         return None
-    command = redact(m[3])
+    command = redact(m[5])
     if len(command) > COMMAND_MAX:
         command = command[:COMMAND_MAX - 1] + "\u2026"
-    return {"step": int(m[1]), "steps": int(m[2]), "command": command}
+    return {"step": int(m[3]), "steps": int(m[4]), "command": command}
+
+
+class Steps:
+    """podman's own STEP lines of one podman build. A RUN step's output can print anything,
+    a line like "STEP 9999/9999: ..." too, so a STEP line counts only as the next one podman
+    writes: step 1 first, then step n+1 of the same count in the same stage, or step 1 of the
+    next stage of a multi-stage Containerfile ("[i/k] STEP n/m: ...", the same k). Any other
+    STEP line is output of a step; at most it names the step that comes next."""
+
+    def __init__(self):
+        self.at = None               # (stage, stages, step, steps) of the last one taken
+
+    def take(self, line):
+        """The progress (step_line) when `line` is podman's next STEP line, else None."""
+        found = step_line(line)
+        if found is None:
+            return None
+        m = STEP_LINE.fullmatch(line.rstrip("\r\n"))
+        stage, stages = (int(m[1]), int(m[2])) if m[1] else (None, None)
+        if stage is not None and not 1 <= stage <= stages:
+            return None
+        n, total = found["step"], found["steps"]
+        if self.at is None:
+            ok = n == 1 and stage in (None, 1)
+        else:
+            last_stage, last_stages, last, last_total = self.at
+            ok = (stage, stages) == (last_stage, last_stages) and total == last_total and n == last + 1 \
+                or stage is not None and stages == last_stages and stage == last_stage + 1 and n == 1
+        if not ok:
+            return None
+        self.at = (stage, stages, n, total)
+        return found
 
 
 def progress(rec):
@@ -369,21 +401,23 @@ def _podman_build(*args, rec, input=None):
 
     def relay():
         # reads to the end whatever happens: podman would wait on a full pipe
-        begins = True
+        begins, steps, failed = True, Steps(), False
         for chunk in iter(lambda: proc.stdout.readline(65536), b""):
             try:
                 sys.stdout.buffer.write(chunk)
                 sys.stdout.buffer.flush()
             except (OSError, ValueError):
                 pass
-            found = step_line(chunk.decode("utf-8", "replace")) if begins else None
-            begins = chunk.endswith(b"\n")
-            if found:
-                rec["progress"] = found
-                try:
+            line, begins = begins, chunk.endswith(b"\n")     # whether the chunk begins a line
+            try:
+                found = steps.take(chunk.decode("utf-8", "replace")) if line else None
+                if found:
+                    rec["progress"] = found
                     _save(rec)
-                except (OSError, Fail):
-                    pass
+            except Exception as e:    # the progress is lost, never the output: keep draining
+                if not failed:
+                    failed = True
+                    print(f"agentbox: the Build's progress could not be saved: {e}", file=sys.stderr, flush=True)
 
     def feed():
         try:

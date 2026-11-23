@@ -40,7 +40,7 @@ from vm_records import record  # noqa: E402
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 from agentbox import safeguards  # noqa: E402
-from agentbox.images import step_line  # noqa: E402
+from agentbox.images import Steps, step_line  # noqa: E402
 with open(os.path.join(REPO, "VERSION")) as f:
     RELEASE = f.read().strip()         # the Release of the CLI under test (a checkout's VERSION)
 COMMIT = "abcdef0123456789abcdef0123456789abcdef01"     # of main, named by Builds from before ADR 0010
@@ -1852,6 +1852,44 @@ class ProgressTest(ImagesTest):
         self.assertEqual(self.overview()["odd"]["running"]["progress"],
                          {"step": 2, "steps": 3, "command": "RUN echo bold flip [hidden] done"})
         go()
+
+    def test_a_step_printing_step_lines_does_not_move_the_progress(self):
+        """A RUN step's output may look like podman's STEP lines: only podman's next one counts."""
+        fake = ("STEP 9999/9999: RUN rm -rf / (fake)\nSTEP 2/9: RUN other count\nSTEP 1/3: RUN backwards\n"
+                "STEP 2/3: RUN again\n[2/2] STEP 1/1: RUN another stage\n")
+        self.scenario(build_waits={"step": 3, "file": "go"}, run_prints={"print-steps": fake})
+        self.built()
+        # the last step prints them: without the rule the last of them would be the progress
+        self.image("liar", DERIVED + "RUN true\nRUN print-steps\n")
+        at = {"step": 3, "steps": 3, "command": "RUN print-steps"}
+        p = self.build_in_background("liar")
+        # held after step 3 and what it printed
+        self.wait_for(lambda: ((self.overview()["liar"]["running"] or {}).get("progress") or {}).get("step") == 3,
+                      "podman's STEP 3 was not taken")
+        self.assertEqual(self.overview()["liar"]["running"]["progress"], at)
+        open(os.path.join(self.dir, "go"), "w").close()
+        out, _ = p.communicate(timeout=60)
+        self.assertEqual(p.returncode, 0, out)
+        self.assertIn("STEP 3/3: RUN print-steps\n" + fake, out)    # the journal has the output as it was
+        # every line the relay read before podman ended: still podman's step 3
+        self.assertEqual(self.build_record("liar")["progress"], at)
+
+    def test_only_podmans_next_step_line_counts(self):
+        def taken(*lines):
+            steps = Steps()
+            return [(p["step"], p["steps"]) if p else None for p in map(steps.take, lines)]
+
+        self.assertEqual(taken("STEP 1/3: FROM x", "STEP 9999/9999: RUN y", "STEP 2/4: RUN y", "STEP 3/3: RUN y",
+                               "STEP 2/3: RUN y", "STEP 2/3: RUN y", "STEP 1/3: RUN y", "[1/1] STEP 3/3: RUN y",
+                               "STEP 3/3: RUN y"),
+                         [(1, 3), None, None, None, (2, 3), None, None, None, (3, 3)])
+        self.assertEqual(taken("STEP 2/3: RUN y", "STEP 1/3: FROM x"), [None, (1, 3)])     # step 1 first
+        # a multi-stage Containerfile: each stage counts on its own, the stages one after another
+        self.assertEqual(taken("[1/2] STEP 1/2: FROM a AS build", "[1/2] STEP 2/2: RUN make",
+                               "[2/2] STEP 2/3: RUN y", "[3/3] STEP 1/1: RUN y", "[2/3] STEP 1/1: RUN y",
+                               "[2/2] STEP 1/3: FROM b", "[1/2] STEP 1/9: RUN y", "[2/2] STEP 2/3: COPY --from=0 / /",
+                               "[3/2] STEP 1/1: RUN y"),
+                         [(1, 2), (2, 2), None, None, None, (1, 3), None, (2, 3), None])
 
     def test_step_lines(self):
         token = "ghs_" + "b" * 36
