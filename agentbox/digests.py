@@ -41,6 +41,7 @@ Build's), 1-2 GB each, and one bootc-image-builder.
 import json
 import os
 import re
+import shutil
 import subprocess
 import time
 
@@ -234,6 +235,8 @@ def instance(name, digest):
     digests = sorted({d for d in (valid(x[len(repo):]) for x in found if isinstance(x, str) and x.startswith(repo))
                       if d} | {digest})
     platform = [d for d in sorted(digests, key=lambda d: d != digest) if _is_list(reference(name, d)) is False]
+    if not platform and not shutil.which("skopeo"):
+        return None, f"{ref}: skopeo is missing, which tells the platform image from the list (dnf install skopeo)"
     if not platform:
         return None, (f"{ref}: the Host's container storage holds no platform image of it that skopeo can "
                       f"read; pull it again (sudo podman rmi {ref}, then sudo agentbox check-versions)")
