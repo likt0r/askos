@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.10.1](https://github.com/likt0r/askos/compare/v0.10.0...v0.10.1) (2026-11-23)
+
+### Bug Fixes
+
+* the disk step names the buildroot by its platform image's digest ([#186](https://github.com/likt0r/askos/issues/186)) ([1a15a11](https://github.com/likt0r/askos/commit/1a15a11d8ed6697a0ac7fbe59d3a034405905f74)), references [#181](https://github.com/likt0r/askos/issues/181) [#144](https://github.com/likt0r/askos/issues/144)
+
 ## [0.10.0](https://github.com/likt0r/askos/compare/v0.9.0...v0.10.0) (2026-11-23)
 
 ### Features
