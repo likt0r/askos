@@ -75,7 +75,7 @@ describe('Images and Builds (units)', () => {
     const ml = started.images.find(i => i.name === 'ml')!
     expect(ml.builds.map(b => b.build)).toEqual(['20261104-0300', '20261030-0300'])
     expect(ml.builds[0]!.release).toBe('0.1.0')
-    expect(ml.running).toEqual({ build: '20261104-0300', step: 'build', started: '2026-11-01T03:00:00Z' })
+    expect(ml.running).toEqual({ build: '20261104-0300', step: 'build', started: '2026-11-01T03:00:00Z', progress: null })
     const done = applyBuild(started, { ...build('20261104-0300', { status: 'ok', step: 'done' }), image: 'ml' } as never)!
     expect(done.images.find(i => i.name === 'ml')!.running).toBeNull()
     // the other Image is untouched; an unknown Image is not applied
