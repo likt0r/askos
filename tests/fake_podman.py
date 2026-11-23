@@ -345,8 +345,8 @@ def main(argv):
             return 125
         repo, _, digest = ref.partition("@")
         platform = scenario().get("manifest_lists", {}).get(digest)
-        print(json.dumps([ref] + ([f"{repo}@{d}" for d in ([platform] if isinstance(platform, str) else platform)]
-                                  if platform else [])))
+        entries = [platform] if isinstance(platform, str) else (platform or [])
+        print(json.dumps([ref] + [e if "@" in e else f"{repo}@{e}" for e in entries]))
         return 0
     if argv[:2] == ["image", "inspect"]:
         try:

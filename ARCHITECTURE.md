@@ -1093,8 +1093,9 @@ Host after every Build
   pristine `fedora-bootc` digest the Image is built on (a derived Image: its Base Build's),
   named by its platform image's digest: the pinned digest names a manifest list, and
   bootc-image-builder looks a list's entry up in the local store by the image's `Digest`, which
-  podman set to the list's, so the disk step takes the other digest of the same repository
-  podman records for the image (`RepoDigests`), and fails when there are several.
+  podman set to the list's, so the disk step takes a digest of the same repository podman
+  records for the image (`RepoDigests`) that skopeo, reading the Host's store, finds to be no
+  list, and fails when there is none.
   That image, not the Image, is osbuild's buildroot: the `bootc` that runs `bootc install
   to-filesystem`, the Python that runs osbuild's stages and the tools that make the
   partitions and filesystems come from it; only bootc-image-builder's configuration
