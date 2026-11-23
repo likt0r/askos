@@ -144,12 +144,13 @@ const log = (b: string) => props.logs[logKey(props.image.name, b)]
         </li>
       </ol>
       <div v-if="podman" class="mt-2" data-testid="build-podman-step" :data-step="podman.step" :data-steps="podman.steps">
-        <p class="text-xs text-muted">
+        <p :id="`podman-step-${image.name}`" class="text-xs text-muted">
           {{ t('system.build.podmanStep', { step: podman.step, steps: podman.steps }) }}
         </p>
         <div
           class="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-accented"
           role="progressbar"
+          :aria-labelledby="`podman-step-${image.name}`"
           aria-valuemin="0"
           :aria-valuemax="podman.steps"
           :aria-valuenow="podman.step"
