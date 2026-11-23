@@ -741,6 +741,41 @@ class DigestTest(VersionsTest):
                                                                    "error": "unknown error"})
         self.assertEqual(self.podman("pull"), [])
 
+    def test_a_fetch_file_without_digest_entries_says_not_fetched_yet_not_unknown_error(self):
+        """#184: a fetch file without the digests (a fetch of a Release before the pins, or one that
+        ran before this Release was installed) asked quay.io nothing; that is no failed fetch."""
+        now = int(time.time())
+        before = {"fetched": now, "package_min_age_days": 2, "npm": {}, "orca": {}}
+        self.write(AVAILABLE, json.dumps(before))
+        self.forget_calls()
+        code, out, err = self.run_agentbox("check-versions")
+        self.assertEqual(code, 0, err)
+        not_fetched = {"digest": None, "since": None, "error": "not fetched yet; the next fetch asks quay.io"}
+        self.assertEqual(self.record()["digests"], {"fedora-bootc": not_fetched, "bootc-image-builder": not_fetched})
+        self.assertIn("quay.io/fedora/fedora-bootc:44: unknown (not fetched yet; the next fetch asks quay.io), "
+                      "the tag's current digest\n", out)
+        self.assertIn("quay.io/centos-bootc/bootc-image-builder:latest: unknown (not fetched yet; the next fetch "
+                      "asks quay.io), the digest of the tag at least 2 days ago\n", out)
+        self.assertEqual([l for l in out.splitlines() if l.startswith("quay.io") and "unknown error" in l], [])
+        # the pins stay, nothing is pulled
+        self.assertEqual(self.podman("pull"), [])
+        self.assertEqual((self.pins()["fedora-bootc"]["digest"], self.pins()["bootc-image-builder"]["digest"]),
+                         (FEDORA_DIGEST, BUILDER_DIGEST))
+        # an entry for one image only: the other was not asked for
+        self.write(AVAILABLE, json.dumps({**before, "digests": {
+            "fedora-bootc": {"digest": None, "since": None, "error": "quay.io answered 500"}}}))
+        self.assertEqual(self.run_agentbox("check-versions")[0], 0)
+        self.assertEqual({n: d["error"] for n, d in self.record()["digests"].items()},
+                         {"fedora-bootc": "quay.io answered 500",
+                          "bootc-image-builder": "not fetched yet; the next fetch asks quay.io"})
+        # what is there but malformed stays an unknown error
+        for found in ({"fedora-bootc": "x", "bootc-image-builder": None}, ["fedora-bootc"], "x"):
+            with self.subTest(digests=found):
+                self.write(AVAILABLE, json.dumps({**before, "digests": found}))
+                self.assertEqual(self.run_agentbox("check-versions")[0], 0)
+                self.assertEqual({n: d["error"] for n, d in self.record()["digests"].items()},
+                                 {"fedora-bootc": "unknown error", "bootc-image-builder": "unknown error"})
+
     def test_a_pinned_image_missing_on_the_host_is_pulled_again(self):
         self.forget_calls()
         self.check()
