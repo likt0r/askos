@@ -16,7 +16,9 @@ builds the Base image, then every other Image), whose journal is its log
      quay.io/fedora/fedora-bootc:44 (digests.py, build argument FEDORA_BOOTC) with
      package_min_age_days, orca_version and playwright_version of the Settings (its
      Containerfile downloads Orca from its GitHub release, vm/build/orca-release; nothing of
-     Orca comes from the Host), a derived Image on the Base image's current Build;
+     Orca comes from the Host), a derived Image on the Base image's current Build; its output
+     passes through build-run into the journal, and the latest `STEP n/m: <command>` line goes
+     into the running Build's record (`progress`, cleaned like the log);
   3. safeguards.check reads the built filesystem (podman image mount) and discards the
      Build if a safeguard is missing or weakened; then the versions of its tools are read
      from the same files (versions.py);
@@ -69,6 +71,7 @@ import signal
 import stat
 import subprocess
 import sys
+import threading
 import time
 
 from . import activity, digests, footprint, guest, options, paths, programs, registry, safeguards, settings
@@ -76,7 +79,7 @@ from . import state_files, times, version
 from . import states, versions
 from .commands import declare
 from .errors import Fail, die
-from .sanitize import SECRET, clean, entry
+from .sanitize import SECRET, clean, entry, redact
 
 BASE = "base"
 NAME = settings.IMAGE                                  # also the names of default_image
@@ -97,6 +100,10 @@ REQUEST_LOCK = os.path.join(paths.STATE, "build-request")  # held while a reques
 UPDATE = "update"           # the target of an update of everything: build-run update (#114)
 TARGETS = ("all", UPDATE)   # targets of agentbox-build@ that are no Image
 COMMIT = re.compile(r"[0-9a-f]{7,40}")      # of main, named by Builds from before ADR 0010
+# the line podman build writes as it begins an instruction of the Containerfile ("[1/2] " in
+# front in a multi-stage one, whose stages count on their own)
+STEP_LINE = re.compile(r"(?:\[(\d{1,4})/(\d{1,4})\] )?STEP (\d{1,4})/(\d{1,4}): ?(.*)")
+COMMAND_MAX = 200                 # characters of a step's command a running Build carries
 CONTAINERFILE_MAX = 64 * 1024     # bytes of a Containerfile `agentbox containerfile` shows at most
 DISK_CONFIG = """\
 # room for container images, node_modules, build caches (all disposable)
@@ -325,6 +332,121 @@ def _podman(*args, capture=False, timeout=600, what=None, input=None):
     return r.stdout if capture else None
 
 
+def step_line(line):
+    """{"step": n, "steps": m, "command"} of a line of podman build that begins step n of m of
+    the Containerfile ("STEP 7/19: RUN dnf ..."), else None. The command is the Build's output,
+    untrusted: one line without control characters, redacted as the build log is (tokens, keys
+    and Pairing codes hidden), at most COMMAND_MAX characters."""
+    m = STEP_LINE.fullmatch(line.rstrip("\r\n"))
+    if not m or not 1 <= int(m[3]) <= int(m[4]):
+        return None
+    command = redact(m[5])
+    if len(command) > COMMAND_MAX:
+        command = command[:COMMAND_MAX - 1] + "\u2026"
+    return {"step": int(m[3]), "steps": int(m[4]), "command": command}
+
+
+class Steps:
+    """podman's own STEP lines of one podman build. A RUN step's output can print anything,
+    a line like "STEP 9999/9999: ..." too, so a STEP line counts only as the next one podman
+    writes: step 1 first, then step n+1 of the same count in the same stage, or step 1 of the
+    next stage of a multi-stage Containerfile ("[i/k] STEP n/m: ...", the same k). Any other
+    STEP line is output of a step; at most it names the step that comes next."""
+
+    def __init__(self):
+        self.at = None               # (stage, stages, step, steps) of the last one taken
+
+    def take(self, line):
+        """The progress (step_line) when `line` is podman's next STEP line, else None."""
+        found = step_line(line)
+        if found is None:
+            return None
+        m = STEP_LINE.fullmatch(line.rstrip("\r\n"))
+        stage, stages = (int(m[1]), int(m[2])) if m[1] else (None, None)
+        if stage is not None and not 1 <= stage <= stages:
+            return None
+        n, total = found["step"], found["steps"]
+        if self.at is None:
+            ok = n == 1 and stage in (None, 1)
+        else:
+            last_stage, last_stages, last, last_total = self.at
+            ok = (stage, stages) == (last_stage, last_stages) and total == last_total and n == last + 1 \
+                or stage is not None and stages == last_stages and stage == last_stage + 1 and n == 1
+        if not ok:
+            return None
+        self.at = (stage, stages, n, total)
+        return found
+
+
+def progress(rec):
+    """Where the podman build of a Build record is (step_line of its latest STEP line) while the
+    Build runs its step build; None otherwise."""
+    p = rec.get("progress")
+    if rec.get("status") != "running" or rec.get("step") != "build" or not isinstance(p, dict):
+        return None
+    if not all(isinstance(p.get(k), int) for k in ("step", "steps")) or not isinstance(p.get("command"), str):
+        return None
+    return {"step": p["step"], "steps": p["steps"], "command": p["command"]}
+
+
+def _podman_build(*args, rec, input=None):
+    """podman build with its output passed on to the Build's journal line by line, the latest
+    STEP line of it in the running Build's record (`progress`); _Failed when it fails."""
+    sys.stdout.flush()
+    try:
+        proc = subprocess.Popen(["podman", "build", *args], stdin=subprocess.PIPE if input is not None else None,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    except FileNotFoundError:
+        raise _Failed("podman is missing")
+
+    def relay():
+        # reads to the end whatever happens: podman would wait on a full pipe
+        begins, steps, failed = True, Steps(), False
+        for chunk in iter(lambda: proc.stdout.readline(65536), b""):
+            try:
+                sys.stdout.buffer.write(chunk)
+                sys.stdout.buffer.flush()
+            except (OSError, ValueError):
+                pass
+            line, begins = begins, chunk.endswith(b"\n")     # whether the chunk begins a line
+            try:
+                found = steps.take(chunk.decode("utf-8", "replace")) if line else None
+                if found:
+                    rec["progress"] = found
+                    _save(rec)
+            except Exception as e:    # the progress is lost, never the output: keep draining
+                if not failed:
+                    failed = True
+                    print(f"agentbox: the Build's progress could not be saved: {e}", file=sys.stderr, flush=True)
+
+    def feed():
+        try:
+            proc.stdin.write(input)
+            proc.stdin.close()
+        except OSError:
+            pass
+
+    threads = [threading.Thread(target=relay, daemon=True)]
+    if input is not None:
+        threads.append(threading.Thread(target=feed, daemon=True))
+    for t in threads:
+        t.start()
+    try:
+        code = proc.wait(timeout=4 * 3600)
+    except subprocess.TimeoutExpired:
+        code = None
+    finally:                      # also on an interruption (KeyboardInterrupt, _terminate)
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        for t in threads:         # a process podman left behind may hold the pipe open
+            t.join(timeout=30)
+    if code is None:
+        raise _Failed("podman build: time limit exceeded")
+    if code != 0:
+        raise _Failed(f"podman build failed (exit {code})")
+
+
 def _rmi(tag):
     """Remove a container image; --force also ends a container of it that still runs (the
     version check's count, versions.py), so a Build never waits for one or leaves its
@@ -495,11 +617,10 @@ def _build_container(image, src, release, days, orca, playwright, rec, tag, say,
             + "; Playwright: " + (f"{playwright}, pinned in playwright_version)" if playwright
                                   else "the newest version at least that old)"))
         # the version check pulled the pinned digest; never anything by its tag
-        _podman("build", "--pull=missing", "--no-cache", "--build-arg", f"FEDORA_BOOTC={fedora}",
-                "--build-arg", f"PACKAGE_MIN_AGE_DAYS={days}",
-                "--build-arg", f"ORCA_VERSION={orca}", "--build-arg", f"PLAYWRIGHT_VERSION={playwright}",
-                "-t", tag, "-f", os.path.join(src, "vm", "Containerfile"), src,
-                timeout=4 * 3600, what="podman build")
+        _podman_build("--pull=missing", "--no-cache", "--build-arg", f"FEDORA_BOOTC={fedora}",
+                      "--build-arg", f"PACKAGE_MIN_AGE_DAYS={days}",
+                      "--build-arg", f"ORCA_VERSION={orca}", "--build-arg", f"PLAYWRIGHT_VERSION={playwright}",
+                      "-t", tag, "-f", os.path.join(src, "vm", "Containerfile"), src, rec=rec)
         return None
     if isinstance(recipe_data, Fail):
         raise recipe_data             # the Recipe could not be taken at the start of the run
@@ -518,13 +639,11 @@ def _build_container(image, src, release, days, orca, playwright, rec, tag, say,
         # One owned snapshot of the Recipe is handed over by a single call, never as a path.
         from . import recipes
         recipes.check(recipe_data)
-        _podman("build", "--pull=missing", "--no-cache", "--build-arg",
-                f"BASE={CONTAINER.format(BASE, base_build)}", "-t", tag, "-",
-                input=recipe_data, timeout=4 * 3600, what="podman build")
+        _podman_build("--pull=missing", "--no-cache", "--build-arg", f"BASE={CONTAINER.format(BASE, base_build)}",
+                      "-t", tag, "-", input=recipe_data, rec=rec)
     else:
-        _podman("build", "--pull=missing", "--no-cache", "--build-arg",
-                f"BASE={CONTAINER.format(BASE, base_build)}", "-t", tag,
-                "-f", os.path.join(context, "Containerfile"), context, timeout=4 * 3600, what="podman build")
+        _podman_build("--pull=missing", "--no-cache", "--build-arg", f"BASE={CONTAINER.format(BASE, base_build)}",
+                      "-t", tag, "-f", os.path.join(context, "Containerfile"), context, rec=rec)
     return base
 
 
@@ -1196,7 +1315,7 @@ def _public(info, cur, used, pins, offered):
     fedora, builder = digests.valid(info.get("fedora_bootc_digest")), digests.valid(info.get("builder_digest"))
     updates = versions.updates(tools, offered) if info["status"] in USABLE else []
     return {"build": info["build"], "status": info["status"], "step": info.get("step"),
-            "started": times.iso(info.get("started")), "finished": times.iso(info.get("finished")),
+            "progress": progress(info), "started": times.iso(info.get("started")), "finished": times.iso(info.get("finished")),
             "release": info.get("release"), "commit": info.get("commit"), "base_build": info.get("base_build"),
             "recipe_sha256": info.get("recipe_sha256"),
             "package_min_age_days": info.get("package_min_age_days"), "orca_version": info.get("orca_version"),
@@ -1268,7 +1387,7 @@ def overview():
             "name": image, "base": image == BASE, "recipe": is_recipe,
             "in_release": False if is_recipe else (image in defined if defined is not None else None),
             "current": cur, "vms": sorted(users.get(image, [])), "problem": problem,
-            "running": {"build": running["build"], "step": running.get("step"),
+            "running": {"build": running["build"], "step": running.get("step"), "progress": progress(running),
                         "started": times.iso(running.get("started"))} if running else None,
             "package_updates": packages, "updates": changes, "update": bool(changes) if known else None,
             "containerfile": source,
@@ -1291,6 +1410,12 @@ def _update_line(image):
         return "Update available: a new Build would bring " + ", ".join(changes)
     return "Update: a new Build would bring nothing new" + ("" if packages is not None else
                                                             " (package updates unknown)")
+
+
+def step_text(step, at):
+    """A running Build's step for people: "step check", or in the step build where its podman
+    build is ("build: step 7/19: RUN dnf ...", `at` from progress())."""
+    return f"{step}: step {at['step']}/{at['steps']}: {at['command']}" if at else f"step {step}"
 
 
 def images_cmd(args):
@@ -1333,7 +1458,7 @@ def images_cmd(args):
             elif b["commit"]:
                 line += f"  Commit {b['commit'][:12]}"
             if b["status"] == "running":
-                line += f"  step {b['step']}"
+                line += "  " + step_text(b["step"], b["progress"])
             if b["error"]:
                 line += f"  {b['error']}"
             if notes:
@@ -1478,11 +1603,13 @@ def build_log(args):
     entries, truncated = _log_entries(info, opts)
     if "json" in opts:
         print(json.dumps({"image": image, "build": info["build"], "status": info["status"], "step": info.get("step"),
-                          "error": info.get("error"), "problems": info.get("problems") or [], "entries": entries,
+                          "progress": progress(info), "error": info.get("error"), "problems": info.get("problems") or [], "entries": entries,
                           "cursor": entries[-1]["cursor"] if entries else opts.get("after-cursor"),
                           "truncated": truncated}, ensure_ascii=False))
         return
+    at = progress(info)
     print(f"Build {image}-{info['build']}: {STATUS.get(info['status'], info['status'])}"
+          + (f" ({step_text(info['step'], at)})" if at else "")
           + (f" ({info['error']})" if info.get("error") else ""))
     for e in entries:
         t = times.parse(e["time"])

@@ -58,6 +58,8 @@ function stepLabel(step: string) {
 }
 
 const stepsDone = computed(() => stepIndex(running.value?.step))
+// in the step build: podman's step n of m and its command, as the log has them (#183)
+const podman = computed(() => podmanStep(running.value))
 const log = (b: string) => props.logs[logKey(props.image.name, b)]
 </script>
 
@@ -141,6 +143,26 @@ const log = (b: string) => props.logs[logKey(props.image.name, b)]
           {{ stepLabel(step) }}
         </li>
       </ol>
+      <div v-if="podman" class="mt-2" data-testid="build-podman-step" :data-step="podman.step" :data-steps="podman.steps">
+        <p :id="`podman-step-${image.name}`" class="text-xs text-muted">
+          {{ t('system.build.podmanStep', { step: podman.step, steps: podman.steps }) }}
+        </p>
+        <div
+          class="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-accented"
+          role="progressbar"
+          :aria-labelledby="`podman-step-${image.name}`"
+          aria-valuemin="0"
+          :aria-valuemax="podman.steps"
+          :aria-valuenow="podman.step"
+          :aria-valuetext="t('system.build.podmanStep', { step: podman.step, steps: podman.steps })"
+          data-testid="build-podman-bar"
+        >
+          <div class="h-full rounded-full bg-info transition-[width]" :style="{ width: `${podman.percent}%` }" />
+        </div>
+        <p class="mt-1 truncate font-mono text-xs text-muted" :title="podman.command" data-testid="build-podman-command">
+          {{ podman.command }}
+        </p>
+      </div>
     </div>
 
     <p v-if="!image.builds.length" class="px-4 py-4 text-sm text-muted">

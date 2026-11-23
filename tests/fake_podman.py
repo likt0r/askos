@@ -22,7 +22,8 @@ Environment:
                                <unit>...` and `ln -s /dev/null <path>` (links to /dev/null); every
                                other RUN takes effect only through run.json
         ARG, others            ignored
-      Every instruction adds a layer.
+      Every instruction adds a layer. As podman, it writes "STEP n/m: <instruction>" as it begins
+      each instruction from the first FROM on.
   podman image mount TAG       prints the rootfs directory
   podman image unmount TAG
   podman image inspect TAG     [{"Id": ..., "RootFS": {"Layers": [...]}}]
@@ -49,6 +50,9 @@ run.json (optional): {"<text in a RUN line>": {"<path in the image>": "<content>
 scenario.json:
   podman_fails       {"build": [TAG prefixes], "run": [...], "mount": [...], "pull": [...],
                       "rmi": [...]}: those calls fail
+  build_waits        {"step": n, "file": "<name in FAKE_DIR>"}: podman build waits after step n (its
+                     STEP line and its output) until that file exists (at most 30 seconds)
+  run_prints         {"<text in a RUN line>": "<output>"}: what that RUN step writes
   check_update       {"<TAG prefix>": {"exit": 100, "stdout": "<dnf's lines>", "stderr": "...", "sleep": <seconds>}}
   fedora_bootc_release  the VERSION_ID a pulled fedora-bootc names (default "44", what
                      quay.io/fedora/fedora-bootc:44 is)
@@ -172,6 +176,12 @@ def read_text(path):
         return f.read()
 
 
+def wait_for(path):
+    end = time.monotonic() + 30
+    while not os.path.exists(path) and time.monotonic() < end:
+        time.sleep(0.05)
+
+
 def build(argv, call):
     args, tag, file, context, i = {}, None, None, None, 0
     while i < len(argv):
@@ -204,7 +214,13 @@ def build(argv, call):
     rootfs = os.path.join(out, "rootfs")
     os.makedirs(rootfs)
     layers = []
-    for verb, rest in instructions(file):
+    steps = instructions(file)
+    # as podman: an ARG before the first FROM is no step
+    first = next((n for n, (verb, _) in enumerate(steps) if verb == "FROM"), 0)
+    waits = scenario().get("build_waits") or {}
+    for number, (verb, rest) in enumerate(steps):
+        if number >= first:
+            print(f"STEP {number - first + 1}/{len(steps) - first}: {verb} {rest}", flush=True)
         if verb == "FROM":
             ref = rest.split()[0]
             m = re.fullmatch(r"\$\{?(\w+)\}?", ref)
@@ -236,6 +252,9 @@ def build(argv, call):
                 else:
                     copy(src, inside(rootfs, dest))
         elif verb == "RUN":
+            for text, output in (scenario().get("run_prints") or {}).items():
+                if text in rest:
+                    print(output, end="", flush=True)
             m = re.search(r"(/usr/lib/agentbox/package-safeguards)\s", rest + " ")
             if m:
                 r = subprocess.run(["sh", inside(rootfs, m.group(1)), args.get("PACKAGE_MIN_AGE_DAYS", "2"), rootfs])
@@ -272,6 +291,8 @@ def build(argv, call):
             effects(rest, rootfs)
         if verb != "ARG":
             layers.append("sha256:" + hashlib.sha256(f"{tag} {len(layers)} {verb} {rest}".encode()).hexdigest())
+        if number >= first and waits.get("step") == number - first + 1:
+            wait_for(os.path.join(DIR, waits["file"]))
     with open(os.path.join(out, "layers.json"), "w") as f:
         json.dump(layers, f)
     print(f"COMMIT {tag}")

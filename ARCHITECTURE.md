@@ -1395,6 +1395,9 @@ Host after every Build
   their record and show the commit of `main` they came from instead. While a Build runs,
   `agentbox watch` follows its unit's journal and the Build records and the stream carries
   `build` (status and step) and `build-log` (new lines) events; the log endpoint fills gaps.
+  In the step `build` a Build's record also holds podman's latest `STEP n/m: <command>` line
+  (`progress`, cleaned and redacted as the log is), which the Control Room shows as a bar and
+  the command under it.
 - Each Image's definition (#67): `agentbox images` names its Containerfile (`containerfile`,
   the path in the repository) and links it on GitHub at what its current Build came from
   (`containerfile_url`: the tag `v<release>` of the Build's Release, or the commit and
