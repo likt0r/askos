@@ -25,8 +25,9 @@ version check moves (versions.py):
   (UPSTREAM), since the repository holds every release (43, 45, rawhide...) and the fetch, not
   root, chose the digest: one of another release is removed again. A failed fetch or pull leaves
   the pin as it is, and so does a fetch file without the image's entry, which asked quay.io
-  nothing (a fetch from before the pins): "not fetched yet", no error of quay.io. A pinned image missing from the Host's container storage is pulled again by
-  the next check, which a Build runs first when it misses one it needs (images._pins).
+  nothing (a fetch from before the pins): "not fetched yet", no error of quay.io. A pinned
+  image missing from the Host's container storage is pulled again by the next check, which a
+  Build runs first when it misses one it needs (images._pins).
 
 A new digest is no update by itself: no Build starts for it, the next one (the weekly rebuild
 on rebuild_day, or an update of Orca, the agents or the packages) takes it.
