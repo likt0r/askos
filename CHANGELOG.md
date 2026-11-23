@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.10.0](https://github.com/likt0r/askos/compare/v0.9.0...v0.10.0) (2026-11-23)
+
+### Features
+
+* forbid a destination for one VM for a while: refused at once, no hold ([#39](https://github.com/likt0r/askos/issues/39)) ([#179](https://github.com/likt0r/askos/issues/179)) ([b301397](https://github.com/likt0r/askos/commit/b3013971d2783f07a9e0a441b1058ec61f5fa451))
+* pin fedora-bootc and bootc-image-builder by digest; the disk step's buildroot is the pristine fedora-bootc ([#144](https://github.com/likt0r/askos/issues/144)) ([#181](https://github.com/likt0r/askos/issues/181)) ([7d18026](https://github.com/likt0r/askos/commit/7d180264f7e42e862bf68cd0fa2f94dc60be9697))
+* the proxy holds an unknown destination for up to 30 s so the owner can allow it live ([#39](https://github.com/likt0r/askos/issues/39), first step) ([#176](https://github.com/likt0r/askos/issues/176)) ([027c71f](https://github.com/likt0r/askos/commit/027c71f232db752e3178587e2450966eef4324ff))
+
+### Bug Fixes
+
+* a held destination is notified again after a minute ([#177](https://github.com/likt0r/askos/issues/177)) ([3824ddc](https://github.com/likt0r/askos/commit/3824ddc9d85f4fa3451d49e2708f31072f29092a)), references [#39](https://github.com/likt0r/askos/issues/39) [#39](https://github.com/likt0r/askos/issues/39)
+* a reboot inside a VM ends it, so its next start reads the current SSH keys ([#160](https://github.com/likt0r/askos/issues/160)) ([#180](https://github.com/likt0r/askos/issues/180)) ([f9d3e41](https://github.com/likt0r/askos/commit/f9d3e41f5028ebc86ce6aab8a5d422041ea6b8a2))
+
 ## [0.9.0](https://github.com/likt0r/askos/compare/v0.8.1...v0.9.0) (2026-11-20)
 
 ### Features
