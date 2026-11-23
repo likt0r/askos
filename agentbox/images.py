@@ -27,8 +27,9 @@ builds the Base image, then every other Image), whose journal is its log
      Image's own bootupctl to install the bootloader, see ARCHITECTURE.md);
   5. the link images/<image>.qcow2 moves to it (one rename) and old Builds go.
 
-The pinned digests are read once at the start of a run; with none pinned yet the run first
-runs the version check, as Update now does.
+The pinned digests are read once at the start of a run; with one it needs not pinned yet
+(fedora-bootc only for a run that builds the Base image) the run first runs the version check,
+as Update now does.
 
 Anything failing leaves the previous Build in use and is recorded in Activity (kind
 build) with the reason. Builds run one at a time.
@@ -848,23 +849,26 @@ def _recipe_snapshot(name):
     return data, recipes.check(data)["sha256"]
 
 
-def _pins(say):
-    """The pinned digests a run's Builds use ({name: digest}, digests.py), read once. With one
-    not pinned yet (no version check has pulled it), the version check runs first, as Update now
-    runs it; still none fails the run."""
+def _pins(base, say):
+    """The pinned digests a run's Builds use ({name: digest or None}, digests.py), read once:
+    bootc-image-builder always, fedora-bootc only for a run that builds the Base image (`base`;
+    a derived Image takes its Base Build's). With one it needs not pinned yet (no version check
+    has pulled it), the version check runs first, as Update now runs it; still none fails the
+    run."""
+    needed = [n for n in digests.NAMES if base or n != "fedora-bootc"]
     pins = digests.pinned()
-    if not all(pins.values()):
-        say("== No pinned digest of " + ", ".join(digests.tagged(n) for n, p in pins.items() if not p)
+    if not all(pins[n] for n in needed):
+        say("== No pinned digest of " + ", ".join(digests.tagged(n) for n in needed if not pins[n])
             + " yet: running the version check first")
         _check_versions(say)
         pins = digests.pinned()
-    missing = [digests.tagged(n) for n, p in pins.items() if not p]
+    missing = [digests.tagged(n) for n in needed if not pins[n]]
     if missing:
         die(f"no pinned digest of {', '.join(missing)}: the version check could not pin one "
             "(systemctl start agentbox-versions; journalctl -u agentbox-versions)", error="action_failed")
-    for name, pin in pins.items():
-        say(f"{digests.tagged(name)}: pinned {pin['digest']}")
-    return {name: pin["digest"] for name, pin in pins.items()}
+    for name in needed:
+        say(f"{digests.tagged(name)}: pinned {pins[name]['digest']}")
+    return {name: pins[name]["digest"] if name in needed else None for name in digests.NAMES}
 
 
 def _run(target, actor, say):
@@ -891,7 +895,7 @@ def _run(target, actor, say):
                 values = settings.load()
                 days, orca = values["package_min_age_days"], values["orca_version"]
                 playwright = values["playwright_version"]
-                pins = _pins(say)
+                pins = _pins(target in ("all", BASE) or BASE in (wanted or []), say)
                 src, release = take_source(work, say)
             except Fail as f:
                 # nothing to build from: one failed Build of the Image (the Base image for all)
@@ -931,10 +935,7 @@ def _changes(image, offered):
     """What a new Build of the Image would bring, for people: "Claude Code 2.1.5 -> 2.1.7, 12
     package updates"."""
     now = next((b for b in image["builds"] if b["current"]), None)
-    pin = offered["digests"].get("fedora-bootc") or {}
-    parts = [f"fedora-bootc {digests.short(now['fedora_bootc_digest'])} -> {digests.short(pin.get('digest'))}"
-             if t == "fedora-bootc" else
-             f"{versions.NAMES.get(t, t)} {now['tools'].get(t) or '?'} -> {offered['tools'].get(t) or '?'}"
+    parts = [f"{versions.NAMES.get(t, t)} {now['tools'].get(t) or '?'} -> {offered['tools'].get(t) or '?'}"
              for t in (now["updates"] if now else [])]
     if image["package_updates"]:
         parts.append(f"{image['package_updates']} package updates")
@@ -1143,9 +1144,6 @@ def _public(info, cur, used, pins, offered):
     tools = versions.of_build(info)
     fedora, builder = digests.valid(info.get("fedora_bootc_digest")), digests.valid(info.get("builder_digest"))
     updates = versions.updates(tools, offered) if info["status"] in USABLE else []
-    pin = (offered["digests"].get("fedora-bootc") or {}).get("digest")
-    if info["status"] in USABLE and fedora and pin and fedora != pin:
-        updates.append("fedora-bootc")
     return {"build": info["build"], "status": info["status"], "step": info.get("step"),
             "started": times.iso(info.get("started")), "finished": times.iso(info.get("finished")),
             "release": info.get("release"), "commit": info.get("commit"), "base_build": info.get("base_build"),
@@ -1179,9 +1177,9 @@ def overview():
     of its tools (`tools`) and those a new Build would change (`updates`), by what the last
     version check found (`available`, versions.py), with the pinned digests a new Build would
     use (`available.digests`, digests.py); a Build's `fedora_bootc_digest` and `builder_digest`
-    are those it was built with, and "fedora-bootc" is among its `updates` when the pin has moved
-    on. An Image's `update`: a new Build would change a tool or fedora-bootc or bring package
-    updates (None: nothing to tell it by). An Image's
+    are those it was built with. A digest pinned since is no update: the next Build takes it.
+    An Image's `update`: a new Build would change a tool or bring package updates (None:
+    nothing to tell it by). An Image's
     Containerfile (`containerfile`, its path in the repository) links to the repository at the
     tag or commit its current Build came from (`containerfile_url`, None when that is not
     known); `repository` is where the Releases come from. Links only: nothing is fetched."""
@@ -1209,8 +1207,7 @@ def overview():
         packages = versions.package_updates(image, cur, checked or {})
         changes = (now["updates"] if now else []) + (["packages"] if packages else [])
         known = now is not None and (packages is not None or any(
-            offered["tools"][t] and now["tools"][t] for t in ("orca", *versions.NPM))
-            or bool(offered["digests"]["fedora-bootc"] and now["fedora_bootc_digest"]))
+            offered["tools"][t] and now["tools"][t] for t in ("orca", *versions.NPM)))
         repository, ref = _source_ref(found.get(image, {}).get(cur) or {})
         is_recipe = image in active_recipes
         source = definition(image) if not is_recipe else f"Recipe {image}: Containerfile (current recipe.tar)"
@@ -1235,7 +1232,7 @@ def _update_line(image):
     """What a new Build of the Image would bring, for people."""
     if image["update"] is None:
         return "Update: unknown (checked daily; now: systemctl start agentbox-versions)"
-    changes = [versions.NAMES.get(u, "a new " + u) for u in image["updates"] if u != "packages"]
+    changes = [versions.NAMES.get(u, u) for u in image["updates"] if u != "packages"]
     packages = image["package_updates"]
     if packages:
         changes.append(f"{packages} package updates")

@@ -39,7 +39,8 @@ two parts, so that nothing from the internet is parsed as root:
              Nothing is downloaded here.
   digests    of quay.io/fedora/fedora-bootc:44 and quay.io/centos-bootc/bootc-image-builder,
              from quay.io's history of the tag (digests.py): what the next Build uses once
-             check-versions has pulled and pinned it.
+             check-versions has pulled and pinned it. A new digest is no update and starts
+             no Build; the next Build for another reason takes it.
   packages  per Image whose current Build's container image is kept (the Base image),
              how many Fedora package updates are available for that Build: `dnf
              check-update` in a container from it (podman as root, like the Build), named
@@ -578,7 +579,8 @@ def fetched(now):
     """What agentbox-feeds' fetch found (AVAILABLE), checked as untrusted input: the shape,
     every version against VERSION (Orca's and the pin it was taken with against
     settings.ORCA_VERSION, Playwright's pin against settings.PLAYWRIGHT_VERSION), the digests
-    (digests.fetched), errors against FETCH_ERROR, the time; anything else is unknown.
+    (digests.fetched, with root's package_min_age_days from the Settings), errors against
+    FETCH_ERROR, the time; anything else is unknown.
     A missing, unreadable or stale file makes everything unknown."""
     npm = {t: {"version": None, "error": "not fetched (agentbox-versions-fetch.service)"} for t in NPM}
     npm["playwright"]["pin"] = None
@@ -612,7 +614,8 @@ def fetched(now):
     version = _orca_version(found.get("version"))
     orca.update(version=version, error=None if version else _error(found.get("error")),
                 pin=_orca_version(found.get("pin")))
-    out["digests"] = digests.fetched(rec.get("digests"), when, out["package_min_age_days"], _error)
+    # the builder's minimum age is root's own Setting, not the file's
+    out["digests"] = digests.fetched(rec.get("digests"), when, settings.load()["package_min_age_days"], _error)
     return out
 
 

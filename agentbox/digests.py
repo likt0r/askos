@@ -9,20 +9,28 @@ A Build never pulls either by its tag: it uses the digests pinned in RECORD, whi
 version check moves (versions.py):
 
   the fetch (agentbox fetch-versions, as agentbox-feeds) asks quay.io's API for the tag's
-  history (every digest the tag pointed to, since when and until when) and takes
+  history (every digest the tag pointed to, since when and until when; pages of 100, at most
+  HISTORY_PAGES of them) and takes
     bootc-image-builder  the digest the tag pointed to package_min_age_days ago, as npm
                          --before takes a version
     fedora-bootc         the digest the tag points to now: quay.io keeps a digest of
                          fedora/fedora-bootc only while a tag points to it, and the tag moves
                          every day, so no older digest can still be pulled
-  check-versions (root) reads that answer as untrusted input, pulls a new digest by its digest
-  (podman pull <repository>@<digest>, which checks the content against it) and only then pins
-  it. A failed fetch or pull leaves the pin as it is. A pinned image missing from the Host's
-  container storage is pulled again by the next check.
+  check-versions (root) reads that answer as untrusted input: the repository is fixed here, the
+  digest must have the form of one, and the builder's minimum age is root's own
+  package_min_age_days (Settings). The time the tag moved to a digest (`since`) is the fetch's
+  claim, which root cannot verify. Root pulls a new digest by its digest (podman pull
+  <repository>@<digest>, which checks the content against it) and only then pins it. A failed
+  fetch or pull leaves the pin as it is. A pinned image missing from the Host's container
+  storage is pulled again by the next check.
+
+A new digest is no update by itself: no Build starts for it, the next one (the weekly rebuild
+on rebuild_day, or an update of Orca, the agents or the packages) takes it.
 
 The digest a pin replaces is retired: the next Build run removes its image (podman rmi, under
 the run lock, so no Build is using it), unless it is pinned again or the current Base Build is
-built on it, whose derived Images' disk steps still use it as their buildroot.
+built on it, whose derived Images' disk steps still use it as their buildroot. An image podman
+could not remove stays retired, and the next run tries again.
 """
 import os
 import re
@@ -42,11 +50,14 @@ NAMES = tuple(UPSTREAM)
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 RECORD = os.path.join(paths.STATE, "digests.json")
 API = "https://quay.io/api/v1/repository/"
-HISTORY = 100                       # entries of a tag's history asked for (one page)
+HISTORY = 100                       # entries of a tag's history per page (quay.io's most)
+HISTORY_PAGES = 5                   # pages read at most
 PULL_SECONDS = paths.tunable("AGENTBOX_DIGEST_PULL_SECONDS", 3600)
 # the errors the fetch reports for a digest (versions.FETCH_ERROR takes them)
 ERRORS = (r"quay\.io not reachable|quay\.io answered [1-5][0-9][0-9]|no digest of the tag found|"
-          r"no digest of the tag at least package_min_age_days old")
+          r"no digest of the tag at least package_min_age_days old|"
+          r"no digest of the tag (found|at least package_min_age_days old) "
+          r"in the first [0-9]{1,4} entries of its history")
 
 
 def tagged(name):
@@ -73,7 +84,9 @@ def valid(digest):
 
 def choose(history, tag, cutoff):
     """(digest, since) the tag pointed to at `cutoff` (epoch seconds) by quay.io's tag history
-    (its "tags": start_ts, end_ts when it left the digest, manifest_digest), or (None, None)."""
+    (its "tags": start_ts, end_ts when it left the digest, manifest_digest), or (None, None).
+    By the entries' own times, in whatever order they come: the one that began last of those
+    that cover `cutoff`."""
     found = None
     for entry in history if isinstance(history, list) else []:
         if not isinstance(entry, dict) or entry.get("name") != tag:
@@ -90,19 +103,31 @@ def choose(history, tag, cutoff):
 
 def newest(name, now, days, get):
     """(digest, since, error) of the image as the next Build would use it: by the tag's
-    history on quay.io, asked with get(url, accept) -> (status, JSON) (versions._get)."""
+    history on quay.io, asked with get(url, accept) -> (status, JSON) (versions._get), page by
+    page until an entry covers the time asked for, quay.io has no more, or HISTORY_PAGES were
+    read; a history longer than that names how much of it was read in the error."""
     repository, tag, aged = UPSTREAM[name]
-    status, answer = get(f"{API}{repository}/tag/?specificTag={tag}&onlyActiveTags=false&limit={HISTORY}",
-                         "application/json")
-    if status == 0:
-        return None, None, "quay.io not reachable"
-    if status != 200 or not isinstance(answer, dict):
-        return None, None, f"quay.io answered {status}"
-    digest, since = choose(answer.get("tags"), tag, now - days * 86400 if aged else now)
-    if digest is None:
-        return None, None, ("no digest of the tag at least package_min_age_days old" if aged
-                            else "no digest of the tag found")
-    return digest, since, None
+    cutoff = now - days * 86400 if aged else now
+    history, more = [], False
+    for page in range(1, HISTORY_PAGES + 1):
+        status, answer = get(f"{API}{repository}/tag/?specificTag={tag}&onlyActiveTags=false"
+                             f"&limit={HISTORY}&page={page}", "application/json")
+        if status == 0:
+            return None, None, "quay.io not reachable"
+        if status != 200 or not isinstance(answer, dict):
+            return None, None, f"quay.io answered {status}"
+        entries = answer.get("tags")
+        history += entries if isinstance(entries, list) else []
+        more = answer.get("has_additional") is True
+        digest, since = choose(history, tag, cutoff)
+        if digest is not None:
+            return digest, since, None
+        if not more:
+            break
+    wanted = "at least package_min_age_days old" if aged else "found"
+    if more:
+        return None, None, f"no digest of the tag {wanted} in the first {len(history)} entries of its history"
+    return None, None, f"no digest of the tag {wanted}"
 
 
 def line(name, got, days):
@@ -120,7 +145,9 @@ def line(name, got, days):
 def fetched(found, when, days, error):
     """What the fetch found for the images ({name: {digest, since, error}} of its file), checked
     as untrusted input: the digest's form, `since` no later than the fetch (`when`), and for an
-    image with a minimum age, at least package_min_age_days (`days`) before it; `error`
+    image with a minimum age, at least `days` before it: root's own package_min_age_days, never
+    the file's. `since` itself is the fetch's claim, which root cannot verify; the repository
+    is fixed (UPSTREAM), and the pull checks the content against the digest. `error`
     (versions._error) turns an error text into one the fetch may report."""
     out = {}
     for name in NAMES:
@@ -161,6 +188,16 @@ def present(ref):
     try:
         return subprocess.run(["podman", "image", "exists", ref], stdout=subprocess.DEVNULL,
                               stderr=subprocess.DEVNULL, timeout=60).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def gone(ref):
+    """Whether podman says the image is not there (podman image exists: 1); not when it
+    cannot tell."""
+    try:
+        return subprocess.run(["podman", "image", "exists", ref], stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, timeout=60).returncode == 1
     except (OSError, subprocess.TimeoutExpired):
         return False
 
@@ -230,7 +267,8 @@ def _ours(ref):
 def remove_retired(base_digest, say):
     """Before the Builds of a run (holding its lock): remove the images of retired digests,
     except one pinned again and the fedora-bootc the current Base Build is built on
-    (`base_digest`), which stays retired until a later run."""
+    (`base_digest`), which stays retired until a later run; so does one podman did not remove
+    (podman image exists does not say it is gone)."""
     with state_files.locked(RECORD):
         rec = load()
         retired = rec.get("retired")
@@ -246,6 +284,11 @@ def remove_retired(base_digest, say):
                 stay.append(ref)
                 continue
             programs.quietly(["podman", "rmi", "--ignore", ref], 300)
+            if not gone(ref):
+                # e.g. an image still built on it: stays retired, the next run tries again
+                stay.append(ref)
+                say(f"Could not remove the retired image {ref} yet; the next Build run tries again")
+                continue
             say(f"Removed the retired image {ref}")
         rec["retired"] = stay
         state_files.write_json(RECORD, rec)

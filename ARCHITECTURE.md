@@ -1117,10 +1117,12 @@ Host after every Build
   is pulled again by the next check. A failed fetch or pull leaves the pin as it is. The digest
   a pin replaces is retired: the next Build run removes its image under the run lock
   (`podman rmi`), unless the current Base Build is built on it (its derived Images' disk steps
-  still use it). With a digest not pinned yet (a new Host), a run first runs the version
-  check as Update now does, and fails when that pins none. A new fedora-bootc digest counts
-  as an update of every Image built on another one (`updates`: `fedora-bootc`); a new
-  bootc-image-builder digest does not, the next Build simply uses it.
+  still use it). An image podman could not remove stays retired, and the next run tries again.
+  With a digest not pinned yet that a run needs (a new Host; fedora-bootc only when the run
+  builds the Base image, since a derived Image takes its Base Build's), the run first runs the
+  version check as Update now does, and fails when that pins none. A new digest is no update:
+  it starts no Build, and the next Build (the weekly rebuild on `rebuild_day`, or an update of
+  Orca, the agents or the packages) takes it.
 - What the Base image downloads, it downloads inside the Build container, where Fedora's
   packages, the npm tools and Orca are chosen, fetched and checked; no root process on the
   Host parses what the internet answers (#113). Orca comes from its GitHub release
@@ -1271,14 +1273,19 @@ Host after every Build
     at least `package_min_age_days` old. Like the minimum age it gets `orca_version` and
     `playwright_version` from its unit; it records the pins it used. For fedora-bootc and
     bootc-image-builder it asks quay.io's API for the tag's history
-    (`quay.io/api/v1/repository/<repository>/tag/?specificTag=<tag>`, one page of 100) and
-    picks the digest by the rule under Pinned digests; nothing is pulled here.
+    (`quay.io/api/v1/repository/<repository>/tag/?specificTag=<tag>`, in pages of 100) and
+    picks the digest by the rule under Pinned digests, by the entries' own times in whatever
+    order they come. It reads page after page until one covers the time asked for, and at most
+    five; a longer history is an error that says how many entries were read, and the pin stays.
+    Nothing is pulled here.
   - The root part, `agentbox check-versions`, reads that file as untrusted input: never
     through a link, a regular file of at most 64 KiB, JSON of the expected shape, written in
     the last three days; every version and the pins of Orca and Playwright are checked again
     against the patterns the Builds use and an error must be one the fetch reports; a digest
     must be `sha256:` and 64 hex digits, the time its tag moved to it no later than the fetch,
-    and bootc-image-builder's at least `package_min_age_days` before it. Anything
+    and bootc-image-builder's at least `package_min_age_days` before it, by root's own Settings,
+    never the file's. That time is the fetch's claim, which root cannot verify; the repository
+    is root's own and the pull checks the content against the digest. Anything
     else is unknown (so is Orca in a file or `versions.json` from before #113, which named the Host's `/opt/Orca` and
     the newest release instead). It pulls and pins the digests (Pinned digests above), without
     a lock a Build waits for: a Build reads the pins once at its start. It adds, for each Image
@@ -1347,9 +1354,8 @@ Host after every Build
 - `agentbox images` and `GET /api/v1/images` show both: each Build's `tools` and the tools a new
   Build would change (`updates`: an npm tool with a newer version, Orca with another one,
   which a pinned `orca_version` may make an older one, Playwright with another one while
-  `playwright_version` pins it, so never one beyond the pin, and `fedora-bootc` when its
-  pinned digest is another than the one the Build is built on), each Build's
-  `fedora_bootc_digest` and `builder_digest`, per Image the package updates of
+  `playwright_version` pins it, so never one beyond the pin; a pinned digest another than the
+  Build's is none), each Build's `fedora_bootc_digest` and `builder_digest`, per Image the package updates of
   its current Build and whether a new Build would bring anything (`update`), and what the
   check found (`available`, with the pins of the Settings; Orca or Playwright there is unknown
   while the last check took it with another pin, until the check a changed pin starts; and
@@ -2142,9 +2148,10 @@ laptops.
   print-configuration`, `bootc container inspect` and `lsinitrd` of the Image in a container
   of its own inside the privileged one, as podman runs a Build's `RUN` lines. Both images
   come from quay.io by pinned digest ([Pinned digests](#images-and-builds)): bootc-image-builder
-  only once its digest is `package_min_age_days` old, fedora-bootc
-  (`quay.io/fedora/fedora-bootc:44`, which brings dnf with its repositories and keys) on the
-  day its tag moves, with no minimum age. pnpm and Bun have
+  only once its digest is `package_min_age_days` old (by the time its tag moved to it, which
+  the unprivileged fetch reports and root cannot verify), fedora-bootc
+  (`quay.io/fedora/fedora-bootc:44`, which brings dnf with its repositories and keys) pinned
+  on the day its tag moves, with no minimum age. pnpm and Bun have
   no minimum age in a Build (theirs is set for the VM's services and the agent's home), Fedora's
   packages none at all. A Recipe an agent drafted and the owner saved unread reaches as far.
   Mitigation: the owner reads a Recipe before saving it; the minimum age where a Build installs
@@ -2165,8 +2172,7 @@ laptops.
   reaches nothing but the resolver, the proxy and the token service), runs a Build with podman
   and bootc-image-builder (that `--build-container` makes the pristine fedora-bootc osbuild's
   buildroot, and what bootc still runs from the Image, is known from their source and
-  documentation, not from a test), asks quay.io or pulls by digest (the fake answers as quay.io's
-  tag API did when it was written), shuts down or reboots a Host with `libvirt-guests`, or lets the proxy
+  documentation, not from a test), asks quay.io or pulls by digest (a fake plays quay.io's tag API), shuts down or reboots a Host with `libvirt-guests`, or lets the proxy
   resolve a real name (the proxy's tests give it the addresses a name resolves to, and allowed
   tunnels go to a local server instead). What GitHub and Anthropic enforce, such as a token's
   scope, is checked only as the request Agent Box sends.

@@ -172,9 +172,8 @@ export interface DigestRow {
   image: DigestImage
   /** sha256: and the first 12 hex digits; null: unknown */
   installed: string | null
+  /** the pinned one; another one than `installed` is no update: the next Build takes it */
   available: string | null
-  /** a new Build would change it (only fedora-bootc counts as an update) */
-  update: boolean
 }
 
 /** sha256: and the first 12 hex digits of a digest, null for anything else. */
@@ -183,13 +182,12 @@ export function shortDigest(digest: unknown): string | null {
 }
 
 /** The digests a Build was made with next to the pinned ones a new Build would use. */
-export function digestRows(build: Pick<Build, 'fedora_bootc_digest' | 'builder_digest' | 'updates'> | null | undefined,
+export function digestRows(build: Pick<Build, 'fedora_bootc_digest' | 'builder_digest'> | null | undefined,
   available: Available | null | undefined): DigestRow[] {
   return DIGEST_IMAGES.map(image => ({
     image,
     installed: shortDigest(image === 'fedora-bootc' ? build?.fedora_bootc_digest : build?.builder_digest),
     available: shortDigest(available?.digests?.[image]?.digest),
-    update: image === 'fedora-bootc' && !!build?.updates?.includes('fedora-bootc'),
   }))
 }
 

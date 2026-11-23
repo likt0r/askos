@@ -14,11 +14,12 @@ registry.json:
               lists them (GET https://api.github.com/repos/<owner>/<repo>/releases?per_page=N&page=P,
               pages of N), or {"status": 500} for an error. GET .../releases/tags/<tag> answers
               the release with that tag_name unless it is a draft, else 404}
-  quay       {"<namespace>/<repository>": the history of its tags as quay.io's API lists them
-              (name, manifest_digest, start_ts, end_ts once the tag left the digest), newest
-              first, or {"status": 500} for an error}: GET https://quay.io/api/v1/repository/
-              <namespace>/<repository>/tag/?specificTag=<tag>&limit=N answers {"tags": [the
-              entries of that tag, at most N]}
+  quay       {"<namespace>/<repository>": the history of its tags (name, manifest_digest,
+              start_ts, end_ts once the tag left the digest), in the order the API lists
+              them, or {"status": 500} for an error}: GET https://quay.io/api/v1/repository/
+              <namespace>/<repository>/tag/?specificTag=<tag>&limit=N&page=P answers
+              {"tags": [the entries of that tag on page P, pages of N], "page": P,
+              "has_additional": whether a page follows}
   downloads  {"<url>": "<path of a file with its content>" or {"status": 404}}: what curl -o
               writes for that URL (-f: an error status fails with exit 22)
              {"flood": true} instead: a body without length that never ends, whatever
@@ -65,7 +66,7 @@ def releases(u, known):
 
 def tags(u, known):
     """(status, body) of quay.io's tag API: the history of the tag asked for (specificTag),
-    newest first, at most `limit` entries."""
+    page `page` of `limit` entries."""
     m = re.fullmatch(r"/api/v1/repository/([^/]+/[^/]+)/tag/", u.path)
     found = known.get("quay", {}).get(m.group(1)) if m else None
     if found is None:
@@ -75,7 +76,9 @@ def tags(u, known):
     query = parse_qs(u.query)
     tag = query.get("specificTag", [None])[0]
     history = [t for t in found if tag is None or t.get("name") == tag]
-    return 200, {"tags": history[:int(query.get("limit", ["50"])[0])], "page": 1, "has_additional": False}
+    limit, page = int(query.get("limit", ["50"])[0]), int(query.get("page", ["1"])[0])
+    return 200, {"tags": history[(page - 1) * limit:page * limit], "page": page,
+                 "has_additional": len(history) > page * limit}
 
 
 def answer(url, known):

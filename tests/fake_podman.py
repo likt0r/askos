@@ -27,7 +27,8 @@ Environment:
   podman image unmount TAG
   podman image inspect TAG     [{"Id": ..., "RootFS": {"Layers": [...]}}]
   podman image exists TAG      exit 0 or 1
-  podman rmi [--ignore] TAG..  removes them
+  podman rmi [--ignore] TAG..  removes them; fails for TAG prefixes in podman_fails "rmi"
+                               (as when another image is built on it) and keeps those
   podman pull [--quiet] REF    makes REF exist (an empty image); fails for REF prefixes in
                                podman_fails "pull"
   podman run ... bootc-image-builder ... TAG
@@ -45,7 +46,8 @@ run.json (optional): {"<text in a RUN line>": {"<path in the image>": "<content>
                        {"base64": "<binary content>"}}}
 
 scenario.json:
-  podman_fails       {"build": [TAG prefixes], "run": [...], "mount": [...], "pull": [...]}: those calls fail
+  podman_fails       {"build": [TAG prefixes], "run": [...], "mount": [...], "pull": [...],
+                      "rmi": [...]}: those calls fail
   check_update       {"<TAG prefix>": {"exit": 100, "stdout": "<dnf's lines>", "stderr": "...", "sleep": <seconds>}}
 """
 import base64
@@ -353,9 +355,15 @@ def main(argv):
         print("sha256:" + hashlib.sha256(ref.encode()).hexdigest())
         return 0
     if argv[:1] == ["rmi"]:
+        code = 0
         for tag in (a for a in argv[1:] if not a.startswith("-")):
+            if fails("rmi", tag):
+                print(f"Error: image used by another image: {tag}: image has dependent child images",
+                      file=sys.stderr)
+                code = 2
+                continue
             shutil.rmtree(image_dir(tag), ignore_errors=True)
-        return 0
+        return code
     print("podman (fake): unexpected arguments", file=sys.stderr)
     return 125
 

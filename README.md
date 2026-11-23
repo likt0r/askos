@@ -849,7 +849,8 @@ digests of the two images a Build takes from quay.io, `quay.io/fedora/fedora-boo
 `quay.io/centos-bootc/bootc-image-builder:latest`: a Build never pulls them by their tags.
 bootc-image-builder's is the digest its tag pointed to `package_min_age_days` ago;
 fedora-bootc's is the tag's current digest, because quay.io no longer serves one the tag has
-left, and it moves daily. A new fedora-bootc digest counts as an update of the Images. The
+left, and it moves daily. A new digest is no update and starts no Build: the next Build (the
+weekly rebuild, or an update of Orca, the agents or the packages) takes it. The
 questions to the npm registry, GitHub and quay.io run as the unprivileged service user
 `agentbox-feeds` (`agentbox fetch-versions`); root only checks its answer, pulls the new
 digests and pins them, and counts the packages (`agentbox check-versions`). `agentbox images` and the

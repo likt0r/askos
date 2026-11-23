@@ -2,8 +2,8 @@
 // The versions of the tools in a Build next to what is available (#104): one row per tool,
 // marked where a new Build would change it, Orca and Playwright marked when the Settings pin
 // their version (#113, #162); the digests of fedora-bootc and bootc-image-builder the Build was
-// made with next to the pinned ones (#144); and the Fedora package updates when they were
-// counted for this Build.
+// made with next to the pinned ones (#144; a new digest is no update, the next Build takes it);
+// and the Fedora package updates when they were counted for this Build.
 import type { Available, DigestRow, ToolRow } from '~/utils/images'
 
 const props = defineProps<{
@@ -68,7 +68,6 @@ const playwrightPinned = computed(() => props.available?.playwright_version ?? n
             :key="d.image"
             data-testid="digest-row"
             :data-image="d.image"
-            :data-update="d.update ? 'true' : 'false'"
           >
             <td class="py-0.5 pe-4">
               {{ d.image }}
@@ -76,11 +75,8 @@ const playwrightPinned = computed(() => props.available?.playwright_version ?? n
             <td class="py-0.5 pe-4 font-mono text-xs" data-testid="digest-installed">
               {{ d.installed ?? t('system.versions.unknown') }}
             </td>
-            <td class="py-0.5 text-xs" data-testid="digest-available">
-              <span class="inline-flex flex-wrap items-center gap-x-2">
-                <span class="font-mono">{{ d.available ?? t('system.versions.unknown') }}</span>
-                <UBadge v-if="d.update" color="warning" variant="subtle" size="sm" :label="t('system.versions.update')" />
-              </span>
+            <td class="py-0.5 font-mono text-xs" data-testid="digest-available">
+              {{ d.available ?? t('system.versions.unknown') }}
             </td>
           </tr>
           <tr v-if="props.packages !== undefined" data-testid="tool-packages">
