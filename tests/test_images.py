@@ -271,6 +271,26 @@ class BaseBuildTest(ImagesTest):
         self.assertEqual([l for l in lines if l.startswith("FROM")], ["FROM ${FEDORA_BOOTC}"])
         self.assertFalse([l for l in lines if "fedora-bootc:" in l])
 
+    def test_the_buildroot_is_handed_over_by_its_platform_images_digest(self):
+        """A tag's digest names a manifest list; image-builder looks its entry up in the local
+        store by the image's Digest field, which podman set to the list's, and fails. The disk
+        step names the platform image's digest, which podman records beside it."""
+        platform = "sha256:" + "a" * 64
+        self.scenario(manifest_lists={FEDORA_DIGEST: platform})
+        self.built()
+        run = self.podman("run")[0]["argv"]
+        self.assertEqual(run[run.index("--build-container") + 1], "quay.io/fedora/fedora-bootc@" + platform)
+        # the Build still records the pinned (list) digest it is built on
+        self.assertEqual(self.newest()["fedora_bootc_digest"], FEDORA_DIGEST)
+
+    def test_a_buildroot_with_several_other_digests_fails_the_build(self):
+        self.scenario(manifest_lists={FEDORA_DIGEST: ["sha256:" + "a" * 64, "sha256:" + "b" * 64]})
+        code, out = self.build("base")
+        new = self.newest()
+        self.assertEqual(new["status"], "failed", out)
+        self.assertIn("platform image is unclear", new["error"])
+        self.assertEqual(self.podman("run"), [])
+
     def test_bootc_image_builder_makes_the_disk_from_the_checked_image(self):
         self.built()
         new = self.newest()
