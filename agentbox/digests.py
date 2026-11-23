@@ -24,8 +24,10 @@ version check moves (versions.py):
   fedora-bootc only when the image's os-release names Fedora of the release its tag names
   (UPSTREAM), since the repository holds every release (43, 45, rawhide...) and the fetch, not
   root, chose the digest: one of another release is removed again. A failed fetch or pull leaves
-  the pin as it is. A pinned image missing from the Host's container storage is pulled again by
-  the next check, which a Build runs first when it misses one it needs (images._pins).
+  the pin as it is, and so does a fetch file without the image's entry, which asked quay.io
+  nothing (a fetch from before the pins): "not fetched yet", no error of quay.io. A pinned
+  image missing from the Host's container storage is pulled again by the next check, which a
+  Build runs first when it misses one it needs (images._pins).
 
 A new digest is no update by itself: no Build starts for it, the next one (the weekly rebuild
 on rebuild_day, or an update of Orca, the agents or the packages) takes it.
@@ -66,6 +68,8 @@ ERRORS = (r"quay\.io not reachable|quay\.io answered [1-5][0-9][0-9]|no digest o
           r"no digest of the tag at least package_min_age_days old|"
           r"no digest of the tag (found|at least package_min_age_days old) "
           r"in the first [0-9]{1,4} entries of its history")
+# the fetch file has no entry for the image: that fetch never asked quay.io for it (fetched())
+NOT_FETCHED = "not fetched yet; the next fetch asks quay.io"
 
 
 def tagged(name):
@@ -156,14 +160,21 @@ def fetched(found, when, days, error):
     image with a minimum age, at least `days` before it: root's own package_min_age_days, never
     the file's. `since` itself is the fetch's claim, which root cannot verify; the repository
     is fixed (UPSTREAM), and the pull checks the content against the digest. `error`
-    (versions._error) turns an error text into one the fetch may report."""
+    (versions._error) turns an error text into one the fetch may report. A file without an
+    entry for the image (no `digests`, or not this one) did not ask quay.io for it: written by
+    a fetch of a Release before the pins, or one that ran before this Release was installed;
+    that is NOT_FETCHED, not a failed fetch."""
     out = {}
     for name in NAMES:
+        # found: the file's `digests`, None without one
+        asked = name in found if isinstance(found, dict) else found is not None
         got = found.get(name) if isinstance(found, dict) else None
         got = got if isinstance(got, dict) else {}
         digest, since = valid(got.get("digest")), got.get("since")
         problem = None
-        if digest is None:
+        if not asked:
+            problem = NOT_FETCHED
+        elif digest is None:
             problem = error(got.get("error"))
         elif not isinstance(since, int) or isinstance(since, bool) or not 0 < since <= when:
             problem = "unknown error"
