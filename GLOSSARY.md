@@ -73,7 +73,7 @@ One built and checked version of an Image, named by the time it was made; the ne
 _Avoid_: image version, tag
 
 **Build VM**:
-A throwaway VM a Build runs in instead of the Host: started from the signed Fedora Cloud image with new, empty disks, with open egress but nothing of the Host, the home network or other VMs, nobody logging in, and gone when it ends. Not a VM of the registry: it has no Allowlist, no Data disk and no name of the owner's. So far behind an internal switch that is off.
+A throwaway VM a Build runs in instead of the Host: started from the signed Fedora Cloud image with new, empty disks, with open egress but nothing of the Host, the home network or other VMs, nobody logging in, and gone when it ends. Not a VM of the registry: it has no Allowlist, no Data disk and no name of the owner's. Builds and the version check's package count run in build VMs while the Setting `build_vm` is on, its default; off, they run as root on the Host.
 _Avoid_: builder, build container
 
 **System disk**:

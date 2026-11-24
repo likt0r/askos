@@ -57,7 +57,9 @@ function stepLabel(step: string) {
   return te(`system.build.step.${step}`) ? t(`system.build.step.${step}`) : step
 }
 
-const stepsDone = computed(() => stepIndex(running.value?.step))
+// `import` only for a Build in build VMs (ADR 0025)
+const steps = computed(() => buildSteps(running.value?.build_vm))
+const stepsDone = computed(() => stepIndex(running.value?.step, running.value?.build_vm))
 // in the step build: podman's step n of m and its command, as the log has them (#183)
 const podman = computed(() => podmanStep(running.value))
 const log = (b: string) => props.logs[logKey(props.image.name, b)]
@@ -133,7 +135,7 @@ const log = (b: string) => props.logs[logKey(props.image.name, b)]
       </p>
       <ol class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs">
         <li
-          v-for="(step, i) in BUILD_STEPS"
+          v-for="(step, i) in steps"
           :key="step"
           class="flex items-center gap-1"
           :class="i < stepsDone ? 'text-success' : i === stepsDone ? 'font-semibold text-info' : 'text-dimmed'"

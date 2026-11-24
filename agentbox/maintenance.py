@@ -350,14 +350,25 @@ def timer_missing():
 
 
 def warnings():
-    """What the Host lacks for its maintenance, as [{"code", "message"}] (stable codes, ADR 0012):
-    `maintenance_timer_missing` while timer_missing()."""
-    if not timer_missing():
-        return []
-    message = f"The timer of the Maintenance window ({TIMER}) is missing: sudo agentbox regenerate creates it"
-    if _unit_file(OLD_TIMER):
-        message += "; until then the old Reset check's timer runs the window at the old Reset time"
-    return [{"code": "maintenance_timer_missing", "message": message}]
+    """What the Host lacks for its maintenance and safety, as [{"code", "message"}] (stable codes,
+    ADR 0012): `maintenance_timer_missing` while timer_missing(); `builds_on_host` while the
+    Setting build_vm is off (ADR 0025), so Builds run as root on the Host. Settings that cannot
+    be read add nothing here (every command that reads them says so)."""
+    found = []
+    if timer_missing():
+        message = f"The timer of the Maintenance window ({TIMER}) is missing: sudo agentbox regenerate creates it"
+        if _unit_file(OLD_TIMER):
+            message += "; until then the old Reset check's timer runs the window at the old Reset time"
+        found.append({"code": "maintenance_timer_missing", "message": message})
+    try:
+        off = not settings.load()["build_vm"]
+    except Fail:
+        off = False
+    if off:
+        found.append({"code": "builds_on_host", "message": "Builds run as root on the Host (the Setting build_vm "
+                      "is off): their code reaches root on the Host. sudo agentbox set-settings build_vm=true runs "
+                      "them in throwaway build VMs"})
+    return found
 
 
 def weekly_check(args):

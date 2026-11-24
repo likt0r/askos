@@ -25,6 +25,11 @@ which ends it for good.
      xfs root filesystem of the image "tag" (the one the Host checked) with the image
      "buildroot" (the pristine fedora-bootc) as its buildroot and the job's config.toml; its
      disk.qcow2 is copied to OUT/disk.qcow2
+     the job "count" (the version check's package count, online): dnf -q check-update in a
+     container from the image "tag" (an Image's current Build), as the Host would run it
+     (no capabilities, no-new-privileges, a read-only root); what dnf writes to its output, at
+     most MAX_COUNT bytes, goes to OUT/check-update.txt when dnf ends with 0 (no updates) or 100
+     (updates listed), its errors to the log
   7. OUT/result.json: {"status": "ok"}, or {"status": "failed", "error": "<why>"}, which the
      Host takes only as text for the reason of a failure
 
@@ -47,7 +52,10 @@ WORK = "/var/lib/containers/agentbox-build"
 OUT = "/run/agentbox-out"
 OUT_TAG = "agentbox-out"
 DEVICE_WAIT = 120
-JOBS = ("build", "disk")
+JOBS = ("build", "disk", "count")
+MAX_COUNT = 1 << 20
+COUNT_SECONDS = 600
+CHECK_TMPFS = ("/var/cache", "/var/lib/dnf", "/var/log")     # what dnf may write in the read-only container
 SEAM = os.environ.get("AGENTBOX_BUILD_VM_ROOT", "") if os.geteuid() != 0 else ""
 
 
@@ -184,6 +192,34 @@ def disk(log, work, job):
     shutil.copyfile(made, os.path.join(here(OUT), "disk.qcow2"))
 
 
+def count(log, work, job):
+    """dnf -q check-update in a container from the job's image; its output to
+    OUT/check-update.txt when it ends with 0 or 100."""
+    if not isinstance(job.get("tag"), str) or not job["tag"]:
+        raise Failed("job.json names no tag")
+    listing = os.path.join(work, "check-update.txt")
+    log.say("running dnf check-update")
+    with open(listing, "wb") as out:
+        try:
+            proc = subprocess.run(["podman", "run", "--rm", "--pull=never", "--cap-drop=all",
+                                   "--security-opt=no-new-privileges", "--read-only",
+                                   *(f"--tmpfs={d}" for d in CHECK_TMPFS), job["tag"], "dnf", "-q", "check-update"],
+                                  stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.PIPE,
+                                  timeout=COUNT_SECONDS)
+        except subprocess.TimeoutExpired:
+            raise Failed("dnf check-update: time limit exceeded")
+        except OSError as e:
+            raise Failed(f"podman cannot be started: {e.strerror or e}")
+    for line in proc.stderr.splitlines()[-50:]:
+        log.write(line + b"\n")
+    if proc.returncode not in (0, 100):
+        tail = " ".join(proc.stderr.decode("utf-8", "replace").split())[-300:]
+        raise Failed(f"dnf check-update failed (exit {proc.returncode})" + (f": {tail}" if tail else ""))
+    if os.path.getsize(listing) > MAX_COUNT:
+        raise Failed(f"dnf check-update wrote more than {MAX_COUNT} bytes")
+    shutil.copyfile(listing, os.path.join(here(OUT), "check-update.txt"))
+
+
 def main():
     wait_for(LOG)
     with open(here(LOG), "wb", buffering=0) as port:
@@ -202,10 +238,7 @@ def main():
             work = here(WORK)
             job = unpack(log, work)
             load(log, work, job.get("images") or [])
-            if job["job"] == "build":
-                build(log, work, job)
-            else:
-                disk(log, work, job)
+            {"build": build, "disk": disk, "count": count}[job["job"]](log, work, job)
             result = {"status": "ok"}
             log.say("done")
         except Failed as e:

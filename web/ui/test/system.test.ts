@@ -2,7 +2,7 @@
 // Host reboot. Mounts the app on /system against a fake backend and a fake event stream.
 import { flushPromises } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
-import { appendLines, applyBuild, podmanStep, stepIndex } from '~/utils/images'
+import { appendLines, applyBuild, buildSteps, podmanStep, stepIndex } from '~/utils/images'
 import type { ImagesOverview } from '~/utils/images'
 import { ok, openPage, useFreshApp } from './system-helpers'
 
@@ -53,8 +53,12 @@ async function openSystem(routes: Record<string, unknown> = {}) {
 }
 
 describe('Images and Builds (units)', () => {
-  it('orders the steps and finds them by name', () => {
-    expect(['source', 'build', 'check', 'disk', 'done'].map(stepIndex)).toEqual([0, 1, 2, 3, 4])
+  it('orders the steps and finds them by name, import only in build VMs', () => {
+    expect(['source', 'build', 'import', 'check', 'disk', 'done'].map(s => stepIndex(s))).toEqual([0, 1, 2, 3, 4, 5])
+    expect(['source', 'build', 'import', 'check', 'disk', 'done'].map(s => stepIndex(s, true))).toEqual([0, 1, 2, 3, 4, 5])
+    // on the Host (build_vm off) there is no import
+    expect(['source', 'build', 'import', 'check', 'disk', 'done'].map(s => stepIndex(s, false))).toEqual([0, 1, -1, 2, 3, 4])
+    expect(buildSteps(false)).toEqual(['source', 'build', 'check', 'disk', 'done'])
     expect(stepIndex(null)).toBe(-1)
     expect(stepIndex('nonsense')).toBe(-1)
   })
@@ -402,17 +406,19 @@ describe('System page: live progress', () => {
     expect(api.calls.some(c => c.path.startsWith('/images/base/log?build=20261104-0300'))).toBe(true)
     expect(loads).toBe(1)
 
-    for (const step of ['build', 'check', 'disk']) {
-      es.emit('build', ev('running', step))
+    // in build VMs (ADR 0025): the Host's import of the image archive is a step of its own
+    for (const step of ['build', 'import', 'check', 'disk']) {
+      es.emit('build', ev('running', step, { build_vm: true }))
       await flushPromises()
       progress = card(wrapper).find('[data-testid="build-progress"]')
       expect(progress.attributes('data-step')).toBe(step)
       const steps = progress.findAll('li')
-      const at = stepIndex(step)
+      expect(steps).toHaveLength(6)
+      const at = stepIndex(step, true)
       expect(steps.map(s => s.attributes('aria-current'))).toEqual(steps.map((_, i) => (i === at ? 'step' : undefined)))
       expect(steps.slice(0, at).every(s => s.classes().includes('text-success'))).toBe(true)
     }
-    expect(progress.text()).toContain('Make disk')
+    expect(progress.findAll('li').map(s => s.text())).toEqual(['Copy source', 'Build', 'Import', 'Check safeguards', 'Make disk', 'Done'])
     expect(loads).toBe(1)           // nothing refetched while it runs
 
     es.emit('build', ev('ok', 'done', { finished: '2026-11-04T03:30:00Z' }))
@@ -422,6 +428,17 @@ describe('System page: live progress', () => {
     expect(card(wrapper).find('[data-testid="image-current"]').text()).toBe('20261104-0300')
     expect(rows(wrapper)[0]!.attributes('data-status')).toBe('ok')
     expect(rows(wrapper)[0]!.text()).toContain('current')
+  })
+
+  it('shows no import step for a Build on the Host (build_vm off)', async () => {
+    const { wrapper, es } = await openSystem({
+      'GET /images/base/log?build=20261104-0300&lines=500': ok({ image: 'base', build: '20261104-0300', status: 'running', step: 'check', error: null, problems: [], entries: [], cursor: null, truncated: false }),
+    })
+    es.emit('build', { ...build('20261104-0300', { status: 'running', step: 'check', finished: null, actor: 'timer' }), image: 'base', unit: 'agentbox-build@base.service', build_vm: false })
+    await flushPromises()
+    const steps = card(wrapper).find('[data-testid="build-progress"]').findAll('li')
+    expect(steps.map(s => s.text())).toEqual(['Copy source', 'Build', 'Check safeguards', 'Make disk', 'Done'])
+    expect(steps.map(s => s.attributes('aria-current'))).toEqual([undefined, undefined, 'step', undefined, undefined])
   })
 
   it('shows a bar of podman\'s steps and the current command while the Build is in its step build (#183)', async () => {
@@ -736,6 +753,29 @@ describe('System page: services', () => {
     await flushPromises()
     expect(wrapper.find('[data-testid="services-failed"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="service-row"]').attributes('data-color')).toBe('success')
+  })
+
+  it('says for as long as build_vm is off that Builds run as root on the Host (ADR 0025)', async () => {
+    const { wrapper, es } = await openSystem()
+    const message = 'Builds run as root on the Host (the Setting build_vm is off): their code reaches root on the Host. sudo agentbox set-settings build_vm=true runs them in throwaway build VMs'
+    es.emit('services', { units: [unit('a.service', 'running')], warnings: [{ code: 'builds_on_host', message }] })
+    await flushPromises()
+    let warning = wrapper.find('[data-testid="services-warning"]')
+    expect(warning.attributes('data-code')).toBe('builds_on_host')
+    expect(warning.text()).toContain('Builds run as root on the Host')
+    expect(warning.text()).toContain('sudo agentbox set-settings build_vm=true')
+    // it stays while it is off, also when the units change
+    es.emit('services', { units: [unit('b.service', 'running')], warnings: [{ code: 'builds_on_host', message }] })
+    await flushPromises()
+    await useNuxtApp().$i18n.setLocale('de')
+    await flushPromises()
+    warning = wrapper.find('[data-testid="services-warning"]')
+    expect(warning.text()).toContain('Builds laufen als root auf dem Host')
+    expect(warning.text()).toContain('sudo agentbox set-settings build_vm=true')
+    // gone once it is on
+    es.emit('services', { units: [unit('b.service', 'running')], warnings: [] })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="services-warning"]').exists()).toBe(false)
   })
 
   it('warns while the timer of the Maintenance window is missing, in the user\'s language', async () => {

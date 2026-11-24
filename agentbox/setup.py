@@ -28,9 +28,10 @@ on a first run, and a password source without it is refused on a Host that has o
 setup twice cannot change how the Host is exposed: without options setup then does the Host
 steps for the Host setup there is (after an update, or to finish a run that stopped; with
 --new-password it sets a new password besides), and with any other option it refuses.
-Activity records a new password, never its value. Settings, the VM registry, an existing
-certificate and the GitHub App are never touched; with --force the Orca and SSH ports of
-existing VMs and the firewall rules follow the new mode.
+Activity records a new password, never its value. The VM registry, an existing certificate and
+the GitHub App are never touched, nor are the Settings but for build_vm on a Host without KVM or
+16 GiB of memory, and only while none is stored (hoststeps.build_vms); with --force the Orca and
+SSH ports of existing VMs and the firewall rules follow the new mode.
 
 The steps run in a fixed order (ARCHITECTURE.md, "Setting a Host up"); each changes
 only what differs, so a second run changes nothing. One that fails stops setup with a message
@@ -362,6 +363,8 @@ def setup(args):
     steps.run("Expiry of Temporary allowlist entries", hoststeps.expiry_timer)
     steps.run("Container image cleanup", hoststeps.container_image_cleanup_timer)
     steps.run("Pause on Alerts", hoststeps.alert_watch)
+    # before regenerate, which removes the build VMs' network while build_vm is off
+    steps.run("Build VMs", hoststeps.build_vms)
     steps.run("migrate", hoststeps.migrate)
     steps.run("migrate-allowlist", hoststeps.migrate_allowlist)
 

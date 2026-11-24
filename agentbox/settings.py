@@ -10,7 +10,9 @@ file is world-readable and holds nothing secret.
 `agentbox settings` shows the values, `agentbox set-settings KEY=VALUE...` validates
 all of them, saves nothing when one is invalid, and otherwise saves and applies what
 depends on them (generate.apply: timers, journald retention) without a restart by
-hand. The Control Room password, the home network and the ports are not settings.
+hand. The Control Room password, the home network and the ports are not settings. The Control
+Room changes every Setting, but turns build_vm only on (CONTROL_ROOM_OFF): off is root's on the
+CLI at the Host.
 
 maintenance_time (#49) replaced reset_time and rebuild_time: a file that still holds
 reset_time reads as maintenance_time two hours before it (when the version check ran), and
@@ -43,6 +45,9 @@ PLAYWRIGHT_VERSION = ORCA_VERSION
 MAX_MEMORY_MIB = 1048576       # as vms.py: when the Host's memory is unknown; create checks the real one
 MAX_DATA_DISK_GIB = 16384
 RESET = "default"              # as a value in set-settings: back to the built-in default
+# Settings the Control Room may turn on but never off (ADR 0025): a stolen session that turned
+# build_vm off could build a Recipe as root on the Host
+CONTROL_ROOM_OFF = ("build_vm",)
 ALERT_PAUSE, ALERT_NONE = "pause", "none"     # alert_action
 
 
@@ -137,6 +142,11 @@ SPEC = {
     "young_domain_days": Setting(14, _young_days(), "at the next fetch of the Feeds"),
     "feed_interval_hours": Setting(12, _int(1, 168)),
     "package_min_age_days": Setting(2, _int(1, 30), BUILD),
+    # ADR 0025: Builds and the version check's package count run in throwaway build VMs
+    # (build_vm_run.py); off, as root on the Host. agentbox setup writes false on a Host without
+    # the memory or KVM for them (hoststeps.build_vms); only root on the CLI turns it off
+    # (CONTROL_ROOM_OFF), never the Control Room
+    "build_vm": Setting(True, _bool(), BUILD),
     # #114: the version check of the Maintenance window starts a Build of every Image with an
     # update, and its Reset check also resets idle VMs whose Image has a newer Build
     "auto_update": Setting(True, _bool()),
@@ -286,6 +296,19 @@ def _show(args):
         print(f"{key:26} {_shown(i['value'])!s:8} ({'; '.join(notes)})")
 
 
+def refuse_off_from_control_room(changes):
+    """Called through sudo by the Control Room (SUDO_USER, as cli.check_control_room reads it):
+    no change of {key: text} turns a CONTROL_ROOM_OFF Setting off; `default` turns it on. Before
+    anything is saved."""
+    from .cli import CONTROL_ROOM_USER      # cli imports every command's module, this one too
+    if os.environ.get("SUDO_USER") != CONTROL_ROOM_USER:
+        return
+    for key in CONTROL_ROOM_OFF:
+        if key in changes and changes[key] != RESET and check(key, changes[key]) is False:
+            die(f"{key}=false is not for the Control Room: only root on the CLI at the Host turns it off "
+                f"(sudo agentbox set-settings {key}=false)", error="setting_cli_only", setting=key)
+
+
 def _set(args):
     """agentbox set-settings KEY=VALUE... [--json]  (VALUE `default`: back to the default)"""
     usage = "set-settings KEY=VALUE... [--json] (VALUE default: the default value); each key only once"
@@ -299,6 +322,7 @@ def _set(args):
         changes[key] = value
     if not changes:
         die(usage, error="invalid_argument")
+    refuse_off_from_control_room(changes)
     from . import generate     # generate imports activity, which imports this module
     with state_files.locked(paths.REGISTRY):
         generate.ports_free()      # what apply() would stop on stops the change before it is saved

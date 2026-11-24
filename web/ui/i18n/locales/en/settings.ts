@@ -34,6 +34,7 @@ export default {
       auto_update: { label: 'Automatic updates', help: 'On: in every Maintenance window the Host checks what a new Build would bring (newer agent tools, Orca, Fedora packages) and builds every Image with an update; once those Builds have finished, the window moves idle VMs onto the new Build. VMs pinned to a Build stay as they are. Off: new versions come with the weekly rebuild, and VMs get them at their Reset by age.' },
       rebuild_day: { label: 'Rebuild day', help: 'The day of the week on which the Maintenance window rebuilds all Images from the installed Release. If that day\'s window did not rebuild them (the Host was off, for instance), the next window does, once.' },
       builds_kept: { label: 'Builds kept', help: 'How many Builds of each Image are kept. Builds in use are never deleted.' },
+      build_vm: { label: 'Build VMs', help: 'On: every Build runs in two throwaway VMs (the container image in one with internet access, the disk in an offline one), and the daily package count in one too; the Host checks what comes out. Off: they run as root on the Host, where a malicious package or Recipe reaches the whole Host. Only root on the Host can turn this off.', cliOnly: 'Turning it off is only possible on the Host: sudo agentbox set-settings build_vm=false' },
       package_min_age_days: { label: 'Package minimum age', help: 'The minimum release age for packages installed in Images (npm, pnpm, bun, uv) and for the Orca release a Build takes.' },
       orca_version: { label: 'Orca version', help: 'Empty: every Build takes the newest Orca release at least the package minimum age old. A version such as 1.4.250 pins that release, for when a newer one causes trouble.' },
       playwright_version: { label: 'Playwright version', help: 'Empty: every Build takes the newest version of Playwright (with its Chromium and Firefox) at least the package minimum age old. A version such as 1.65.1 pins that version, which has to be that old as well, so the {\'@\'}playwright/test a project pins does not change with an update.' },
@@ -54,6 +55,7 @@ export default {
     },
     later: {
       builds_kept: 'Applies from the next Build.',
+      build_vm: 'Applies from the next Build.',
       package_min_age_days: 'Applies from the next Build.',
       orca_version: 'Applies from the next Build.',
       playwright_version: 'Applies from the next Build.',
@@ -73,6 +75,7 @@ export default {
       young_domain_days: { 7: '7 days', 14: '14 days', 21: '21 days', 28: '28 days', 35: '35 days' },
       default_language: { browser: 'Browser language', en: 'English', de: 'Deutsch' },
       auto_update: { true: 'On', false: 'Off' },
+      build_vm: { true: 'On', false: 'Off' },
       alert_action: { pause: 'Pause the VM', none: 'Nothing' },
       default_container_image_cleanup: { true: 'On', false: 'Off' },
     },

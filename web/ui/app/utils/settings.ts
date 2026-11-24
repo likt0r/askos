@@ -32,6 +32,7 @@ export const SETTING_SPECS: Record<string, Spec> = {
   auto_update: { type: 'choice', options: ['true', 'false'], boolean: true },
   rebuild_day: { type: 'choice', options: DAYS },
   builds_kept: { type: 'int', min: 1, max: 20 },
+  build_vm: { type: 'choice', options: ['true', 'false'], boolean: true },
   default_memory_mib: { type: 'int', min: 1024, max: 1048576, unit: 'MiB' },
   default_data_disk_gib: { type: 'int', min: 1, max: 16384, unit: 'GiB' },
   default_image: { type: 'name' },
@@ -52,11 +53,21 @@ export const SETTING_SPECS: Record<string, Spec> = {
 }
 
 export const SETTING_GROUPS: { id: string, keys: string[] }[] = [
-  { id: 'schedule', keys: ['maintenance_time', 'reset_age_days', 'auto_update', 'rebuild_day', 'builds_kept', 'package_min_age_days', 'orca_version', 'playwright_version'] },
+  { id: 'schedule', keys: ['maintenance_time', 'reset_age_days', 'auto_update', 'rebuild_day', 'builds_kept', 'build_vm', 'package_min_age_days', 'orca_version', 'playwright_version'] },
   { id: 'newVms', keys: ['default_memory_mib', 'default_data_disk_gib', 'default_image', 'default_container_image_cleanup', 'default_container_image_cleanup_days'] },
   { id: 'access', keys: ['alert_action', 'hold_seconds', 'open_web_max_minutes', 'temporary_entry_default', 'young_domain_days', 'feed_interval_hours'] },
   { id: 'controlRoom', keys: ['activity_retention_days', 'session_hours', 'default_language'] },
 ]
+
+/** Settings the Control Room turns on but never off (agentbox/settings.py CONTROL_ROOM_OFF,
+ * ADR 0025): off is root's on the CLI at the Host, and PATCH answers 409 setting_cli_only. */
+export const ON_ONLY: readonly string[] = ['build_vm']
+
+/** Whether the option `value` of `key` is one the Control Room may not choose: off for an
+ * ON_ONLY Setting that is on now (one that is off already stays selectable as it is). */
+export function optionRefused(key: string, value: string, info: SettingInfo): boolean {
+  return ON_ONLY.includes(key) && value === 'false' && info.value !== false
+}
 
 const TIME = /^([01][0-9]|2[0-3]):[0-5][0-9]$/
 const NAME = /^[a-z0-9][a-z0-9-]{0,31}$/

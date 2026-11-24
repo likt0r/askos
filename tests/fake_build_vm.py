@@ -21,8 +21,8 @@ The VM has a root of its own, FAKE_VIRSH_DIR/guest-<domain without "agentbox-">:
 It waits for the Host to connect to the log channel, then runs the seed's build-vm-run there as
 the VM would (AGENTBOX_BUILD_VM_ROOT), and ends the domain when it ends.
 
-scenario.json "build_vm" (the first build VM of a Build, <image>-<build>-build) and "disk_vm"
-(the second, <image>-<build>-disk), each:
+scenario.json "build_vm" (the first build VM of a Build, <image>-<build>-build), "disk_vm" (the second,
+<image>-<build>-disk) and "count_vm" (the version check's package count, <image>-<build>-count), each:
   boots       false: the VM says nothing and runs until destroyed (default true)
   driver      false: no driver runs; the VM writes "lines" and ends (default true)
   lines       lines the VM writes to its log before the driver (bytes as latin-1 text)
@@ -199,8 +199,8 @@ def main(domain, fd, xml_file):
     from xml.sax.saxutils import unescape
     import re
     args = json.loads(unescape(re.search(r"<args>(.*)</args>", xml, re.S).group(1)))
-    disk = domain.endswith("-disk")
-    conf = fake_virsh.load("scenario.json", {}).get("disk_vm" if disk else "build_vm") or {}
+    key = "disk_vm" if domain.endswith("-disk") else "count_vm" if domain.endswith("-count") else "build_vm"
+    conf = fake_virsh.load("scenario.json", {}).get(key) or {}
     root = os.path.join(DIR, "guest-" + domain.removeprefix("agentbox-"))
     out = prepare(root, args, conf)
     conn, _ = listener.accept()
@@ -224,7 +224,7 @@ def main(domain, fd, xml_file):
         forward(port, conn, driver)
         with open(os.path.join(root, "driver.exit"), "w") as f:
             f.write(str(driver.returncode))
-    handed = os.path.join(out, "disk.qcow2" if disk else "image.oci.tar")
+    handed = os.path.join(out, {"disk_vm": "disk.qcow2", "count_vm": "check-update.txt"}.get(key, "image.oci.tar"))
     if conf.get("tamper") == "symlink":
         os.remove(handed)
         os.symlink(os.path.join(DIR, "scenario.json"), handed)

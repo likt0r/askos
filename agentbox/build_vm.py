@@ -1,6 +1,6 @@
-"""The build VMs (ADR 0025, #144): throwaway VMs that are to run the Builds; their image. The
-first build VM of a Build boots it (build_vm_run.py), behind an internal switch that is off, so
-Builds run on the Host.
+"""The build VMs (ADR 0025, #144): throwaway VMs that run the Builds and the version check's
+package count while the Setting build_vm is on; their image. Every build VM boots it
+(build_vm_run.py).
 
 Their image is the Fedora Cloud Base Generic qcow2 of the Fedora release whose fedora-bootc the
 Builds take (RELEASE, the tag in digests.UPSTREAM), as Fedora publishes and signs it with the

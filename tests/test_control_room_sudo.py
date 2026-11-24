@@ -263,6 +263,39 @@ class CallerTest(ActivityTest):
                 self.assertEqual(said["params"], {"command": args[0], "option": "--force"})
         self.assertFalse(self.allowlist_exists())
 
+    def test_build_vm_is_turned_off_only_on_the_cli(self):
+        """ADR 0025: a stolen Control Room session that turned the build VMs off could build a
+        Recipe as root on the Host; turning them on is the Control Room's too."""
+        settings_file = self.path("etc/agentbox/settings.json")
+        for value in ("false", "False"):
+            with self.subTest(value=value):
+                code, out, err = self.through_sudo("agentbox-web", "set-settings", f"--actor={FIREFOX}",
+                                                   f"build_vm={value}", "--json")
+                self.assertEqual((code, out), (1, ""), err)
+                said = json.loads(err.strip().splitlines()[-1])
+                if value == "false":
+                    self.assertEqual((said["error"], said["params"]), ("setting_cli_only", {"setting": "build_vm"}))
+                    self.assertIn("only root on the CLI at the Host turns it off", said["message"])
+                else:
+                    self.assertEqual(said["error"], "invalid_setting")
+                self.assertFalse(os.path.exists(settings_file))
+        # with other Settings in the same call nothing is saved
+        code, _, err = self.through_sudo("agentbox-web", "set-settings", f"--actor={FIREFOX}", "builds_kept=4",
+                                         "build_vm=false", "--json")
+        self.assertEqual(code, 1, err)
+        self.assertFalse(os.path.exists(settings_file))
+        # root on the CLI turns it off; the Control Room turns it on again, also as its default
+        code, _, err = self.run_agentbox("set-settings", "build_vm=false")
+        self.assertEqual(code, 0, err)
+        for value in ("true", "default"):
+            with self.subTest(on=value):
+                code, out, err = self.through_sudo("agentbox-web", "set-settings", f"--actor={FIREFOX}",
+                                                   f"build_vm={value}", "--json")
+                self.assertEqual(code, 0, err)
+                with open(settings_file) as f:
+                    self.assertNotIn("build_vm", {k for k, v in json.load(f).items() if v is False})
+                self.run_agentbox("set-settings", "build_vm=false")
+
     def test_the_control_rooms_commands_run(self):
         code, out, err = self.through_sudo("agentbox-web", "allow", f"--actor={FIREFOX}", "work", "a.example",
                                            "--note=--force", "--json")

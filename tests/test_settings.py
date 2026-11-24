@@ -20,7 +20,8 @@ DEFAULTS = {"reset_age_days": 7, "maintenance_time": "02:00", "rebuild_day": "su
             "builds_kept": 3, "default_memory_mib": 26624, "default_data_disk_gib": 300, "default_image": "base",
             "default_container_image_cleanup": True, "default_container_image_cleanup_days": 7,
             "open_web_max_minutes": 240, "hold_seconds": 30, "alert_action": "pause", "temporary_entry_default": "1h", "young_domain_days": 14,
-            "feed_interval_hours": 12, "package_min_age_days": 2, "auto_update": True, "orca_version": "",
+            "feed_interval_hours": 12, "package_min_age_days": 2, "build_vm": True, "auto_update": True,
+            "orca_version": "",
             "playwright_version": "", "activity_retention_days": 90, "session_hours": 12, "default_language": "browser"}
 INVALID = {
     "reset_age_days": ["0", "366", "abc", "1.5", "-1", ""], "maintenance_time": ["24:00", "4:00", "04:60", "x"],
@@ -32,7 +33,7 @@ INVALID = {
     "alert_action": ["", "Pause", "off", "kill", "false"],
     "temporary_entry_default": ["30m", "2h", "1d", "15"], "young_domain_days": ["0", "10", "42", "14.0"],
     "feed_interval_hours": ["0", "169"], "package_min_age_days": ["0", "31"],
-    "auto_update": ["", "on", "True", "1", "yes", "false "],
+    "auto_update": ["", "on", "True", "1", "yes", "false "], "build_vm": ["", "off", "False", "0", "no"],
     "orca_version": ["1.4", "v1.4.250", "1.4.250-rc.0", "01.4.250", "1.4.250 ", " ", "latest", "1.4.250;true",
                      "1.4.1234567890"],
     "playwright_version": ["1.65", "v1.65.1", "1.66.0-alpha-2026-11-18", "01.65.1", "1.65.1 ", " ", "latest",
@@ -192,6 +193,27 @@ class AutoUpdateTest(SettingsTest):
         self.assertEqual([c for c in self.systemctl() if c[0] != "enable"], [])
 
 
+class BuildVmTest(SettingsTest):
+    """build_vm (ADR 0025): on by default, read by each Build run; off only by root on the CLI
+    (test_control_room_sudo.py), which agentbox status then says."""
+
+    def test_on_by_default_and_off_from_the_next_build(self):
+        info = json.loads(self.ok("settings", "--json"))["settings"]["build_vm"]
+        self.assertEqual((info["value"], info["default"], info["allowed"], info["applies_later"]),
+                         (True, True, "true or false", "from the next Build"))
+        self.assertEqual(json.loads(self.ok("status", "--json")).get("host_warnings"), None)
+        self.assertIn("build_vm: true -> false (applies from the next Build)", self.ok("set-settings", "build_vm=false"))
+        self.assertEqual(self.stored(), {"build_vm": False})
+        warnings = json.loads(self.ok("status", "--json"))["host_warnings"]
+        self.assertEqual([w["code"] for w in warnings], ["builds_on_host"])
+        self.assertIn("Builds run as root on the Host", warnings[0]["message"])
+        self.assertIn("sudo agentbox set-settings build_vm=true", warnings[0]["message"])
+        self.assertIn("Builds run as root on the Host", self.ok("status"))
+        self.ok("set-settings", "build_vm=default")
+        self.assertEqual(self.stored(), {})
+        self.assertEqual(json.loads(self.ok("status", "--json")).get("host_warnings"), None)
+
+
 class SetTest(SettingsTest):
     def test_saves_and_shows_the_values(self):
         out = self.ok("set-settings", "reset_age_days=10", "default_language=de")
@@ -213,7 +235,7 @@ class SetTest(SettingsTest):
                  "default_image": "rust-2", "default_container_image_cleanup": "false",
                  "default_container_image_cleanup_days": "365", "open_web_max_minutes": "1440", "hold_seconds": "120", "alert_action": "none", "temporary_entry_default": "7d",
                  "young_domain_days": "35", "feed_interval_hours": "168", "package_min_age_days": "30",
-                 "auto_update": "false", "orca_version": "1.4.250", "playwright_version": "1.65.1",
+                 "build_vm": "false", "auto_update": "false", "orca_version": "1.4.250", "playwright_version": "1.65.1",
                  "activity_retention_days": "3650",
                  "session_hours": "168", "default_language": "de"}
         self.ok("set-settings", *[f"{k}={v}" for k, v in valid.items()])

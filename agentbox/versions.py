@@ -371,10 +371,43 @@ def orca_newest(cutoff, pin=None):
     return version, None
 
 
+def updates_listed(text):
+    """How many packages dnf check-update's output lists: one per line (name.arch, version,
+    repository) up to its obsoletes."""
+    names = set()
+    for line in text.splitlines():
+        if line.lower().startswith("obsolet"):
+            break
+        f = line.split()
+        if len(f) == 3 and "." in f[0]:
+            names.add(f[0])
+    return len(names)
+
+
+def count_in_build_vm(image, build, tag, say):
+    """(number of Fedora package updates, error) for the container image `tag` of the Image's
+    Build `build`, with build_vm on: `dnf check-update` in a build VM (build_vm_run.count), never
+    on the Host. It takes the Build run lock without waiting: while a Build runs, the count is
+    unknown, and a Build that starts meanwhile makes it give way."""
+    from . import build_vm_run, images      # images records the versions of a Build with this module
+    with state_files.locked_unless_held(images.RUN_LOCK) as mine:
+        if not mine:
+            return None, "a Build runs: no count in a build VM until the next check"
+        build_vm_run.leftovers(say)
+        try:
+            text = build_vm_run.count(image, build, tag, say)
+        except build_vm_run.Failed as f:
+            return None, clean(f.message, False)[:300]
+        except (Fail, OSError) as e:
+            return None, clean(e.message if isinstance(e, Fail) else f"{e.strerror or e}", False)[:300]
+    return updates_listed(text), None
+
+
 def count_updates(image, tag):
     """(number of Fedora package updates, error) for the container image `tag` of the
-    Image: `dnf check-update` in a container from it, which exits 100 and lists one
-    package per line (name.arch, version, repository) when there are updates."""
+    Image, with build_vm off: `dnf check-update` in a container from it on the Host, which
+    exits 100 and lists one package per line (name.arch, version, repository) when there are
+    updates."""
     name = f"agentbox-check-{image}"
     # left over from a check that was killed
     programs.quietly(["podman", "rm", "--force", "--ignore", name], 120)
@@ -394,14 +427,7 @@ def count_updates(image, tag):
     if r.returncode != 100:
         tail = clean((r.stderr or "")[-300:], multiline=False).strip()
         return None, f"dnf check-update failed (exit {r.returncode})" + (f": {tail}" if tail else "")
-    names = set()
-    for line in r.stdout.splitlines():
-        if line.lower().startswith("obsolet"):
-            break
-        f = line.split()
-        if len(f) == 3 and "." in f[0]:
-            names.add(f[0])
-    return len(names), None
+    return updates_listed(r.stdout), None
 
 
 # --- the record -------------------------------------------------------------------------------
@@ -649,13 +675,14 @@ def _check(say):
     digests.take(rec["digests"], say)
     images.remove_retired(say)          # the digests it retired, each fedora-bootc 1-2 GB
     rec["build_vm_image"] = build_vm.check(found["build_vm_image"], say)
+    in_vm = settings.load()["build_vm"]
     for image in images.available():
         build = images.current(image)
         tag = images.CONTAINER.format(image, build)
         # only the Base image keeps the container image of its current Build
         if not build or not images.image_exists(tag):
             continue
-        n, error = count_updates(image, tag)
+        n, error = count_in_build_vm(image, build, tag, say) if in_vm else count_updates(image, tag)
         rec["packages"][image] = {"build": build, "updates": n, "error": error}
         say(f"Package updates for {image}-{build}: " + (str(n) if n is not None else "unknown")
             + (f" ({error})" if error else ""))

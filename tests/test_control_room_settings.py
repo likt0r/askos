@@ -76,6 +76,21 @@ class SettingsApiTest(ControlRoomTest):
         self.assertEqual(self.calls(), [["set-settings", "auto_update=false", "--json"],
                                         ["set-settings", "auto_update=true", "--json"]])
 
+    def test_build_vm_is_turned_on_but_never_off(self):
+        """ADR 0025: turning the build VMs off is root's on the CLI (agentbox refuses it too,
+        test_control_room_sudo.py); the Control Room shows the Setting and turns it on."""
+        for body in ({"build_vm": False}, {"build_vm": "false"}, {"builds_kept": 4, "build_vm": False}):
+            with self.subTest(body=body):
+                answer = self.request("PATCH", "/api/v1/settings", body)
+                self.assertError(answer, 409, "setting_cli_only")
+                self.assertEqual(answer[1]["error"]["field"], "build_vm")
+        self.assertEqual(self.calls(), [])
+        self.respond(SAVED)
+        self.assertEqual(self.request("PATCH", "/api/v1/settings", {"build_vm": True})[0], 200)
+        self.assertEqual(self.request("PATCH", "/api/v1/settings", {"build_vm": "default"})[0], 200)
+        self.assertEqual(self.calls(), [["set-settings", "build_vm=true", "--json"],
+                                        ["set-settings", "build_vm=default", "--json"]])
+
     def test_odd_values_and_empty_bodies_are_rejected(self):
         for body in ({}, {"maintenance_time": True}, {"builds_kept": 1.5}, {"builds_kept": [3]},
                      {"maintenance_time": None}, {"maintenance_time": {"a": 1}}):

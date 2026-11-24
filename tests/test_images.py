@@ -123,6 +123,8 @@ class ImagesTest(VmsTest):
         with open(os.path.join(self.dir, "run.json"), "w") as f:
             json.dump(RUN_EFFECTS, f)
         self.pin(FEDORA_DIGEST, BUILDER_DIGEST)
+        # Builds on the Host, as on a Host without build VMs; test_build_vm_run.py turns them on
+        self.write("etc/agentbox/settings.json", json.dumps({"build_vm": False}))
 
     def pin(self, fedora, builder, retired=()):
         """The digests the version check pinned (digests.py), as it leaves them: pinned, and

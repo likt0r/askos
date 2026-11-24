@@ -18,10 +18,11 @@ builds the Base image, then every other Image), whose journal is its log
      Containerfile downloads Orca from its GitHub release, vm/build/orca-release; nothing of
      Orca comes from the Host), a derived Image on the Base image's current Build; its output
      passes through build-run into the journal, and the latest `STEP n/m: <command>` line goes
-     into the running Build's record (`progress`, cleaned like the log); with the internal
-     switch of build_vm_run.py on, this podman build runs in the Build's first build VM instead
-     (online), and the Host imports the image archive it hands out with skopeo copy under the
-     name it chose for the Build, never the archive's (the step import);
+     into the running Build's record (`progress`, cleaned like the log); with the Setting
+     build_vm on (ADR 0025, read once at the start of the run, the record's `build_vm`), this
+     podman build runs in the Build's first build VM instead (online, build_vm_run.py), and the
+     Host imports the image archive it hands out with skopeo copy under the name it chose for
+     the Build, never the archive's (the step import);
   3. safeguards.check reads the built filesystem (podman image mount) and discards the
      Build if a safeguard is missing or weakened; then the versions of its tools are read
      from the same files (versions.py);
@@ -29,15 +30,18 @@ builds the Base image, then every other Image), whose journal is its log
      images/<image>-<build>.qcow2, with the fedora-bootc the Image is built on as its
      buildroot (--build-container): bootc, osbuild's stages and the tools that make the
      filesystems come from that pristine image, not from the Image (bootc still runs the
-     Image's own bootupctl to install the bootloader, see ARCHITECTURE.md); with the switch on,
+     Image's own bootupctl to install the bootloader, see ARCHITECTURE.md); with build_vm on,
      in the Build's second build VM (offline: no network device) from the image the Host
      checked, and the Host takes its disk.qcow2 only once qemu-img read its header (no backing
      file, no data file, not encrypted) and only as a new qcow2 its own qemu-img writes from it;
   5. the link images/<image>.qcow2 moves to it (one rename) and old Builds go.
 
 The pinned digests are read once at the start of a run; with one it needs not pinned yet
-(fedora-bootc only for a run that builds the Base image) the run first runs the version check,
-as Update now does.
+(fedora-bootc only for a run that builds the Base image), or with build_vm on and no checked
+build VM image yet (build_vm.py), the run first runs the version check, as Update now does,
+and fails at the step pins when there is still none. With build_vm on, a Build never falls
+back to the Host: when a build VM cannot run (no KVM, not enough memory, libvirt refuses it)
+the Build fails with that reason.
 
 Anything failing leaves the previous Build in use and is recorded in Activity (kind
 build) with the reason. Builds run one at a time.
@@ -96,7 +100,7 @@ RECORD = re.compile(rf"({NAME.pattern})-({BUILD_ID.pattern})\.json")
 USABLE = ("ok", "migrated")
 STATUS = {"ok": "ok", "migrated": "from before", "running": "running", "failed": "failed",
           "rejected": "rejected", "missing": "file missing"}
-# a run that fails before its Builds records one failed Build at "pins" (the pinned images it
+# a run that fails before its Builds records one failed Build at "pins" (the pinned images and the build VMs' image it
 # needs, _pins) or "source" (the Release, the Settings); a Build runs "build" to "done"
 STEPS = ("pins", "source", "build", "import", "check", "disk", "done")    # import: in build VMs only
 TEMPLATE = "agentbox-build@.service"
@@ -622,9 +626,10 @@ def _stamp():
     return time.strftime("%Y%m%d-%H%M%S")
 
 
-def _new_build(image, release, days, orca, playwright, pins, actor, unit_name, recipe_sha256=None):
+def _new_build(image, release, days, orca, playwright, pins, actor, unit_name, in_vm, recipe_sha256=None):
     """A new Build id and its first, running record, with the pinned digests of the run
-    (`pins`: {name: digest}); a derived Image's fedora-bootc is its Base Build's."""
+    (`pins`: {name: digest}) and whether it runs in build VMs (`in_vm`, the Setting build_vm
+    of the run); a derived Image's fedora-bootc is its Base Build's."""
     build = _stamp()
     while os.path.exists(record_file(image, build)) or os.path.exists(build_file(image, build)):
         time.sleep(1)
@@ -636,7 +641,7 @@ def _new_build(image, release, days, orca, playwright, pins, actor, unit_name, r
            "fedora_bootc_digest": pins["fedora-bootc"] if image == BASE else None,
            "builder_digest": pins["bootc-image-builder"], "unit": unit_name,
            "actor": actor, "agents": None, "tools": None, "problems": [], "error": None, "safeguards": None,
-           "container": False}
+           "container": False, "build_vm": in_vm}
     _save(rec)
     return build, rec
 
@@ -649,7 +654,7 @@ def _build_container(image, src, release, days, orca, playwright, rec, tag, say,
             + (f"{orca}, pinned in orca_version" if orca else "the newest release at least that old")
             + "; Playwright: " + (f"{playwright}, pinned in playwright_version)" if playwright
                                   else "the newest version at least that old)"))
-        if build_vm_run.enabled():
+        if rec["build_vm"]:
             # the VM gets the platform image of the pin from the Host's storage, under a local name
             platform, why = digests.instance("fedora-bootc", rec["fedora_bootc_digest"])
             if why:
@@ -683,13 +688,13 @@ def _build_container(image, src, release, days, orca, playwright, rec, tag, say,
         # One owned snapshot of the Recipe is handed over by a single call, never as a path.
         from . import recipes
         recipes.check(recipe_data)
-        if build_vm_run.enabled():
+        if rec["build_vm"]:
             _in_build_vm(image, rec, tag, [("BASE", base_tag)], None, recipe_data, [(base_tag, base_tag)], src, say)
             return base
         _podman_build("--pull=missing", "--no-cache", "--build-arg", f"BASE={CONTAINER.format(BASE, base_build)}",
                       "-t", tag, "-", input=recipe_data, rec=rec)
     else:
-        if build_vm_run.enabled():
+        if rec["build_vm"]:
             _in_build_vm(image, rec, tag, [("BASE", base_tag)], "Containerfile", context, [(base_tag, base_tag)],
                          src, say)
             return base
@@ -698,9 +703,16 @@ def _build_container(image, src, release, days, orca, playwright, rec, tag, say,
     return base
 
 
+def _vm_failed(f):
+    """A build VM's failure as the Build's: with its stable code when the Host lacks what a build
+    VM needs (no KVM, no checked image, not enough memory), recorded with that code; else its
+    reason as text."""
+    return Fail(f.message, error=f.error, **f.params) if f.error else _Failed(f.message)
+
+
 def _in_build_vm(image, rec, tag, build_args, containerfile, context, hand_in, src, say):
     """The podman build of _build_container in the Build's first build VM (build_vm_run.py, the
-    internal switch on): the same build arguments, the same context (a Recipe's tar as it is),
+    Setting build_vm on): the same build arguments, the same context (a Recipe's tar as it is),
     the images it builds on handed in from the Host's storage; its log in the Build's journal,
     its STEP lines the Build's progress. Then the image archive it hands out goes into the
     Host's storage as `tag` (_import, the step import), and is deleted with its output."""
@@ -721,7 +733,7 @@ def _in_build_vm(image, rec, tag, build_args, containerfile, context, hand_in, s
     try:
         build_vm_run.build_image(image, rec["build"], job, context, hand_in, src, say, seen, take)
     except build_vm_run.Failed as f:
-        raise _Failed(f.message)
+        raise _vm_failed(f) from None
 
 
 def _import(image, build, archive, tag, say):
@@ -1045,9 +1057,9 @@ def _make_disk(image, build, tag, out, rec, src, say):
     """Create the Image's System disk from its checked container image: bootc-image-builder by
     its pinned digest, with the pristine fedora-bootc the Image is built on as the buildroot
     (--build-container), so the bootc that installs the Image, osbuild's stages and the tools
-    that make the filesystems do not come from the Image. With the internal switch on, in the
+    that make the filesystems do not come from the Image. With build_vm on, in the
     Build's second build VM (_disk_in_build_vm)."""
-    if build_vm_run.enabled():
+    if rec["build_vm"]:
         return _disk_in_build_vm(image, build, tag, out, rec, src, say)
     builder = digests.reference("bootc-image-builder", rec["builder_digest"])
     buildroot, why = digests.instance("fedora-bootc", rec["fedora_bootc_digest"])
@@ -1088,7 +1100,7 @@ def _disk_in_build_vm(image, build, tag, out, rec, src, say):
         build_vm_run.make_disk(image, build, job, hand_in, src, say,
                                lambda disk: _take_disk(image, build, disk, out, say))
     except build_vm_run.Failed as f:
-        raise _Failed(f.message)
+        raise _vm_failed(f) from None
 
 
 def _take_disk(image, build, disk, out, say):
@@ -1237,16 +1249,16 @@ def _done(image, build, rec, tag, release, what, actor, reason, say):
     return build
 
 
-def _build_one(image, src, release, days, orca, playwright, pins, actor, unit_name, say, reason=None,
+def _build_one(image, src, release, days, orca, playwright, pins, actor, unit_name, say, in_vm, reason=None,
                recipe_data=None, recipe_sha256=None):
     """Build one Image from the Release's files or its Recipe in the unit unit_name, the Base image with
     the package minimum age `days`, Orca's release `orca` (orca_version, "" for the newest old
     enough) and Playwright's version `playwright` (playwright_version, likewise), with the
-    pinned digests `pins` ({name: digest}, digests.py); the Build's id when it became the
-    current Build, else False. The Activity entries of an update's Builds have the reason
-    "update"."""
+    pinned digests `pins` ({name: digest}, digests.py), in build VMs when `in_vm` (the Setting
+    build_vm of the run); the Build's id when it became the current Build, else False. The
+    Activity entries of an update's Builds have the reason "update"."""
     what = "Update: " if reason == "update" else ""
-    build, rec = _new_build(image, release, days, orca, playwright, pins, actor, unit_name, recipe_sha256)
+    build, rec = _new_build(image, release, days, orca, playwright, pins, actor, unit_name, in_vm, recipe_sha256)
     tag = CONTAINER.format(image, build)
     out = os.path.join(paths.IMAGES, f".build-{image}-{build}")
     os.makedirs(out)
@@ -1496,14 +1508,16 @@ def _recipe_snapshot(name):
     return data, recipes.check(data)["sha256"]
 
 
-def _pins(base, say):
+def _pins(base, in_vm, say):
     """The pinned digests a run's Builds use ({name: digest or None}, digests.py), read once:
     bootc-image-builder always, fedora-bootc only for a run that builds the Base image (`base`;
     a derived Image takes its Base Build's). With one it needs not pinned yet (no version check
     has pulled it), or whose image is not in the Host's container storage (podman system prune;
-    quay.io drops an old fedora-bootc digest, so podman could not pull it by itself), the
+    quay.io drops an old fedora-bootc digest, so podman could not pull it by itself), or, for
+    a run in build VMs (`in_vm`), without a checked build VM image (build_vm.current()), the
     version check runs first, as Update now runs it: it pulls the pinned digest again or pins
-    the tag's current one. Still none, or still not there, fails the run. A run without the
+    the tag's current one, and fetches and checks the build VMs' image. Still none, or still not
+    there, fails the run (no build VM image: build_vm_no_image). A run without the
     Base image fails at once when the fedora-bootc its Base Build is built on, its disk steps'
     buildroot, is not there: quay.io no longer serves that digest once the tag moved on, so
     only a new Base Build helps."""
@@ -1520,9 +1534,15 @@ def _pins(base, say):
     if gone:
         say(f"== The image of the pinned digest of {', '.join(gone)} is not on the Host: "
             "running the version check first")
-    if unpinned or gone:
+    no_image = in_vm and not build_vm.current()
+    if no_image:
+        say("== No checked build VM image yet: running the version check first")
+    if unpinned or gone or no_image:
         _check_versions(say)
         pins = digests.pinned()
+    if in_vm and not build_vm.current():
+        die("there is no checked build VM image: the version check could not fetch and check one "
+            "(systemctl start agentbox-versions; journalctl -u agentbox-versions)", error="build_vm_no_image")
     missing = [digests.tagged(n) for n in needed if not pins[n]]
     if missing:
         die(f"no pinned digest of {', '.join(missing)}: the version check could not pin one "
@@ -1548,9 +1568,14 @@ def _pins(base, say):
 def _run(target, actor, say):
     """The Builds of build-run, one at a time (the run lock): [(Image, Build id or False)]. An
     update decides under the lock which Images it builds (update_images), so a Build that
-    ended while it waited for the lock counts; when none needs one, it builds nothing."""
+    ended while it waited for the lock counts; when none needs one, it builds nothing. The
+    version check's count in a build VM, which holds the lock too, gives way to it
+    (build_vm_run.want_lock)."""
     reason = "update" if target == UPDATE else None
+    if state_files.held(RUN_LOCK):
+        build_vm_run.want_lock()
     with state_files.locked(RUN_LOCK):
+        build_vm_run.lock_taken()
         started = int(time.time())
         _cleanup(say)
         wanted = None
@@ -1565,11 +1590,13 @@ def _run(target, actor, say):
         work = os.path.join(paths.IMAGES, f".build-source-{_stamp()}")
         os.makedirs(work)
         try:
-            step = "pins"
+            step = "source"
             try:
-                pins = _pins(target in ("all", BASE) or BASE in (wanted or []), say)
-                step = "source"
                 values = settings.load()
+                in_vm = values["build_vm"]
+                step = "pins"
+                pins = _pins(target in ("all", BASE) or BASE in (wanted or []), in_vm, say)
+                step = "source"
                 days, orca = values["package_min_age_days"], values["orca_version"]
                 playwright = values["playwright_version"]
                 src, release = take_source(work, say)
@@ -1583,7 +1610,9 @@ def _run(target, actor, say):
                        "fedora_bootc_digest": None, "builder_digest": None, "unit": unit(target), "actor": actor,
                        "agents": None,
                        "tools": None, "problems": [], "error": f.message, "safeguards": None, "container": False})
-                say(f"== {'Pinned images missing' if step == 'pins' else 'No sources'}: {f.message}")
+                head = "No checked build VM image" if f.error == "build_vm_no_image" else \
+                    "Pinned images missing" if step == "pins" else "No sources"
+                say(f"== {head}: {f.message}")
                 say(f"The previous Build stays in use ({current(image) or 'none'})")
                 activity.record("build", "build.failed", ("Update: " if reason else "")
                                 + f"{'Build of all Images' if target == 'all' else f'Build {image}-{build}'} failed: "
@@ -1600,7 +1629,7 @@ def _run(target, actor, say):
             snapshots = {name: _recipe_snapshot(name) for name in build_images
                          if name != BASE and name not in released and name in recipes.names()}
             return [(image, _build_one(image, src, release, days, orca, playwright, pins, actor, unit(target), say,
-                                       reason, recipe_data=snapshots.get(image, (None, None))[0],
+                                       in_vm, reason, recipe_data=snapshots.get(image, (None, None))[0],
                                        recipe_sha256=snapshots.get(image, (None, None))[1]))
                     for image in build_images]
         finally:
@@ -1823,7 +1852,7 @@ def _public(info, cur, used, pins, offered):
     return {"build": info["build"], "status": info["status"], "step": info.get("step"),
             "progress": progress(info), "started": times.iso(info.get("started")), "finished": times.iso(info.get("finished")),
             "release": info.get("release"), "commit": info.get("commit"), "base_build": info.get("base_build"),
-            "recipe_sha256": info.get("recipe_sha256"),
+            "recipe_sha256": info.get("recipe_sha256"), "build_vm": info.get("build_vm"),
             "package_min_age_days": info.get("package_min_age_days"), "orca_version": info.get("orca_version"),
             "playwright_version": info.get("playwright_version"), "fedora_bootc_digest": fedora,
             "builder_digest": builder, "agents": info.get("agents"), "tools": tools, "updates": updates,
@@ -1894,6 +1923,7 @@ def overview():
             "in_release": False if is_recipe else (image in defined if defined is not None else None),
             "current": cur, "vms": sorted(users.get(image, [])), "problem": problem,
             "running": {"build": running["build"], "step": running.get("step"), "progress": progress(running),
+                        "build_vm": running.get("build_vm"),
                         "started": times.iso(running.get("started"))} if running else None,
             "package_updates": packages, "updates": changes, "update": bool(changes) if known else None,
             "containerfile": source,

@@ -4,8 +4,9 @@ enables and writes nothing on its own (ADR 0009), still needs before its VMs run
 Every step changes only what differs from how it should be and returns what it changed, as
 lines for people, so running setup again changes nothing. No step overwrites a record of the
 Host: the lists a new Host starts with go only where there is neither the record nor the text
-file it came from nor that file moved aside by its migration, and Settings, the VM registry,
-the certificate and the GitHub App are not touched here at all. Files are replaced whole
+file it came from nor that file moved aside by its migration; of the Settings only build_vm is
+written, and only while none is stored, on a Host without what build VMs need (build_vms); the
+VM registry, the certificate and the GitHub App are not touched here at all. Files are replaced whole
 (state_files.write_atomic), so a step that fails leaves none half-written. A failure ends the
 command (Fail); setup says which step it was.
 """
@@ -18,7 +19,8 @@ import subprocess
 import sys
 import tempfile
 
-from . import activity, classifier, detection, firewall, generate, list_records, lists, paths, programs, state_files, states
+from . import activity, build_vm_run, classifier, detection, firewall, generate, list_records, lists, paths, programs
+from . import settings, state_files, states
 from .errors import die
 
 # the hand-maintained lists as (record, the text file it is migrated from); the Allowlist the
@@ -402,6 +404,23 @@ def proxies_before_lists():
         return []
     programs.systemctl("try-restart", PROXIES, timeout=300)
     return ["running proxies restarted before the lists are taken over"]
+
+
+def build_vms():
+    """Whether Builds run in build VMs (the Setting build_vm, ADR 0025), decided once: with no
+    value stored, a Host without KVM or with less than 16 GiB of memory
+    (build_vm_run.host_unfit) gets build_vm false, written to the Settings, and the reason; any
+    other keeps the built-in default, on. A stored value is never changed."""
+    stored = settings.stored()
+    if "build_vm" in stored:
+        return [] if stored["build_vm"] else [
+            "build_vm is off, as stored: Builds run as root on the Host (sudo agentbox set-settings build_vm=true "
+            "runs them in build VMs)"]
+    why = build_vm_run.host_unfit()
+    if why is None:
+        return ["Builds run in throwaway build VMs (build_vm is on by default)"]
+    settings.save({"build_vm": "false"})
+    return [f"build_vm set to false: {why}; Builds run as root on the Host"]
 
 
 def first_feeds():
