@@ -20,6 +20,8 @@ registry.json:
               <namespace>/<repository>/tag/?specificTag=<tag>&limit=N&page=P answers
               {"tags": [the entries of that tag on page P, pages of N], "page": P,
               "has_additional": whether a page follows}
+  fedora     the list GET https://fedoraproject.org/releases.json answers (Fedora's releases),
+             or {"status": 500} for an error
   downloads  {"<url>": "<path of a file with its content>" or {"status": 404}}: what curl -o
               writes for that URL (-f: an error status fails with exit 22)
              {"flood": true} instead: a body without length that never ends, whatever
@@ -91,6 +93,10 @@ def answer(url, known):
         return releases(u, known)
     elif u.netloc == "quay.io":
         return tags(u, known)
+    elif u.netloc == "fedoraproject.org" and u.path == "/releases.json":
+        found = known.get("fedora")
+        if isinstance(found, list):
+            return 200, found
     else:
         return None
     if found is None:

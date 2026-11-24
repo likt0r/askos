@@ -204,6 +204,8 @@ class PackageTest(unittest.TestCase):
                               "socat", "openssl", "python3", "sudo"}, requires)
         # and the programs agentbox setup runs for the Host steps (agentbox/hoststeps.py)
         self.assertLessEqual({"shadow-utils", "e2fsprogs", "systemd", "firewalld"}, requires)
+        # and what checks the build VMs' image (agentbox/build_vm.py)
+        self.assertLessEqual({"/usr/bin/gpgv", "/usr/bin/setpriv", "fedora-gpg-keys", "qemu-img"}, requires)
 
     def test_it_carries_the_license_of_the_repository(self):
         self.assertRegex(self.spec, r"(?m)^License:\s+MIT$")

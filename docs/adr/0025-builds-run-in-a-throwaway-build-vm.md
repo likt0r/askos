@@ -1,6 +1,6 @@
 # Builds run in throwaway build VMs; the Host checks what comes out before it becomes a Build
 
-Status: Accepted (#144), by the owner on 2026-11-23 with the decisions below, after those of 2026-11-18 and 2026-11-20 on #144. Nothing is implemented yet. ARCHITECTURE.md (Images and Builds, Network, Settings, Setting a Host up, Where the files live, Agent Box's own code, the threat model's item 4), GLOSSARY.md ("build VM"), [ADR 0008](0008-safeguards-checked-from-the-host-after-every-build.md), [ADR 0018](0018-recipes-define-images-on-the-host.md), [ADR 0019](0019-the-host-and-what-its-owner-writes-are-trusted.md) and docs/claims.md change with the code.
+Status: Accepted (#144), by the owner on 2026-11-23 with the decisions below, after those of 2026-11-18 and 2026-11-20 on #144. Implemented so far: their image (Their image, below; `agentbox/build_vm.py`), which nothing boots yet; Builds still run on the Host. ARCHITECTURE.md (Images and Builds, Network, Settings, Setting a Host up, Where the files live, Agent Box's own code, the threat model's item 4), GLOSSARY.md ("build VM"), [ADR 0008](0008-safeguards-checked-from-the-host-after-every-build.md), [ADR 0018](0018-recipes-define-images-on-the-host.md), [ADR 0019](0019-the-host-and-what-its-owner-writes-are-trusted.md) and docs/claims.md change with the code.
 
 ## Context
 

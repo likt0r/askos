@@ -42,6 +42,11 @@ Requires:       virt-install
 Requires:       podman
 # reads a manifest from the Host's container storage (the disk step's buildroot, agentbox/digests.py)
 Requires:       skopeo
+# the build VMs' image (agentbox/build_vm.py): its signed CHECKSUM checked by gpgv, run as
+# agentbox-feeds through setpriv, against the Host's own Fedora key
+Requires:       /usr/bin/gpgv
+Requires:       /usr/bin/setpriv
+Requires:       fedora-gpg-keys
 # the rules of the VM networks (agentbox-vmnet.service) and of Network mode (agentbox setup)
 Requires:       nftables
 Requires:       firewalld

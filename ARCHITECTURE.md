@@ -1148,6 +1148,26 @@ Host after every Build
   the Release's files does at `source`. A new digest is no update:
   it starts no Build, and the next Build (the weekly rebuild on `rebuild_day`, or an update of
   Orca, the agents or the packages) takes it.
+- **The build VMs' image** (#144, [ADR 0025](docs/adr/0025-builds-run-in-a-throwaway-build-vm.md),
+  `agentbox/build_vm.py`): Builds are to run in throwaway build VMs. So far only their image
+  is in place, and nothing boots it: Builds still run on the Host. It is the Fedora Cloud Base
+  Generic qcow2 of the release fedora-bootc's tag names (44), as Fedora publishes and signs it
+  with the release under `releases/44/Cloud/x86_64/images/`; nothing is built or changed on
+  the Host to make it. Fedora does not update that image during the release, so it is renewed
+  only when the release changes, with a Release of Agent Box that moves the tag. The version
+  check finds it (below): the unprivileged fetch downloads it with its signed `CHECKSUM` only
+  when its name differs from the image in use. Root has `gpgv` check the CHECKSUM's signature,
+  run as `agentbox-feeds`, not root, with the Host's own key of the release
+  (`/etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-44-primary`, package `fedora-gpg-keys`) as the only key;
+  compares the SHA-256 the signed text names for exactly that file with the image as root copies
+  it; and reads the copy's header with `qemu-img info -f qcow2` (the format named, never
+  guessed; 1 GiB of address space and 30 s of CPU): a qcow2 that names a backing file or an
+  external data file, which would make QEMU read files of the Host, and one that is encrypted,
+  marked corrupt or larger than 20 GiB is refused. Only then root keeps the copy as
+  `/var/lib/agentbox/build-vm/images/<name>` and records it in `build-vm/image.json`; a refused
+  image leaves the one in use as it is. The image it replaces is removed once no Build runs (the
+  run lock, not waited for), else by the next check. A new image is no update: it starts no
+  Build.
 - What the Base image downloads, it downloads inside the Build container, where Fedora's
   packages, the npm tools and Orca are chosen, fetched and checked; no root process on the
   Host parses what the internet answers (#113). Orca comes from its GitHub release
@@ -1287,7 +1307,8 @@ Host after every Build
     capabilities, a read-only system, no `/home`, and `/etc/agentbox`, the VMs' and Builds'
     directories, libvirt's and podman's state made inaccessible; it gets
     `package_min_age_days` from its unit and writes only its StateDirectory,
-    `/var/lib/agentbox/available/available.json`. For each npm tool it reads the package's
+    `/var/lib/agentbox/available/available.json` and the download of the build VMs' image in
+    `available/build-vm/`. For each npm tool it reads the package's
     full metadata from the registry (`registry.npmjs.org`, through `curl -q`, HTTPS only, at
     most 64 MiB) and picks what npm `--before` would: the `latest` tag when it is at least
     `package_min_age_days` old, else the newest such release, deprecated ones last. For Orca
@@ -1302,7 +1323,15 @@ Host after every Build
     picks the digest by the rule under Pinned digests, by the entries' own times in whatever
     order they come. It reads page after page until one covers the time asked for, and at most
     five; a longer history is an error that says how many entries were read, and the pin stays.
-    Nothing is pulled here.
+    Nothing is pulled here. For the build VMs' image it reads Fedora's list of its releases
+    (`https://fedoraproject.org/releases.json`) for the one `Cloud_Base` `x86_64` entry of the
+    release whose link is a Generic `.qcow2` directly in that release's
+    `Cloud/x86_64/images/` directory, and, when the image's name differs from the image in use
+    (root's `build-vm/image.json`, which its unit binds read-only), downloads the image and that
+    directory's `Fedora-Cloud-<release>-<compose>-x86_64-CHECKSUM` with `curl -q` over HTTPS
+    only, redirects too, the image at most 2 GiB in at most 40 minutes. It checks the download
+    against the SHA-256 and size releases.json lists, which catches a broken download, not a
+    changed one: releases.json is not signed. Once the image is in use, it deletes its download.
   - The root part, `agentbox check-versions`, reads that file as untrusted input: never
     through a link, a regular file of at most 64 KiB, JSON of the expected shape, written in
     the last three days; every version and the pins of Orca and Playwright are checked again
@@ -1314,7 +1343,13 @@ Host after every Build
     another release than its tag's is not pinned. Anything
     else is unknown (so is Orca in a file or `versions.json` from before #113, which named the Host's `/opt/Orca` and
     the newest release instead). It pulls and pins the digests (Pinned digests above), without
-    a lock a Build waits for: a Build reads the pins once at its start. It adds, for each Image
+    a lock a Build waits for: a Build reads the pins once at its start. It checks the build VMs'
+    image the fetch downloaded (The build VMs' image above), only one whose name is that of the
+    release's image, and reads the fetch's files through a directory it opens without following
+    a link, regular files only, the CHECKSUM at most 64 KiB and the image at most 2 GiB; it
+    takes the signed text only from gpgv's exit 0 with a `VALIDSIG`, since gpgv writes the text
+    of a bad signature too, and hashes the image while it copies it, so what it compares is what
+    it keeps. It adds, for each Image
     whose current Build's container image is kept (the Base image), the Fedora package updates
     counted with `dnf check-update` in a container from that Build (podman, out to the Fedora
     mirrors), named `agentbox-check-<image>`, with no capabilities, `no-new-privileges` and a
@@ -1857,7 +1892,9 @@ need not be there or belong to another Release.
 | Units generated by `agentbox regenerate` | `/etc/systemd/system/` | `SYSTEMD` |
 
 The Host's records and state stay where they are: `/etc/agentbox` (`CONF`) and
-`/var/lib/agentbox` (`STATE`); `agentbox import` keeps its tar file in
+`/var/lib/agentbox` (`STATE`); the build VMs' image lies in `/var/lib/agentbox/build-vm`
+(`BUILD_VM`, root's only), and the version check reads the Host's Fedora keys from
+`/etc/pki/rpm-gpg` (`RPM_GPG`); `agentbox import` keeps its tar file in
 `/var/lib/agentbox/transfers` (`TRANSFERS`) while it is attached to the VM; the Control Room's
 sign-in links lie in `/run/agentbox-sign-in-links` (`SIGN_IN_LINKS`), which the package's
 tmpfiles entry makes at every boot. An update of the RPM replaces only the package's files: it
@@ -2187,8 +2224,13 @@ laptops.
   through npm or uv, and for Orca and bootc-image-builder; fedora-bootc and bootc-image-builder
   by digest; the Release's Containerfile pins the JDK and Orca's Node
   runtime by SHA-256 and cargo-ndk by version, a Recipe what its author pins; Fedora's packages
-  are signed, with the keys that come in the base image. Containing Builds further (a build
-  VM) is #144.
+  are signed, with the keys that come in the base image. Containing Builds further (build VMs,
+  [ADR 0025](docs/adr/0025-builds-run-in-a-throwaway-build-vm.md)) is #144; so far only their
+  image is in place, which nothing boots yet. Checking it, root reads the header of a qcow2
+  downloaded from Fedora's mirrors with `qemu-img info`, bounded, after the signature and the
+  SHA-256 matched; `gpgv` runs as `agentbox-feeds`, the user whose fetch downloaded what it
+  checks, so a process of that user running at the same time (the Feeds run as it too) could
+  tamper with its answer.
 
 ### What no test covers
 
@@ -2201,7 +2243,10 @@ laptops.
   reaches nothing but the resolver, the proxy and the token service), runs a Build with podman
   and bootc-image-builder (that `--build-container` makes the pristine fedora-bootc osbuild's
   buildroot, and what bootc still runs from the Image, is known from their source and
-  documentation, not from a test), asks quay.io or pulls by digest (a fake plays quay.io's tag API), shuts down or reboots a Host with `libvirt-guests`, or lets the proxy
+  documentation, not from a test), asks quay.io or pulls by digest (a fake plays quay.io's tag API), downloads the build VMs'
+  image or checks a real Fedora signature or qcow2 header (fakes play `gpgv`, `setpriv` and
+  `qemu-img`; the key handling was compared with `gpg --dearmor` and gpgv's answers with gpgv
+  2.4.9 by hand), shuts down or reboots a Host with `libvirt-guests`, or lets the proxy
   resolve a real name (the proxy's tests give it the addresses a name resolves to, and allowed
   tunnels go to a local server instead). What GitHub and Anthropic enforce, such as a token's
   scope, is checked only as the request Agent Box sends.
