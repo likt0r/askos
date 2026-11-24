@@ -81,6 +81,12 @@ def off(name):
     return False, "unknown"
 
 
+def gone(name):
+    """Whether libvirt has no domain of the name (a transient one that ended, a build VM's);
+    False when virsh cannot tell."""
+    return off(name)[1] == "not defined"
+
+
 def has_process(name):
     """Whether the VM has a QEMU process (running, or suspended in memory); False when
     libvirt cannot tell."""
@@ -145,6 +151,16 @@ def unit_text(active, sub):
     """systemd's words for a unit as the Control Room shows them: "active (running)", or
     the ActiveState alone when the SubState says nothing more."""
     return f"{active} ({sub})" if sub and sub != active else active
+
+
+def unit_stopped(unit, timeout):
+    """Whether systemd says the unit is not running (inactive, or failed; one it does not know is
+    inactive); False when it says anything else or cannot say."""
+    try:
+        r = programs.systemctl("is-active", unit, timeout=timeout, ok=None)
+    except Fail:
+        return False
+    return r.stdout.strip() in ("inactive", "failed")
 
 
 def started(unit, timeout):

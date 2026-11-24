@@ -9,7 +9,7 @@ import type { Vm } from './live'
 export const VM_NAME = /^[a-z][a-z0-9-]{1,15}$/
 /** Words that stand where a VM name may stand (registry.RESERVED, plus v1, v2, ...). */
 export const RESERVED_NAMES = ['off', 'all', 'new', 'status', 'login', 'logout', 'activity', 'allowlist',
-  'watchlist', 'images', 'settings', 'system', 'host', 'events', 'version', 'vms', 'github-app']
+  'watchlist', 'images', 'settings', 'system', 'host', 'events', 'version', 'vms', 'github-app', 'build']
 export const GITHUB_OWNER = /^[A-Za-z0-9-]{1,39}$/
 export const MIN_MEMORY_MIB = 1024
 export const MAX_DATA_DISK_GIB = 16384

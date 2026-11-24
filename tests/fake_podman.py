@@ -42,6 +42,11 @@ Environment:
                                and ends at once with exit 137 when TAG is removed meanwhile
                                (podman rmi --force ends the containers of an image)
   podman rm --force --ignore N exit 0
+  podman save --format oci-archive -o FILE TAG
+                               writes FILE: a tar of TAG's directory (image/) and its name (name)
+  podman load -i FILE          the image of such a tar (or one fake_skopeo.py wrote) under its name;
+                               prints "Loaded image: <name>"
+  podman tag SRC DST           DST becomes a copy of SRC
 
 run.json (optional): {"<text in a RUN line>": {"<path in the image>": "<content>" or
                        {"symlink": "<target>"} or {"content": "...", "mode": 493} or
@@ -333,6 +338,29 @@ def builder(argv):
     return 0
 
 
+def write_archive(tag, path, source=None):
+    """An image archive of the fakes: the directory of the image `source` (default: tag) and the
+    name `tag`, as a tar."""
+    with tarfile.open(path, "w") as tar:
+        data = tag.encode()
+        info = tarfile.TarInfo("name")
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+        tar.add(image_dir(source or tag), arcname="image")
+
+
+def load(path):
+    """The image of an archive of the fakes into the store: its name."""
+    with tarfile.open(path) as tar:
+        name = tar.extractfile("name").read().decode()
+        with tempfile.TemporaryDirectory(dir=DIR) as tmp:
+            tar.extractall(tmp, filter="tar")
+            shutil.rmtree(image_dir(name), ignore_errors=True)
+            os.makedirs(STORE, exist_ok=True)
+            shutil.move(os.path.join(tmp, "image"), image_dir(name))
+    return name
+
+
 def record(call):
     with open(os.path.join(DIR, "calls.jsonl"), "a") as f:
         f.write(json.dumps(call) + "\n")
@@ -379,6 +407,23 @@ def main(argv):
         print(json.dumps([{"Id": hashlib.sha256(argv[2].encode()).hexdigest(), "RootFS": {"Layers": layers}}]))
         return 0
     if argv[:1] == ["rm"]:
+        return 0
+    if argv[:1] == ["save"]:
+        tag, out = argv[-1], argv[argv.index("-o") + 1]
+        if fails("save", tag) or not os.path.isdir(image_dir(tag)):
+            print(f"Error: {tag}: image not known", file=sys.stderr)
+            return 125
+        write_archive(tag, out)
+        return 0
+    if argv[:1] == ["load"]:
+        print(f"Loaded image: {load(argv[argv.index('-i') + 1])}")
+        return 0
+    if argv[:1] == ["tag"]:
+        if not os.path.isdir(image_dir(argv[1])):
+            print(f"Error: {argv[1]}: image not known", file=sys.stderr)
+            return 125
+        shutil.rmtree(image_dir(argv[2]), ignore_errors=True)
+        shutil.copytree(image_dir(argv[1]), image_dir(argv[2]), symlinks=True)
         return 0
     if argv[:1] == ["pull"]:
         ref = argv[-1]

@@ -8,6 +8,9 @@ u agentbox-claude - "Agent Box Anthropic route"     - -
 # runs nothing but gpgv on the build VMs' image's CHECKSUM (agentbox/build_vm.py), so no other
 # process runs as it to trace that gpgv
 u agentbox-gpgv  - "Agent Box signature check"       - -
+# runs nothing but the virtiofsd of a build VM's output directory (agentbox/build_vm_run.py),
+# which owns every file a build VM writes there
+u agentbox-buildvm - "Agent Box build VM output"     - -
 # who may write into the Activity journal besides root (ADR 0007): the services through
 # their units, and the members of libvirt
 g agentbox-journal -

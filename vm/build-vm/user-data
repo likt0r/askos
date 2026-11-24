@@ -1,0 +1,22 @@
+#cloud-config
+# A build VM's provisioning (ADR 0025, agentbox/build_vm_run.py): the user-data of its NoCloud
+# seed, as the installed Release has it. It holds no secret. No user is created and nobody can
+# log in: no password, no key, sshd masked before it starts, no guest agent channel. Nothing is
+# installed or upgraded: the VM runs the Fedora Cloud image as Fedora signed it. Once the
+# system is up, the driver build-vm-run (beside this file on the seed) runs as root; when it
+# ends, also after a failure, the VM powers off, which ends it for good (its domain is
+# transient and destroyed on power-off).
+users: []
+disable_root: true
+ssh_pwauth: false
+package_update: false
+package_upgrade: false
+bootcmd:
+  - [systemctl, mask, --now, sshd.service, sshd.socket, qemu-guest-agent.service]
+runcmd:
+  - [sh, -c, 'mkdir -p /run/agentbox-seed && mount -o ro /dev/disk/by-label/cidata /run/agentbox-seed && python3 -I /run/agentbox-seed/build-vm-run']
+power_state:
+  mode: poweroff
+  delay: now
+  condition: true
+  timeout: 60

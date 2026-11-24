@@ -27,7 +27,8 @@ import stat
 import tempfile
 import time
 
-from . import activity, firewall, footprint, hostsetup, paths, programs, registry, settings, sshkeys, state_files
+from . import activity, build_vm_run, firewall, footprint, hostsetup, paths, programs, registry, settings, sshkeys
+from . import state_files
 from . import states, times, versions, virsh, vmenv
 from .commands import declare
 from .errors import Fail, die
@@ -139,7 +140,10 @@ def nft_rules(records):
     Host's address on another port is refused at once (a TCP reset, ICMP port unreachable for
     UDP), so a program fails without waiting for a timeout: every name resolves to that address.
     Other addresses, IPv6 and anything but TCP and UDP are dropped. A reject ends the packet like
-    a drop, so firewalld's zone libvirt (a later hook) never sees it."""
+    a drop, so firewalld's zone libvirt (a later hook) never sees it.
+
+    The build VMs' network (build_vm_run.rule_lines) has chains of its own: to the Host only
+    DHCP and DNS, nothing forwarded to the home network, the VMs or over IPv6."""
     return "".join(line + "\n" for line in [
         "table inet agentbox_vm",
         "delete table inet agentbox_vm",
@@ -147,6 +151,7 @@ def nft_rules(records):
         "  chain input {",
         "    type filter hook input priority -5; policy accept",
         '    iifname "abox-*" jump from_vm',
+        build_vm_run.input_jump(),
         "  }",
         "  chain from_vm {",
         "    meta nfproto ipv6 drop",
@@ -159,6 +164,7 @@ def nft_rules(records):
         "    meta l4proto udp reject with icmp type port-unreachable",
         "    drop",
         "  }",
+        *build_vm_run.rule_lines(),
         "}",
     ])
 
@@ -856,7 +862,8 @@ Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 RuntimeMaxSec=6h
-TimeoutStopSec=2min
+# the teardown of a running build VM, a minute to spare
+TimeoutStopSec={build_vm_run.TEARDOWN_SECONDS + 60}s
 """
 
 

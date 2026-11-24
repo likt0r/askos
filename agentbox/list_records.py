@@ -29,10 +29,12 @@ OPEN_WEB = "open-{}"
 
 # a VM's name, and the words that stand, or may come to stand, where one may stand (the scope
 # "all" of Allowlist entries, `agentbox focus off`, the Control Room's areas and paths, its API
-# versions v1, v2, ...), so no VM can have them (registry.py)
+# versions v1, v2, ..., "build", whose agentbox-build is the build VMs' network), so no VM can
+# have them (registry.py)
 VM_NAME = re.compile(r"[a-z][a-z0-9-]{1,15}")
 RESERVED_NAMES = frozenset({"off", "all", "new", "status", "login", "logout", "activity", "allowlist", "watchlist",
-                            "images", "settings", "system", "host", "events", "version", "vms", "github-app"})
+                            "images", "settings", "system", "host", "events", "version", "vms", "github-app",
+                            "build"})
 API_VERSION = re.compile(r"v[0-9]+")
 ALL = "all"             # the scope of an Allowlist entry for every VM
 # lowercase labels of letters, digits and inner hyphens, at least two of them

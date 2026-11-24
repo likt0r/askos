@@ -1,5 +1,6 @@
-"""The build VMs (ADR 0025, #144): throwaway VMs that are to run the Builds. So far their image;
-nothing boots it yet, and Builds run on the Host.
+"""The build VMs (ADR 0025, #144): throwaway VMs that are to run the Builds; their image. The
+first build VM of a Build boots it (build_vm_run.py), behind an internal switch that is off, so
+Builds run on the Host.
 
 Their image is the Fedora Cloud Base Generic qcow2 of the Fedora release whose fedora-bootc the
 Builds take (RELEASE, the tag in digests.UPSTREAM), as Fedora publishes and signs it with the
@@ -536,7 +537,7 @@ def _take(name, say):
         wanted = signed_sha256(text, name)
         if wanted is None:
             return f"the signed CHECKSUM names no single SHA-256 of {name}"
-        state_files.directory(paths.BUILD_VM, 0o700)
+        state_files.directory(paths.BUILD_VM, 0o711)       # QEMU, as qemu, reaches a build VM's files
         state_files.directory(IMAGES, 0o755)
         part = os.path.join(IMAGES, f".{name}.part")
         state_files.remove(part, fail=False)

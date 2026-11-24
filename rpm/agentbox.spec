@@ -48,6 +48,10 @@ Requires:       /usr/bin/gpgv
 Requires:       /usr/bin/setpriv
 Requires:       /usr/bin/unshare
 Requires:       fedora-gpg-keys
+# the build VMs (agentbox/build_vm_run.py): their output directory served by a virtiofsd of
+# agentbox-buildvm, their cloud-init seed written by xorrisofs, their images handed in by skopeo
+Requires:       virtiofsd
+Requires:       xorriso
 # the rules of the VM networks (agentbox-vmnet.service) and of Network mode (agentbox setup)
 Requires:       nftables
 Requires:       firewalld
