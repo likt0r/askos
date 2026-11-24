@@ -65,7 +65,8 @@ class BuildVmTest(ImagesTest):
     def setUp(self):
         self.env = {"AGENTBOX_BUILD_VM": "1", "AGENTBOX_BUILD_VM_MIN_FREE_BYTES": "0",
                     "AGENTBOX_BUILD_VM_OUT_BYTES": str(1 << 30),
-                    "AGENTBOX_BUILD_VM_WATCH_SECONDS": "1", "AGENTBOX_BUILD_VM_END_SECONDS": "10"}
+                    "AGENTBOX_BUILD_VM_WATCH_SECONDS": "1", "AGENTBOX_BUILD_VM_END_SECONDS": "10",
+                    "AGENTBOX_BUILD_VM_DESTROY_SECONDS": "10"}
         super().setUp()
         fake(os.path.join(self.dir, "bin", "systemd-run"), "fake_systemd_run.py")
         fake(os.path.join(self.dir, "bin", "xorrisofs"), "fake_xorrisofs.py")
@@ -215,8 +216,10 @@ class BuildInVmTest(BuildVmTest):
         self.assertEqual((st.st_size, st.st_mode & 0o777), (1 << 30, 0o600))
         self.assertLess(st.st_blocks * 512, 1 << 20)            # sparse
         uid, gid = os.getuid(), os.getgid()
-        self.assertEqual(self.calls("mkfs.ext4")[0]["argv"], ["-q", "-F", "-m", "0", "-E", f"root_owner={uid}:{gid}",
-                                                              image])
+        # one inode per MiB and a 64 MiB journal: 65.86 GiB of 66 GiB free, the archive's 64 GiB fit
+        self.assertEqual(self.calls("mkfs.ext4")[0]["argv"], ["-q", "-F", "-m", "0", "-i", "1048576", "-J", "size=64",
+                                                              "-E", f"root_owner={uid}:{gid}", image])
+        self.assertEqual(build_vm_run.OUT_BYTES, (64 << 30) + (2 << 30))
         self.assertEqual([c["argv"] for c in self.calls("mount")], [
             ["-t", "ext4", "-o", "loop,nosuid,nodev,noexec", image, out],
             ["-o", "remount,ro,nosuid,nodev,noexec", out]])
@@ -239,8 +242,11 @@ class BuildInVmTest(BuildVmTest):
     def test_without_room_for_the_output_filesystem_no_build_vm_starts(self):
         self.env["AGENTBOX_BUILD_VM_OUT_BYTES"] = str(1 << 60)
         new, _ = self.in_vm()
-        self.assertEqual(new["error"], f"not enough free space under {self.path(BUILD_VM)} for a build VM's output: "
-                                       f"it needs {(1 << 60) >> 30} GiB")
+        self.assertEqual(new["error"], f"not enough free space under {self.path(BUILD_VM)} for a build VM and its "
+                                       f"output: it needs {(1 << 60) >> 30} GiB more")
+        # checked before anything is written, so nothing is handed in either
+        self.assertEqual([c for c in self.calls("skopeo") if c["argv"][0] == "copy"], [])
+        self.assertEqual(self.calls("qemu-img"), [])
         self.assertEqual(self.calls("create") + self.calls("mkfs.ext4"), [])
         self.assertEqual(self.leftover(self.ident()), [])
 
@@ -659,14 +665,14 @@ class LimitTest(BuildVmTest):
 
     def test_too_little_free_space_on_the_host_ends_the_vm(self):
         """Room at the start (for the output filesystem and the rest), then the VM takes it."""
-        st = os.statvfs(self.root)
+        os.makedirs(self.path(BUILD_VM), exist_ok=True)
+        st = os.statvfs(self.path(BUILD_VM))
         free = st.f_bavail * st.f_frsize
         self.env["AGENTBOX_BUILD_VM_MIN_FREE_BYTES"] = str(free - (100 << 20))
         self.env["AGENTBOX_BUILD_VM_OUT_BYTES"] = str(1 << 20)
         self.scenario(build_vm={"out_space": 256 << 20, "podman": {"build_waits": {"step": 1, "file": "never"}}})
         new, _ = self.in_vm()
-        self.assertEqual(new["error"], f"less than {free - (100 << 20)} bytes free under "
-                                       f"{self.path('var/lib/agentbox')}")
+        self.assertEqual(new["error"], f"less than {free - (100 << 20)} bytes free under {self.path(BUILD_VM)}")
         self.assertEqual(len(self.calls("destroy")), 1)
         self.assertEqual(self.leftover(self.ident()), [])
 
@@ -698,6 +704,7 @@ class InterruptionTest(BuildVmTest):
 
     def test_a_domain_that_survives_the_teardown_fails_the_build(self):
         self.env["AGENTBOX_BUILD_VM_END_SECONDS"] = "2"
+        self.env["AGENTBOX_BUILD_VM_DESTROY_SECONDS"] = "2"
         self.scenario(build_vm={"stays": True}, build_vm_survives_destroy=True)
         new, _ = self.in_vm()
         domain = f"agentbox-buildvm-{self.ident()}"
@@ -705,6 +712,39 @@ class InterruptionTest(BuildVmTest):
                                        "not taken")
         self.assertEqual([c["dom"] for c in self.calls("destroy")], [domain])
         self.assertEqual(self.leftover(self.ident()), [])
+
+    def test_an_image_named_out_dash_leaves_nothing_behind_either(self):
+        """out-x-<build>-build is the work directory of the Image out-x and reads as the output
+        directory of the Image x as well: both are cleaned up, nothing of either is left."""
+        ident = "out-x-20260101-000000-build"
+        self.write(f"{BUILD_VM}/{ident}/system.qcow2", "")         # killed after its run directory went
+        self.scenario(vms={f"buildvm-{ident}": {"defined": True, "state": "running"}})
+        del self.env["AGENTBOX_BUILD_VM"]
+        out = self.built()
+        self.assertEqual(self.leftover(ident), [])
+        self.assertEqual([c["dom"] for c in self.calls("destroy")], [f"agentbox-buildvm-{ident}"])
+        self.assertIn(f"Removed what the build VM agentbox-buildvm-{ident} left", out)
+        # what x would have left, had it left anything, says nothing
+        self.assertNotIn("agentbox-buildvm-x-20260101-000000-build left", out)
+
+    def test_an_output_filesystem_that_cannot_be_unmounted_is_said(self):
+        self.scenario(mount_fails=["umount"], build_vm={"podman": {"podman_fails": {"build": ["localhost/"]}}})
+        new, out = self.in_vm()
+        self.assertIn(f"umount of {self.out(self.ident())} failed: umount: failed (fake)", out)
+        self.assertEqual(new["error"], "in the build VM: podman build failed (exit 1)")
+
+    def test_the_build_units_stop_timeout_covers_the_teardown(self):
+        """systemctl stop sends SIGTERM; the run then destroys the VM, stops virtiofsd and unmounts
+        the output before it marks the Build failed. systemd's SIGKILL after TimeoutStopSec would
+        leave the transient domain running, so the timeout covers every wait of the teardown."""
+        worst = (4 * 15                         # virsh: state, destroy, state after the wait, state again
+                 + build_vm_run.DESTROY_WAIT + build_vm_run.STOP_SECONDS + 2 * build_vm_run.CHECK_SECONDS
+                 + build_vm_run.UMOUNT_SECONDS)
+        self.assertEqual(build_vm_run.TEARDOWN_SECONDS, worst)
+        from agentbox import virsh
+        self.assertEqual(virsh.TIMEOUT, build_vm_run.VIRSH_SECONDS)
+        stop = re.search(r"^TimeoutStopSec=(\d+)s$", generate.BUILD_SERVICE, re.MULTILINE)
+        self.assertGreaterEqual(int(stop.group(1)), worst + 60)
 
     def test_the_next_run_removes_what_a_killed_run_left(self):
         ident = "base-20260101-000000-build"

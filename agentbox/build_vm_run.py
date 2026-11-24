@@ -75,7 +75,7 @@ import stat
 import tarfile
 import time
 
-from . import build_vm, paths, programs, state_files, states, virsh
+from . import build_vm, paths, programs, settings, state_files, states, virsh
 from .errors import Fail
 from .registry import dom
 from .sanitize import clean
@@ -93,7 +93,8 @@ BLOCKED = ("0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0
 USER = "agentbox-buildvm"           # rpm/agentbox.sysusers: runs nothing but virtiofsd
 NAME_PREFIX = "buildvm-"            # longer than any VM's name with the rest of an id
 DOMAIN_PREFIX = dom(NAME_PREFIX)    # agentbox-buildvm-
-ID = re.compile(r"[a-z0-9][a-z0-9-]{0,80}")
+# a build VM's id: <image>-<build>-<step>; its work directory, out-<id>, out-<id>.img, RUN/<id>
+ID = re.compile(rf"(?:{settings.IMAGE.pattern})-(?:{settings.BUILD_ID.pattern})-build")
 MEMORY_MIB = 8192
 MAX_VCPUS = 8
 SYSTEM_GIB = 20
@@ -111,12 +112,26 @@ BOOT_SECONDS = paths.tunable("AGENTBOX_BUILD_VM_BOOT_SECONDS", 600)
 BUILD_SECONDS = paths.tunable("AGENTBOX_BUILD_VM_SECONDS", 4 * 3600)
 WATCH_SECONDS = paths.tunable("AGENTBOX_BUILD_VM_WATCH_SECONDS", 2)
 END_SECONDS = paths.tunable("AGENTBOX_BUILD_VM_END_SECONDS", 60)   # from its log's end to its domain's
+# the teardown's waits, each bounded; their sum, with every virsh call it makes (virsh.TIMEOUT
+# each), is TEARDOWN_SECONDS, which the Build unit's TimeoutStopSec covers (generate.py), so a
+# stopped Build destroys its VM before systemd would kill the run
+DESTROY_WAIT = 30                   # from destroy to the domain's end
+DESTROY_SECONDS = paths.tunable("AGENTBOX_BUILD_VM_DESTROY_SECONDS", DESTROY_WAIT)
+STOP_SECONDS = 60                   # systemctl stop of virtiofsd's units
+CHECK_SECONDS = 15                  # systemctl is-active of each of them
+UMOUNT_SECONDS = 30
+VIRSH_SECONDS = 15                  # virsh.TIMEOUT
+VIRSH_CALLS = 4                     # in the teardown: state, destroy, state after the wait, state again
+TEARDOWN_SECONDS = VIRSH_CALLS * VIRSH_SECONDS + DESTROY_WAIT + STOP_SECONDS + 2 * CHECK_SECONDS + UMOUNT_SECONDS
 MAX_OUT_ENTRIES = paths.tunable("AGENTBOX_BUILD_VM_OUT_ENTRIES", 10000)   # files and directories in it
 MAX_OUT_DEPTH = 32                  # directories within directories in it
 MAX_LOG = paths.tunable("AGENTBOX_BUILD_VM_LOG_BYTES", 64 << 20)          # of its log, kept in the journal
 MIN_FREE = paths.tunable("AGENTBOX_BUILD_VM_MIN_FREE_BYTES", 10 << 30)
 MAX_ARCHIVE = 64 << 30
-OUT_BYTES = paths.tunable("AGENTBOX_BUILD_VM_OUT_BYTES", MAX_ARCHIVE + (1 << 30))   # its output filesystem
+# its output filesystem: ext4 with one inode per MiB and a 64 MiB journal leaves 65.86 GiB of
+# 66 GiB free (mkfs.ext4 1.47), so the archive's cap fits with almost 2 GiB to spare
+OUT_BYTES = paths.tunable("AGENTBOX_BUILD_VM_OUT_BYTES", MAX_ARCHIVE + (2 << 30))
+OUT_MKFS = ("-m", "0", "-i", "1048576", "-J", "size=64")
 LINE_OVERHEAD = 64                  # what a line of its log counts on top of its bytes
 MAX_RESULT = 64 << 10
 LINE_MAX = 4096
@@ -395,6 +410,7 @@ def _input_disk(vm, job, context, hand_in, say):
         except Fail as f:
             raise Failed(f.message)
         images.append((archive, {"archive": f"images/{n}.oci.tar", "name": name}))
+        _room()
     job = {**job, "images": [entry for _, entry in images]}
     with tarfile.open(vm["input"], "x", format=tarfile.PAX_FORMAT) as tar:
         _add_bytes(tar, "job.json", json.dumps(job, indent=2).encode())
@@ -437,7 +453,8 @@ def _prepare(vm, image, job, context, hand_in, src, ids, say):
     """The VM's disks, its output directory and its run directory, all new. The disks are root's
     alone (0600, libvirt hands them to QEMU while the VM runs): the input disk holds a Recipe."""
     state_files.directory(paths.BUILD_VM, 0o711)
-    _drop_out(vm)
+    _drop_out(vm, say)
+    _room()
     for path in (vm["work"], vm["run"]):
         shutil.rmtree(path, ignore_errors=True)
     state_files.directory(vm["work"], 0o711)
@@ -446,28 +463,39 @@ def _prepare(vm, image, job, context, hand_in, src, ids, say):
         _disks(vm, image, job, context, hand_in, src, say)
     finally:
         os.umask(umask)
-    _out_fs(vm, ids)
+    _out_fs(vm, ids, say)
     qemu_gid = state_files.group_id("qemu", "is libvirt installed?")
     state_files.directory(os.path.dirname(RUN), 0o755)
     state_files.directory(RUN, 0o755)
     state_files.directory(vm["run"], 0o770, qemu_gid)
 
 
-def _out_fs(vm, ids):
+def _free():
+    """Bytes free on the filesystem of BUILD_VM, where a build VM's files grow."""
+    st = os.statvfs(paths.BUILD_VM)
+    return st.f_bavail * st.f_frsize
+
+
+def _room():
+    """Room left for the build VM's output filesystem, all of it, and MIN_FREE besides: before
+    anything is written, after each thing handed in, and before the filesystem is made."""
+    if _free() < OUT_BYTES + MIN_FREE:
+        raise Failed(f"not enough free space under {paths.BUILD_VM} for a build VM and its output: it needs "
+                     f"{_size(OUT_BYTES + MIN_FREE)} more")
+
+
+def _out_fs(vm, ids, say):
     """The output directory, the root of a filesystem of its own of OUT_BYTES (ext4 in a sparse
     image file, loop-mounted nosuid,nodev,noexec), USER's: virtiofs has no quota, this bounds
     what the VM writes whatever it does between two checks. There must be room for all of it."""
-    st = os.statvfs(paths.BUILD_VM)
-    if st.f_bavail * st.f_frsize < OUT_BYTES + MIN_FREE:
-        raise Failed(f"not enough free space under {paths.BUILD_VM} for a build VM's output: it needs "
-                     f"{_size(OUT_BYTES + MIN_FREE)}")
+    _room()
     fd = os.open(vm["out_image"], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
         os.ftruncate(fd, OUT_BYTES)
     finally:
         os.close(fd)
     uid, gid = ids
-    _run(["mkfs.ext4", "-q", "-F", "-m", "0", "-E", f"root_owner={uid}:{gid}", vm["out_image"]], 300,
+    _run(["mkfs.ext4", "-q", "-F", *OUT_MKFS, "-E", f"root_owner={uid}:{gid}", vm["out_image"]], 300,
          "mkfs.ext4 of the output filesystem")
     os.mkdir(vm["out"], 0o700)
     _run(["mount", "-t", "ext4", "-o", "loop,nosuid,nodev,noexec", vm["out_image"], vm["out"]], 60,
@@ -476,15 +504,21 @@ def _out_fs(vm, ids):
     os.chmod(vm["out"], 0o700)
 
 
-def _drop_out(vm):
-    """The output filesystem unmounted, its directory and image file deleted."""
+def _drop_out(vm, say):
+    """The output filesystem unmounted, its directory and image file deleted. One that cannot be
+    unmounted is said so and kept, for the next Build run to try again (leftovers)."""
     if os.path.isdir(vm["out"]) and not os.path.islink(vm["out"]):
         try:
-            programs.run(["umount", vm["out"]], 60, ok=None, c_locale=True)
-        except Fail:
-            pass
-        if not os.path.ismount(vm["out"]):
-            shutil.rmtree(vm["out"], ignore_errors=True)
+            r = programs.run(["umount", vm["out"]], UMOUNT_SECONDS, ok=None, c_locale=True)
+            failed = programs.summary(r) if r.returncode != 0 else None
+        except Fail as f:
+            failed = f.message
+        if failed:
+            say(f"umount of {vm['out']} failed: {failed}")
+        if os.path.ismount(vm["out"]):
+            say(f"The output filesystem {vm['out']} stays mounted; the next Build run tries again")
+            return
+        shutil.rmtree(vm["out"], ignore_errors=True)
     state_files.remove(vm["out_image"], fail=False)
 
 
@@ -497,6 +531,7 @@ def _disks(vm, image, job, context, hand_in, src, say):
     _run(["qemu-img", "create", "-q", "-f", "qcow2", vm["scratch"], f"{SCRATCH_GIB}G"], 120,
          "qemu-img create of the scratch disk")
     _input_disk(vm, job, context, hand_in, say)
+    _room()
     _seed(vm, src)
 
 
@@ -616,9 +651,8 @@ def _size(n):
 
 
 def _watch(vm):
-    st = os.statvfs(paths.STATE)
-    if st.f_bavail * st.f_frsize < MIN_FREE:
-        raise Failed(f"less than {_size(MIN_FREE)} free under {paths.STATE}")
+    if _free() < MIN_FREE:
+        raise Failed(f"less than {_size(MIN_FREE)} free under {paths.BUILD_VM}")
     if _held(vm["out"]) > OUT_BYTES:
         raise Failed(f"the build VM wrote more than {_size(OUT_BYTES)} into its output directory")
 
@@ -709,7 +743,7 @@ def _relay(vm, limit, say, seen):
 def _stop(unit):
     """virtiofsd's units stopped; whatever goes wrong is ignored (they may be gone already)."""
     try:
-        programs.systemctl("stop", f"{unit}.socket", f"{unit}.service", timeout=60, ok=None)
+        programs.systemctl("stop", f"{unit}.socket", f"{unit}.service", timeout=STOP_SECONDS, ok=None)
     except Fail:
         pass
 
@@ -721,12 +755,13 @@ def _end(vm):
     says, or cannot say): [what], for the caller to fail the Build on."""
     if not _gone(vm):
         virsh.run("destroy", vm["domain"])
-        deadline = time.monotonic() + END_SECONDS
+        deadline = time.monotonic() + DESTROY_SECONDS
         while not _gone(vm) and time.monotonic() < deadline:
             time.sleep(0.5)
     _stop(vm["unit"])
     left = [] if _gone(vm) else [f"the domain {vm['domain']}"]
-    left += [unit for unit in (f"{vm['unit']}.service", f"{vm['unit']}.socket") if not states.unit_stopped(unit, 30)]
+    left += [unit for unit in (f"{vm['unit']}.service", f"{vm['unit']}.socket")
+             if not states.unit_stopped(unit, CHECK_SECONDS)]
     shutil.rmtree(vm["work"], ignore_errors=True)
     shutil.rmtree(vm["run"], ignore_errors=True)
     if os.path.isdir(vm["out"]) and not os.path.islink(vm["out"]):
@@ -831,7 +866,7 @@ def build_image(image, build, job, context, hand_in, src, say, seen):
         ok = True
     finally:
         if not ok:
-            _drop_out(vm)
+            _drop_out(vm, say)
     say(f"== {image}: the build VM handed out its image archive ({archive})")
     return archive
 
@@ -843,19 +878,24 @@ def leftovers(say):
     unmounted, its disks, output and run directories deleted. The checked image and its record
     stay."""
     found = set()
+    # each form of a name read on its own: a work directory of the Image out-x is also the name
+    # of an output directory of the Image x; both are taken, what does not exist costs nothing
     for name in state_files.listdir(paths.BUILD_VM, fail=False):
-        ident = name.removeprefix("out-").removesuffix(".img")
-        if name not in ("images", os.path.basename(build_vm.RECORD)) and ID.fullmatch(ident):
-            found.add(ident)
-    for name in state_files.listdir(RUN, fail=False):
-        if ID.fullmatch(name):
-            found.add(name)
+        for pattern in (ID, re.compile(rf"out-({ID.pattern})"), re.compile(rf"out-({ID.pattern})\.img")):
+            m = pattern.fullmatch(name)
+            if m:
+                found.add(m.group(1) if pattern.groups else name)
+    found |= {name for name in state_files.listdir(RUN, fail=False) if ID.fullmatch(name)}
     for ident in sorted(found):
         vm = _named(ident)
+        there = [p for p in (vm["work"], vm["out"], vm["out_image"], vm["run"]) if os.path.lexists(p)]
         if not _gone(vm):
+            there.append(vm["domain"])
             virsh.run("destroy", vm["domain"])
+        if not there:
+            continue
         _stop(vm["unit"])     # what still runs is removed by the run after it
-        _drop_out(vm)
+        _drop_out(vm, say)
         for path in (vm["work"], vm["run"]):
             shutil.rmtree(path, ignore_errors=True)
         say(f"Removed what the build VM {vm['domain']} left")

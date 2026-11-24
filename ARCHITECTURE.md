@@ -1209,9 +1209,11 @@ Host after every Build
     and upgrades nothing and powers the VM off when the driver `build-vm-run` (also from the
     seed) ends, also after a failure.
   - **What comes out**: its output directory is the root of a filesystem of its own, so what
-    the VM writes there is bounded however fast it writes: an ext4 of 65 GiB (the archive's
-    64 GiB and one more) in a sparse image file, made by root and loop-mounted
-    `nosuid,nodev,noexec`; a build VM starts only with room for all of it and 10 GiB besides.
+    the VM writes there is bounded however fast it writes: an ext4 of 66 GiB with one inode
+    per MiB and a 64 MiB journal (65.86 GiB free, so an archive at its 64 GiB cap fits) in a
+    sparse image file, made by root and loop-mounted `nosuid,nodev,noexec`; a build VM starts
+    only with room for all of it and 10 GiB besides under `/var/lib/agentbox/build-vm`, checked
+    before anything is written and again after each thing handed in.
     It is served over virtiofs by a virtiofsd Agent Box starts, not libvirt's, which runs as
     root: a transient unit of the service user `agentbox-buildvm`, whose socket systemd makes
     (`root:qemu`, `0660`) and hands over, in virtiofsd's own sandbox as the root of a user
@@ -1231,11 +1233,13 @@ Host after every Build
     kept: one note says so, its `STEP` lines still count.
   - **Limits**: the VM is destroyed and the Build fails when it writes no line within
     10 minutes of its start, runs longer than 4 hours or leaves less than 10 GiB free under
-    `/var/lib/agentbox`. Its output directory is measured every 2 seconds through directory
+    `/var/lib/agentbox/build-vm`. Its output directory is measured every 2 seconds through directory
     file descriptors, links not followed; more than 10,000 files and directories in it,
     directories deeper than 32, or a walk that cannot finish fail the Build as well. Stopping
-    the Build destroys it and stops its virtiofsd; the next Build run removes whatever a killed
-    run left, and the output a Build left. A Host without KVM, without a checked image, with
+    the Build destroys it and stops its virtiofsd before the Build is marked failed: the Build
+    unit's `TimeoutStopSec` covers every wait of that teardown and a minute more, so systemd
+    does not kill the run first. The next Build run removes whatever a killed run left, and the
+    output a Build left. A Host without KVM, without a checked image, with
     less than 8 GiB of memory available or without the build network's rules loaded in the
     kernel (as `nft list chain` shows them) fails the Build: it never falls back to the Host.
 - What the Base image downloads, it downloads inside the Build container, where Fedora's

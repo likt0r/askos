@@ -862,7 +862,8 @@ Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 RuntimeMaxSec=6h
-TimeoutStopSec=2min
+# the teardown of a running build VM, a minute to spare
+TimeoutStopSec={build_vm_run.TEARDOWN_SECONDS + 60}s
 """
 
 
