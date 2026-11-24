@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.11.0](https://github.com/likt0r/askos/compare/v0.10.1...v0.11.0) (2026-11-24)
+
+### Features
+
+* a Build in build VMs imports its image, checks it and makes its disk in an offline second VM ([#190](https://github.com/likt0r/askos/issues/190)) ([602bfde](https://github.com/likt0r/askos/commit/602bfdef7c4761c5d960392a0c4a021119fd1cbb)), references [#144](https://github.com/likt0r/askos/issues/144)
+* show podman's STEP n/m and its command for a running Build ([#185](https://github.com/likt0r/askos/issues/185)) ([b78921e](https://github.com/likt0r/askos/commit/b78921e1fe6c9a75b7a97545be2e26dda2260f23)), closes [#183](https://github.com/likt0r/askos/issues/183), references [#186](https://github.com/likt0r/askos/issues/186) [#187](https://github.com/likt0r/askos/issues/187)
+* the build VMs' image, the signed Fedora Cloud image, fetched and checked by the version check ([#188](https://github.com/likt0r/askos/issues/188)) ([2a65670](https://github.com/likt0r/askos/commit/2a65670205754f575f1defbe5546024b908ff536)), references [#144](https://github.com/likt0r/askos/issues/144)
+* the first build VM runs a Build's podman build, behind an internal switch that is off ([#189](https://github.com/likt0r/askos/issues/189)) ([ed59eff](https://github.com/likt0r/askos/commit/ed59effbcbbdf890b316f571b1aa9effdeecb49c)), references [#144](https://github.com/likt0r/askos/issues/144)
+* the Setting build_vm runs Builds and the package count in build VMs by default ([#191](https://github.com/likt0r/askos/issues/191)) ([f10dd5b](https://github.com/likt0r/askos/commit/f10dd5b9c39afd545f525eb1c3572ecfac5016d6)), closes [#144](https://github.com/likt0r/askos/issues/144), references [#144](https://github.com/likt0r/askos/issues/144) [#181](https://github.com/likt0r/askos/issues/181)
+
+### Bug Fixes
+
+* check-versions says "not fetched yet" for digests a fetch file has no entry for ([#187](https://github.com/likt0r/askos/issues/187)) ([c04aaf8](https://github.com/likt0r/askos/commit/c04aaf89a4817ce78d2ec4925e36098d64f7f435)), closes [#184](https://github.com/likt0r/askos/issues/184)
+
 ## [0.10.1](https://github.com/likt0r/askos/compare/v0.10.0...v0.10.1) (2026-11-23)
 
 ### Bug Fixes
