@@ -1196,27 +1196,31 @@ Host after every Build
     never unpacks it), then `podman save --format oci-archive` into its output directory. The
     images it builds on go in from the Host's storage (`skopeo copy` to an OCI archive): it pulls
     nothing from a registry for them.
-  - **The import**: root imports the archive with `skopeo copy oci-archive:<archive>
+  - **The import**: root imports the image with `skopeo copy oci:<directory>
     containers-storage:localhost/agentbox/<image>:<build>`, under the name the Host chose for the
     Build, never one the archive names: `podman load` takes the name from the archive, so a
     crafted archive could retag the current Base Build, the pinned fedora-bootc or any other image
-    in the Host's storage. Before skopeo gets the archive, root reads its `index.json` and
-    manifest in a child process (1 GiB of address space, 5 minutes of CPU) and refuses an archive
-    that is not one OCI image: more than one image, a blob the archive does not hold, a descriptor
-    that names URLs (skopeo would fetch that layer from there, from the Host), a media type that
-    is not an OCI manifest's, config's or layer's, more than 128 layers, more than 10,000 entries
-    or an entry that is no regular file or directory. skopeo then runs in a network namespace of
-    its own (`unshare --net`), so nothing an archive names makes root on the Host send a request
-    anywhere. skopeo unpacks the archive into a directory of its own under
-    `/var/lib/agentbox/build-vm` (`--tmpdir`, not `/var/tmp`), root's, deleted after the import
-    and by the next run if a run is killed. The import starts only with room for the archive's
-    size there, three times it in the Host's container storage and 10 GiB besides on each; while
-    it runs, root reads the free space of both every 2 seconds and kills skopeo when either falls
-    below 10 GiB (a layer that unpacks to far more than its size), and the Build fails at
+    in the Host's storage. skopeo never reads the archive. Root reads it first, in a child process
+    (1 GiB of address space, 30 minutes of CPU), and refuses an archive that is not one OCI image:
+    more than one image, a blob the archive does not hold, a descriptor that names URLs (skopeo
+    would fetch that layer from there, from the Host), a media type that is not an OCI manifest's,
+    config's or layer's, more than 128 layers, more than 10,000 entries, an entry that is sparse
+    or no regular file or directory, or anything but NUL bytes after the tar's end (where Python's
+    and Go's tar readers could part ways). Then root writes the image's files itself into a new
+    directory under `/var/lib/agentbox/build-vm`: its own `oci-layout` and an `index.json` naming
+    only the manifest it checked, and the manifest, config and layers copied out of the archive,
+    nothing else; skopeo copies from that directory, so it reads only the files root extracted and
+    checked. skopeo then runs in a network namespace of its own (`unshare --net`), so nothing an
+    archive names makes root on the Host send a request anywhere. The directory, with skopeo's
+    `--tmpdir` in it, is root's and deleted after the import, and by the next run if a run is
+    killed. The import starts only with room for the blobs there, as root extracts them, three
+    times the layers' size in the Host's container storage and 10 GiB besides on each; while
+    skopeo runs, root reads the free space of both every 2 seconds and kills skopeo when either
+    falls below 10 GiB (a layer that unpacks to far more than its size), and the Build fails at
     `import`. What the killed skopeo left of the image goes with the failed Build, and
     containers/storage deletes a layer left incomplete when it next opens the store. skopeo and
-    containers/storage parse the archive as root and check every blob against the manifest's
-    digest, as for every pull; nothing from the image runs. The archive and its output filesystem
+    containers/storage check every blob against the manifest's digest, as for every pull, and
+    apply the layers as root; nothing from the image runs. The archive and its output filesystem
     are deleted right after. The Safeguard check, the tool versions and a derived Image's
     comparison with the Base Build then run on the imported image as they run on the Host's own
     Builds; a rejected Build ends there, before any disk step.
@@ -2372,8 +2376,8 @@ laptops.
   and a Build's two build VMs are in place, behind an internal switch that is off. With it on, a
   Build's `podman build` and its disk step, the Image's `bootupctl` included, run in build VMs,
   not on the Host; what root runs on what they hand out are parsers: skopeo and
-  containers/storage importing the image archive (in a network namespace of its own, after root
-  read its index and manifest), `podman image mount` and the Safeguard check, and qemu-img
+  containers/storage importing the image (in a network namespace of its own, from the files root
+  checked and took out of the archive), `podman image mount` and the Safeguard check, and qemu-img
   reading the disk's header, bounded; qemu-img rewrites the disk as `agentbox-buildvm`, without
   network. Checking the
   image, root reads the header of a qcow2
@@ -2401,9 +2405,9 @@ laptops.
   that the Fedora Cloud image runs `build-vm-run` from its seed with podman, btrfs and virtiofs,
   that bootc-image-builder makes a disk in the offline build VM from the images handed in under
   local names (loop devices in the guest, `--build-container` by a local name, nothing pulled),
-  that skopeo imports an archive under the name given and without network, that the archive
-  `podman save` writes passes root's check of its index and manifest (OCI media types, every
-  blob in it), that qemu-img as `agentbox-buildvm` reads and writes the files root hands it as
+  that skopeo imports an OCI layout under the name given and without network, that the archive
+  `podman save` writes passes root's check (OCI media types, every blob in it, nothing after
+  its tar's end), that qemu-img as `agentbox-buildvm` reads and writes the files root hands it as
   `/dev/fd/N`, and that the build network's rules hold in the kernel; the check and rewrite of a
   disk with a backing file or a data file run with the Host's own qemu-img where there is one
   (as the test's own user, `unshare` and `setpriv` played by fakes); fakes play `systemd-run`, `xorrisofs`, `skopeo`, `qemu-img`, `virsh create` and the VM, which

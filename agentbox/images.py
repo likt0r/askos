@@ -114,16 +114,18 @@ COMMAND_MAX = 200                 # characters of a step's command a running Bui
 CONTAINERFILE_MAX = 64 * 1024     # bytes of a Containerfile `agentbox containerfile` shows at most
 IMPORT_SECONDS = 3600            # skopeo copy of a build VM's image archive into the Host's storage
 # the room an import must find before it starts: in the Host's storage IMPORT_FACTOR times the
-# archive's size (a filesystem compresses to about a third), and IMPORT_RESERVE on each
-# filesystem it writes to, below which the import is stopped while it runs
+# size of the image's layers (a filesystem compresses to about a third), and IMPORT_RESERVE on
+# each filesystem it writes to, below which the import is stopped while it runs
 IMPORT_FACTOR = 3
 IMPORT_RESERVE = paths.tunable("AGENTBOX_BUILD_IMPORT_RESERVE_BYTES", 10 << 30)
-# a build VM's image archive, read before skopeo gets it (archive_problem): its tar's entries,
-# the size of index.json and of its manifest, its layers; in a child process under these limits
+# a build VM's image archive, which root checks and takes the image's files out of (_unpack):
+# its tar's entries, the NUL bytes after its end, the size of index.json, its manifest and its
+# config, its layers; in a child process under these limits (copying 64 GiB costs CPU time)
 ARCHIVE_ENTRIES = 10000
+ARCHIVE_TRAIL = 1 << 20
 ARCHIVE_JSON = 4 << 20
 ARCHIVE_LAYERS = 128
-ARCHIVE_LIMITS = {resource.RLIMIT_AS: 1 << 30, resource.RLIMIT_CPU: 300}
+ARCHIVE_LIMITS = {resource.RLIMIT_AS: 1 << 30, resource.RLIMIT_CPU: 1800}
 OCI_MANIFEST = "application/vnd.oci.image.manifest.v1+json"
 OCI_CONFIG = "application/vnd.oci.image.config.v1+json"
 OCI_LAYERS = ("application/vnd.oci.image.layer.v1.tar", "application/vnd.oci.image.layer.v1.tar+gzip",
@@ -724,42 +726,44 @@ def _in_build_vm(image, rec, tag, build_args, containerfile, context, hand_in, s
 
 def _import(image, build, archive, tag, say):
     """The image archive of a first build VM into the Host's storage under the name the Host
-    chose for the Build (`tag`), never one the archive names: skopeo copy, not podman load,
-    which takes the name from the archive and so could retag the current Base Build or any
-    other image there. The oci-archive reference names no image in the archive, so skopeo takes
-    its only one and refuses an archive with more. skopeo and containers/storage check every
-    blob against the manifest's digest; nothing from the image runs.
+    chose for the Build (`tag`), never one the archive names: not podman load, which takes the
+    name from the archive and so could retag the current Base Build or any other image there.
 
-    Before skopeo gets it, archive_problem reads its index and manifest: one image, every blob
-    in the archive, no URL to fetch one from, OCI media types only, at most ARCHIVE_LAYERS
-    layers. skopeo then runs in a network namespace of its own (unshare --net), so nothing an
-    archive names makes root on the Host send a request anywhere.
+    skopeo never reads the archive. Root reads it (_unpack, in a child process under
+    ARCHIVE_LIMITS) and writes the image's files itself into a new directory, the OCI layout
+    `layout` in build_vm_run.import_dir: its own oci-layout and index.json, which names the one
+    manifest it checked and nothing else, and the manifest, the config and the layers copied out
+    of the archive. Then `skopeo copy oci:<layout> containers-storage:<tag>`: skopeo reads only
+    files root wrote and checked, so no difference between how Python and Go read a tar
+    reaches it. skopeo and containers/storage check every blob against the manifest's digest;
+    nothing from the image runs. skopeo runs in a network namespace of its own (unshare --net),
+    so nothing an archive names makes root on the Host send a request anywhere.
 
-    skopeo unpacks the archive into a directory of its own on the filesystem of the build VMs
-    (--tmpdir, build_vm_run.import_dir, not /var/tmp), deleted afterwards; its layers then go
-    into the Host's storage. It starts only with room for both: the archive's size there,
-    IMPORT_FACTOR times it in the storage, and IMPORT_RESERVE left on each filesystem; while it
-    runs, the free space of both is read every build_vm_run.WATCH_SECONDS, and skopeo is killed
-    and the import fails when either falls below IMPORT_RESERVE (a layer that unpacks to far
-    more than its size). What a killed skopeo left of the image goes with the failed Build
-    (podman rmi of tag); containers/storage deletes a layer it left incomplete when it next
-    opens the store."""
-    problem = archive_problem(archive)
-    if problem:
-        raise _Failed(f"the build VM's image archive is refused: {problem}")
-    size = os.stat(archive).st_size
-    tmp = build_vm_run.import_dir(image, build)
+    The import starts only with room for the blobs on the filesystem of the build VMs (as
+    root extracts them), IMPORT_FACTOR times the layers' size in the Host's storage, and
+    IMPORT_RESERVE left on each; while skopeo runs, the free space of both is read every
+    build_vm_run.WATCH_SECONDS, and skopeo is killed and the import fails when either falls
+    below IMPORT_RESERVE (a layer that unpacks to far more than its size). What a killed skopeo
+    left of the image goes with the failed Build (podman rmi of tag); containers/storage deletes
+    a layer it left incomplete when it next opens the store. The directory goes afterwards,
+    whatever happened, and with leftovers() after a killed run."""
+    work = build_vm_run.import_dir(image, build)
+    layout, tmp = os.path.join(work, "layout"), os.path.join(work, "tmp")
     storage = paths.host(STORAGE)
-    _room_for(f"to import the build VM's image archive ({size} bytes)",
-              [(paths.BUILD_VM, size), (storage, IMPORT_FACTOR * size)], IMPORT_RESERVE)
-    say(f"== {image}: importing the build VM's image archive as {tag}")
-    shutil.rmtree(tmp, ignore_errors=True)
-    os.mkdir(tmp, 0o700)
+    shutil.rmtree(work, ignore_errors=True)
+    os.mkdir(work, 0o700)
     try:
-        _watched(["unshare", "--net", "--", "skopeo", "--tmpdir", tmp, "copy", "--quiet", f"oci-archive:{archive}",
+        say(f"== {image}: checking the build VM's image archive and taking its image's files out of it")
+        answer = _in_child(_unpack, archive, layout, storage)
+        if answer:
+            raise _Failed(answer["failed"] if "failed" in answer
+                          else f"the build VM's image archive is refused: {answer['refused']}")
+        os.mkdir(tmp, 0o700)
+        say(f"== {image}: importing the image as {tag}")
+        _watched(["unshare", "--net", "--", "skopeo", "--tmpdir", tmp, "copy", "--quiet", f"oci:{layout}",
                   f"containers-storage:{tag}"], (storage, paths.BUILD_VM))
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def _watched(argv, places):
@@ -797,10 +801,10 @@ def _watched(argv, places):
                           + (f": {said}" if said else ""))
 
 
-def archive_problem(path):
-    """What makes the OCI archive at `path` (a build VM's image.oci.tar) one the Host does not
-    hand skopeo, or None. Read in a child process under ARCHIVE_LIMITS, as Python's tarfile
-    holds a member's extended header in memory, whatever its size."""
+def _in_child(fn, *args):
+    """fn(*args) in a child process under ARCHIVE_LIMITS: its answer (JSON), which a _Failed
+    there turns into {"failed": its message}; {"refused": ...} when the child dies or answers
+    nothing (Python's tarfile holds a member's extended header in memory, whatever its size)."""
     sys.stdout.flush()
     sys.stderr.flush()
     r, w = os.pipe()
@@ -809,9 +813,11 @@ def archive_problem(path):
         try:
             os.close(r)
             build_vm.lower(ARCHIVE_LIMITS)
-            answer = _archive_problem(path)
+            answer = fn(*args)
+        except _Failed as f:
+            answer = {"failed": f.message}
         except BaseException as e:       # MemoryError among them: whatever it is, the archive is refused
-            answer = f"it cannot be read within its limits ({type(e).__name__})"
+            answer = {"refused": f"it cannot be read within its limits ({type(e).__name__})"}
         try:
             os.write(w, json.dumps(answer).encode()[:1 << 12])
         finally:
@@ -823,94 +829,163 @@ def archive_problem(path):
     try:
         answer = json.loads(data)
     except ValueError:                   # no answer: the child was ended (its CPU time, say)
-        return "it cannot be read within its limits"
-    return answer if answer is None or isinstance(answer, str) else "it cannot be read within its limits"
+        answer = {"refused": "it cannot be read within its limits"}
+    return answer if answer is None or isinstance(answer, dict) else {"refused": "it cannot be read"}
 
 
-def _archive_problem(path):
+def _unpack(path, layout, storage):
+    """In the child of _in_child: the OCI archive at `path` checked, then the files of its one
+    image written into the new directory `layout` (root's, 0700; files 0600, never through a
+    link): None, or {"refused": why}. _Failed without room for them.
+
+    The tar: at most ARCHIVE_ENTRIES entries, each a regular file or a directory (no link,
+    device, FIFO, sparse member or continuation) under a name with no empty, . or .. part,
+    none twice, and nothing but NUL bytes after its end, at most ARCHIVE_TRAIL of them, so that
+    no reader of the tar finds entries this one did not see. Its image: index.json names exactly
+    one manifest; the manifest (at most ARCHIVE_JSON, matching its digest) an OCI config (at
+    most ARCHIVE_JSON, matching its digest) and 1 to ARCHIVE_LAYERS OCI layers; every
+    descriptor names its blob by a sha256 digest and its size, no URL to fetch it from, and the
+    blob is in the archive with that size. Root writes oci-layout and index.json itself (the
+    one manifest, its media type, digest and size) and copies the manifest, config and layer
+    blobs out of the archive; nothing else."""
     import hashlib
     import tarfile
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError as e:
-        return f"it cannot be opened: {e.strerror or e}"
+        return {"refused": f"it cannot be opened: {e.strerror or e}"}
     with os.fdopen(fd, "rb") as raw:
         try:
             tar = tarfile.open(fileobj=raw, mode="r:")
             files = {}
             for count, m in enumerate(iter(tar.next, None), 1):
                 if count > ARCHIVE_ENTRIES:
-                    return f"it holds more than {ARCHIVE_ENTRIES} entries"
+                    return {"refused": f"it holds more than {ARCHIVE_ENTRIES} entries"}
                 name = m.name[2:] if m.name.startswith("./") else m.name
                 name = name.rstrip("/") if m.isdir() else name
+                shown = repr(clean(name[:100], False))
                 if name.startswith("/") or any(p in ("", ".", "..") for p in name.split("/")):
-                    return f"it holds an entry named {clean(name[:100], False)!r}"
-                if m.isdir():
-                    continue
-                if not m.isreg():
-                    return f"it holds {clean(name[:100], False)!r}, which is no regular file or directory"
+                    return {"refused": f"it holds an entry named {shown}"}
+                if m.sparse is not None or any(k.startswith("GNU.sparse.") for k in m.pax_headers):
+                    return {"refused": f"it holds {shown}, which is sparse"}
+                if m.type not in (tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.DIRTYPE):
+                    return {"refused": f"it holds {shown}, which is no regular file or directory"}
                 if name in files:
-                    return f"it holds {clean(name[:100], False)!r} twice"
-                files[name] = m
+                    return {"refused": f"it holds {shown} twice"}
+                if not m.isdir():
+                    files[name] = m
+            end = tar.offset
         except tarfile.TarError:
-            return "it is no tar"
+            return {"refused": "it is no tar"}
+        raw.seek(end)
+        trail = raw.read(ARCHIVE_TRAIL + 1)
+        if len(trail) > ARCHIVE_TRAIL or trail.strip(b"\0"):
+            return {"refused": "it holds more after the end of its tar"}
 
         def read(name):
             m = files.get(name)
             return tar.extractfile(m).read(ARCHIVE_JSON + 1) if m is not None and m.size <= ARCHIVE_JSON else None
 
         def blob(d, types, what):
-            """(the blob's name in the archive, None) of the descriptor d, or (None, what is wrong)."""
+            """The blob's name in the archive of the descriptor d; _Refused otherwise."""
             if not isinstance(d, dict):
-                return None, f"its {what} is no descriptor"
+                raise _Refused(f"its {what} is no descriptor")
             if "urls" in d:
-                return None, f"its {what} names URLs to fetch it from"
+                raise _Refused(f"its {what} names URLs to fetch it from")
             if d.get("mediaType") not in types:
-                return None, f"its {what} has the media type {clean(str(d.get('mediaType'))[:100], False)!r}"
+                raise _Refused(f"its {what} has the media type {clean(str(d.get('mediaType'))[:100], False)!r}")
             m = SHA256.fullmatch(d["digest"]) if isinstance(d.get("digest"), str) else None
             size = d.get("size")
             if not m or not isinstance(size, int) or isinstance(size, bool):
-                return None, f"its {what} names no sha256 digest and size"
+                raise _Refused(f"its {what} names no sha256 digest and size")
             name = f"blobs/sha256/{m.group(1)}"
             if name not in files or files[name].size != size:
-                return None, f"its {what} is not in the archive"
-            return name, None
+                raise _Refused(f"its {what} is not in the archive")
+            return name
 
-        def parsed(data):
+        def checked_json(name, digest, what):
+            data = read(name)
+            if data is None or "sha256:" + hashlib.sha256(data).hexdigest() != digest:
+                raise _Refused(f"its {what} does not match its digest, or is larger than {ARCHIVE_JSON} bytes")
             try:
-                found = json.loads(data.decode("utf-8")) if data is not None else None
+                found = json.loads(data.decode("utf-8"))
             except (ValueError, RecursionError):
                 found = None
-            return found if isinstance(found, dict) else None
+            if not isinstance(found, dict):
+                raise _Refused(f"its {what} is no JSON object")
+            return found
 
-        index = parsed(read("index.json"))
-        if index is None:
-            return f"its index.json is missing, larger than {ARCHIVE_JSON} bytes or no JSON object"
-        manifests = index.get("manifests")
-        if not isinstance(manifests, list) or len(manifests) != 1:
-            return f"it holds {len(manifests) if isinstance(manifests, list) else 'no list of'} images, not one"
-        name, why = blob(manifests[0], (OCI_MANIFEST,), "image's manifest")
-        if why:
-            return why
-        data = read(name)
-        if data is None or "sha256:" + hashlib.sha256(data).hexdigest() != manifests[0]["digest"]:
-            return f"its manifest does not match its digest, or is larger than {ARCHIVE_JSON} bytes"
-        manifest = parsed(data)
-        if manifest is None or manifest.get("schemaVersion") != 2 or manifest.get("mediaType") not in (None, OCI_MANIFEST):
-            return "its manifest is no OCI image manifest"
-        _, why = blob(manifest.get("config"), (OCI_CONFIG,), "config")
-        if why:
-            return why
-        layers = manifest.get("layers")
-        if not isinstance(layers, list) or not layers:
-            return "its manifest names no layers"
-        if len(layers) > ARCHIVE_LAYERS:
-            return f"it has {len(layers)} layers, more than {ARCHIVE_LAYERS}"
-        for n, layer in enumerate(layers):
-            _, why = blob(layer, OCI_LAYERS, f"layer {n + 1}")
-            if why:
-                return why
+        try:
+            index = read("index.json")
+            try:
+                index = json.loads(index.decode("utf-8")) if index is not None else None
+            except (ValueError, RecursionError):
+                index = None
+            if not isinstance(index, dict):
+                raise _Refused(f"its index.json is missing, larger than {ARCHIVE_JSON} bytes or no JSON object")
+            manifests = index.get("manifests")
+            if not isinstance(manifests, list) or len(manifests) != 1:
+                raise _Refused(f"it holds {len(manifests) if isinstance(manifests, list) else 'no list of'} "
+                               "images, not one")
+            entry = manifests[0]
+            name = blob(entry, (OCI_MANIFEST,), "image's manifest")
+            manifest = checked_json(name, entry["digest"], "manifest")
+            if manifest.get("schemaVersion") != 2 or manifest.get("mediaType") not in (None, OCI_MANIFEST):
+                raise _Refused("its manifest is no OCI image manifest")
+            config = blob(manifest.get("config"), (OCI_CONFIG,), "config")
+            checked_json(config, manifest["config"]["digest"], "config")
+            layers = manifest.get("layers")
+            if not isinstance(layers, list) or not layers:
+                raise _Refused("its manifest names no layers")
+            if len(layers) > ARCHIVE_LAYERS:
+                raise _Refused(f"it has {len(layers)} layers, more than {ARCHIVE_LAYERS}")
+            layer_blobs = [blob(layer, OCI_LAYERS, f"layer {n + 1}") for n, layer in enumerate(layers)]
+        except _Refused as r:
+            return {"refused": r.why}
+        wanted = list(dict.fromkeys([name, config, *layer_blobs]))
+        total = sum(files[n].size for n in wanted)
+        layer_bytes = sum(files[n].size for n in dict.fromkeys(layer_blobs))
+        _room_for(f"to import the build VM's image archive ({total} bytes, {layer_bytes} of them layers)",
+                  [(paths.BUILD_VM, total), (storage, IMPORT_FACTOR * layer_bytes)], IMPORT_RESERVE)
+        for folder in (layout, os.path.join(layout, "blobs"), os.path.join(layout, "blobs", "sha256")):
+            os.mkdir(folder, 0o700)
+        _write_new(os.path.join(layout, "oci-layout"), b'{"imageLayoutVersion": "1.0.0"}')
+        _write_new(os.path.join(layout, "index.json"), json.dumps(
+            {"schemaVersion": 2, "manifests": [{"mediaType": OCI_MANIFEST, "digest": entry["digest"],
+                                                "size": entry["size"]}]}).encode())
+        for n in wanted:
+            out = os.open(os.path.join(layout, n), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            try:
+                _copy_range(raw.fileno(), out, files[n].offset_data, files[n].size)
+            finally:
+                os.close(out)
     return None
+
+
+class _Refused(Exception):
+    def __init__(self, why):
+        super().__init__(why)
+        self.why = why
+
+
+def _write_new(path, data):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+
+
+def _copy_range(src, dst, offset, size):
+    """size bytes of the file src from offset to the file dst, in the kernel where it can."""
+    done = 0
+    while done < size:
+        try:
+            n = os.copy_file_range(src, dst, min(size - done, 1 << 30), offset + done)
+        except OSError:                  # an older kernel across filesystems
+            data = os.pread(src, min(size - done, 1 << 20), offset + done)
+            n = os.write(dst, data) if data else 0
+        if n <= 0:
+            raise OSError(f"the archive ended {size - done} bytes early")
+        done += n
 
 
 def _free_at(path):
@@ -1001,12 +1076,14 @@ def _take_disk(image, build, disk, out, say):
     problem = rewrite(disk, part, min(virtual + CONVERT_MARGIN, _free_at(paths.IMAGES)[1] - DISK_RESERVE))
     if problem:
         raise _Failed(f"the build VM's disk cannot be rewritten: {problem}")
-    # what an unprivileged qemu-img wrote is checked as the VM's disk was before it becomes the Build's
+    # root's alone before it is read: the unprivileged qemu-img that wrote it can change it no more
+    if os.geteuid() == 0:
+        os.chown(part, 0, 0)
+    os.chmod(part, 0o600)
+    # what that qemu-img wrote is checked as the VM's disk was before it becomes the Build's
     problem = build_vm.qcow2_problem(part, build_vm_run.MAX_DISK)
     if problem:
         raise _Failed(f"the rewritten disk is refused: {problem}")
-    if os.geteuid() == 0:
-        os.chown(part, 0, 0)
     os.chmod(part, 0o644)
     os.replace(part, build_file(image, build))
 

@@ -11,15 +11,15 @@
       storage, named NAME; fails when REF is not there, and for REF prefixes in the scenario's
       "skopeo_copy_fails"
 
-  skopeo copy --quiet oci-archive:PATH containers-storage:REF
-      the image of the OCI archive PATH (fake_podman.write_archive) into the fake container
-      storage as REF, whatever name the archive gives it; as skopeo with no image named in the
-      oci-archive reference, it refuses an archive with more than one image. As skopeo 1.22
-      does, it fetches a layer the archive does not hold from the URLs its descriptor names: the
-      call records "fetched" (and FAKE_UNSHARE says whether it had a network). It fails when the
-      scenario says "skopeo_import_fails"; with "import_fills": n it first allocates n bytes in
-      REF's directory of the store, then waits up to 60 s, as a layer that unpacks to much more
-      than its size (to be stopped by the Host)
+  skopeo copy --quiet oci:DIR containers-storage:REF
+      the image of the OCI layout DIR into the fake container storage as REF, whatever name
+      the layout gives it; the call records "layout": the files in DIR, and "index": its
+      index.json. As skopeo with no image named in the oci reference, it refuses a layout with
+      more than one image. As skopeo 1.22 does, it fetches a layer the layout does not hold from
+      the URLs its descriptor names (recorded as {"cmd": "skopeo-fetch"}, with whether it had a
+      network). It fails when the scenario says "skopeo_import_fails"; with "import_fills": n it
+      first allocates n bytes in REF's directory of the store, then waits up to 60 s, as a layer
+      that unpacks to much more than its size (to be stopped by the Host)
 
   skopeo --tmpdir DIR ...   the global option: the call also records "tmpdir": {"exists": bool,
       "mode": its permissions}, and the fake unpacks an imported archive there, as skopeo does
@@ -36,11 +36,16 @@ import fake_podman  # noqa: E402
 
 def main(argv):
     call = {"cmd": "skopeo", "argv": argv, "net": os.environ.get("FAKE_UNSHARE") != "net"}
-    tmpdir = None
     if argv[:1] == ["--tmpdir"]:
         tmpdir, argv = argv[1], argv[2:]
         call["tmpdir"] = {"exists": os.path.isdir(tmpdir),
                           "mode": os.stat(tmpdir).st_mode & 0o777 if os.path.isdir(tmpdir) else None}
+    if argv[:2] == ["copy", "--quiet"] and len(argv) == 4 and argv[2].startswith("oci:"):
+        layout = argv[2][len("oci:"):]
+        call["layout"] = sorted(os.path.relpath(os.path.join(d, f), layout)
+                                for d, _, names in os.walk(layout) for f in names)
+        with open(os.path.join(layout, "index.json")) as f:
+            call["index"] = json.load(f)
     with open(os.path.join(fake_podman.DIR, "calls.jsonl"), "a") as f:
         f.write(json.dumps(call) + "\n")
     if argv[:2] == ["copy", "--quiet"] and len(argv) == 4 and argv[2].startswith("containers-storage:") \
@@ -54,20 +59,16 @@ def main(argv):
             return 1
         fake_podman.write_archive(name, path, source=ref)
         return 0
-    if argv[:2] == ["copy", "--quiet"] and len(argv) == 4 and argv[2].startswith("oci-archive:") \
+    if argv[:2] == ["copy", "--quiet"] and len(argv) == 4 and argv[2].startswith("oci:") \
             and argv[3].startswith("containers-storage:"):
-        path, ref = argv[2][len("oci-archive:"):], argv[3][len("containers-storage:"):]
+        path, ref = argv[2][len("oci:"):], argv[3][len("containers-storage:"):]
         if fake_podman.scenario().get("skopeo_import_fails"):
             print("FATA[0000] writing blob: storing blob to file: digest mismatch", file=sys.stderr)
             return 1
-        import tarfile
-        if tmpdir:
-            with tarfile.open(path) as tar:
-                tar.extractall(os.path.join(tmpdir, "oci"), filter="tar")
         index, blobs = fake_podman.read_oci(path)
         if len(index["manifests"]) != 1:
-            print(f"FATA[0000] initializing source oci-archive:{path}: loading index: more than one image "
-                  "in oci, choose an image", file=sys.stderr)
+            print(f"FATA[0000] initializing source oci:{path}: more than one image in oci, choose an image",
+                  file=sys.stderr)
             return 1
         manifest = json.loads(blobs[index["manifests"][0]["digest"]])
         fetched = [u for layer in manifest["layers"] if layer["digest"] not in blobs for u in layer.get("urls", [])]

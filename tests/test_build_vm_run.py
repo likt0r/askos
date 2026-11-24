@@ -218,11 +218,19 @@ class BuildInVmTest(BuildVmTest):
         self.assertEqual(self.guest_podman(verb="save")[0][:4], ["save", "--format", "oci-archive", "-o"])
         self.assertIn(f"== base: the build VM handed out its image archive ({archive_path})", out)
         # skopeo copy into the Host's storage under the name the Host chose; never podman load
-        tmp = self.path(f"{BUILD_VM}/import-base-{new['build']}")
-        self.assertEqual(self.imports(), [(["--tmpdir", tmp, "copy", "--quiet", f"oci-archive:{archive_path}",
+        work = self.path(f"{BUILD_VM}/import-base-{new['build']}")
+        self.assertEqual(self.imports(), [(["--tmpdir", f"{work}/tmp", "copy", "--quiet", f"oci:{work}/layout",
                                             f"containers-storage:{tag}"], {"exists": True, "mode": 0o700})])
-        # skopeo unpacked the archive there, on the build VMs' filesystem, not in /var/tmp; it is gone
-        self.assertFalse(os.path.lexists(tmp))
+        # skopeo read no tar: only the files root took out of the archive and checked, and the
+        # index root wrote itself, naming the one manifest; all on the build VMs' filesystem, gone
+        [call] = [c for c in self.calls("skopeo") if c["argv"][:1] == ["--tmpdir"]]
+        [entry] = call["index"]["manifests"]
+        self.assertEqual(sorted(entry), ["digest", "mediaType", "size"])
+        blobs = sorted(f"blobs/sha256/{d}" for d in (entry["digest"].split(":")[1],))
+        self.assertEqual(len(call["layout"]), 5)                  # manifest, config, layer
+        self.assertEqual([f for f in call["layout"] if not f.startswith("blobs/sha256/")], ["index.json", "oci-layout"])
+        self.assertIn(blobs[0], call["layout"])
+        self.assertFalse(os.path.lexists(work))
         # in a network namespace of its own: nothing an archive names reaches anything
         self.assertEqual([c["argv"][:4] for c in self.calls("unshare") if "skopeo" in c["argv"]],
                          [["--net", "--", "skopeo", "--tmpdir"]])
@@ -263,7 +271,11 @@ class BuildInVmTest(BuildVmTest):
                              ("many_layers", "it has 129 layers, more than 128"),
                              ("media_type", "its layer 1 has the media type "
                                             "'application/vnd.oci.image.layer.nondistributable.v1.tar+gzip'"),
-                             ("link_member", "it holds 'blobs/sha256/passwd', which is no regular file or directory")):
+                             ("link_member", "it holds 'blobs/sha256/passwd', which is no regular file or directory"),
+                             ("sparse_member", "it holds 'blobs/sha256/sparse', which is sparse"),
+                             ("pax_sparse", "it holds 'blobs/sha256/pax-sparse', which is sparse"),
+                             # Python's tarfile ends at the bad header, Go's reads on: nothing may follow
+                             ("hidden_index", "it holds more after the end of its tar")):
             with self.subTest(tamper=tamper):
                 self.forget_calls()
                 self.scenario(build_vm={"tamper": tamper})
@@ -276,6 +288,14 @@ class BuildInVmTest(BuildVmTest):
                 self.assertEqual(self.current(), f"base-{OLD}.qcow2")
                 self.assertEqual(self.leftover(self.ident()), [])
                 time.sleep(1.1)
+
+    def test_skopeo_gets_only_the_files_root_checked(self):
+        """What else an archive holds never reaches skopeo."""
+        self.scenario(build_vm={"tamper": "extra_member"})
+        self.ok_in_vm()
+        [call] = [c for c in self.calls("skopeo") if c["argv"][:1] == ["--tmpdir"]]
+        self.assertNotIn("evil.txt", call["layout"])
+        self.assertEqual(len(call["layout"]), 5)
 
     def test_an_import_that_fills_the_storage_is_stopped(self):
         """A layer can unpack to far more than its size: the free space is read while skopeo
@@ -303,12 +323,15 @@ class BuildInVmTest(BuildVmTest):
         self.env["AGENTBOX_BUILD_IMPORT_RESERVE_BYTES"] = str(1 << 60)
         new, _ = self.in_vm()
         self.assertEqual((new["status"], new["step"]), ("failed", "import"))
-        m = re.fullmatch(r"not enough free space to import the build VM's image archive \((\d+) bytes\): "
-                         rf"{re.escape(self.path(BUILD_VM))} needs (\d+) bytes free, has \d+", new["error"])
+        m = re.fullmatch(r"not enough free space to import the build VM's image archive \((\d+) bytes, (\d+) of "
+                         rf"them layers\): {re.escape(self.path(BUILD_VM))} needs (\d+) bytes free, has \d+",
+                         new["error"])
         self.assertIsNotNone(m, new["error"])
-        size = int(m.group(1))
-        self.assertGreater(size, 0)
-        self.assertEqual(int(m.group(2)), 4 * size + (1 << 60))
+        total, layers = int(m.group(1)), int(m.group(2))
+        # the blobs' own sizes as root takes them out, not the archive's
+        self.assertGreater(layers, 0)
+        self.assertGreater(total, layers)
+        self.assertEqual(int(m.group(3)), total + 3 * layers + (1 << 60))
         self.assertEqual(self.imports(), [])
         self.assertEqual(self.creates(), [f"agentbox-buildvm-{self.ident()}"])
         self.assertEqual(self.leftover(self.ident()), [])

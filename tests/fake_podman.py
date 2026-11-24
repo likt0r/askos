@@ -395,7 +395,16 @@ def write_oci(path, index, blobs, extra=()):
 
 
 def read_oci(path):
-    """(index, {digest: bytes}) of an OCI archive of the fakes."""
+    """(index, {digest: bytes}) of an OCI archive of the fakes, or of an OCI layout directory."""
+    if os.path.isdir(path):
+        with open(os.path.join(path, "index.json")) as f:
+            index = json.load(f)
+        folder = os.path.join(path, "blobs", "sha256")
+        blobs = {}
+        for name in os.listdir(folder):
+            with open(os.path.join(folder, name), "rb") as f:
+                blobs["sha256:" + name] = f.read()
+        return index, blobs
     with tarfile.open(path) as tar:
         index = json.loads(tar.extractfile("index.json").read())
         blobs = {"sha256:" + m.name.rsplit("/", 1)[1]: tar.extractfile(m).read() for m in tar.getmembers()
@@ -426,8 +435,9 @@ def edit_archive(path, index=None, manifest=None, drop_layers=False, extra=()):
 
 
 def load(path, name=None):
-    """The image of an OCI archive of the fakes into the store, under `name` or else the one
-    its index names: that name. Its first manifest's first layer is the image's directory."""
+    """The image of an OCI archive of the fakes (or an OCI layout directory) into the store,
+    under `name` or else the one its index names: that name. Its first manifest's first layer
+    is the image's directory."""
     index, blobs = read_oci(path)
     entry = index["manifests"][0]
     name = name or entry["annotations"][REF_NAME]
