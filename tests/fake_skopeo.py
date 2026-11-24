@@ -11,6 +11,12 @@
       storage, named NAME; fails when REF is not there, and for REF prefixes in the scenario's
       "skopeo_copy_fails"
 
+  skopeo copy --quiet oci-archive:PATH containers-storage:REF
+      the image of the archive PATH into the fake container storage as REF, whatever name the
+      archive gives it; as skopeo with no image named in the oci-archive reference, it refuses
+      an archive with more than one image (more than one image* directory), and fails when the
+      scenario says "skopeo_import_fails"
+
 Environment: FAKE_DIR (calls in calls.jsonl as {"cmd": "skopeo", "argv": [...]}, scenario.json).
 """
 import json
@@ -34,6 +40,20 @@ def main(argv):
                   file=sys.stderr)
             return 1
         fake_podman.write_archive(name, path, source=ref)
+        return 0
+    if argv[:2] == ["copy", "--quiet"] and len(argv) == 4 and argv[2].startswith("oci-archive:") \
+            and argv[3].startswith("containers-storage:"):
+        path, ref = argv[2][len("oci-archive:"):], argv[3][len("containers-storage:"):]
+        if fake_podman.scenario().get("skopeo_import_fails"):
+            print("FATA[0000] writing blob: storing blob to file: digest mismatch", file=sys.stderr)
+            return 1
+        import tarfile
+        with tarfile.open(path) as tar:
+            if len(fake_podman.images_in(tar)) != 1:
+                print(f"FATA[0000] initializing source oci-archive:{path}: loading index: more than one image "
+                      "in oci, choose an image", file=sys.stderr)
+                return 1
+        fake_podman.load(path, ref)
         return 0
     if argv[:2] != ["inspect", "--raw"] or len(argv) != 3 or not argv[2].startswith("containers-storage:"):
         print(f"fake skopeo: unsupported: {argv}", file=sys.stderr)

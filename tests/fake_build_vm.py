@@ -21,7 +21,8 @@ The VM has a root of its own, FAKE_VIRSH_DIR/guest-<domain without "agentbox-">:
 It waits for the Host to connect to the log channel, then runs the seed's build-vm-run there as
 the VM would (AGENTBOX_BUILD_VM_ROOT), and ends the domain when it ends.
 
-scenario.json "build_vm":
+scenario.json "build_vm" (the first build VM of a Build, <image>-<build>-build) and "disk_vm"
+(the second, <image>-<build>-disk), each:
   boots       false: the VM says nothing and runs until destroyed (default true)
   driver      false: no driver runs; the VM writes "lines" and ends (default true)
   lines       lines the VM writes to its log before the driver (bytes as latin-1 text)
@@ -32,9 +33,14 @@ scenario.json "build_vm":
   out_space   bytes it allocates (fallocate) in its output directory once the Host reads its log
   stays       true: the domain does not end when the driver ends (as if QEMU hung)
   podman      the scenario of the VM's podman (fake_podman.py), e.g. build_waits, podman_fails
-  tamper      after the driver: "symlink" puts a link to a Host file in place of
-              image.oci.tar, "hardlink" adds a second link to it
+  tamper      after the driver: "symlink" puts a link to a Host file in place of the file it
+              hands out (image.oci.tar, disk.qcow2), "hardlink" adds a second link to it,
+              "second_image" adds a second image to image.oci.tar
+  names       after the driver: image.oci.tar names this image instead of the one podman saved
+  disk_meta   after the driver: these keys of a fake disk (fake_qemu_img.py) added to disk.qcow2,
+              e.g. {"backing-filename": "/etc/shadow"}
 """
+import io
 import json
 import os
 import select
@@ -42,6 +48,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tarfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -136,6 +143,18 @@ def prepare(root, args, conf):
     return out
 
 
+def rewrite(archive, name):
+    """The archive of the fakes naming another image."""
+    with tarfile.open(archive) as tar:
+        members = [(m, tar.extractfile(m).read() if m.isfile() else None) for m in tar.getmembers()]
+    with tarfile.open(archive, "w") as tar:
+        for m, data in members:
+            if m.name == "name":
+                data = name.encode()
+                m.size = len(data)
+            tar.addfile(m, io.BytesIO(data) if data is not None else None)
+
+
 def forward(port, conn, driver):
     """The FIFO into the log channel until the driver has ended and said all."""
     while True:
@@ -156,7 +175,8 @@ def main(domain, fd, xml_file):
     from xml.sax.saxutils import unescape
     import re
     args = json.loads(unescape(re.search(r"<args>(.*)</args>", xml, re.S).group(1)))
-    conf = fake_virsh.load("scenario.json", {}).get("build_vm") or {}
+    disk = domain.endswith("-disk")
+    conf = fake_virsh.load("scenario.json", {}).get("disk_vm" if disk else "build_vm") or {}
     root = os.path.join(DIR, "guest-" + domain.removeprefix("agentbox-"))
     out = prepare(root, args, conf)
     conn, _ = listener.accept()
@@ -180,12 +200,22 @@ def main(domain, fd, xml_file):
         forward(port, conn, driver)
         with open(os.path.join(root, "driver.exit"), "w") as f:
             f.write(str(driver.returncode))
-    archive = os.path.join(out, "image.oci.tar")
+    handed = os.path.join(out, "disk.qcow2" if disk else "image.oci.tar")
     if conf.get("tamper") == "symlink":
-        os.remove(archive)
-        os.symlink(os.path.join(DIR, "scenario.json"), archive)
+        os.remove(handed)
+        os.symlink(os.path.join(DIR, "scenario.json"), handed)
     elif conf.get("tamper") == "hardlink":
-        os.link(archive, os.path.join(out, "second-link"))
+        os.link(handed, os.path.join(out, "second-link"))
+    elif conf.get("tamper") == "second_image":
+        with tarfile.open(handed, "a") as tar:
+            tar.add(os.path.join(root, "seed"), arcname="image2")
+    if conf.get("names"):
+        rewrite(handed, conf["names"])
+    if conf.get("disk_meta"):
+        with open(handed) as f:
+            meta = json.load(f)
+        with open(handed, "w") as f:
+            json.dump({**meta, **conf["disk_meta"]}, f)
     # power-off: the transient domain is gone, then QEMU's end closes the channel
     if not conf.get("stays"):
         with fake_virsh.changing():

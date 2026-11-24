@@ -34,7 +34,9 @@ Environment:
                                /usr/lib/os-release of Fedora fedora_bootc_release); fails for
                                REF prefixes in podman_fails "pull"
   podman run ... bootc-image-builder ... TAG
-                               writes <dir of -v ..:/output>/qcow2/disk.qcow2, a fake disk naming TAG
+                               writes <dir of -v ..:/output>/qcow2/disk.qcow2, a fake disk naming TAG;
+                               with --pull=never (in a build VM) the
+                               builder, the --build-container and TAG must be in the store
   podman run --rm --name=N ... TAG dnf -q check-update
                                the package updates for TAG (agentbox check-versions): as
                                check_update in scenario.json says, else none (exit 0); an
@@ -329,6 +331,13 @@ def check_update(argv):
 def builder(argv):
     output = next(v.split(":")[0] for v in argv if v.endswith(":/output"))
     tag = argv[-1]
+    buildroot = argv[argv.index("--build-container") + 1]
+    if "--pull=never" in argv:
+        image = argv[argv.index("--type") - 1]
+        for ref in (image, buildroot, tag):
+            if not os.path.isdir(image_dir(ref)):
+                print(f"Error: {ref}: image not known", file=sys.stderr)
+                return 125
     if fails("run", tag):
         print("error: osbuild failed", file=sys.stderr)
         return 1
@@ -349,10 +358,16 @@ def write_archive(tag, path, source=None):
         tar.add(image_dir(source or tag), arcname="image")
 
 
-def load(path):
-    """The image of an archive of the fakes into the store: its name."""
+def images_in(tar):
+    """The images an archive of the fakes holds: its top-level directories image*."""
+    return sorted({m.name.split("/", 1)[0] for m in tar.getmembers() if m.name.split("/", 1)[0].startswith("image")})
+
+
+def load(path, name=None):
+    """The image of an archive of the fakes into the store, under `name` or else the one it
+    names: that name."""
     with tarfile.open(path) as tar:
-        name = tar.extractfile("name").read().decode()
+        name = name or tar.extractfile("name").read().decode()
         with tempfile.TemporaryDirectory(dir=DIR) as tmp:
             tar.extractall(tmp, filter="tar")
             shutil.rmtree(image_dir(name), ignore_errors=True)

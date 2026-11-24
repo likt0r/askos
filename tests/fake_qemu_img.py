@@ -18,6 +18,10 @@ Environment:
   qemu-img create -q -f qcow2 -F qcow2 -b <base> <disk> [<size>]   writes the fake disk
   qemu-img create -q -f qcow2 <disk> <size>                a fake disk without backing file
   qemu-img resize -q -f qcow2 <disk> <size>                the fake disk gets that "size"
+  qemu-img convert -q -f qcow2 -O qcow2 <source> <disk>    a new fake disk of the source's
+             metadata: no data file, no encryption, and no backing file when the source is a
+             json: filename that says "backing": null (else qemu-img follows it, and so does
+             the fake: the backing file stays); "converted-from" names the source file
 """
 import json
 import os
@@ -109,6 +113,23 @@ def main(args):
     if args[:4] == ["create", "-q", "-f", "qcow2"] and len(args) == 6:
         with open(args[4], "w") as f:
             json.dump({"size": args[5]}, f)
+        return 0
+    if args[:6] == ["convert", "-q", "-f", "qcow2", "-O", "qcow2"] and len(args) == 8:
+        source, options = args[6], {}
+        if source.startswith("json:"):
+            options = json.loads(source[len("json:"):])
+            source = options["file"]["filename"]
+        try:
+            with open(source) as f:
+                meta = json.load(f)
+        except (OSError, ValueError) as e:
+            print(f"qemu-img: Could not open '{source}': {e}", file=sys.stderr)
+            return 1
+        meta = {k: v for k, v in meta.items() if k not in ("data-file", "encrypted", "compat")}
+        if "backing" in options and options["backing"] is None:
+            meta.pop("backing-filename", None)
+        with open(args[7], "w") as f:
+            json.dump({**meta, "converted-from": source}, f)
         return 0
     print("qemu-img (fake): unexpected arguments", file=sys.stderr)
     return 1

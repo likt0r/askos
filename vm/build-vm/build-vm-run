@@ -13,13 +13,18 @@ which ends it for good.
      storage newly mounted where the policy names a path
   3. the output directory, the virtiofs tag agentbox-out, mounted at OUT
   4. the input disk (serial agentbox-build-input), a tar the Host wrote, unpacked into WORK:
-     job.json, context.tar and images/<n>.oci.tar
+     job.json, context.tar (the job "build" only) and images/<n>.oci.tar
   5. each image handed in, loaded into Podman's storage under the name job.json gives it, so
      nothing is pulled from a registry
-  6. the job "build": podman build --pull=never --no-cache with the job's build arguments and
-     tag, from the build context unpacked from context.tar with the job's Containerfile, or
-     with context.tar itself on stdin (a Recipe, which the Host never unpacks); then podman save
-     --format oci-archive of the image to OUT/image.oci.tar
+  6. the job "build" (the first build VM, online): podman build --pull=never --no-cache with the
+     job's build arguments and tag, from the build context unpacked from context.tar with the
+     job's Containerfile, or with context.tar itself on stdin (a Recipe, which the Host never
+     unpacks); then podman save --format oci-archive of the image to OUT/image.oci.tar
+     the job "disk" (the second build VM, offline: it has no network device): bootc-image-builder,
+     the image handed in as "builder", privileged, with Podman's storage, makes a qcow2 with an
+     xfs root filesystem of the image "tag" (the one the Host checked) with the image
+     "buildroot" (the pristine fedora-bootc) as its buildroot and the job's config.toml; its
+     disk.qcow2 is copied to OUT/disk.qcow2
   7. OUT/result.json: {"status": "ok"}, or {"status": "failed", "error": "<why>"}, which the
      Host takes only as text for the reason of a failure
 
@@ -28,6 +33,7 @@ path under that directory.
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -41,7 +47,7 @@ WORK = "/var/lib/containers/agentbox-build"
 OUT = "/run/agentbox-out"
 OUT_TAG = "agentbox-out"
 DEVICE_WAIT = 120
-JOBS = ("build",)
+JOBS = ("build", "disk")
 SEAM = os.environ.get("AGENTBOX_BUILD_VM_ROOT", "") if os.geteuid() != 0 else ""
 
 
@@ -155,6 +161,29 @@ def build(log, work, job):
               job["tag"]], "podman save")
 
 
+def disk(log, work, job):
+    """bootc-image-builder of the job's image, from the images handed in only, then its
+    disk.qcow2 to OUT/disk.qcow2."""
+    for key in ("tag", "builder", "buildroot", "config"):
+        if not isinstance(job.get(key), str) or not job[key]:
+            raise Failed(f"job.json names no {key}")
+    config = os.path.join(work, "config.toml")
+    with open(config, "w") as f:
+        f.write(job["config"])
+    output = os.path.join(work, "output")
+    os.makedirs(output)
+    storage = here(STORAGE) + "/storage"
+    run(log, ["podman", "run", "--rm", "--privileged", "--pull=never", "--security-opt", "label=type:unconfined_t",
+              "-v", f"{output}:/output", "-v", f"{config}:/config.toml:ro",
+              "-v", f"{storage}:/var/lib/containers/storage", job["builder"], "--type", "qcow2", "--rootfs", "xfs",
+              "--build-container", job["buildroot"], "--config", "/config.toml", job["tag"]], "bootc-image-builder")
+    made = os.path.join(output, "qcow2", "disk.qcow2")
+    if os.path.islink(made) or not os.path.isfile(made):
+        raise Failed("bootc-image-builder made no disk")
+    log.say("copying the disk to the output directory")
+    shutil.copyfile(made, os.path.join(here(OUT), "disk.qcow2"))
+
+
 def main():
     wait_for(LOG)
     with open(here(LOG), "wb", buffering=0) as port:
@@ -173,7 +202,10 @@ def main():
             work = here(WORK)
             job = unpack(log, work)
             load(log, work, job.get("images") or [])
-            build(log, work, job)
+            if job["job"] == "build":
+                build(log, work, job)
+            else:
+                disk(log, work, job)
             result = {"status": "ok"}
             log.say("done")
         except Failed as e:

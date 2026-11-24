@@ -1,35 +1,36 @@
-"""The first build VM of a Build (ADR 0025, #144): `podman build` of an Image in a throwaway VM,
-whose result is an image archive in an output directory of the Host. build_vm.py checks the
-image it boots.
+"""The build VMs of a Build (ADR 0025, #144): two throwaway VMs, one after the other. The first,
+online, runs the Image's `podman build` and hands out an image archive; the Host imports and
+checks it (images.py); the second, offline (no network device at all), makes the disk from the
+image the Host checked and hands out disk.qcow2. build_vm.py checks the image they boot.
 
-Behind an internal switch, off: a Build runs its podman build in a build VM only when its run's
-environment says AGENTBOX_BUILD_VM=1 (enabled(); for the Build unit `systemctl set-environment
-AGENTBOX_BUILD_VM=1`); the Setting build_vm replaces it. The Host does not import the archive
-yet, so such a Build ends after the build VM with the archive left in its output directory,
-which the next Build run removes (images.py).
+Behind an internal switch, off: a Build runs in build VMs only when its run's environment says
+AGENTBOX_BUILD_VM=1 (enabled(); for the Build unit `systemctl set-environment
+AGENTBOX_BUILD_VM=1`); the Setting build_vm replaces it.
 
-One build VM, named DOMAIN_PREFIX + its id (<image>-<build>-build):
+A build VM, named DOMAIN_PREFIX + its id (<image>-<build>-<pass>, the pass "build" or "disk",
+PASSES):
 
   before   /dev/kvm; the checked image (build_vm.current()); MemAvailable of at least MEMORY_MIB;
-           room for its output filesystem; the build network's rules loaded in the kernel (as
-           `nft list chain` shows them, rules_problem()); the network NETWORK, defined and
-           started when it is not, refused when it is not the one network_xml() describes
+           room for its output filesystem; for the online pass only: the build network's rules
+           loaded in the kernel (as `nft list chain` shows them, rules_problem()) and the network
+           NETWORK, defined and started when it is not, refused when it is not the one
+           network_xml() describes
   its disks, in BUILD_VM/<id>/ (root; BUILD_VM and it 0711, so QEMU, as qemu, reaches the
            files libvirt hands it), 0600 when made, deleted after it, whatever happened:
              system.qcow2   a copy of the checked image grown to SYSTEM_GIB, no backing file;
                             cloud-init grows the root filesystem into it
              scratch.qcow2  new, empty, sparse, SCRATCH_GIB: the VM's /var/lib/containers
              input.tar      the input disk, raw and read-only (serial INPUT_SERIAL): job.json,
-                            context.tar (a Recipe's tar as it is, else a tar of the Release's
-                            build context) and images/<n>.oci.tar, the images it builds on as
-                            `skopeo copy` writes them from the Host's storage
+                            for the build pass context.tar (a Recipe's tar as it is, else a tar
+                            of the Release's build context), and images/<n>.oci.tar, the images
+                            it gets as `skopeo copy` writes them from the Host's storage
              seed.iso       the NoCloud seed (volume cidata, xorrisofs as virt-install writes
                             it): user-data and build-vm-run of the run's copy of the Release
                             (vm/build-vm/), meta-data naming the VM
   its output directory BUILD_VM/out-<id>: the root of a filesystem of its own, so what the VM
-           writes there is bounded however fast it writes: an ext4 of OUT_BYTES in a sparse
-           image file BUILD_VM/out-<id>.img (root, 0600), loop-mounted nosuid,nodev,noexec, its
-           root USER's (0700) while the VM runs; served as the virtiofs tag OUT_TAG by a
+           writes there is bounded however fast it writes: an ext4 of the pass's out_bytes in a
+           sparse image file BUILD_VM/out-<id>.img (root, 0600), loop-mounted nosuid,nodev,noexec,
+           its root USER's (0700) while the VM runs; served as the virtiofs tag OUT_TAG by a
            virtiofsd Agent Box starts, not libvirt's (which runs as root): a transient unit
            (systemd-run) of USER, whose listening socket systemd makes (root:qemu 0660, in
            RUN/<id>, root:qemu 0770) and hands it as fd 3, so root never touches a file USER
@@ -39,26 +40,29 @@ One build VM, named DOMAIN_PREFIX + its id (<image>-<build>-build):
   the domain: virt-install --print-xml (as every VM, ADR 0004) of MEMORY_MIB, as many vCPUs as
            the Host has but at most MAX_VCPUS, memfd shared memory (virtiofs), no balloon, no
            graphics, no console, no guest agent, the log channel (LOG_CHANNEL, a Unix socket
-           QEMU makes in RUN/<id>), started with `virsh create`: transient, destroyed on
-           power-off, reboot and crash
+           QEMU makes in RUN/<id>), the network NETWORK for the online pass and no network
+           device at all for the offline one, started with `virsh create`: transient, destroyed
+           on power-off, reboot and crash
   its log: the Build run reads the channel line by line, each line cleaned like any text
            from a VM (control characters out, at most LINE_MAX characters) and written with
            "vm: " in front to the run's output, the Build unit's journal, up to MAX_LOG bytes
            (each line counting LINE_OVERHEAD more); podman's STEP lines among them go to the
            caller (seen), which keeps the Build's progress. The Host reads at its own pace: a VM
            that writes faster waits.
-  limits:  no line within BOOT_SECONDS of the start (it did not boot), BUILD_SECONDS in all,
-           more than OUT_BYTES, MAX_OUT_ENTRIES files and directories or MAX_OUT_DEPTH levels
-           in the output directory, or less than MIN_FREE bytes free under /var/lib/agentbox
+  limits:  no line within BOOT_SECONDS of the start (it did not boot), the pass's seconds in
+           all, more than its out_bytes, MAX_OUT_ENTRIES files and directories or MAX_OUT_DEPTH
+           levels in the output directory, or less than MIN_FREE bytes free under BUILD_VM
            (checked every WATCH_SECONDS): the VM is destroyed and the Build fails with that
            reason
   after:   the domain destroyed if it is still there, virtiofsd's units stopped, the disks
            and RUN/<id> deleted, the output directory taken back by root (0700); the domain
            must be gone and virtiofsd's units inactive, else the Build fails. Then the output
-           filesystem is mounted read-only, and root opens exactly result.json and
-           image.oci.tar in it, never through a link: regular files of USER with one link,
-           result.json at most MAX_RESULT, the archive at most MAX_ARCHIVE. A failure unmounts
-           and deletes the output filesystem.
+           filesystem is mounted read-only, and root opens exactly result.json and the pass's
+           file in it (image.oci.tar or disk.qcow2), never through a link: regular files of USER
+           with one link, result.json at most MAX_RESULT, the pass's file at most its cap. The
+           caller takes that file (take: the import, or the disk's check and rewrite) while
+           nothing can change it; then the output filesystem is unmounted and deleted, whatever
+           happened.
 
 An interruption (the run's SIGTERM handler, Ctrl+C) runs the same teardown; after a crash of
 the run, the next run removes whatever a build VM left (leftovers()).
@@ -93,8 +97,8 @@ BLOCKED = ("0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0
 USER = "agentbox-buildvm"           # rpm/agentbox.sysusers: runs nothing but virtiofsd
 NAME_PREFIX = "buildvm-"            # longer than any VM's name with the rest of an id
 DOMAIN_PREFIX = dom(NAME_PREFIX)    # agentbox-buildvm-
-# a build VM's id: <image>-<build>-<step>; its work directory, out-<id>, out-<id>.img, RUN/<id>
-ID = re.compile(rf"(?:{settings.IMAGE.pattern})-(?:{settings.BUILD_ID.pattern})-build")
+# a build VM's id: <image>-<build>-<pass>; its work directory, out-<id>, out-<id>.img, RUN/<id>
+ID = re.compile(rf"(?:{settings.IMAGE.pattern})-(?:{settings.BUILD_ID.pattern})-(?:build|disk)")
 MEMORY_MIB = 8192
 MAX_VCPUS = 8
 SYSTEM_GIB = 20
@@ -108,8 +112,10 @@ VIRTIOFSD = "/usr/libexec/virtiofsd"
 RUN = paths.host("/run/agentbox/build-vm")
 SOURCE = os.path.join("vm", "build-vm")   # the seed's files in the Release
 FEDORA_BOOTC = "localhost/agentbox-input/fedora-bootc:{}"   # its name in a build VM, by Build
+BUILDER = "localhost/agentbox-input/bootc-image-builder:{}"
 BOOT_SECONDS = paths.tunable("AGENTBOX_BUILD_VM_BOOT_SECONDS", 600)
 BUILD_SECONDS = paths.tunable("AGENTBOX_BUILD_VM_SECONDS", 4 * 3600)
+DISK_SECONDS = paths.tunable("AGENTBOX_BUILD_VM_DISK_SECONDS", 2 * 3600)
 WATCH_SECONDS = paths.tunable("AGENTBOX_BUILD_VM_WATCH_SECONDS", 2)
 END_SECONDS = paths.tunable("AGENTBOX_BUILD_VM_END_SECONDS", 60)   # from its log's end to its domain's
 # the teardown's waits, each bounded; their sum, with every virsh call it makes (virsh.TIMEOUT
@@ -128,14 +134,25 @@ MAX_OUT_DEPTH = 32                  # directories within directories in it
 MAX_LOG = paths.tunable("AGENTBOX_BUILD_VM_LOG_BYTES", 64 << 20)          # of its log, kept in the journal
 MIN_FREE = paths.tunable("AGENTBOX_BUILD_VM_MIN_FREE_BYTES", 10 << 30)
 MAX_ARCHIVE = 64 << 30
-# its output filesystem: ext4 with one inode per MiB and a 64 MiB journal leaves 65.86 GiB of
-# 66 GiB free (mkfs.ext4 1.47), so the archive's cap fits with almost 2 GiB to spare
+MAX_DISK = 160 << 30                # of the disk.qcow2 it hands out, and of its virtual size
+# their output filesystems: ext4 with one inode per MiB and a 64 MiB journal leaves 65.86 GiB of
+# 66 GiB and 161.83 GiB of 162 GiB free (mkfs.ext4 1.47), so each cap fits with almost 2 GiB to
+# spare
 OUT_BYTES = paths.tunable("AGENTBOX_BUILD_VM_OUT_BYTES", MAX_ARCHIVE + (2 << 30))
+DISK_OUT_BYTES = paths.tunable("AGENTBOX_BUILD_VM_DISK_OUT_BYTES", MAX_DISK + (2 << 30))
 OUT_MKFS = ("-m", "0", "-i", "1048576", "-J", "size=64")
 LINE_OVERHEAD = 64                  # what a line of its log counts on top of its bytes
 MAX_RESULT = 64 << 10
 LINE_MAX = 4096
 SKOPEO_SECONDS = 3600
+# the two passes of a Build: whether the VM has a network device, its time limit, the size of
+# its output filesystem, the one file it hands out and that file's cap
+PASSES = {
+    "build": {"online": True, "seconds": BUILD_SECONDS, "out_bytes": OUT_BYTES, "file": "image.oci.tar",
+              "cap": MAX_ARCHIVE, "what": "image archive", "doing": "the podman build runs in the build VM"},
+    "disk": {"online": False, "seconds": DISK_SECONDS, "out_bytes": DISK_OUT_BYTES, "file": "disk.qcow2",
+             "cap": MAX_DISK, "what": "disk", "doing": "the disk is made in the offline build VM"},
+}
 
 
 class Failed(Exception):
@@ -147,8 +164,8 @@ class Failed(Exception):
 
 
 def enabled():
-    """The internal switch: whether a Build's podman build runs in a build VM (AGENTBOX_BUILD_VM=1
-    in the run's environment). Off by default; turning it on only moves a Build off the Host."""
+    """The internal switch: whether a Build runs in build VMs (AGENTBOX_BUILD_VM=1 in the run's
+    environment). Off by default; turning it on only moves a Build off the Host."""
     return os.environ.get(SWITCH) == "1"
 
 
@@ -345,8 +362,9 @@ def _memory_available():
     return int(m.group(1)) // 1024 if m else None
 
 
-def _host_ready():
-    """The checked image a build VM boots, once the Host can run one."""
+def _host_ready(online):
+    """The checked image a build VM boots, once the Host can run one; an online one only with the
+    build network's rules loaded and the network there."""
     if not os.path.exists(paths.host("/dev/kvm")):
         raise Failed("the Host has no KVM (/dev/kvm): no build VM can run")
     image = build_vm.current()
@@ -357,8 +375,9 @@ def _host_ready():
     if available is None or available < MEMORY_MIB:
         raise Failed(f"not enough free memory for a build VM: it needs {MEMORY_MIB >> 10} GiB, "
                      f"the Host has {'an unknown amount' if available is None else f'{available} MiB'} available")
-    _rules()
-    _network()
+    if online:
+        _rules()
+        _network()
     return image
 
 
@@ -398,8 +417,9 @@ def _add_bytes(tar, name, data):
 
 
 def _input_disk(vm, job, context, hand_in, say):
-    """The input disk: job.json, context.tar and the images handed in, from the Host's storage
-    by skopeo (`hand_in`: [(reference in the Host's storage, name in the VM)])."""
+    """The input disk: job.json, context.tar (none when context is None) and the images handed
+    in, from the Host's storage by skopeo (`hand_in`: [(reference in the Host's storage, name in
+    the VM)])."""
     images = []
     for n, (ref, name) in enumerate(hand_in):
         archive = os.path.join(vm["work"], f"image-{n}.oci.tar")
@@ -410,13 +430,13 @@ def _input_disk(vm, job, context, hand_in, say):
         except Fail as f:
             raise Failed(f.message)
         images.append((archive, {"archive": f"images/{n}.oci.tar", "name": name}))
-        _room()
+        _room(vm)
     job = {**job, "images": [entry for _, entry in images]}
     with tarfile.open(vm["input"], "x", format=tarfile.PAX_FORMAT) as tar:
         _add_bytes(tar, "job.json", json.dumps(job, indent=2).encode())
         if isinstance(context, (bytes, bytearray)):
             _add_bytes(tar, "context.tar", bytes(context))
-        else:
+        elif context is not None:
             nested = os.path.join(vm["work"], "context.tar")
             _tar_of(context, nested)
             tar.add(nested, arcname="context.tar", filter=_owned)
@@ -454,7 +474,7 @@ def _prepare(vm, image, job, context, hand_in, src, ids, say):
     alone (0600, libvirt hands them to QEMU while the VM runs): the input disk holds a Recipe."""
     state_files.directory(paths.BUILD_VM, 0o711)
     _drop_out(vm, say)
-    _room()
+    _room(vm)
     for path in (vm["work"], vm["run"]):
         shutil.rmtree(path, ignore_errors=True)
     state_files.directory(vm["work"], 0o711)
@@ -476,22 +496,23 @@ def _free():
     return st.f_bavail * st.f_frsize
 
 
-def _room():
+def _room(vm):
     """Room left for the build VM's output filesystem, all of it, and MIN_FREE besides: before
     anything is written, after each thing handed in, and before the filesystem is made."""
-    if _free() < OUT_BYTES + MIN_FREE:
+    if _free() < vm["out_bytes"] + MIN_FREE:
         raise Failed(f"not enough free space under {paths.BUILD_VM} for a build VM and its output: it needs "
-                     f"{_size(OUT_BYTES + MIN_FREE)} more")
+                     f"{_size(vm['out_bytes'] + MIN_FREE)} more")
 
 
 def _out_fs(vm, ids, say):
-    """The output directory, the root of a filesystem of its own of OUT_BYTES (ext4 in a sparse
-    image file, loop-mounted nosuid,nodev,noexec), USER's: virtiofs has no quota, this bounds
-    what the VM writes whatever it does between two checks. There must be room for all of it."""
-    _room()
+    """The output directory, the root of a filesystem of its own of the pass's out_bytes (ext4 in
+    a sparse image file, loop-mounted nosuid,nodev,noexec), USER's: virtiofs has no quota, this
+    bounds what the VM writes whatever it does between two checks. There must be room for all of
+    it."""
+    _room(vm)
     fd = os.open(vm["out_image"], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
-        os.ftruncate(fd, OUT_BYTES)
+        os.ftruncate(fd, vm["out_bytes"])
     finally:
         os.close(fd)
     uid, gid = ids
@@ -531,7 +552,7 @@ def _disks(vm, image, job, context, hand_in, src, say):
     _run(["qemu-img", "create", "-q", "-f", "qcow2", vm["scratch"], f"{SCRATCH_GIB}G"], 120,
          "qemu-img create of the scratch disk")
     _input_disk(vm, job, context, hand_in, say)
-    _room()
+    _room(vm)
     _seed(vm, src)
 
 
@@ -575,7 +596,8 @@ def virt_install_args(vm):
         "--disk", f"path={vm['input']},format=raw,bus=virtio,target.dev=vdc,readonly=on,serial={INPUT_SERIAL}",
         "--disk", f"path={vm['seed']},format=raw,bus=virtio,target.dev=vdd,readonly=on",
         "--filesystem", f"type=mount,driver.type=virtiofs,source.socket={vm['fs_socket']},target.dir={OUT_TAG}",
-        "--network", f"network={NETWORK},mac={MAC},model=virtio",
+        # the offline pass has no network device at all (virt-install adds one unless told none)
+        "--network", f"network={NETWORK},mac={MAC},model=virtio" if vm["online"] else "none",
         "--channel", f"unix,mode=bind,path={vm['log_socket']},target.type=virtio,target.name={LOG_CHANNEL}",
         "--memballoon", "none",
         "--rng", "/dev/urandom",
@@ -590,7 +612,8 @@ def _start(vm, ids, say):
     with open(path, "w") as f:
         f.write(xml)
     _run(["virsh", "-q", "-c", "qemu:///system", "create", path], 120, f"virsh create {vm['domain']}")
-    say(f"== Build VM {vm['domain']} started ({MEMORY_MIB >> 10} GiB, {vcpus()} vCPUs, network {NETWORK})")
+    say(f"== Build VM {vm['domain']} started ({MEMORY_MIB >> 10} GiB, {vcpus()} vCPUs, "
+        + (f"network {NETWORK})" if vm["online"] else "no network device)"))
 
 
 # --- while it runs -------------------------------------------------------------------------------
@@ -653,8 +676,8 @@ def _size(n):
 def _watch(vm):
     if _free() < MIN_FREE:
         raise Failed(f"less than {_size(MIN_FREE)} free under {paths.BUILD_VM}")
-    if _held(vm["out"]) > OUT_BYTES:
-        raise Failed(f"the build VM wrote more than {_size(OUT_BYTES)} into its output directory")
+    if _held(vm["out"]) > vm["out_bytes"]:
+        raise Failed(f"the build VM wrote more than {_size(vm['out_bytes'])} into its output directory")
 
 
 def _connect(path):
@@ -688,10 +711,10 @@ def _log(line, logged, say, seen):
     return logged
 
 
-def _relay(vm, limit, say, seen):
+def _relay(vm, say, seen):
     """The log channel into the run's output until QEMU closes it (the VM ended), within the
     limits; Failed when one is reached."""
-    started = time.monotonic()
+    started, limit = time.monotonic(), vm["seconds"]
     conn, heard, pending, watched, logged = None, False, b"", 0.0, 0
     try:
         while True:
@@ -786,7 +809,8 @@ def _handed_out(dir_fd, name, cap, uid):
 
 
 def _outcome(vm, uid):
-    """The image archive the VM handed out: its path; Failed with the VM's reason otherwise."""
+    """The file the VM handed out (the pass's file): its path; Failed with the VM's reason
+    otherwise."""
     try:
         dir_fd = os.open(vm["out"], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     except OSError as e:
@@ -806,23 +830,24 @@ def _outcome(vm, uid):
         if result["status"] != "ok":
             why = result.get("error") if isinstance(result.get("error"), str) else "no reason given"
             raise Failed("in the build VM: " + clean(" ".join(why.split()), False)[:300])
-        fd = _handed_out(dir_fd, "image.oci.tar", MAX_ARCHIVE, uid)
+        fd = _handed_out(dir_fd, vm["file"], vm["cap"], uid)
         if fd is None:
-            raise Failed(f"the build VM handed out no image archive (image.oci.tar: a regular file of {USER} "
-                         f"with one link, at most {MAX_ARCHIVE >> 30} GiB)")
+            raise Failed(f"the build VM handed out no {vm['what']} ({vm['file']}: a regular file of {USER} "
+                         f"with one link, at most {vm['cap'] >> 30} GiB)")
         os.close(fd)
     finally:
         os.close(dir_fd)
-    return os.path.join(vm["out"], "image.oci.tar")
+    return os.path.join(vm["out"], vm["file"])
 
 
 def names(image, build, step="build"):
-    """The paths and names of the build VM of a Build's step."""
+    """The paths and names of the build VM of a Build's pass (PASSES), and the pass's values."""
     vm = _named(f"{image}-{build}-{step}")
     work, run = vm["work"], vm["run"]
-    return {**vm, "system": os.path.join(work, "system.qcow2"), "scratch": os.path.join(work, "scratch.qcow2"),
-            "input": os.path.join(work, "input.tar"), "seed": os.path.join(work, "seed.iso"),
-            "log_socket": os.path.join(run, "log.sock"), "fs_socket": os.path.join(run, "virtiofs.sock")}
+    return {**vm, **PASSES[step], "system": os.path.join(work, "system.qcow2"),
+            "scratch": os.path.join(work, "scratch.qcow2"), "input": os.path.join(work, "input.tar"),
+            "seed": os.path.join(work, "seed.iso"), "log_socket": os.path.join(run, "log.sock"),
+            "fs_socket": os.path.join(run, "virtiofs.sock")}
 
 
 def _named(ident):
@@ -832,24 +857,20 @@ def _named(ident):
             "out_image": os.path.join(paths.BUILD_VM, f"out-{ident}.img"), "run": os.path.join(RUN, ident)}
 
 
-def build_image(image, build, job, context, hand_in, src, say, seen):
-    """podman build in the first build VM of the Build: the path of the image archive it handed
-    out, in its output directory, which the caller removes. job: tag, build_args ([[name,
-    value]]) and containerfile (in the context; None: the context on stdin). context: the tar of
-    a Recipe (bytes) or a directory. hand_in: [(reference in the Host's storage, name in the
-    VM)]. src: the run's copy of the Release. seen(line): each line of the VM's log. Failed when
-    the build VM cannot run, or ends without the archive."""
-    image_file = _host_ready()
+def _pass(image, build, step, job, context, hand_in, src, say, seen, take):
+    """One build VM of the Build, its pass `step`, to its end: take(path) of the file it handed
+    out, while its output filesystem is mounted read-only and nothing runs that could change it;
+    take's answer. The output filesystem is unmounted and deleted afterwards, whatever happened."""
+    vm = names(image, build, step)
+    image_file = _host_ready(vm["online"])
     ids = _ids()
-    vm = names(image, build)
-    say(f"== {image}: the podman build runs in the build VM {vm['domain']} (image {os.path.basename(image_file)})")
-    ok = False
+    say(f"== {image}: {vm['doing']} {vm['domain']} (image {os.path.basename(image_file)})")
     try:
         try:
-            _prepare(vm, image_file, {"job": "build", "image": image, "build": build, **job}, context, hand_in,
+            _prepare(vm, image_file, {"job": step, "image": image, "build": build, **job}, context, hand_in,
                      src, ids, say)
             _start(vm, ids, say)
-            _relay(vm, BUILD_SECONDS, say, seen)
+            _relay(vm, say, seen)
         except OSError as e:
             raise Failed(f"build VM: {e.strerror or e}" + (f" ({e.filename})" if e.filename else ""))
         finally:
@@ -862,21 +883,39 @@ def build_image(image, build, job, context, hand_in, src, say, seen):
         # nothing changes what it handed out from here on
         _run(["mount", "-o", "remount,ro,nosuid,nodev,noexec", vm["out"]], 60,
              "read-only mount of the output filesystem")
-        archive = _outcome(vm, ids[0])
-        ok = True
+        path = _outcome(vm, ids[0])
+        say(f"== {image}: the build VM handed out its {vm['what']} ({path})")
+        return take(path)
     finally:
-        if not ok:
-            _drop_out(vm, say)
-    say(f"== {image}: the build VM handed out its image archive ({archive})")
-    return archive
+        _drop_out(vm, say)
+
+
+def build_image(image, build, job, context, hand_in, src, say, seen, take):
+    """podman build in the first build VM of the Build, online: take(path) of the image archive
+    it handed out (the import), whose answer this returns; the archive and its output directory
+    are deleted after it. job: tag, build_args ([[name, value]]) and containerfile (in the
+    context; None: the context on stdin). context: the tar of a Recipe (bytes) or a directory.
+    hand_in: [(reference in the Host's storage, name in the VM)]. src: the run's copy of the
+    Release. seen(line): each line of the VM's log. Failed when the build VM cannot run, or ends
+    without the archive."""
+    return _pass(image, build, "build", job, context, hand_in, src, say, seen, take)
+
+
+def make_disk(image, build, job, hand_in, src, say, take):
+    """bootc-image-builder in the second build VM of the Build, offline (no network device):
+    take(path) of the disk.qcow2 it handed out (the Host's check and rewrite), whose answer this
+    returns; the disk and its output directory are deleted after it. job: tag (the image the
+    Host checked), builder and buildroot (bootc-image-builder and fedora-bootc), by their names
+    in the VM, and config (bootc-image-builder's config.toml). hand_in: those three images, as
+    for build_image. Failed when the build VM cannot run, or ends without the disk."""
+    return _pass(image, build, "disk", job, None, hand_in, src, say, lambda line: None, take)
 
 
 def leftovers(say):
     """Holding the run lock, before a Build: what a build VM left when its run ended without its
-    teardown (killed, the Host's crash), or what a Build left on purpose (an archive the Host
-    does not import yet): its domain destroyed, its virtiofsd stopped, its output filesystem
-    unmounted, its disks, output and run directories deleted. The checked image and its record
-    stay."""
+    teardown (killed, the Host's crash), or an output filesystem that could not be unmounted:
+    its domain destroyed, its virtiofsd stopped, its output filesystem unmounted, its disks,
+    output and run directories deleted. The checked image and its record stay."""
     found = set()
     # each form of a name read on its own: a work directory of the Image out-x is also the name
     # of an output directory of the Image x; both are taken, what does not exist costs nothing

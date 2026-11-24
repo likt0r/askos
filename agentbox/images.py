@@ -19,8 +19,9 @@ builds the Base image, then every other Image), whose journal is its log
      Orca comes from the Host), a derived Image on the Base image's current Build; its output
      passes through build-run into the journal, and the latest `STEP n/m: <command>` line goes
      into the running Build's record (`progress`, cleaned like the log); with the internal
-     switch of build_vm_run.py on, this podman build runs in the Build's first build VM instead,
-     and the Build ends after it, since the Host does not import its image archive yet;
+     switch of build_vm_run.py on, this podman build runs in the Build's first build VM instead
+     (online), and the Host imports the image archive it hands out with skopeo copy under the
+     name it chose for the Build, never the archive's (the step import);
   3. safeguards.check reads the built filesystem (podman image mount) and discards the
      Build if a safeguard is missing or weakened; then the versions of its tools are read
      from the same files (versions.py);
@@ -28,7 +29,10 @@ builds the Base image, then every other Image), whose journal is its log
      images/<image>-<build>.qcow2, with the fedora-bootc the Image is built on as its
      buildroot (--build-container): bootc, osbuild's stages and the tools that make the
      filesystems come from that pristine image, not from the Image (bootc still runs the
-     Image's own bootupctl to install the bootloader, see ARCHITECTURE.md);
+     Image's own bootupctl to install the bootloader, see ARCHITECTURE.md); with the switch on,
+     in the Build's second build VM (offline: no network device) from the image the Host
+     checked, and the Host takes its disk.qcow2 only once qemu-img read its header (no backing
+     file, no data file, not encrypted) and only as a new qcow2 its own qemu-img writes from it;
   5. the link images/<image>.qcow2 moves to it (one rename) and old Builds go.
 
 The pinned digests are read once at the start of a run; with one it needs not pinned yet
@@ -76,7 +80,7 @@ import sys
 import threading
 import time
 
-from . import activity, build_vm_run, digests, footprint, guest, options, paths, programs, registry, safeguards
+from . import activity, build_vm, build_vm_run, digests, footprint, guest, options, paths, programs, registry, safeguards
 from . import settings, state_files, times, version
 from . import states, versions
 from .commands import declare
@@ -93,7 +97,7 @@ STATUS = {"ok": "ok", "migrated": "from before", "running": "running", "failed":
           "rejected": "rejected", "missing": "file missing"}
 # a run that fails before its Builds records one failed Build at "pins" (the pinned images it
 # needs, _pins) or "source" (the Release, the Settings); a Build runs "build" to "done"
-STEPS = ("pins", "source", "build", "check", "disk", "done")
+STEPS = ("pins", "source", "build", "import", "check", "disk", "done")    # import: in build VMs only
 TEMPLATE = "agentbox-build@.service"
 CONTAINER = "localhost/agentbox/{}:{}"
 STORAGE = "/var/lib/containers/storage"
@@ -107,6 +111,8 @@ COMMIT = re.compile(r"[0-9a-f]{7,40}")      # of main, named by Builds from befo
 STEP_LINE = re.compile(r"(?:\[(\d{1,4})/(\d{1,4})\] )?STEP (\d{1,4})/(\d{1,4}): ?(.*)")
 COMMAND_MAX = 200                 # characters of a step's command a running Build carries
 CONTAINERFILE_MAX = 64 * 1024     # bytes of a Containerfile `agentbox containerfile` shows at most
+IMPORT_SECONDS = 3600            # skopeo copy of a build VM's image archive into the Host's storage
+CONVERT_SECONDS = 3600           # qemu-img convert of a build VM's disk
 DISK_CONFIG = """\
 # room for container images, node_modules, build caches (all disposable)
 [[customizations.filesystem]]
@@ -627,6 +633,7 @@ def _build_container(image, src, release, days, orca, playwright, rec, tag, say,
             _in_build_vm(image, rec, tag, [("FEDORA_BOOTC", local), ("PACKAGE_MIN_AGE_DAYS", days),
                                            ("ORCA_VERSION", orca), ("PLAYWRIGHT_VERSION", playwright)],
                          "vm/Containerfile", src, [(platform, local)], src, say)
+            return None
         # the version check pulled the pinned digest; never anything by its tag
         _podman_build("--pull=missing", "--no-cache", "--build-arg", f"FEDORA_BOOTC={fedora}",
                       "--build-arg", f"PACKAGE_MIN_AGE_DAYS={days}",
@@ -653,12 +660,14 @@ def _build_container(image, src, release, days, orca, playwright, rec, tag, say,
         recipes.check(recipe_data)
         if build_vm_run.enabled():
             _in_build_vm(image, rec, tag, [("BASE", base_tag)], None, recipe_data, [(base_tag, base_tag)], src, say)
+            return base
         _podman_build("--pull=missing", "--no-cache", "--build-arg", f"BASE={CONTAINER.format(BASE, base_build)}",
                       "-t", tag, "-", input=recipe_data, rec=rec)
     else:
         if build_vm_run.enabled():
             _in_build_vm(image, rec, tag, [("BASE", base_tag)], "Containerfile", context, [(base_tag, base_tag)],
                          src, say)
+            return base
         _podman_build("--pull=missing", "--no-cache", "--build-arg", f"BASE={CONTAINER.format(BASE, base_build)}",
                       "-t", tag, "-f", os.path.join(context, "Containerfile"), context, rec=rec)
     return base
@@ -668,9 +677,8 @@ def _in_build_vm(image, rec, tag, build_args, containerfile, context, hand_in, s
     """The podman build of _build_container in the Build's first build VM (build_vm_run.py, the
     internal switch on): the same build arguments, the same context (a Recipe's tar as it is),
     the images it builds on handed in from the Host's storage; its log in the Build's journal,
-    its STEP lines the Build's progress. The Host does not import the image archive it hands
-    out yet: the Build fails after it (this never returns), the archive left in its output
-    directory for the next run to remove."""
+    its STEP lines the Build's progress. Then the image archive it hands out goes into the
+    Host's storage as `tag` (_import, the step import), and is deleted with its output."""
     steps = Steps()
 
     def seen(line):
@@ -679,20 +687,41 @@ def _in_build_vm(image, rec, tag, build_args, containerfile, context, hand_in, s
             rec["progress"] = found
             _save(rec)
 
+    def take(archive):
+        rec.update(step="import")
+        _save(rec)
+        _import(image, archive, tag, say)
+
     job = {"tag": tag, "build_args": [[k, str(v)] for k, v in build_args], "containerfile": containerfile}
     try:
-        archive = build_vm_run.build_image(image, rec["build"], job, context, hand_in, src, say, seen)
+        build_vm_run.build_image(image, rec["build"], job, context, hand_in, src, say, seen, take)
     except build_vm_run.Failed as f:
         raise _Failed(f.message)
-    raise _Failed(f"the build VM handed out {archive}; the Host does not import a build VM's image archive "
-                  "yet, so the Build ends here")
 
 
-def _make_disk(image, build, tag, out, rec, say):
+def _import(image, archive, tag, say):
+    """The image archive of a first build VM into the Host's storage under the name the Host
+    chose for the Build (`tag`), never one the archive names: skopeo copy, not podman load,
+    which takes the name from the archive and so could retag the current Base Build or any
+    other image there. The oci-archive reference names no image in the archive, so skopeo takes
+    its only one and refuses an archive with more. skopeo and containers/storage check every
+    blob against the manifest's digest; nothing from the image runs."""
+    say(f"== {image}: importing the build VM's image archive as {tag}")
+    try:
+        programs.run(["skopeo", "copy", "--quiet", f"oci-archive:{archive}", f"containers-storage:{tag}"],
+                     IMPORT_SECONDS, what="skopeo copy of the build VM's image archive", c_locale=True)
+    except Fail as f:
+        raise _Failed(f"the build VM's image archive cannot be imported: {f.message}")
+
+
+def _make_disk(image, build, tag, out, rec, src, say):
     """Create the Image's System disk from its checked container image: bootc-image-builder by
     its pinned digest, with the pristine fedora-bootc the Image is built on as the buildroot
     (--build-container), so the bootc that installs the Image, osbuild's stages and the tools
-    that make the filesystems do not come from the Image."""
+    that make the filesystems do not come from the Image. With the internal switch on, in the
+    Build's second build VM (_disk_in_build_vm)."""
+    if build_vm_run.enabled():
+        return _disk_in_build_vm(image, build, tag, out, rec, src, say)
     builder = digests.reference("bootc-image-builder", rec["builder_digest"])
     buildroot, why = digests.instance("fedora-bootc", rec["fedora_bootc_digest"])
     if why:
@@ -710,6 +739,53 @@ def _make_disk(image, build, tag, out, rec, say):
         raise _Failed("bootc-image-builder created no disk")
     os.chmod(disk, 0o644)
     os.replace(disk, build_file(image, build))
+
+
+def _disk_in_build_vm(image, build, tag, out, rec, src, say):
+    """The disk step in the Build's second build VM, offline (build_vm_run.make_disk): the image
+    the Host checked, bootc-image-builder and the buildroot go in from the Host's storage, each
+    by its platform image as the Host's own disk step names the buildroot, under local names;
+    the same arguments and config.toml as on the Host. Its disk.qcow2 becomes the Build's disk
+    only as a new file the Host's qemu-img writes (_take_disk)."""
+    builder, why = digests.instance("bootc-image-builder", rec["builder_digest"])
+    if why:
+        raise _Failed(why)
+    buildroot, why = digests.instance("fedora-bootc", rec["fedora_bootc_digest"])
+    if why:
+        raise _Failed(why)
+    say(f"== {image}: all Safeguards present. Creating the disk in a build VM ({builder}, buildroot {buildroot})")
+    local_builder, local_root = build_vm_run.BUILDER.format(build), build_vm_run.FEDORA_BOOTC.format(build)
+    job = {"tag": tag, "builder": local_builder, "buildroot": local_root, "config": DISK_CONFIG}
+    hand_in = [(tag, tag), (builder, local_builder), (buildroot, local_root)]
+    try:
+        build_vm_run.make_disk(image, build, job, hand_in, src, say,
+                               lambda disk: _take_disk(image, build, disk, out, say))
+    except build_vm_run.Failed as f:
+        raise _Failed(f.message)
+
+
+def _take_disk(image, build, disk, out, say):
+    """A build VM's disk.qcow2 as the Build's disk: its header read with the format named, never
+    guessed (build_vm.qcow2_problem: a qcow2 naming no backing file and no external data file,
+    not encrypted, of at most build_vm_run.MAX_DISK), then rewritten by qemu-img convert into a
+    new qcow2 in `out`, which moves into place in one rename. The json: filename opens it with
+    "backing": null, so no backing file is opened even if one were named (an external data file
+    it would still open: the check refused one, and nothing changes the read-only output in
+    between); the new file has neither, and holds the guest's blocks and no header field the VM
+    chose."""
+    problem = build_vm.qcow2_problem(disk, build_vm_run.MAX_DISK)
+    if problem:
+        raise _Failed(f"the build VM's disk is refused: {problem}")
+    say(f"== {image}: the disk's header is checked; writing the Build's disk from it")
+    source = "json:" + json.dumps({"driver": "qcow2", "file": {"driver": "file", "filename": disk}, "backing": None})
+    part = os.path.join(out, "disk.qcow2.part")
+    try:
+        programs.run(["qemu-img", "convert", "-q", "-f", "qcow2", "-O", "qcow2", source, part], CONVERT_SECONDS,
+                     what="qemu-img convert of the build VM's disk", c_locale=True)
+    except Fail as f:
+        raise _Failed(f"the build VM's disk cannot be rewritten: {f.message}")
+    os.chmod(part, 0o644)
+    os.replace(part, build_file(image, build))
 
 
 def _failed(image, build, rec, tag, f, what, actor, reason, say):
@@ -797,7 +873,7 @@ def _build_one(image, src, release, days, orca, playwright, pins, actor, unit_na
             manifest, agents, tools = _check(image, tag, rec["package_min_age_days"], base)
             rec.update(step="disk", agents=agents, tools=tools, safeguards=manifest if image == BASE else None)
             _save(rec)
-            _make_disk(image, build, tag, out, rec, say)
+            _make_disk(image, build, tag, out, rec, src, say)
             rec.update(status="ok", step="done", finished=int(time.time()), container=image == BASE)
             _save(rec)
             with state_files.locked(paths.IMAGES):
