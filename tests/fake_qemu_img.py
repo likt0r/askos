@@ -12,8 +12,9 @@ Environment:
   qemu-img info -U --output=json <disk>
   qemu-img info -f qcow2 --output=json <disk>   with the format named, as qemu-img 10 answers
              it; the fake disk may hold "backing-filename", "data-file", "encrypted": true,
-             "corrupt": true, "format" (another than qcow2 fails) and "virtual-size". The call
-             records the limits it ran under: "limits": {"as": bytes, "cpu": seconds};
+             "corrupt": true, "format" (another than qcow2 fails) and "virtual-size". Each call
+             records the limits it ran under: "limits": {"as": bytes, "cpu": seconds}, and
+             "fsize": bytes (None: none);
              "compat": "0.10" makes it a version 2 qcow2, which has no "corrupt" flag
   qemu-img create -q -f qcow2 -F qcow2 -b <base> <disk> [<size>]   writes the fake disk
   qemu-img create -q -f qcow2 <disk> <size>                a fake disk without backing file
@@ -68,7 +69,9 @@ def info_qcow2(disk):
 def main(args):
     limits = {"as": resource.getrlimit(resource.RLIMIT_AS)[0], "cpu": resource.getrlimit(resource.RLIMIT_CPU)[0]}
     with open(os.path.join(DIR, "calls.jsonl"), "a") as f:
-        f.write(json.dumps({"cmd": "qemu-img", "argv": args, "limits": limits}) + "\n")
+        fsize = resource.getrlimit(resource.RLIMIT_FSIZE)[0]
+        f.write(json.dumps({"cmd": "qemu-img", "argv": args, "limits": limits,
+                            "fsize": None if fsize == resource.RLIM_INFINITY else fsize}) + "\n")
     disk = args[-1]
     if args[:7] == ["create", "-q", "-f", "qcow2", "-F", "qcow2", "-b"] and len(args) == 10:
         disk = args[8]

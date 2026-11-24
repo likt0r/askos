@@ -1201,7 +1201,14 @@ Host after every Build
     Build, never one the archive names: `podman load` takes the name from the archive, so a
     crafted archive could retag the current Base Build, the pinned fedora-bootc or any other
     image in the Host's storage. The reference names no image in the archive, so skopeo takes its
-    only image and refuses an archive with more. skopeo and containers/storage parse the archive
+    only image and refuses an archive with more.
+    skopeo unpacks the archive into a directory of its own under `/var/lib/agentbox/build-vm`
+    (`--tmpdir`, not `/var/tmp`), root's, deleted after the import and by the next run if a run
+    is killed. The import starts only with room for the archive's size there, three times it in
+    the Host's container storage and 10 GiB besides on each, else the Build fails at `import`.
+    The factor is a check, not a bound: a layer that unpacks to more fills the storage as an
+    image pulled from quay.io could.
+    skopeo and containers/storage parse the archive
     as root and check every blob against the manifest's digest, as for every pull; nothing from
     the image runs. The archive and its output filesystem are deleted right after. The Safeguard
     check, the tool versions and a derived Image's comparison with the Base Build then run on the
@@ -1220,7 +1227,12 @@ Host after every Build
   - **The disk**: root reads the header of the `disk.qcow2` it handed out with `qemu-img info -f
     qcow2` (the format named, never guessed; 1 GiB of address space and 30 s of CPU) and refuses
     a qcow2 that names a backing file or an external data file, one that is encrypted, marked
-    corrupt or larger than 160 GiB. Then `qemu-img convert -f qcow2 -O qcow2` writes a new qcow2
+    corrupt or larger than 160 GiB.
+    The rewrite starts only with room under `/var/lib/agentbox/images` for as much as the VM's
+    file and 10 GiB besides; `qemu-img convert` runs with at most 4 GiB of address space and may
+    write a file no larger than the disk's virtual size and 1 GiB of metadata, nor than the room
+    there less 10 GiB.
+    Then `qemu-img convert -f qcow2 -O qcow2` writes a new qcow2
     from it, opened through a `json:` filename with `"backing": null`, which moves to
     `images/<image>-<build>.qcow2` in one rename: the Build's disk is a file the Host's qemu-img
     wrote, with no backing file and no data file, holding the guest's blocks and no header field

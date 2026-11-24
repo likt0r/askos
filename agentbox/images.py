@@ -72,6 +72,7 @@ of the Release (or the commit) its current Build came from. Nothing is fetched f
 import json
 import os
 import re
+import resource
 import shutil
 import signal
 import stat
@@ -112,7 +113,17 @@ STEP_LINE = re.compile(r"(?:\[(\d{1,4})/(\d{1,4})\] )?STEP (\d{1,4})/(\d{1,4}): 
 COMMAND_MAX = 200                 # characters of a step's command a running Build carries
 CONTAINERFILE_MAX = 64 * 1024     # bytes of a Containerfile `agentbox containerfile` shows at most
 IMPORT_SECONDS = 3600            # skopeo copy of a build VM's image archive into the Host's storage
+# the most the layers of an image archive take in the Host's storage, per byte of archive, once
+# unpacked (a filesystem compresses to about a third); checked before an import, not enforced
+IMPORT_FACTOR = 3
+IMPORT_RESERVE = paths.tunable("AGENTBOX_BUILD_IMPORT_RESERVE_BYTES", 10 << 30)   # left free by an import
 CONVERT_SECONDS = 3600           # qemu-img convert of a build VM's disk
+DISK_RESERVE = paths.tunable("AGENTBOX_BUILD_DISK_RESERVE_BYTES", 10 << 30)       # left free by the rewrite
+# qemu-img convert as root on a disk a VM wrote: at most 4 GiB of address space (it aborts below
+# 2 GiB once its thread pool grows, qemu-img 10.2) and a file no larger than the disk's virtual
+# size and its metadata, nor than the room under images/ less DISK_RESERVE
+CONVERT_AS = 4 << 30
+CONVERT_MARGIN = 1 << 30         # qcow2 metadata beyond the guest's blocks: 20 MiB at 160 GiB
 DISK_CONFIG = """\
 # room for container images, node_modules, build caches (all disposable)
 [[customizations.filesystem]]
@@ -690,7 +701,7 @@ def _in_build_vm(image, rec, tag, build_args, containerfile, context, hand_in, s
     def take(archive):
         rec.update(step="import")
         _save(rec)
-        _import(image, archive, tag, say)
+        _import(image, rec["build"], archive, tag, say)
 
     job = {"tag": tag, "build_args": [[k, str(v)] for k, v in build_args], "containerfile": containerfile}
     try:
@@ -699,19 +710,55 @@ def _in_build_vm(image, rec, tag, build_args, containerfile, context, hand_in, s
         raise _Failed(f.message)
 
 
-def _import(image, archive, tag, say):
+def _import(image, build, archive, tag, say):
     """The image archive of a first build VM into the Host's storage under the name the Host
     chose for the Build (`tag`), never one the archive names: skopeo copy, not podman load,
     which takes the name from the archive and so could retag the current Base Build or any
     other image there. The oci-archive reference names no image in the archive, so skopeo takes
     its only one and refuses an archive with more. skopeo and containers/storage check every
-    blob against the manifest's digest; nothing from the image runs."""
+    blob against the manifest's digest; nothing from the image runs.
+
+    skopeo unpacks the archive into a directory of its own on the filesystem of the build VMs
+    (--tmpdir, build_vm_run.import_dir, not /var/tmp), deleted afterwards; its layers then go
+    into the Host's storage. Only with room for both: the archive's size there, IMPORT_FACTOR
+    times it in the storage, and IMPORT_RESERVE left on each filesystem."""
+    size = os.stat(archive).st_size
+    tmp = build_vm_run.import_dir(image, build)
+    _room_for(f"to import the build VM's image archive ({size} bytes)",
+              [(paths.BUILD_VM, size), (paths.host(STORAGE), IMPORT_FACTOR * size)], IMPORT_RESERVE)
     say(f"== {image}: importing the build VM's image archive as {tag}")
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.mkdir(tmp, 0o700)
     try:
-        programs.run(["skopeo", "copy", "--quiet", f"oci-archive:{archive}", f"containers-storage:{tag}"],
-                     IMPORT_SECONDS, what="skopeo copy of the build VM's image archive", c_locale=True)
+        programs.run(["skopeo", "--tmpdir", tmp, "copy", "--quiet", f"oci-archive:{archive}",
+                      f"containers-storage:{tag}"], IMPORT_SECONDS, what="skopeo copy of the build VM's image archive",
+                     c_locale=True)
     except Fail as f:
         raise _Failed(f"the build VM's image archive cannot be imported: {f.message}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _free_at(path):
+    """(device, bytes free) of the filesystem of path, or of its nearest parent that exists."""
+    while not os.path.exists(path) and os.path.dirname(path) != path:
+        path = os.path.dirname(path)
+    st = os.statvfs(path)
+    return os.stat(path).st_dev, st.f_bavail * st.f_frsize
+
+
+def _room_for(what, needs, reserve):
+    """_Failed unless each filesystem has room for what it is to take ([(path, bytes)], summed
+    where two paths share one) and `reserve` besides."""
+    wanted, free, where = {}, {}, {}
+    for path, need in needs:
+        dev, free[dev] = _free_at(path)
+        wanted[dev] = wanted.get(dev, 0) + need
+        where.setdefault(dev, path)
+    short = [f"{where[dev]} needs {wanted[dev] + reserve} bytes free, has {free[dev]}"
+             for dev in wanted if free[dev] < wanted[dev] + reserve]
+    if short:
+        raise _Failed(f"not enough free space {what}: " + "; ".join(short))
 
 
 def _make_disk(image, build, tag, out, rec, src, say):
@@ -766,26 +813,50 @@ def _disk_in_build_vm(image, build, tag, out, rec, src, say):
 
 def _take_disk(image, build, disk, out, say):
     """A build VM's disk.qcow2 as the Build's disk: its header read with the format named, never
-    guessed (build_vm.qcow2_problem: a qcow2 naming no backing file and no external data file,
-    not encrypted, of at most build_vm_run.MAX_DISK), then rewritten by qemu-img convert into a
-    new qcow2 in `out`, which moves into place in one rename. The json: filename opens it with
-    "backing": null, so no backing file is opened even if one were named (an external data file
-    it would still open: the check refused one, and nothing changes the read-only output in
-    between); the new file has neither, and holds the guest's blocks and no header field the VM
-    chose."""
-    problem = build_vm.qcow2_problem(disk, build_vm_run.MAX_DISK)
+    guessed (build_vm.qcow2_check: a qcow2 naming no backing file and no external data file,
+    not encrypted, of at most build_vm_run.MAX_DISK), then rewritten into a new qcow2 in `out`
+    (rewrite), which moves into place in one rename. Only with room under images/ for as much
+    as the VM's file and DISK_RESERVE besides; the new file may grow to the disk's virtual size
+    (and CONVERT_MARGIN), never beyond the room there less DISK_RESERVE."""
+    problem, virtual = build_vm.qcow2_check(disk, build_vm_run.MAX_DISK)
     if problem:
         raise _Failed(f"the build VM's disk is refused: {problem}")
+    _room_for("to write the Build's disk", [(paths.IMAGES, os.stat(disk).st_size)], DISK_RESERVE)
     say(f"== {image}: the disk's header is checked; writing the Build's disk from it")
-    source = "json:" + json.dumps({"driver": "qcow2", "file": {"driver": "file", "filename": disk}, "backing": None})
     part = os.path.join(out, "disk.qcow2.part")
-    try:
-        programs.run(["qemu-img", "convert", "-q", "-f", "qcow2", "-O", "qcow2", source, part], CONVERT_SECONDS,
-                     what="qemu-img convert of the build VM's disk", c_locale=True)
-    except Fail as f:
-        raise _Failed(f"the build VM's disk cannot be rewritten: {f.message}")
+    problem = rewrite(disk, part, min(virtual + CONVERT_MARGIN, _free_at(paths.IMAGES)[1] - DISK_RESERVE))
+    if problem:
+        raise _Failed(f"the build VM's disk cannot be rewritten: {problem}")
     os.chmod(part, 0o644)
     os.replace(part, build_file(image, build))
+
+
+def rewrite(disk, part, max_size):
+    """qemu-img convert of the qcow2 `disk` into a new qcow2 `part`, as root with at most
+    CONVERT_AS of address space and files of at most max_size bytes: None, or what went wrong.
+    The json: filename opens it with "backing": null, so no backing file is opened even if one
+    were named (an external data file it would still open: the caller's check refuses one, and
+    nothing changes the read-only output in between); the new file has neither, and holds the
+    guest's blocks and no header field the VM chose."""
+    source = "json:" + json.dumps({"driver": "qcow2", "file": {"driver": "file", "filename": disk}, "backing": None})
+
+    def limits():
+        build_vm.lower({resource.RLIMIT_AS: CONVERT_AS, resource.RLIMIT_FSIZE: max(0, max_size)})
+    try:
+        r = subprocess.run(["qemu-img", "convert", "-q", "-f", "qcow2", "-O", "qcow2", source, part],
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True, errors="replace",
+                           timeout=CONVERT_SECONDS, preexec_fn=limits, env=dict(os.environ, LC_ALL="C"))
+    except FileNotFoundError:
+        return "qemu-img is missing"
+    except subprocess.TimeoutExpired:
+        return f"qemu-img convert does not end within {CONVERT_SECONDS} s"
+    except (OSError, subprocess.SubprocessError) as e:
+        return f"qemu-img convert cannot be started: {e}"
+    if r.returncode == -signal.SIGXFSZ:
+        return f"it would be larger than {max_size} bytes"
+    if r.returncode != 0:
+        return f"qemu-img convert failed (exit {r.returncode}): " + clean(" ".join(r.stderr.split())[-200:], False)
+    return None
 
 
 def _failed(image, build, rec, tag, f, what, actor, reason, say):

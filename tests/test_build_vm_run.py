@@ -30,12 +30,12 @@ import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from test_images import BUILDER_REF, FEDORA_REF, IMAGES, OLD, ImagesTest  # noqa: E402
+from test_images import BUILDER_DIGEST, BUILDER_REF, FEDORA_REF, IMAGES, OLD, ImagesTest  # noqa: E402
 from test_recipes import RecipeTest, archive, file  # noqa: E402
 from test_registry import AGENTBOX, REPO, fake  # noqa: E402
 
 sys.path.insert(0, REPO)
-from agentbox import build_vm_run, generate, images  # noqa: E402
+from agentbox import build_vm, build_vm_run, generate, images  # noqa: E402
 
 BUILD_VM = "var/lib/agentbox/build-vm"
 IMAGE_44 = "Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2"
@@ -67,6 +67,7 @@ class BuildVmTest(ImagesTest):
     def setUp(self):
         self.env = {"AGENTBOX_BUILD_VM": "1", "AGENTBOX_BUILD_VM_MIN_FREE_BYTES": "0",
                     "AGENTBOX_BUILD_VM_OUT_BYTES": str(1 << 30), "AGENTBOX_BUILD_VM_DISK_OUT_BYTES": str(2 << 30),
+                    "AGENTBOX_BUILD_IMPORT_RESERVE_BYTES": "0", "AGENTBOX_BUILD_DISK_RESERVE_BYTES": "0",
                     "AGENTBOX_BUILD_VM_WATCH_SECONDS": "1", "AGENTBOX_BUILD_VM_END_SECONDS": "10",
                     "AGENTBOX_BUILD_VM_DESTROY_SECONDS": "10"}
         super().setUp()
@@ -148,8 +149,8 @@ class BuildVmTest(ImagesTest):
                 and c["argv"][2].startswith("containers-storage:") and f"/{ident}/" in c["argv"][3]]
 
     def imports(self):
-        return [c["argv"] for c in self.calls("skopeo") if c["argv"][0] == "copy"
-                and c["argv"][2].startswith("oci-archive:")]
+        """skopeo copy of an image archive into the Host's storage: (argv, what it found of --tmpdir)."""
+        return [(c["argv"], c.get("tmpdir")) for c in self.calls("skopeo") if c["argv"][:1] == ["--tmpdir"]]
 
     def creates(self):
         return [c["dom"] for c in self.calls("create")]
@@ -215,15 +216,18 @@ class BuildInVmTest(BuildVmTest):
         self.assertEqual(self.guest_podman(verb="save")[0][:4], ["save", "--format", "oci-archive", "-o"])
         self.assertIn(f"== base: the build VM handed out its image archive ({archive_path})", out)
         # skopeo copy into the Host's storage under the name the Host chose; never podman load
-        self.assertEqual(self.imports(), [["copy", "--quiet", f"oci-archive:{archive_path}",
-                                           f"containers-storage:{tag}"]])
+        tmp = self.path(f"{BUILD_VM}/import-base-{new['build']}")
+        self.assertEqual(self.imports(), [(["--tmpdir", tmp, "copy", "--quiet", f"oci-archive:{archive_path}",
+                                            f"containers-storage:{tag}"], {"exists": True, "mode": 0o700})])
+        # skopeo unpacked the archive there, on the build VMs' filesystem, not in /var/tmp; it is gone
+        self.assertFalse(os.path.lexists(tmp))
         self.assertEqual(self.podman("load"), [])
         self.assertTrue(os.path.isdir(self.image_store(tag)))
         # imported once the VM was gone and its output read-only, then the archive and its
         # output filesystem deleted
         calls = self.calls()
         remount = next(i for i, c in enumerate(calls) if c["cmd"] == "mount" and "remount" in c["argv"][1])
-        skopeo = next(i for i, c in enumerate(calls) if c["cmd"] == "skopeo" and c["argv"][2].startswith("oci-archive:"))
+        skopeo = next(i for i, c in enumerate(calls) if c["cmd"] == "skopeo" and c["argv"][0] == "--tmpdir")
         umount = next(i for i, c in enumerate(calls) if c["cmd"] == "umount" and c["argv"] == [self.out(ident)])
         self.assertLess(remount, skopeo)
         self.assertLess(skopeo, umount)
@@ -237,7 +241,7 @@ class BuildInVmTest(BuildVmTest):
             pinned = f.read()
         self.scenario(build_vm={"names": FEDORA_REF})
         new, _ = self.ok_in_vm()
-        self.assertEqual(self.imports()[0][3], f"containers-storage:localhost/agentbox/base:{new['build']}")
+        self.assertEqual(self.imports()[0][0][5], f"containers-storage:localhost/agentbox/base:{new['build']}")
         with open(os.path.join(self.image_store(FEDORA_REF), "layers.json")) as f:
             self.assertEqual(f.read(), pinned)
         with open(os.path.join(self.image_store(f"localhost/agentbox/base:{new['build']}"), "layers.json")) as f:
@@ -254,10 +258,29 @@ class BuildInVmTest(BuildVmTest):
         self.assertEqual(self.current(), f"base-{OLD}.qcow2")
         self.assertEqual(self.leftover(self.ident()), [])
 
+    def test_without_room_to_import_the_archive_the_build_fails_before_skopeo(self):
+        """skopeo unpacks the archive on the build VMs' filesystem and its layers into the Host's
+        storage: room for the archive's size there, three times it in the storage, and the
+        reserve on each (in a test both lie on one filesystem: the sum)."""
+        self.env["AGENTBOX_BUILD_IMPORT_RESERVE_BYTES"] = str(1 << 60)
+        new, _ = self.in_vm()
+        self.assertEqual((new["status"], new["step"]), ("failed", "import"))
+        m = re.fullmatch(r"not enough free space to import the build VM's image archive \((\d+) bytes\): "
+                         rf"{re.escape(self.path(BUILD_VM))} needs (\d+) bytes free, has \d+", new["error"])
+        self.assertIsNotNone(m, new["error"])
+        size = int(m.group(1))
+        self.assertGreater(size, 0)
+        self.assertEqual(int(m.group(2)), 4 * size + (1 << 60))
+        self.assertEqual(self.imports(), [])
+        self.assertEqual(self.creates(), [f"agentbox-buildvm-{self.ident()}"])
+        self.assertEqual(self.leftover(self.ident()), [])
+        self.assertFalse(os.path.lexists(self.path(f"{BUILD_VM}/import-base-{new['build']}")))
+
     def test_a_failed_import_fails_the_build_and_deletes_the_archive(self):
         self.scenario(skopeo_import_fails=True)
         new, _ = self.in_vm()
         self.assertEqual((new["status"], new["step"]), ("failed", "import"))
+        self.assertFalse(os.path.lexists(self.path(f"{BUILD_VM}/import-base-{new['build']}")))
         self.assertTrue(new["error"].startswith("the build VM's image archive cannot be imported"), new["error"])
         self.assertEqual(self.creates(), [f"agentbox-buildvm-{self.ident()}"])
         self.assertIn(["rmi", "--force", "--ignore", f"localhost/agentbox/base:{new['build']}"],
@@ -811,13 +834,15 @@ class InterruptionTest(BuildVmTest):
     def test_the_next_run_removes_what_a_killed_run_left(self):
         ident = "base-20260101-000000-build"
         for rel in (f"{BUILD_VM}/{ident}/system.qcow2", f"{BUILD_VM}/out-{ident}/image.oci.tar",
-                    f"{RUN}/{ident}/log.sock"):
+                    f"{RUN}/{ident}/log.sock", f"{BUILD_VM}/import-base-20260101-000000/oci/index.json"):
             self.write(rel, "")
         self.scenario(vms={f"buildvm-{ident}": {"defined": True, "state": "running"}})
         del self.env["AGENTBOX_BUILD_VM"]       # whatever the next run does
         out = self.built()
         self.assertEqual(self.leftover(ident), [])
         self.assertIn(f"Removed what the build VM agentbox-buildvm-{ident} left", out)
+        self.assertFalse(os.path.lexists(self.path(f"{BUILD_VM}/import-base-20260101-000000")))
+        self.assertIn("Removed what the import import-base-20260101-000000 left", out)
         self.assertEqual([c["dom"] for c in self.calls("destroy")], [f"agentbox-buildvm-{ident}"])
         stops = [c["argv"] for c in self.calls("systemctl") if c["argv"][0] == "stop"]
         self.assertIn(["stop", f"agentbox-buildvm-{ident}.socket", f"agentbox-buildvm-{ident}.service"], stops)
@@ -942,6 +967,12 @@ class DiskVmTest(BuildVmTest):
         self.assertEqual(json.loads(convert[6][5:]), {"driver": "qcow2", "file": {"driver": "file", "filename": handed},
                                                       "backing": None})
         self.assertEqual(convert[7], self.path(f"{IMAGES}/.build-base-{build}/disk.qcow2.part"))
+        # as root on a file a VM wrote: bounded address space, and a file no larger than the
+        # disk's virtual size (5 GiB, the fake's) and the metadata's margin
+        [call] = [c for c in self.calls("qemu-img") if c["argv"][0] == "convert"]
+        self.assertEqual(call["limits"]["as"], 4 << 30)
+        self.assertEqual(call["fsize"], min((5 << 30) + (1 << 30), call["fsize"]))
+        self.assertGreater(call["fsize"], 0)
         # checked first, then written: the Build's disk is the new file, not the VM's
         calls = self.calls("qemu-img")
         info = next(i for i, c in enumerate(calls) if c["argv"][:2] == ["info", "-f"] and c["argv"][-1] == handed)
@@ -952,6 +983,41 @@ class DiskVmTest(BuildVmTest):
         self.assertNotIn("backing-filename", disk)
         self.assertNotIn("data-file", disk)
         self.assertFalse(self.exists(f"{IMAGES}/.build-base-{build}"))
+
+    def test_the_new_disk_may_grow_to_the_virtual_size_and_no_further(self):
+        self.scenario(disk_vm={"disk_meta": {"virtual-size": 1 << 20}})
+        self.ok_in_vm()
+        [call] = [c for c in self.calls("qemu-img") if c["argv"][0] == "convert"]
+        self.assertEqual(call["fsize"], (1 << 20) + (1 << 30))
+        self.assertEqual(images.CONVERT_MARGIN, 1 << 30)
+
+    def test_without_room_for_the_new_disk_the_build_fails_before_the_rewrite(self):
+        self.env["AGENTBOX_BUILD_DISK_RESERVE_BYTES"] = str(1 << 60)
+        new, _ = self.in_vm()
+        self.assertEqual((new["status"], new["step"]), ("failed", "disk"))
+        self.assertTrue(new["error"].startswith(f"not enough free space to write the Build's disk: "
+                                                f"{self.path(IMAGES)} needs "), new["error"])
+        self.assertEqual([c for c in self.calls("qemu-img") if c["argv"][0] == "convert"], [])
+        self.assertEqual(self.current(), f"base-{OLD}.qcow2")
+        self.assertEqual(self.leftover(self.ident(step="disk")), [])
+
+    def test_the_builder_goes_in_by_its_pin_or_by_its_lists_platform_image(self):
+        """A pin of one platform's image is handed in as it is; a pin of a manifest list by the
+        platform image podman recorded beside it, as the Host's disk step names the buildroot."""
+        platform = "sha256:" + "c" * 64
+        for pinned_list in (False, True):
+            with self.subTest(pinned_list=pinned_list):
+                self.forget_calls()
+                if pinned_list:
+                    self.scenario(manifest_lists={BUILDER_DIGEST: platform})
+                    self.pulled(f"quay.io/centos-bootc/bootc-image-builder@{platform}")
+                new, _ = self.ok_in_vm()
+                handed = [a[2] for a in self.hand_ins(self.ident(step="disk"))]
+                self.assertEqual(handed[1], "containers-storage:quay.io/centos-bootc/bootc-image-builder@"
+                                 + (platform if pinned_list else BUILDER_DIGEST))
+                # the record keeps the pin
+                self.assertEqual(self.build_record()["builder_digest"], BUILDER_DIGEST)
+                time.sleep(1.1)
 
     def test_a_failure_in_the_disk_vm_fails_the_build_and_leaves_nothing(self):
         self.scenario(disk_vm={"podman": {"podman_fails": {"run": ["localhost/agentbox/base:"]}}})
@@ -1035,6 +1101,62 @@ class DerivedTest(RecipeTest, BuildVmTest):
         self.assertEqual([a[2] for a in self.hand_ins(self.ident("tools", step="disk"))][2],
                          f"containers-storage:{FEDORA_REF}")
         self.assertEqual(self.current("tools"), f"tools-{new['build']}.qcow2")
+
+
+@unittest.skipUnless(shutil.which("qemu-img"), "qemu-img is not installed")
+class RealQemuImgTest(unittest.TestCase):
+    """The disk's check and rewrite (images._take_disk) with the Host's own qemu-img, on qcow2
+    files that name a backing file or an external data file, as a build VM could hand out."""
+
+    def setUp(self):
+        import tempfile
+        self.dir = tempfile.mkdtemp(prefix="qemu-img-")
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+
+    def qemu_img(self, *args):
+        subprocess.run(["qemu-img", *args], check=True, capture_output=True)
+
+    def qcow2_of(self, name, chunks):
+        """A qcow2 of 4 MiB with the bytes chunks[n] (1 MiB each) at MiB n, zeros elsewhere."""
+        raw = os.path.join(self.dir, name + ".raw")
+        with open(raw, "wb") as f:
+            for n in range(4):
+                f.write(chunks.get(n, b"\0") * (1 << 20))
+        path = os.path.join(self.dir, name + ".qcow2")
+        self.qemu_img("convert", "-q", "-f", "raw", "-O", "qcow2", raw, path)
+        return path
+
+    def raw_of(self, path):
+        raw = path + ".out.raw"
+        self.qemu_img("convert", "-q", "-f", "qcow2", "-O", "raw", path, raw)
+        with open(raw, "rb") as f:
+            return f.read()
+
+    def test_a_backing_file_is_refused_and_the_rewrite_never_reads_it(self):
+        base = self.qcow2_of("base", {0: b"\xaa"})
+        top = self.qcow2_of("top", {2: b"\xbb"})
+        self.qemu_img("rebase", "-u", "-f", "qcow2", "-b", base, "-F", "qcow2", top)
+        self.assertEqual(build_vm.qcow2_problem(top, 1 << 30), "the qcow2 names a backing file")
+        # a plain convert would copy the backing file's blocks into the new disk
+        self.assertEqual(self.raw_of(top)[:1 << 20], b"\xaa" * (1 << 20))
+        out = os.path.join(self.dir, "new.qcow2")
+        self.assertIsNone(images.rewrite(top, out, 1 << 30))
+        self.assertIsNone(build_vm.qcow2_problem(out, 1 << 30))       # no backing file, no data file
+        data = self.raw_of(out)
+        self.assertEqual(data[:1 << 20], b"\0" * (1 << 20))
+        self.assertEqual(data[2 << 20:3 << 20], b"\xbb" * (1 << 20))
+
+    def test_an_external_data_file_is_refused(self):
+        path = os.path.join(self.dir, "df.qcow2")
+        self.qemu_img("create", "-q", "-f", "qcow2", "-o", f"data_file={os.path.join(self.dir, 'shadow')}", path, "4M")
+        self.assertEqual(build_vm.qcow2_problem(path, 1 << 30), "the qcow2 names an external data file")
+
+    def test_the_rewrite_stops_at_its_size_limit(self):
+        top = self.qcow2_of("big", {0: b"\x11", 1: b"\x22", 2: b"\x33"})
+        out = os.path.join(self.dir, "small.qcow2")
+        problem = images.rewrite(top, out, 1 << 20)
+        self.assertIsNotNone(problem)
+        self.assertLessEqual(os.path.getsize(out) if os.path.exists(out) else 0, 1 << 20)
 
 
 if __name__ == "__main__":

@@ -890,6 +890,12 @@ def _pass(image, build, step, job, context, hand_in, src, say, seen, take):
         _drop_out(vm, say)
 
 
+def import_dir(image, build):
+    """Where skopeo unpacks the first build VM's image archive while the Host imports it: on the
+    filesystem of BUILD_VM, root's (0700), deleted after the import and by leftovers()."""
+    return os.path.join(paths.BUILD_VM, f"import-{image}-{build}")
+
+
 def build_image(image, build, job, context, hand_in, src, say, seen, take):
     """podman build in the first build VM of the Build, online: take(path) of the image archive
     it handed out (the import), whose answer this returns; the archive and its output directory
@@ -915,7 +921,13 @@ def leftovers(say):
     """Holding the run lock, before a Build: what a build VM left when its run ended without its
     teardown (killed, the Host's crash), or an output filesystem that could not be unmounted:
     its domain destroyed, its virtiofsd stopped, its output filesystem unmounted, its disks,
-    output and run directories deleted. The checked image and its record stay."""
+    output and run directories deleted; the directory of an import (import_dir) deleted. The
+    checked image and its record stay."""
+    imports = re.compile(rf"import-(?:{settings.IMAGE.pattern})-(?:{settings.BUILD_ID.pattern})")
+    for name in state_files.listdir(paths.BUILD_VM, fail=False):
+        if imports.fullmatch(name):
+            shutil.rmtree(os.path.join(paths.BUILD_VM, name), ignore_errors=True)
+            say(f"Removed what the import {name} left")
     found = set()
     # each form of a name read on its own: a work directory of the Image out-x is also the name
     # of an output directory of the Image x; both are taken, what does not exist costs nothing

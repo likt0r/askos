@@ -17,6 +17,9 @@
       an archive with more than one image (more than one image* directory), and fails when the
       scenario says "skopeo_import_fails"
 
+  skopeo --tmpdir DIR ...   the global option: the call also records "tmpdir": {"exists": bool,
+      "mode": its permissions}, and the fake unpacks an imported archive there, as skopeo does
+
 Environment: FAKE_DIR (calls in calls.jsonl as {"cmd": "skopeo", "argv": [...]}, scenario.json).
 """
 import json
@@ -28,8 +31,14 @@ import fake_podman  # noqa: E402
 
 
 def main(argv):
+    call = {"cmd": "skopeo", "argv": argv}
+    tmpdir = None
+    if argv[:1] == ["--tmpdir"]:
+        tmpdir, argv = argv[1], argv[2:]
+        call["tmpdir"] = {"exists": os.path.isdir(tmpdir),
+                          "mode": os.stat(tmpdir).st_mode & 0o777 if os.path.isdir(tmpdir) else None}
     with open(os.path.join(fake_podman.DIR, "calls.jsonl"), "a") as f:
-        f.write(json.dumps({"cmd": "skopeo", "argv": argv}) + "\n")
+        f.write(json.dumps(call) + "\n")
     if argv[:2] == ["copy", "--quiet"] and len(argv) == 4 and argv[2].startswith("containers-storage:") \
             and argv[3].startswith("oci-archive:"):
         ref = argv[2][len("containers-storage:"):]
@@ -49,6 +58,8 @@ def main(argv):
             return 1
         import tarfile
         with tarfile.open(path) as tar:
+            if tmpdir:
+                tar.extractall(os.path.join(tmpdir, "oci"), filter="tar")
             if len(fake_podman.images_in(tar)) != 1:
                 print(f"FATA[0000] initializing source oci-archive:{path}: loading index: more than one image "
                       "in oci, choose an image", file=sys.stderr)
