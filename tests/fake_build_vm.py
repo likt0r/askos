@@ -26,6 +26,10 @@ scenario.json "build_vm":
   driver      false: no driver runs; the VM writes "lines" and ends (default true)
   lines       lines the VM writes to its log before the driver (bytes as latin-1 text)
   out_files   {name: bytes}: files the VM writes into its output directory first
+  out_deep    {"depth": n, "bytes": m}: directories n deep in its output directory, made through
+              directory file descriptors as a VM can, with a file of m bytes at the bottom
+  out_many    n: empty files in its output directory
+  stays       true: the domain does not end when the driver ends (as if QEMU hung)
   podman      the scenario of the VM's podman (fake_podman.py), e.g. build_waits, podman_fails
   tamper      after the driver: "symlink" puts a link to a Host file in place of
               image.oci.tar, "hardlink" adds a second link to it
@@ -115,6 +119,19 @@ def prepare(root, args, conf):
     for name, size in (conf.get("out_files") or {}).items():
         with open(os.path.join(out, name), "wb") as f:
             f.write(b"x" * size)
+    if conf.get("out_deep"):
+        fd = os.open(out, os.O_RDONLY | os.O_DIRECTORY)
+        for _ in range(conf["out_deep"]["depth"]):
+            os.mkdir("d", dir_fd=fd)
+            child = os.open("d", os.O_RDONLY | os.O_DIRECTORY, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        data = os.open("data", os.O_WRONLY | os.O_CREAT, 0o644, dir_fd=fd)
+        os.write(data, b"x" * conf["out_deep"]["bytes"])
+        os.close(data)
+        os.close(fd)
+    for n in range(conf.get("out_many") or 0):
+        open(os.path.join(out, f"f{n}"), "w").close()
     return out
 
 
@@ -143,8 +160,10 @@ def main(domain, fd, xml_file):
     out = prepare(root, args, conf)
     conn, _ = listener.accept()
     if conf.get("boots") is False:
-        while True:
-            time.sleep(1)
+        end = time.monotonic() + 120      # until destroyed; never past its test
+        while time.monotonic() < end and os.path.isdir(DIR):
+            time.sleep(0.5)
+        return
     for line in conf.get("lines") or []:
         conn.sendall(line.encode("latin-1"))
     if conf.get("driver", True):
@@ -163,8 +182,9 @@ def main(domain, fd, xml_file):
     elif conf.get("tamper") == "hardlink":
         os.link(archive, os.path.join(out, "second-link"))
     # power-off: the transient domain is gone, then QEMU's end closes the channel
-    with fake_virsh.changing():
-        fake_virsh.end_transient(domain)
+    if not conf.get("stays"):
+        with fake_virsh.changing():
+            fake_virsh.end_transient(domain)
     conn.close()
     listener.close()
 

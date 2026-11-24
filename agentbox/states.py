@@ -153,6 +153,16 @@ def unit_text(active, sub):
     return f"{active} ({sub})" if sub and sub != active else active
 
 
+def unit_stopped(unit, timeout):
+    """Whether systemd says the unit is not running (inactive, or failed; one it does not know is
+    inactive); False when it says anything else or cannot say."""
+    try:
+        r = programs.systemctl("is-active", unit, timeout=timeout, ok=None)
+    except Fail:
+        return False
+    return r.stdout.strip() in ("inactive", "failed")
+
+
 def started(unit, timeout):
     """Whether the unit runs (systemctl is-active); a failure of systemctl itself raises Fail."""
     return programs.systemctl("is-active", unit, timeout=timeout, ok=None).returncode == 0

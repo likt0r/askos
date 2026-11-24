@@ -6,7 +6,8 @@ Environment:
 
 scenario.json:
   systemctl_fails   verbs (e.g. ["restart"]) that fail
-  systemctl_active  units that `systemctl is-active` reports active (all others: inactive, exit 3)
+  systemctl_active  units (or glob patterns of them) that `systemctl is-active` reports active (all
+                    others: inactive, exit 3)
   systemctl_enabled units that `systemctl is-enabled` reports enabled before any change; `enable`
                     and `disable` change that (in systemctl.json), all others: disabled, exit 1
   systemctl_units   rows [unit, load, active, sub, description] that `systemctl list-units`
@@ -109,7 +110,8 @@ def dequeue(unit):
 
 if sys.argv[1] == "is-active":
     dequeue(sys.argv[-1])
-    active = sys.argv[-1] in scenario.get("systemctl_active", []) or running(sys.argv[-1])
+    active = any(fnmatch.fnmatchcase(sys.argv[-1], p) for p in scenario.get("systemctl_active", [])) \
+        or running(sys.argv[-1])
     print("active" if active else "inactive")
     sys.exit(0 if active else 3)
 if sys.argv[1] == "list-units":

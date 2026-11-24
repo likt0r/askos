@@ -586,7 +586,8 @@ flowchart LR
   the VMs, every address of the Host), and forward nothing to a build VM that it did not ask
   for. Its bridge is outside the `abox-*` names of the VM networks' rules. A build VM's start
   defines and starts the network when it is not there and refuses one of that name that is not
-  it; no VM can be named `build`.
+  it (another bridge, more than its one IPv4 address `10.77.0.1/24`, no NAT); no VM can be named
+  `build`.
 - Containers in a VM are behind the same limits. They run on rootless Podman: `docker` is
   Podman under that name, and `podman compose` and `docker compose` run Docker Compose, which
   builds and starts containers through the agent's Podman socket. `guest-setup` writes the
@@ -1197,8 +1198,9 @@ Host after every Build
   - **The VM**: a transient domain (`virsh create`, never defined) from virt-install's
     `--print-xml`, destroyed on power-off, reboot and crash, with 8 GiB of memory, as many vCPUs
     as the Host has but at most 8, no balloon, no graphics, no console and no guest agent
-    channel. Its disks are new and deleted after it, whatever happened: a qcow2 overlay of
-    20 GiB on the checked image (backing format named), an empty sparse scratch disk of 40 GiB
+    channel. Its disks are new and deleted after it, whatever happened: a copy of the checked
+    image grown to 20 GiB, with no backing file (libvirt hands every file of a disk's chain to
+    QEMU's user and leaves a backing file so), an empty sparse scratch disk of 40 GiB
     for its container storage, the input disk (one raw, read-only tar: `job.json`, the build
     context, the images) and the NoCloud seed (`cidata`, written with `xorrisofs`), root's
     alone (`0600`) while they are there. The seed holds the installed Release's
@@ -1209,21 +1211,28 @@ Host after every Build
     virtiofsd Agent Box starts, not libvirt's, which runs as root: a transient unit of the
     service user `agentbox-buildvm`, whose socket systemd makes (`root:qemu`, `0660`) and hands
     over, with virtiofsd's own sandbox and every guest uid and gid squashed onto
-    `agentbox-buildvm`, so every file a build VM writes is that user's on the Host. Once the VM
-    and virtiofsd ended, root takes the directory back and opens exactly `result.json` and
+    `agentbox-buildvm`, so every file a build VM writes is that user's on the Host, and none
+    larger than 64 GiB (its file size limit). After the teardown the domain must be gone and
+    virtiofsd's units inactive, else the Build fails and nothing of the output is taken. Then
+    root takes the directory back and opens exactly `result.json` and
     `image.oci.tar` in it, never through a link: regular files of `agentbox-buildvm` with one
     link, at most 64 KiB and 64 GiB. A failed VM's reason comes from `result.json`, as text.
   - **Its log**: the virtio-serial channel `org.agentbox.build-log` reaches the Build run line
     by line; each line, cleaned like any text from a VM (control characters out, at most
     4 KiB), goes with `vm: ` in front into the Build's journal, so `agentbox build-log`,
     `agentbox watch` and the Control Room show it, and podman's `STEP` lines there are the
-    Build's progress. A VM that writes faster than the Host reads waits.
+    Build's progress. A VM that writes faster than the Host reads waits. Of 64 MiB of log per
+    build VM, the rest is not kept: one note says so, its `STEP` lines still count.
   - **Limits**: the VM is destroyed and the Build fails when it writes no line within
     10 minutes of its start, runs longer than 4 hours, holds more than 160 GiB in its output
-    directory or leaves less than 10 GiB free under `/var/lib/agentbox`. Stopping the Build
+    directory or leaves less than 10 GiB free under `/var/lib/agentbox`. The output directory is
+    measured every 2 seconds through directory file descriptors, links not followed; more than
+    10,000 files and directories in it, directories deeper than 32, or a walk that cannot finish
+    fail the Build as well. Stopping the Build
     destroys it and stops its virtiofsd; the next Build run removes whatever a killed run left.
     A Host without KVM, without a checked image, with less than 8 GiB of memory available or
-    without the build network's rules loaded fails the Build: it never falls back to the Host.
+    without the build network's rules loaded in the kernel (as `nft list chain` shows them) fails
+    the Build: it never falls back to the Host.
 - What the Base image downloads, it downloads inside the Build container, where Fedora's
   packages, the npm tools and Orca are chosen, fetched and checked; no root process on the
   Host parses what the internet answers (#113). Orca comes from its GitHub release

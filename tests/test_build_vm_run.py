@@ -4,8 +4,9 @@ directory, its log in the Build's journal.
 
 The real CLI runs build-run as test_images.py does, with fakes on PATH as well for what a
 build VM needs: systemd-run (virtiofsd's unit, fake_systemd_run.py), xorrisofs
-(fake_xorrisofs.py) and virsh's `create`, which starts fake_build_vm.py as the VM: it runs the
-real driver from the seed (vm/build-vm/build-vm-run of the Release) in a root of its own, with
+(fake_xorrisofs.py), nft (the kernel's ruleset, fake_nft.py: by default KERNEL, a real nft's
+listing of the rules agentbox regenerate writes) and virsh's `create`, which starts
+fake_build_vm.py as the VM: it runs the real driver from the seed (vm/build-vm/build-vm-run of the Release) in a root of its own, with
 the fake podman as the VM's podman, and its log reaches the Host through the log channel's
 socket as QEMU's would. No test boots a VM.
 
@@ -16,6 +17,7 @@ import io
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -34,6 +36,23 @@ from agentbox import build_vm_run, generate  # noqa: E402
 BUILD_VM = "var/lib/agentbox/build-vm"
 IMAGE_44 = "Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2"
 RUN = "run/agentbox/build-vm"
+# `nft list chain inet agentbox_vm <chain>` of a real nft 1.1 with generate.nft_rules([]) loaded
+# (in a user and network namespace of its own): its priority words, its merged ranges
+KERNEL = {
+    "input": "table inet agentbox_vm {\n\tchain input {\n"
+             "\t\ttype filter hook input priority filter - 5; policy accept;\n"
+             '\t\tiifname "abox-*" jump from_vm\n\t\tiifname "aboxbuild" jump from_build\n\t}\n}\n',
+    "from_build": "table inet agentbox_vm {\n\tchain from_build {\n\t\tmeta nfproto ipv6 drop\n"
+                  "\t\tudp dport 67 accept\n\t\tip daddr 10.77.0.1 udp dport 53 accept\n"
+                  "\t\tip daddr 10.77.0.1 tcp dport 53 accept\n\t\tdrop\n\t}\n}\n",
+    "forward": "table inet agentbox_vm {\n\tchain forward {\n"
+               "\t\ttype filter hook forward priority filter - 5; policy accept;\n"
+               '\t\tiifname "aboxbuild" meta nfproto ipv6 drop\n'
+               '\t\tiifname "aboxbuild" ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, '
+               '169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/3 } drop\n'
+               '\t\toifname "aboxbuild" ct state established,related accept\n\t\toifname "aboxbuild" drop\n'
+               "\t}\n}\n",
+}
 
 
 class BuildVmTest(ImagesTest):
@@ -46,6 +65,7 @@ class BuildVmTest(ImagesTest):
         super().setUp()
         fake(os.path.join(self.dir, "bin", "systemd-run"), "fake_systemd_run.py")
         fake(os.path.join(self.dir, "bin", "xorrisofs"), "fake_xorrisofs.py")
+        fake(os.path.join(self.dir, "bin", "nft"), "fake_nft.py")
         self.write(f"{BUILD_VM}/image.json", json.dumps({"name": IMAGE_44, "release": "44", "sha256": "0" * 64,
                                                          "checked": 1}))
         self.write(f"{BUILD_VM}/images/{IMAGE_44}", "{}")
@@ -55,6 +75,7 @@ class BuildVmTest(ImagesTest):
 
     def scenario(self, **s):
         s.setdefault("systemctl_active", ["agentbox-vmnet.service"])
+        s.setdefault("nft_chains", KERNEL)
         super().scenario(**s)
 
     def environment(self):
@@ -214,15 +235,19 @@ class BuildInVmTest(BuildVmTest):
                            text=True, env=self.environment())
         return r.returncode, r.stdout, r.stderr
 
-    def test_its_disks_are_new_an_overlay_on_the_checked_image_and_an_empty_scratch_disk(self):
+    def test_its_disks_are_new_a_copy_of_the_checked_image_and_an_empty_scratch_disk(self):
         self.in_vm()
         ident = self.ident()
         work = self.path(f"{BUILD_VM}/{ident}")
-        creates = [c["argv"] for c in self.calls("qemu-img") if c["argv"][0] == "create"]
-        self.assertEqual(creates, [
-            ["create", "-q", "-f", "qcow2", "-F", "qcow2", "-b", self.path(f"{BUILD_VM}/images/{IMAGE_44}"),
-             f"{work}/system.qcow2", "20G"],
+        # the system disk is the VM's own copy, grown, with no backing file: libvirt never hands the
+        # checked image to QEMU's user
+        self.assertEqual([c["argv"] for c in self.calls("qemu-img") if c["argv"][0] in ("create", "resize")], [
+            ["resize", "-q", "-f", "qcow2", f"{work}/system.qcow2", "20G"],
             ["create", "-q", "-f", "qcow2", f"{work}/scratch.qcow2", "40G"]])
+        self.assertFalse([c for c in self.calls("qemu-img") if "-b" in c["argv"]])
+        self.assertEqual(self.mode(f"{BUILD_VM}/images/{IMAGE_44}"), 0o644)
+        with open(self.path(f"{BUILD_VM}/images/{IMAGE_44}")) as f:
+            self.assertEqual(f.read(), "{}")
         # the driver formats the scratch disk and makes it the VM's container storage
         with open(os.path.join(self.guest(), "calls.log")) as f:
             said = f.read().splitlines()
@@ -296,6 +321,8 @@ class BuildInVmTest(BuildVmTest):
         self.assertIn("--property=User=agentbox-buildvm", argv)
         self.assertIn("--property=Group=agentbox-buildvm", argv)
         self.assertIn("--property=NoNewPrivileges=yes", argv)
+        # no file it writes for the VM grows past the archive's cap, between the size checks too
+        self.assertIn(f"--property=LimitFSIZE={64 << 30}", argv)
         # systemd (root) makes the socket QEMU connects to; virtiofsd gets it as fd 3
         self.assertIn(f"--socket-property=ListenStream={run}/virtiofs.sock", argv)
         self.assertIn("--socket-property=SocketGroup=qemu", argv)
@@ -395,12 +422,24 @@ class NetworkTest(BuildVmTest):
         self.assertEqual(len(self.calls("create")), 1)
 
     def test_an_existing_network_of_that_name_must_be_the_build_network(self):
-        self.scenario(networks={"agentbox-build": {"active": True, "autostart": True, "xml": (
-            "<network>\n  <name>agentbox-build</name>\n  <bridge name='virbr9'/>\n"
-            "  <ip address='192.168.9.1' netmask='255.255.255.0'/>\n</network>")}})
-        new, _ = self.in_vm()
-        self.assertTrue(new["error"].startswith("the network agentbox-build is not the build network"), new["error"])
-        self.assertEqual(self.calls("create"), [])
+        ours = build_vm_run.network_xml()
+        for what, xml in (
+                ("another network", "<network>\n  <name>agentbox-build</name>\n  <bridge name='virbr9'/>\n"
+                                    "  <ip address='192.168.9.1' netmask='255.255.255.0'/>\n</network>"),
+                ("a wider netmask", ours.replace("255.255.255.0", "255.255.0.0")),
+                ("a second address", ours.replace("</network>", "  <ip address='192.168.9.1' prefix='24'/>\n"
+                                                                "</network>")),
+                ("IPv6", ours.replace("</network>", "  <ip family='ipv6' address='fd00::1' prefix='64'/>\n"
+                                                    "</network>")),
+                ("routed", ours.replace("mode='nat'", "mode='route'"))):
+            with self.subTest(what=what):
+                self.forget_calls()
+                self.scenario(networks={"agentbox-build": {"active": True, "autostart": True, "xml": xml}})
+                new, _ = self.in_vm()
+                self.assertTrue(new["error"].startswith("the network agentbox-build is not the build network"),
+                                new["error"])
+                self.assertEqual(self.calls("create"), [])
+                time.sleep(1.1)
 
     def test_the_rules_let_the_build_network_reach_only_dhcp_and_dns_of_the_host(self):
         rules = generate.nft_rules([]).splitlines()
@@ -426,24 +465,47 @@ class NetworkTest(BuildVmTest):
         self.assertIn('    iifname "abox-*" jump from_vm', rules)
         self.assertNotRegex("aboxbuild", r"^abox-")
 
-    def test_without_the_rules_loaded_no_build_vm_starts(self):
-        for broken in ("file", "pending", "inactive"):
+    def test_without_the_rules_loaded_in_the_kernel_no_build_vm_starts(self):
+        """Written is not loaded: the check asks nft for the chains in the kernel."""
+        forward = KERNEL["forward"]
+        for broken, chains, said in (
+                ("no chains", {}, "the chain input is not loaded"),
+                ("no jump",
+                 {**KERNEL, "input": KERNEL["input"].replace('\t\tiifname "aboxbuild" jump from_build\n', "")},
+                 "the input chain does not send the build network to from_build"),
+                ("a rule missing", {**KERNEL, "from_build": KERNEL["from_build"].replace("\t\tdrop\n", "")},
+                 "the chain from_build is not the build network's"),
+                ("a range missing", {**KERNEL, "forward": forward.replace(" 192.168.0.0/16,", "")},
+                 "the chain forward is not the build network's"),
+                ("not hooked", {**KERNEL, "forward": forward.replace("hook forward", "hook output")},
+                 "the chain forward is not hooked into forward")):
             with self.subTest(broken=broken):
-                self.write("etc/agentbox/vm-input.nft", generate.nft_rules([]))
-                self.scenario()
-                if broken == "file":
-                    self.write("etc/agentbox/vm-input.nft", "table inet agentbox_vm {\n}\n")
-                elif broken == "pending":
-                    self.write("var/lib/agentbox/pending/firewall", "")
-                else:
-                    self.scenario(systemctl_active=[])
+                self.forget_calls()
+                self.scenario(nft_chains=chains)
                 new, _ = self.in_vm()
-                self.assertTrue(new["error"].startswith("the VM network rules with the build network's are not loaded"),
-                                new["error"])
+                self.assertEqual(new["error"], f"the build network's rules are not loaded in the kernel: {said} "
+                                               "(sudo agentbox regenerate; systemctl restart agentbox-vmnet)")
                 self.assertEqual(self.calls("create"), [])
-                if broken == "pending":
-                    os.remove(self.path("var/lib/agentbox/pending/firewall"))
                 time.sleep(1.1)
+        self.assertEqual(self.calls("nft")[0]["argv"], ["list", "chain", "inet", "agentbox_vm", "input"])
+
+    @unittest.skipUnless(shutil.which("nft") and shutil.which("unshare") and subprocess.run(
+        ["unshare", "-rn", "true"], capture_output=True).returncode == 0, "needs nft and user namespaces")
+    def test_the_rules_regenerate_writes_pass_the_check_as_a_real_nft_lists_them(self):
+        """Not in the claims: it skips itself where unprivileged namespaces are not allowed."""
+        rules = os.path.join(self.dir, "rules.nft")
+        with open(rules, "w") as f:
+            f.write(generate.nft_rules([]))
+        script = f"nft -f {rules} && " + " && ".join(
+            f"nft list chain inet agentbox_vm {c} > {os.path.join(self.dir, c)}.txt" for c in KERNEL)
+        self.assertEqual(subprocess.run(["unshare", "-rn", "sh", "-c", script]).returncode, 0)
+        listings = {}
+        for chain in KERNEL:
+            with open(os.path.join(self.dir, f"{chain}.txt")) as f:
+                listings[chain] = f.read()
+        self.assertIsNone(build_vm_run.rules_problem(listings))
+        self.assertIsNotNone(build_vm_run.rules_problem({**listings, "forward": listings["forward"].replace(
+            "10.0.0.0/8, ", "")}))
 
 
 class HostTest(BuildVmTest):
@@ -496,6 +558,44 @@ class LimitTest(BuildVmTest):
         self.assertEqual(len(self.calls("destroy")), 1)
         self.assertEqual(self.leftover(self.ident()), [])
 
+    def test_what_lies_deep_in_the_output_directory_counts(self):
+        self.env["AGENTBOX_BUILD_VM_OUT_BYTES"] = str(64 << 10)
+        self.scenario(build_vm={"out_deep": {"depth": 20, "bytes": 1 << 20},
+                                "podman": {"build_waits": {"step": 1, "file": "never"}}})
+        new, _ = self.in_vm()
+        self.assertEqual(new["error"], f"the build VM wrote more than {64 << 10} bytes into its output directory")
+        self.assertEqual(self.leftover(self.ident()), [])
+
+    def test_directories_nested_too_deep_end_the_vm(self):
+        """3000 deep: deeper than a path can name, which a walk by paths would skip."""
+        self.scenario(build_vm={"out_deep": {"depth": 3000, "bytes": 100 << 10},
+                                "podman": {"build_waits": {"step": 1, "file": "never"}}})
+        new, _ = self.in_vm()
+        self.assertEqual(new["error"], "the build VM nested directories deeper than 32 in its output directory")
+        self.assertEqual(len(self.calls("destroy")), 1)
+        self.assertEqual(self.leftover(self.ident()), [])
+
+    def test_too_many_files_in_the_output_directory_end_the_vm(self):
+        self.env["AGENTBOX_BUILD_VM_OUT_ENTRIES"] = "50"
+        self.scenario(build_vm={"out_many": 51, "podman": {"build_waits": {"step": 1, "file": "never"}}})
+        new, _ = self.in_vm()
+        self.assertEqual(new["error"], "the build VM made more than 50 files and directories in its output directory")
+
+    def test_a_log_beyond_its_cap_is_cut_with_one_note(self):
+        self.env["AGENTBOX_BUILD_VM_LOG_BYTES"] = "2000"
+        self.scenario(build_vm={"lines": [f"line {n:03} " + "y" * 40 + "\n" for n in range(100)]})
+        new, out = self.in_vm()
+        lines = out.splitlines()
+        self.assertIn("vm: line 000 " + "y" * 40, lines)
+        self.assertNotIn("vm: line 099 " + "y" * 40, lines)
+        self.assertNotIn("vm: build-vm: done", lines)
+        self.assertEqual(out.count("the build VM wrote more than 2000 bytes to its log; its further lines are "
+                                   "not kept"), 1)
+        # the Build itself goes on, its progress too
+        self.assertIn("the Host does not import", new["error"])
+        rec = self.build_record()
+        self.assertEqual(rec["progress"]["step"], rec["progress"]["steps"])
+
     def test_too_little_free_space_on_the_host_ends_the_vm(self):
         self.env["AGENTBOX_BUILD_VM_MIN_FREE_BYTES"] = str(1 << 60)
         self.scenario(build_vm={"podman": {"build_waits": {"step": 1, "file": "never"}}})
@@ -520,6 +620,24 @@ class InterruptionTest(BuildVmTest):
         stops = [c["argv"] for c in self.calls("systemctl") if c["argv"][0] == "stop"]
         self.assertIn(["stop", f"agentbox-buildvm-{ident}.socket", f"agentbox-buildvm-{ident}.service"], stops)
         self.assertEqual(self.leftover(ident), [])
+
+    def test_a_virtiofsd_that_still_runs_after_the_teardown_fails_the_build(self):
+        self.scenario(systemctl_active=["agentbox-vmnet.service", "agentbox-buildvm-*.service"])
+        new, out = self.in_vm()
+        unit = f"agentbox-buildvm-{self.ident()}.service"
+        self.assertEqual(new["error"], f"{unit} still runs after the build VM's teardown; its output is not taken")
+        self.assertIn(f"Still running after the build VM's teardown: {unit}", out)
+        self.assertEqual(self.leftover(self.ident()), [])          # no archive handed on
+
+    def test_a_domain_that_survives_the_teardown_fails_the_build(self):
+        self.env["AGENTBOX_BUILD_VM_END_SECONDS"] = "2"
+        self.scenario(build_vm={"stays": True}, build_vm_survives_destroy=True)
+        new, _ = self.in_vm()
+        domain = f"agentbox-buildvm-{self.ident()}"
+        self.assertEqual(new["error"], f"the domain {domain} still runs after the build VM's teardown; its output is "
+                                       "not taken")
+        self.assertEqual([c["dom"] for c in self.calls("destroy")], [domain])
+        self.assertEqual(self.leftover(self.ident()), [])
 
     def test_the_next_run_removes_what_a_killed_run_left(self):
         ident = "base-20260101-000000-build"

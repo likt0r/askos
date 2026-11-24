@@ -17,6 +17,7 @@ Environment:
              "compat": "0.10" makes it a version 2 qcow2, which has no "corrupt" flag
   qemu-img create -q -f qcow2 -F qcow2 -b <base> <disk> [<size>]   writes the fake disk
   qemu-img create -q -f qcow2 <disk> <size>                a fake disk without backing file
+  qemu-img resize -q -f qcow2 <disk> <size>                the fake disk gets that "size"
 """
 import json
 import os
@@ -98,6 +99,12 @@ def main(args):
         except OSError as e:
             print(f"qemu-img: {disk}: Could not create '{disk}': {e.strerror}", file=sys.stderr)
             return 1
+        return 0
+    if args[:4] == ["resize", "-q", "-f", "qcow2"] and len(args) == 6:
+        with open(args[4]) as f:
+            meta = json.load(f)
+        with open(args[4], "w") as f:
+            json.dump({**meta, "size": args[5]}, f)
         return 0
     if args[:4] == ["create", "-q", "-f", "qcow2"] and len(args) == 6:
         with open(args[4], "w") as f:

@@ -71,7 +71,9 @@ attached file is kept in FAKE_VIRSH_DIR/attached/, so a test sees what the VM go
 `create <xml>` starts a transient domain from virt-install's XML (fake_virt_install.py): a
 build VM (agentbox-buildvm-*), as QEMU would, makes the listening socket of its log channel and
 runs as fake_build_vm.py in the background; scenario "create_fails" makes it fail as libvirt
-does. A transient domain is gone once it ends or `destroy` ends it (which kills fake_build_vm.py).
+does. A transient domain is gone once it ends or `destroy` ends it (which kills fake_build_vm.py),
+unless the scenario says "build_vm_survives_destroy": then `destroy` reports success and the
+domain stays.
 Domains named agentbox-buildvm-* do not exist until created.
 
 `dumpxml` shows the System disk (under AGENTBOX_ROOT) and, while running, the
@@ -631,6 +633,9 @@ def libvirt(scenario, cmd, rest):
         if not st["defined"]:
             return no_domain(rest[0])
         record({"cmd": "destroy", "dom": rest[0]})
+        if scenario.get("build_vm_survives_destroy"):
+            print(f"Domain '{rest[0]}' destroyed")
+            return 0
         if st.get("pid"):
             import signal
             try:

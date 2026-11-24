@@ -57,6 +57,7 @@ One build VM, named DOMAIN_PREFIX + its id (<image>-<build>-build):
 An interruption (the run's SIGTERM handler, Ctrl+C) runs the same teardown; after a crash of
 the run, the next run removes whatever a build VM left (leftovers()).
 """
+import ipaddress
 import json
 import os
 import pwd
@@ -102,9 +103,12 @@ SOURCE = os.path.join("vm", "build-vm")   # the seed's files in the Release
 FEDORA_BOOTC = "localhost/agentbox-input/fedora-bootc:{}"   # its name in a build VM, by Build
 BOOT_SECONDS = paths.tunable("AGENTBOX_BUILD_VM_BOOT_SECONDS", 600)
 BUILD_SECONDS = paths.tunable("AGENTBOX_BUILD_VM_SECONDS", 4 * 3600)
-WATCH_SECONDS = paths.tunable("AGENTBOX_BUILD_VM_WATCH_SECONDS", 5)
+WATCH_SECONDS = paths.tunable("AGENTBOX_BUILD_VM_WATCH_SECONDS", 2)
 END_SECONDS = paths.tunable("AGENTBOX_BUILD_VM_END_SECONDS", 60)   # from its log's end to its domain's
 MAX_OUT = paths.tunable("AGENTBOX_BUILD_VM_OUT_BYTES", 160 << 30)
+MAX_OUT_ENTRIES = paths.tunable("AGENTBOX_BUILD_VM_OUT_ENTRIES", 10000)   # files and directories in it
+MAX_OUT_DEPTH = 32                  # directories within directories in it
+MAX_LOG = paths.tunable("AGENTBOX_BUILD_VM_LOG_BYTES", 64 << 20)          # of its log, kept in the journal
 MIN_FREE = paths.tunable("AGENTBOX_BUILD_VM_MIN_FREE_BYTES", 10 << 30)
 MAX_ARCHIVE = 64 << 30
 MAX_RESULT = 64 << 10
@@ -173,23 +177,96 @@ def rule_lines():
     ]
 
 
+def _words(line):
+    return " ".join(line.split()).rstrip(";").strip()
+
+
+def _expected():
+    """{chain: (hook or None, [rule])} of the build network's rules as rule_lines() and
+    input_jump() give them, in nft's words."""
+    chains, name = {"input": ("input", [_words(input_jump())])}, None
+    for line in rule_lines():
+        words = _words(line)
+        if words.startswith("chain "):
+            name = words.split()[1]
+            chains[name] = (None, [])
+        elif words.startswith("type filter hook "):
+            chains[name] = (words.split()[3], chains[name][1])
+        elif words != "}":
+            chains[name][1].append(words)
+    return chains
+
+
+def _interval(element):
+    """(first, last) address of an element of an nft set: a.b.c.d, a.b.c.d/n or a-b."""
+    if "-" in element:
+        first, last = element.split("-", 1)
+        return int(ipaddress.IPv4Address(first.strip())), int(ipaddress.IPv4Address(last.strip()))
+    net = ipaddress.IPv4Network(element.strip(), strict=False)
+    return int(net.network_address), int(net.broadcast_address)
+
+
+def _covers(found, wanted):
+    """Whether the set rule `found` (as nft lists it, which may merge adjacent ranges) is the
+    rule `wanted` with every range of it covered."""
+    head, _, rest = found.partition("{")
+    elements, _, tail = rest.partition("}")
+    w_head, _, w_rest = wanted.partition("{")
+    w_elements, _, w_tail = w_rest.partition("}")
+    if head.strip() != w_head.strip() or tail.strip() != w_tail.strip():
+        return False
+    try:
+        have = sorted(_interval(e) for e in elements.split(",") if e.strip())
+    except ValueError:
+        return False
+    merged = []
+    for first, last in have:
+        if merged and first <= merged[-1][1] + 1:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], last))
+        else:
+            merged.append((first, last))
+    for first, last in (_interval(e) for e in w_elements.split(",")):
+        if not any(a <= first and last <= b for a, b in merged):
+            return False
+    return True
+
+
+def rules_problem(listings):
+    """What is missing from the build network's rules in the kernel, from `nft list chain inet
+    agentbox_vm <chain>` of each chain ({chain: its output, None when nft found no such chain});
+    None when every one is there as it should be. The input chain must hold its jump; from_build
+    and forward exactly their rules in their order, forward hooked into forwarding."""
+    for chain, (hook, rules) in _expected().items():
+        text = listings.get(chain)
+        if text is None:
+            return f"the chain {chain} is not loaded"
+        lines = [_words(l) for l in text.splitlines()]
+        lines = [l for l in lines if l and l != "}" and not l.startswith(("table ", "chain "))]
+        if hook and not any(l.startswith(f"type filter hook {hook} ") for l in lines):
+            return f"the chain {chain} is not hooked into {hook}"
+        got = [l for l in lines if not l.startswith("type ")]
+        if chain == "input":
+            if rules[0] not in got:
+                return "the input chain does not send the build network to from_build"
+            continue
+        if len(got) != len(rules) or not all(g == w or "{" in w and _covers(g, w) for g, w in zip(got, rules)):
+            return f"the chain {chain} is not the build network's"
+    return None
+
+
 def _rules():
-    """The VM network rules with the build network's chains are loaded: in agentbox-vmnet's
-    file, nothing of it pending, the service active."""
-    from . import generate            # generate builds the rules from rule_lines()
-    try:
-        with open(generate.VM_RULES) as f:
-            text = f.read().splitlines()
-    except OSError:
-        text = []
-    loaded = all(line in text for line in [input_jump(), *rule_lines()]) and not generate.is_pending("firewall")
-    try:
-        loaded = loaded and states.started(generate.VMNET, 30)
-    except Fail:
-        loaded = False
-    if not loaded:
-        raise Failed("the VM network rules with the build network's are not loaded "
-                     f"(sudo agentbox regenerate; systemctl status {generate.VMNET})")
+    """The build network's rules are loaded in the kernel (not only written): nft lists them."""
+    listings = {}
+    for chain in _expected():
+        try:
+            r = programs.run(["nft", "list", "chain", "inet", "agentbox_vm", chain], 30, c_locale=True, ok=None)
+        except Fail as f:
+            raise Failed(f"the build network's rules cannot be read: {f.message}")
+        listings[chain] = r.stdout if r.returncode == 0 else None
+    why = rules_problem(listings)
+    if why:
+        raise Failed(f"the build network's rules are not loaded in the kernel: {why} "
+                     "(sudo agentbox regenerate; systemctl restart agentbox-vmnet)")
 
 
 def _network():
@@ -203,12 +280,17 @@ def _network():
         active = False
     else:
         xml = virsh.run("net-dumpxml", NETWORK).stdout
-        has = [re.search(rf"<{tag}\b[^>]*\b{attr}=['\"]([^'\"]+)", xml)
-               for tag, attr in (("bridge", "name"), ("ip", "address"), ("forward", "mode"))]
-        if [m.group(1) if m else None for m in has] != [BRIDGE, ADDRESS, "nat"] \
-                or re.search(r"<ip\b[^>]*\bfamily=['\"]ipv6", xml):
-            raise Failed(f"the network {NETWORK} is not the build network (bridge {BRIDGE}, {ADDRESS}, NAT, "
-                         "IPv4 only): remove it (virsh net-destroy, net-undefine)")
+        tags = {tag: re.findall(rf"<{tag}\b[^>]*>", xml) for tag in ("bridge", "ip", "forward")}
+
+        def attr(tag, name):
+            m = re.search(rf"\b{name}=['\"]([^'\"]*)", tags[tag][0])
+            return m.group(1) if m else None
+        if any(len(found) != 1 for found in tags.values()) or (attr("bridge", "name"), attr("ip", "address"),
+                                                                 attr("forward", "mode")) != (BRIDGE, ADDRESS, "nat") \
+                or attr("ip", "family") not in (None, "ipv4") \
+                or (attr("ip", "netmask"), attr("ip", "prefix")) not in (("255.255.255.0", None), (None, "24")):
+            raise Failed(f"the network {NETWORK} is not the build network (bridge {BRIDGE}, one address, "
+                         f"{ADDRESS}/24, NAT, IPv4 only): remove it (virsh net-destroy, net-undefine)")
         active = found[0]
     if not active:
         r = virsh.run("net-start", NETWORK)
@@ -363,8 +445,11 @@ def _prepare(vm, image, job, context, hand_in, src, ids, say):
 
 
 def _disks(vm, image, job, context, hand_in, src, say):
-    _run(["qemu-img", "create", "-q", "-f", "qcow2", "-F", "qcow2", "-b", image, vm["system"], f"{SYSTEM_GIB}G"],
-         120, "qemu-img create of the system disk")
+    # a copy of its own, not an overlay: libvirt hands every file of a disk's chain to QEMU's
+    # user and leaves a backing file so, which would be the checked image every build VM boots
+    shutil.copyfile(image, vm["system"])
+    _run(["qemu-img", "resize", "-q", "-f", "qcow2", vm["system"], f"{SYSTEM_GIB}G"], 120,
+         "qemu-img resize of the system disk")
     _run(["qemu-img", "create", "-q", "-f", "qcow2", vm["scratch"], f"{SCRATCH_GIB}G"], 120,
          "qemu-img create of the scratch disk")
     _input_disk(vm, job, context, hand_in, say)
@@ -381,6 +466,7 @@ def virtiofsd_argv(vm, ids):
             f"--property=User={USER}", f"--property=Group={USER}", "--property=NoNewPrivileges=yes",
             "--property=ProtectSystem=strict", f"--property=ReadWritePaths={vm['out']}", "--property=ProtectHome=yes",
             "--property=PrivateTmp=yes", "--property=RestrictAddressFamilies=AF_UNIX", "--property=MemoryMax=2G",
+            f"--property=LimitFSIZE={MAX_ARCHIVE}",
             "--", VIRTIOFSD, "--fd=3", f"--shared-dir={vm['out']}", "--sandbox=namespace",
             f"--translate-uid=squash-guest:0:{uid}:4294967295", f"--translate-gid=squash-guest:0:{gid}:4294967295"]
 
@@ -427,14 +513,48 @@ def _gone(vm):
 
 
 def _held(folder):
-    """Bytes allocated under folder, links not followed."""
-    total = 0
-    for top, dirs, files in os.walk(folder):
-        for name in dirs + files:
-            try:
-                total += os.lstat(os.path.join(top, name)).st_blocks * 512
-            except OSError:
-                pass
+    """Bytes allocated under folder, through directory file descriptors (no path grows with the
+    depth), links not followed; Failed when it holds more than MAX_OUT_ENTRIES files and
+    directories, directories deeper than MAX_OUT_DEPTH, or cannot be measured. An entry that
+    goes while it is read counts no more."""
+    total, count = 0, 0
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+    def walk(fd, depth):
+        nonlocal total, count
+        with os.scandir(fd) as entries:
+            for entry in entries:
+                count += 1
+                if count > MAX_OUT_ENTRIES:
+                    raise Failed(f"the build VM made more than {MAX_OUT_ENTRIES} files and directories in its "
+                                 "output directory")
+                try:
+                    st = entry.stat(follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                total += st.st_blocks * 512
+                if not stat.S_ISDIR(st.st_mode):
+                    continue
+                if depth >= MAX_OUT_DEPTH:
+                    raise Failed(f"the build VM nested directories deeper than {MAX_OUT_DEPTH} in its output "
+                                 "directory")
+                try:
+                    child = os.open(entry.name, flags, dir_fd=fd)
+                except FileNotFoundError:
+                    continue
+                try:
+                    walk(child, depth + 1)
+                finally:
+                    os.close(child)
+
+    try:
+        top = os.open(folder, flags)
+        try:
+            walk(top, 1)
+        finally:
+            os.close(top)
+    except OSError as e:
+        raise Failed(f"the build VM's output directory cannot be measured: {e.strerror or e}")
     return total
 
 
@@ -460,20 +580,31 @@ def _connect(path):
     return s
 
 
-def _emit(raw, say, seen):
+def _emit(raw, say, seen, keep=True):
     text = clean(raw.decode("utf-8", "replace").rstrip("\r"), False)[:LINE_MAX]
-    say("vm: " + text)
+    if keep:
+        say("vm: " + text)
     try:
         seen(text)
     except Exception as e:           # the progress is lost, never the log
         say(f"agentbox: the Build's progress could not be saved: {e}")
 
 
+def _log(line, logged, say, seen):
+    """One line of the VM's log into the journal while its log is within MAX_LOG bytes, then
+    one note and no more lines (their STEP lines still count); the bytes so far."""
+    logged += len(line) + 1
+    if MAX_LOG < logged <= MAX_LOG + len(line) + 1:
+        say(f"agentbox: the build VM wrote more than {_size(MAX_LOG)} to its log; its further lines are not kept")
+    _emit(line, say, seen, keep=logged <= MAX_LOG)
+    return logged
+
+
 def _relay(vm, limit, say, seen):
     """The log channel into the run's output until QEMU closes it (the VM ended), within the
     limits; Failed when one is reached."""
     started = time.monotonic()
-    conn, heard, pending, watched = None, False, b"", 0.0
+    conn, heard, pending, watched, logged = None, False, b"", 0.0, 0
     try:
         while True:
             now = time.monotonic()
@@ -505,9 +636,9 @@ def _relay(vm, limit, say, seen):
                     break
                 cut = cut if 0 <= cut < LINE_MAX else LINE_MAX
                 line, pending = pending[:cut], pending[cut + 1 if pending[cut:cut + 1] == b"\n" else cut:]
-                _emit(line, say, seen)
+                logged = _log(line, logged, say, seen)
         if pending:
-            _emit(pending, say, seen)
+            _log(pending, logged, say, seen)
     finally:
         if conn is not None:
             conn.close()
@@ -531,16 +662,24 @@ def _stop(unit):
 
 def _end(vm):
     """The domain destroyed, virtiofsd stopped, the disks and the run directory deleted, the
-    output directory taken back by root: whatever happened."""
+    output directory taken back by root: whatever happened. What still runs afterwards (the
+    domain, whose QEMU libvirt reports gone only once it ended, or virtiofsd's units, as systemd
+    says, or cannot say): [what], for the caller to fail the Build on."""
     if not _gone(vm):
         virsh.run("destroy", vm["domain"])
+        deadline = time.monotonic() + END_SECONDS
+        while not _gone(vm) and time.monotonic() < deadline:
+            time.sleep(0.5)
     _stop(vm["unit"])
+    left = [] if _gone(vm) else [f"the domain {vm['domain']}"]
+    left += [unit for unit in (f"{vm['unit']}.service", f"{vm['unit']}.socket") if not states.unit_stopped(unit, 30)]
     shutil.rmtree(vm["work"], ignore_errors=True)
     shutil.rmtree(vm["run"], ignore_errors=True)
     if os.path.isdir(vm["out"]) and not os.path.islink(vm["out"]):
         if os.geteuid() == 0:
             os.chown(vm["out"], 0, 0)
         os.chmod(vm["out"], 0o700)
+    return left
 
 
 def _handed_out(dir_fd, name, cap, uid):
@@ -625,7 +764,12 @@ def build_image(image, build, job, context, hand_in, src, say, seen):
         except OSError as e:
             raise Failed(f"build VM: {e.strerror or e}" + (f" ({e.filename})" if e.filename else ""))
         finally:
-            _end(vm)
+            left = _end(vm)
+            if left:
+                say(f"Still running after the build VM's teardown: {', '.join(left)}")
+        if left:
+            # the VM or virtiofsd could still change what it handed out: nothing of it is taken
+            raise Failed(f"{', '.join(left)} still runs after the build VM's teardown; its output is not taken")
         archive = _outcome(vm, ids[0])
         ok = True
     finally:
@@ -651,7 +795,7 @@ def leftovers(say):
         vm = _named(ident)
         if not _gone(vm):
             virsh.run("destroy", vm["domain"])
-        _stop(vm["unit"])
+        _stop(vm["unit"])     # what still runs is removed by the run after it
         for path in (vm["work"], vm["out"], vm["run"]):
             shutil.rmtree(path, ignore_errors=True)
         say(f"Removed what the build VM {vm['domain']} left")
