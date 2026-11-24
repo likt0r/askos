@@ -5,7 +5,9 @@ directory, its log in the Build's journal.
 The real CLI runs build-run as test_images.py does, with fakes on PATH as well for what a
 build VM needs: systemd-run (virtiofsd's unit, fake_systemd_run.py), xorrisofs
 (fake_xorrisofs.py), nft (the kernel's ruleset, fake_nft.py: by default KERNEL, a real nft's
-listing of the rules agentbox regenerate writes) and virsh's `create`, which starts
+listing of the rules agentbox regenerate writes), mkfs.ext4, mount and umount of the output
+filesystem (fake_mount.py: the output directory stays a plain directory) and virsh's `create`,
+which starts
 fake_build_vm.py as the VM: it runs the real driver from the seed (vm/build-vm/build-vm-run of the Release) in a root of its own, with
 the fake podman as the VM's podman, and its log reaches the Host through the log channel's
 socket as QEMU's would. No test boots a VM.
@@ -43,7 +45,8 @@ KERNEL = {
              "\t\ttype filter hook input priority filter - 5; policy accept;\n"
              '\t\tiifname "abox-*" jump from_vm\n\t\tiifname "aboxbuild" jump from_build\n\t}\n}\n',
     "from_build": "table inet agentbox_vm {\n\tchain from_build {\n\t\tmeta nfproto ipv6 drop\n"
-                  "\t\tudp dport 67 accept\n\t\tip daddr 10.77.0.1 udp dport 53 accept\n"
+                  "\t\tip daddr { 10.77.0.1, 255.255.255.255 } udp dport 67 accept\n"
+                  "\t\tip daddr 10.77.0.1 udp dport 53 accept\n"
                   "\t\tip daddr 10.77.0.1 tcp dport 53 accept\n\t\tdrop\n\t}\n}\n",
     "forward": "table inet agentbox_vm {\n\tchain forward {\n"
                "\t\ttype filter hook forward priority filter - 5; policy accept;\n"
@@ -61,11 +64,16 @@ class BuildVmTest(ImagesTest):
 
     def setUp(self):
         self.env = {"AGENTBOX_BUILD_VM": "1", "AGENTBOX_BUILD_VM_MIN_FREE_BYTES": "0",
+                    "AGENTBOX_BUILD_VM_OUT_BYTES": str(1 << 30),
                     "AGENTBOX_BUILD_VM_WATCH_SECONDS": "1", "AGENTBOX_BUILD_VM_END_SECONDS": "10"}
         super().setUp()
         fake(os.path.join(self.dir, "bin", "systemd-run"), "fake_systemd_run.py")
         fake(os.path.join(self.dir, "bin", "xorrisofs"), "fake_xorrisofs.py")
         fake(os.path.join(self.dir, "bin", "nft"), "fake_nft.py")
+        for program in ("mkfs.ext4", "mount", "umount"):
+            with open(os.path.join(self.dir, "bin", program), "w") as f:
+                f.write(f'#!/bin/sh\nexec python3 "{os.path.join(REPO, "tests", "fake_mount.py")}" {program} "$@"\n')
+            os.chmod(os.path.join(self.dir, "bin", program), 0o755)
         self.write(f"{BUILD_VM}/image.json", json.dumps({"name": IMAGE_44, "release": "44", "sha256": "0" * 64,
                                                          "checked": 1}))
         self.write(f"{BUILD_VM}/images/{IMAGE_44}", "{}")
@@ -129,8 +137,8 @@ class BuildVmTest(ImagesTest):
 
     def leftover(self, ident):
         """What of the build VM `ident` is still on the Host."""
-        return [p for p in (f"{BUILD_VM}/{ident}", f"{BUILD_VM}/out-{ident}", f"{RUN}/{ident}")
-                if os.path.lexists(self.path(p))]
+        return [p for p in (f"{BUILD_VM}/{ident}", f"{BUILD_VM}/out-{ident}", f"{BUILD_VM}/out-{ident}.img",
+                            f"{RUN}/{ident}") if os.path.lexists(self.path(p))]
 
     def out(self, ident):
         return self.path(f"{BUILD_VM}/out-{ident}")
@@ -194,8 +202,47 @@ class BuildInVmTest(BuildVmTest):
         # nothing of the archive reached the Host's storage, and the previous Build stays
         self.assertFalse(os.path.isdir(self.image_store(f"localhost/agentbox/base:{new['build']}")))
         self.assertEqual(self.current(), "base-20261101.qcow2")
-        # the VM's disks and run directory are gone; only the output directory stays
-        self.assertEqual(self.leftover(ident), [f"{BUILD_VM}/out-{ident}"])
+        # the VM's disks and run directory are gone; only the output filesystem stays
+        self.assertEqual(self.leftover(ident), [f"{BUILD_VM}/out-{ident}", f"{BUILD_VM}/out-{ident}.img"])
+
+    def test_the_output_directory_is_a_filesystem_of_its_own_mounted_read_only_once_the_vm_ended(self):
+        """virtiofs has no quota: a filesystem of a fixed size bounds what the VM writes there,
+        however fast; nothing changes it once the VM ended."""
+        self.in_vm()
+        ident = self.ident()
+        image, out = self.out(ident) + ".img", self.out(ident)
+        st = os.stat(image)
+        self.assertEqual((st.st_size, st.st_mode & 0o777), (1 << 30, 0o600))
+        self.assertLess(st.st_blocks * 512, 1 << 20)            # sparse
+        uid, gid = os.getuid(), os.getgid()
+        self.assertEqual(self.calls("mkfs.ext4")[0]["argv"], ["-q", "-F", "-m", "0", "-E", f"root_owner={uid}:{gid}",
+                                                              image])
+        self.assertEqual([c["argv"] for c in self.calls("mount")], [
+            ["-t", "ext4", "-o", "loop,nosuid,nodev,noexec", image, out],
+            ["-o", "remount,ro,nosuid,nodev,noexec", out]])
+        # the read-only mount comes once virtiofsd's units were stopped and found inactive
+        calls = self.calls()
+        stop = next(i for i, c in enumerate(calls) if c["cmd"] == "systemctl" and c["argv"][0] == "stop")
+        checked = max(i for i, c in enumerate(calls) if c["cmd"] == "systemctl" and c["argv"][0] == "is-active"
+                      and c["argv"][-1].startswith("agentbox-buildvm-"))
+        remount = next(i for i, c in enumerate(calls) if c["cmd"] == "mount" and "remount" in c["argv"][1])
+        self.assertLess(stop, checked)
+        self.assertLess(checked, remount)
+        self.assertEqual(self.calls("umount"), [])
+        # the next run unmounts and deletes it
+        self.forget_calls()
+        del self.env["AGENTBOX_BUILD_VM"]
+        self.built()
+        self.assertEqual([c["argv"] for c in self.calls("umount")], [[out]])
+        self.assertEqual(self.leftover(ident), [])
+
+    def test_without_room_for_the_output_filesystem_no_build_vm_starts(self):
+        self.env["AGENTBOX_BUILD_VM_OUT_BYTES"] = str(1 << 60)
+        new, _ = self.in_vm()
+        self.assertEqual(new["error"], f"not enough free space under {self.path(BUILD_VM)} for a build VM's output: "
+                                       f"it needs {(1 << 60) >> 30} GiB")
+        self.assertEqual(self.calls("create") + self.calls("mkfs.ext4"), [])
+        self.assertEqual(self.leftover(self.ident()), [])
 
     def test_the_vm_is_a_transient_domain_of_fixed_size_that_nobody_logs_into(self):
         self.in_vm()
@@ -252,8 +299,10 @@ class BuildInVmTest(BuildVmTest):
         with open(os.path.join(self.guest(), "calls.log")) as f:
             said = f.read().splitlines()
         scratch = os.path.join(self.guest(), "dev/disk/by-id/virtio-agentbox-scratch")
-        self.assertEqual(said[:2], [f"mkfs.btrfs -q -f {scratch}",
-                                    f"mount {scratch} {os.path.join(self.guest(), 'var/lib/containers')}"])
+        storage = os.path.join(self.guest(), "var/lib/containers")
+        # the new filesystem gets the SELinux labels of /var/lib/containers before podman uses it
+        self.assertEqual(said[:3], [f"mkfs.btrfs -q -f {scratch}", f"mount {scratch} {storage}",
+                                    f"restorecon -R {storage}"])
         self.assertIn(f"mount -t virtiofs agentbox-out {os.path.join(self.guest(), 'run/agentbox-out')}", said)
         self.assertFalse(os.path.exists(work))
         # root's alone while they were there (the input disk holds a Recipe); libvirt hands them to QEMU
@@ -321,16 +370,16 @@ class BuildInVmTest(BuildVmTest):
         self.assertIn("--property=User=agentbox-buildvm", argv)
         self.assertIn("--property=Group=agentbox-buildvm", argv)
         self.assertIn("--property=NoNewPrivileges=yes", argv)
-        # no file it writes for the VM grows past the archive's cap, between the size checks too
-        self.assertIn(f"--property=LimitFSIZE={64 << 30}", argv)
         # systemd (root) makes the socket QEMU connects to; virtiofsd gets it as fd 3
         self.assertIn(f"--socket-property=ListenStream={run}/virtiofs.sock", argv)
         self.assertIn("--socket-property=SocketGroup=qemu", argv)
         self.assertIn("--socket-property=SocketMode=0660", argv)
         uid, gid = os.getuid(), os.getgid()    # agentbox-buildvm's, as a test can give no other
+        # root of a user namespace that maps only agentbox-buildvm, every guest id squashed onto it
         self.assertEqual(argv[argv.index("--") + 1:], [
             "/usr/libexec/virtiofsd", "--fd=3", f"--shared-dir={out}", "--sandbox=namespace",
-            f"--translate-uid=squash-guest:0:{uid}:4294967295", f"--translate-gid=squash-guest:0:{gid}:4294967295"])
+            f"--uid-map=:0:{uid}:1:", f"--gid-map=:0:{gid}:1:",
+            "--translate-uid=squash-guest:0:0:4294967295", "--translate-gid=squash-guest:0:0:4294967295"])
         # its units stopped once the VM ended
         stops = [c["argv"] for c in self.calls("systemctl") if c["argv"][0] == "stop"]
         self.assertIn(["stop", f"agentbox-buildvm-{ident}.socket", f"agentbox-buildvm-{ident}.service"], stops)
@@ -446,7 +495,8 @@ class NetworkTest(BuildVmTest):
         self.assertIn('    iifname "aboxbuild" jump from_build', rules[rules.index("  chain input {"):])
         start = rules.index("  chain from_build {") + 1
         chain = rules[start:rules.index("  }", start)]
-        self.assertEqual(chain, ["    meta nfproto ipv6 drop", "    udp dport 67 accept",
+        self.assertEqual(chain, ["    meta nfproto ipv6 drop",
+                                 "    ip daddr { 10.77.0.1, 255.255.255.255 } udp dport 67 accept",
                                  "    ip daddr 10.77.0.1 udp dport 53 accept",
                                  "    ip daddr 10.77.0.1 tcp dport 53 accept", "    drop"])
         start = rules.index("  chain forward {") + 1
@@ -477,6 +527,9 @@ class NetworkTest(BuildVmTest):
                  "the chain from_build is not the build network's"),
                 ("a range missing", {**KERNEL, "forward": forward.replace(" 192.168.0.0/16,", "")},
                  "the chain forward is not the build network's"),
+                ("a wider accept", {**KERNEL, "from_build": KERNEL["from_build"].replace(
+                    "10.77.0.1, 255.255.255.255", "10.77.0.0/24, 255.255.255.255")},
+                 "the chain from_build is not the build network's"),
                 ("not hooked", {**KERNEL, "forward": forward.replace("hook forward", "hook output")},
                  "the chain forward is not hooked into forward")):
             with self.subTest(broken=broken):
@@ -581,6 +634,14 @@ class LimitTest(BuildVmTest):
         new, _ = self.in_vm()
         self.assertEqual(new["error"], "the build VM made more than 50 files and directories in its output directory")
 
+    def test_empty_lines_count_toward_the_log_cap(self):
+        self.env["AGENTBOX_BUILD_VM_LOG_BYTES"] = "2000"
+        self.scenario(build_vm={"lines": ["\n"] * 100})
+        new, out = self.in_vm()
+        self.assertEqual(out.count("the build VM wrote more than 2000 bytes to its log; its further lines are "
+                                   "not kept"), 1)
+        self.assertEqual(out.splitlines().count("vm: "), 2000 // 64)
+
     def test_a_log_beyond_its_cap_is_cut_with_one_note(self):
         self.env["AGENTBOX_BUILD_VM_LOG_BYTES"] = "2000"
         self.scenario(build_vm={"lines": [f"line {n:03} " + "y" * 40 + "\n" for n in range(100)]})
@@ -597,11 +658,17 @@ class LimitTest(BuildVmTest):
         self.assertEqual(rec["progress"]["step"], rec["progress"]["steps"])
 
     def test_too_little_free_space_on_the_host_ends_the_vm(self):
-        self.env["AGENTBOX_BUILD_VM_MIN_FREE_BYTES"] = str(1 << 60)
-        self.scenario(build_vm={"podman": {"build_waits": {"step": 1, "file": "never"}}})
+        """Room at the start (for the output filesystem and the rest), then the VM takes it."""
+        st = os.statvfs(self.root)
+        free = st.f_bavail * st.f_frsize
+        self.env["AGENTBOX_BUILD_VM_MIN_FREE_BYTES"] = str(free - (100 << 20))
+        self.env["AGENTBOX_BUILD_VM_OUT_BYTES"] = str(1 << 20)
+        self.scenario(build_vm={"out_space": 256 << 20, "podman": {"build_waits": {"step": 1, "file": "never"}}})
         new, _ = self.in_vm()
-        self.assertEqual(new["error"], f"less than {(1 << 60) >> 30} GiB free under {self.path('var/lib/agentbox')}")
+        self.assertEqual(new["error"], f"less than {free - (100 << 20)} bytes free under "
+                                       f"{self.path('var/lib/agentbox')}")
         self.assertEqual(len(self.calls("destroy")), 1)
+        self.assertEqual(self.leftover(self.ident()), [])
 
 
 class InterruptionTest(BuildVmTest):

@@ -581,7 +581,7 @@ flowchart LR
 - The build VMs' network `agentbox-build` (bridge `aboxbuild`, `10.77.0.0/24`, NAT, IPv4 only)
   gives a build VM open egress, without the proxy or an Allowlist
   ([ADR 0025](docs/adr/0025-builds-run-in-a-throwaway-build-vm.md)): the VM network rules let it
-  reach the Host only for DHCP and DNS on `10.77.0.1`, drop what it sends over IPv6 or to
+  reach the Host only for DHCP (to `10.77.0.1` or broadcast) and DNS on `10.77.0.1`, drop what it sends over IPv6 or to
   private, shared, link-local, loopback, multicast and reserved addresses (the home network,
   the VMs, every address of the Host), and forward nothing to a build VM that it did not ask
   for. Its bridge is outside the `abox-*` names of the VM networks' rules. A build VM's start
@@ -1198,41 +1198,46 @@ Host after every Build
   - **The VM**: a transient domain (`virsh create`, never defined) from virt-install's
     `--print-xml`, destroyed on power-off, reboot and crash, with 8 GiB of memory, as many vCPUs
     as the Host has but at most 8, no balloon, no graphics, no console and no guest agent
-    channel. Its disks are new and deleted after it, whatever happened: a copy of the checked
-    image grown to 20 GiB, with no backing file (libvirt hands every file of a disk's chain to
-    QEMU's user and leaves a backing file so), an empty sparse scratch disk of 40 GiB
-    for its container storage, the input disk (one raw, read-only tar: `job.json`, the build
-    context, the images) and the NoCloud seed (`cidata`, written with `xorrisofs`), root's
-    alone (`0600`) while they are there. The seed holds the installed Release's
+    channel. Its disks are new, root's and `0600` when made (libvirt hands them to QEMU's user
+    while the VM runs), and deleted after it, whatever happened: a copy of the checked image
+    grown to 20 GiB, with no backing file (libvirt hands every file of a disk's chain to QEMU's
+    user and leaves a backing file so), an empty sparse scratch disk of 40 GiB for its container
+    storage, which the driver labels for SELinux as `/var/lib/containers` (`restorecon -R`), the
+    input disk (one raw, read-only tar: `job.json`, the build context, the images) and the
+    NoCloud seed (`cidata`, written with `xorrisofs`). The seed holds the installed Release's
     `vm/build-vm/user-data`, which creates no user, masks sshd and the guest agent, installs
     and upgrades nothing and powers the VM off when the driver `build-vm-run` (also from the
     seed) ends, also after a failure.
-  - **What comes out**: its output directory, new and empty, is served over virtiofs by a
-    virtiofsd Agent Box starts, not libvirt's, which runs as root: a transient unit of the
-    service user `agentbox-buildvm`, whose socket systemd makes (`root:qemu`, `0660`) and hands
-    over, with virtiofsd's own sandbox and every guest uid and gid squashed onto
-    `agentbox-buildvm`, so every file a build VM writes is that user's on the Host, and none
-    larger than 64 GiB (its file size limit). After the teardown the domain must be gone and
-    virtiofsd's units inactive, else the Build fails and nothing of the output is taken. Then
-    root takes the directory back and opens exactly `result.json` and
-    `image.oci.tar` in it, never through a link: regular files of `agentbox-buildvm` with one
-    link, at most 64 KiB and 64 GiB. A failed VM's reason comes from `result.json`, as text.
+  - **What comes out**: its output directory is the root of a filesystem of its own, so what
+    the VM writes there is bounded however fast it writes: an ext4 of 65 GiB (the archive's
+    64 GiB and one more) in a sparse image file, made by root and loop-mounted
+    `nosuid,nodev,noexec`; a build VM starts only with room for all of it and 10 GiB besides.
+    It is served over virtiofs by a virtiofsd Agent Box starts, not libvirt's, which runs as
+    root: a transient unit of the service user `agentbox-buildvm`, whose socket systemd makes
+    (`root:qemu`, `0660`) and hands over, in virtiofsd's own sandbox as the root of a user
+    namespace that maps only `agentbox-buildvm`, every guest uid and gid squashed onto it, so
+    every file a build VM writes is that user's on the Host. After the teardown the domain must
+    be gone and virtiofsd's units inactive, else the Build fails and nothing of the output is
+    taken. Then root takes the directory back, mounts the filesystem read-only and opens
+    exactly `result.json` and `image.oci.tar` in it, never through a link: regular files of
+    `agentbox-buildvm` with one link, at most 64 KiB and 64 GiB. A failed VM's reason comes
+    from `result.json`, as text; a failure unmounts and deletes the filesystem.
   - **Its log**: the virtio-serial channel `org.agentbox.build-log` reaches the Build run line
     by line; each line, cleaned like any text from a VM (control characters out, at most
     4 KiB), goes with `vm: ` in front into the Build's journal, so `agentbox build-log`,
     `agentbox watch` and the Control Room show it, and podman's `STEP` lines there are the
     Build's progress. A VM that writes faster than the Host reads waits. Of 64 MiB of log per
-    build VM, the rest is not kept: one note says so, its `STEP` lines still count.
+    build VM, each line counting 64 bytes more (so empty lines count too), the rest is not
+    kept: one note says so, its `STEP` lines still count.
   - **Limits**: the VM is destroyed and the Build fails when it writes no line within
-    10 minutes of its start, runs longer than 4 hours, holds more than 160 GiB in its output
-    directory or leaves less than 10 GiB free under `/var/lib/agentbox`. The output directory is
-    measured every 2 seconds through directory file descriptors, links not followed; more than
-    10,000 files and directories in it, directories deeper than 32, or a walk that cannot finish
-    fail the Build as well. Stopping the Build
-    destroys it and stops its virtiofsd; the next Build run removes whatever a killed run left.
-    A Host without KVM, without a checked image, with less than 8 GiB of memory available or
-    without the build network's rules loaded in the kernel (as `nft list chain` shows them) fails
-    the Build: it never falls back to the Host.
+    10 minutes of its start, runs longer than 4 hours or leaves less than 10 GiB free under
+    `/var/lib/agentbox`. Its output directory is measured every 2 seconds through directory
+    file descriptors, links not followed; more than 10,000 files and directories in it,
+    directories deeper than 32, or a walk that cannot finish fail the Build as well. Stopping
+    the Build destroys it and stops its virtiofsd; the next Build run removes whatever a killed
+    run left, and the output a Build left. A Host without KVM, without a checked image, with
+    less than 8 GiB of memory available or without the build network's rules loaded in the
+    kernel (as `nft list chain` shows them) fails the Build: it never falls back to the Host.
 - What the Base image downloads, it downloads inside the Build container, where Fedora's
   packages, the npm tools and Orca are chosen, fetched and checked; no root process on the
   Host parses what the internet answers (#113). Orca comes from its GitHub release
@@ -2325,7 +2330,9 @@ laptops.
   image or checks a real Fedora signature or qcow2 header (fakes play `gpgv`, `setpriv` and
   `qemu-img`; a test runs the Host's own `gpg` and `gpgv`, when there are, on a throwaway key),
   boots a build VM (that libvirt and SELinux let QEMU use the socket of an unprivileged
-  virtiofsd and the log channel's socket, that virtiofsd's sandbox works as `agentbox-buildvm`,
+  virtiofsd and the log channel's socket, that virtiofsd's sandbox works as `agentbox-buildvm`
+  with its uid and gid maps on the loop-mounted output filesystem (whose SELinux labels it must
+  accept), that `restorecon` labels the scratch disk as podman needs it,
   that the Fedora Cloud image runs `build-vm-run` from its seed with podman, btrfs and virtiofs,
   and that the build network's rules hold in the kernel; fakes play `systemd-run`, `xorrisofs`,
   `skopeo`, `virsh create` and the VM, which runs the real driver against a fake podman),

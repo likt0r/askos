@@ -257,7 +257,7 @@ table inet agentbox_vm {
   }
   chain from_build {
     meta nfproto ipv6 drop
-    udp dport 67 accept
+    ip daddr { 10.77.0.1, 255.255.255.255 } udp dport 67 accept
     ip daddr 10.77.0.1 udp dport 53 accept
     ip daddr 10.77.0.1 tcp dport 53 accept
     drop

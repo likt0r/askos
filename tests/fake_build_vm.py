@@ -14,7 +14,7 @@ The VM has a root of its own, FAKE_VIRSH_DIR/guest-<domain without "agentbox-">:
                                  --shared-dir of the systemd-run whose socket the domain names)
   seed/                          the files of the seed (fake_xorrisofs.py's JSON), kept
   disk-modes.json                {target: mode} of the disk files the domain names
-  usr/bin/                       mkfs.btrfs, mount and umount that only record (in calls.log
+  usr/bin/                       mkfs.btrfs, mount, umount and restorecon that only record (in calls.log
                                  there) and podman, the Host's fake_podman.py with the VM's own
                                  store and calls (FAKE_DIR is the root); run.json comes from the
                                  Host's test directory, scenario.json from "build_vm" "podman"
@@ -29,6 +29,7 @@ scenario.json "build_vm":
   out_deep    {"depth": n, "bytes": m}: directories n deep in its output directory, made through
               directory file descriptors as a VM can, with a file of m bytes at the bottom
   out_many    n: empty files in its output directory
+  out_space   bytes it allocates (fallocate) in its output directory once the Host reads its log
   stays       true: the domain does not end when the driver ends (as if QEMU hung)
   podman      the scenario of the VM's podman (fake_podman.py), e.g. build_waits, podman_fails
   tamper      after the driver: "symlink" puts a link to a Host file in place of
@@ -108,7 +109,7 @@ def prepare(root, args, conf):
     os.makedirs(os.path.join(root, "run"), exist_ok=True)
     os.symlink(out, os.path.join(root, "run", "agentbox-out"))
     calls = os.path.join(root, "calls.log")
-    for name in ("mkfs.btrfs", "mount", "umount"):
+    for name in ("mkfs.btrfs", "mount", "umount", "restorecon"):
         tool(os.path.join(root, "usr/bin", name), f'echo "{name} $*" >> "{calls}"\n')
     tool(os.path.join(root, "usr/bin/podman"),
          f'FAKE_DIR="{root}" exec "{sys.executable}" "{os.path.join(REPO, "tests", "fake_podman.py")}" "$@"\n')
@@ -164,6 +165,10 @@ def main(domain, fd, xml_file):
         while time.monotonic() < end and os.path.isdir(DIR):
             time.sleep(0.5)
         return
+    if conf.get("out_space"):
+        fd = os.open(os.path.join(out, "space"), os.O_WRONLY | os.O_CREAT, 0o644)
+        os.posix_fallocate(fd, 0, conf["out_space"])
+        os.close(fd)
     for line in conf.get("lines") or []:
         conn.sendall(line.encode("latin-1"))
     if conf.get("driver", True):

@@ -8,7 +8,9 @@ which ends it for good.
      port LOG, whose other end the Host reads line by line into the Build's journal; a write
      waits while the Host does not read
   2. the scratch disk (serial agentbox-scratch), formatted, becomes /var/lib/containers:
-     Podman's storage, and WORK, where the input disk is unpacked
+     Podman's storage, and WORK, where the input disk is unpacked; restorecon gives the new
+     filesystem the SELinux labels of /var/lib/containers (container_var_lib_t), as for any
+     storage newly mounted where the policy names a path
   3. the output directory, the virtiofs tag agentbox-out, mounted at OUT
   4. the input disk (serial agentbox-build-input), a tar the Host wrote, unpacked into WORK:
      job.json, context.tar and images/<n>.oci.tar
@@ -164,6 +166,7 @@ def main():
             os.makedirs(here(STORAGE), exist_ok=True)
             run(log, ["mkfs.btrfs", "-q", "-f", here(SCRATCH)], "mkfs.btrfs of the scratch disk")
             run(log, ["mount", here(SCRATCH), here(STORAGE)], "mount of the scratch disk")
+            run(log, ["restorecon", "-R", here(STORAGE)], "restorecon of the scratch disk")
             os.makedirs(here(OUT), exist_ok=True)
             run(log, ["mount", "-t", "virtiofs", OUT_TAG, here(OUT)], "mount of the output directory")
             mounted = True

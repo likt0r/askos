@@ -11,13 +11,13 @@ which the next Build run removes (images.py).
 One build VM, named DOMAIN_PREFIX + its id (<image>-<build>-build):
 
   before   /dev/kvm; the checked image (build_vm.current()); MemAvailable of at least MEMORY_MIB;
-           the VM network rules loaded with the chains of the build network (rule_lines(), in
-           agentbox-vmnet's file, nothing pending); the network NETWORK, defined and started
-           when it is not, refused when it is not the one network_xml() describes
+           room for its output filesystem; the build network's rules loaded in the kernel (as
+           `nft list chain` shows them, rules_problem()); the network NETWORK, defined and
+           started when it is not, refused when it is not the one network_xml() describes
   its disks, in BUILD_VM/<id>/ (root; BUILD_VM and it 0711, so QEMU, as qemu, reaches the
-           files libvirt hands it), made for it and deleted after it, whatever happened:
-             system.qcow2   a new qcow2 overlay of SYSTEM_GIB on the checked image (backing
-                            format named); cloud-init grows the root filesystem into it
+           files libvirt hands it), 0600 when made, deleted after it, whatever happened:
+             system.qcow2   a copy of the checked image grown to SYSTEM_GIB, no backing file;
+                            cloud-init grows the root filesystem into it
              scratch.qcow2  new, empty, sparse, SCRATCH_GIB: the VM's /var/lib/containers
              input.tar      the input disk, raw and read-only (serial INPUT_SERIAL): job.json,
                             context.tar (a Recipe's tar as it is, else a tar of the Release's
@@ -26,14 +26,16 @@ One build VM, named DOMAIN_PREFIX + its id (<image>-<build>-build):
              seed.iso       the NoCloud seed (volume cidata, xorrisofs as virt-install writes
                             it): user-data and build-vm-run of the run's copy of the Release
                             (vm/build-vm/), meta-data naming the VM
-  its output directory BUILD_VM/out-<id>, new and empty, USER's (0700) while the VM runs,
-           served as the virtiofs tag OUT_TAG by a virtiofsd Agent Box starts, not libvirt's
-           (which runs as root): a transient unit (systemd-run) of USER, whose listening socket
-           systemd makes (root:qemu 0660, in RUN/<id>, root:qemu 0770) and hands it as fd 3,
-           so root never touches a file USER could replace; with virtiofsd's own sandbox
-           (namespace) and every guest uid and gid squashed onto USER's
-           (--translate-uid/--translate-gid squash-guest), so every file the VM writes is
-           USER's on the Host whatever uid or setuid bit the VM gives it
+  its output directory BUILD_VM/out-<id>: the root of a filesystem of its own, so what the VM
+           writes there is bounded however fast it writes: an ext4 of OUT_BYTES in a sparse
+           image file BUILD_VM/out-<id>.img (root, 0600), loop-mounted nosuid,nodev,noexec, its
+           root USER's (0700) while the VM runs; served as the virtiofs tag OUT_TAG by a
+           virtiofsd Agent Box starts, not libvirt's (which runs as root): a transient unit
+           (systemd-run) of USER, whose listening socket systemd makes (root:qemu 0660, in
+           RUN/<id>, root:qemu 0770) and hands it as fd 3, so root never touches a file USER
+           could replace; in its own sandbox (namespace) as the root of a user namespace that
+           maps only USER, every guest uid and gid squashed onto it, so every file the VM
+           writes is USER's on the Host whatever uid or setuid bit the VM gives it
   the domain: virt-install --print-xml (as every VM, ADR 0004) of MEMORY_MIB, as many vCPUs as
            the Host has but at most MAX_VCPUS, memfd shared memory (virtiofs), no balloon, no
            graphics, no console, no guest agent, the log channel (LOG_CHANNEL, a Unix socket
@@ -41,18 +43,22 @@ One build VM, named DOMAIN_PREFIX + its id (<image>-<build>-build):
            power-off, reboot and crash
   its log: the Build run reads the channel line by line, each line cleaned like any text
            from a VM (control characters out, at most LINE_MAX characters) and written with
-           "vm: " in front to the run's output, the Build unit's journal; podman's STEP lines
-           among them go to the caller (seen), which keeps the Build's progress. The Host reads
-           at its own pace: a VM that writes faster waits.
+           "vm: " in front to the run's output, the Build unit's journal, up to MAX_LOG bytes
+           (each line counting LINE_OVERHEAD more); podman's STEP lines among them go to the
+           caller (seen), which keeps the Build's progress. The Host reads at its own pace: a VM
+           that writes faster waits.
   limits:  no line within BOOT_SECONDS of the start (it did not boot), BUILD_SECONDS in all,
-           more than MAX_OUT bytes allocated in the output directory or less than MIN_FREE
-           bytes free under /var/lib/agentbox (checked every WATCH_SECONDS): the VM is
-           destroyed and the Build fails with that reason
+           more than OUT_BYTES, MAX_OUT_ENTRIES files and directories or MAX_OUT_DEPTH levels
+           in the output directory, or less than MIN_FREE bytes free under /var/lib/agentbox
+           (checked every WATCH_SECONDS): the VM is destroyed and the Build fails with that
+           reason
   after:   the domain destroyed if it is still there, virtiofsd's units stopped, the disks
-           and RUN/<id> deleted, the output directory taken back by root (0700); then, the VM
-           and virtiofsd gone, root opens exactly result.json and image.oci.tar in it, never
-           through a link: regular files of USER with one link, result.json at most
-           MAX_RESULT, the archive at most MAX_ARCHIVE. A failure deletes the output directory.
+           and RUN/<id> deleted, the output directory taken back by root (0700); the domain
+           must be gone and virtiofsd's units inactive, else the Build fails. Then the output
+           filesystem is mounted read-only, and root opens exactly result.json and
+           image.oci.tar in it, never through a link: regular files of USER with one link,
+           result.json at most MAX_RESULT, the archive at most MAX_ARCHIVE. A failure unmounts
+           and deletes the output filesystem.
 
 An interruption (the run's SIGTERM handler, Ctrl+C) runs the same teardown; after a crash of
 the run, the next run removes whatever a build VM left (leftovers()).
@@ -105,12 +111,13 @@ BOOT_SECONDS = paths.tunable("AGENTBOX_BUILD_VM_BOOT_SECONDS", 600)
 BUILD_SECONDS = paths.tunable("AGENTBOX_BUILD_VM_SECONDS", 4 * 3600)
 WATCH_SECONDS = paths.tunable("AGENTBOX_BUILD_VM_WATCH_SECONDS", 2)
 END_SECONDS = paths.tunable("AGENTBOX_BUILD_VM_END_SECONDS", 60)   # from its log's end to its domain's
-MAX_OUT = paths.tunable("AGENTBOX_BUILD_VM_OUT_BYTES", 160 << 30)
 MAX_OUT_ENTRIES = paths.tunable("AGENTBOX_BUILD_VM_OUT_ENTRIES", 10000)   # files and directories in it
 MAX_OUT_DEPTH = 32                  # directories within directories in it
 MAX_LOG = paths.tunable("AGENTBOX_BUILD_VM_LOG_BYTES", 64 << 20)          # of its log, kept in the journal
 MIN_FREE = paths.tunable("AGENTBOX_BUILD_VM_MIN_FREE_BYTES", 10 << 30)
 MAX_ARCHIVE = 64 << 30
+OUT_BYTES = paths.tunable("AGENTBOX_BUILD_VM_OUT_BYTES", MAX_ARCHIVE + (1 << 30))   # its output filesystem
+LINE_OVERHEAD = 64                  # what a line of its log counts on top of its bytes
 MAX_RESULT = 64 << 10
 LINE_MAX = 4096
 SKOPEO_SECONDS = 3600
@@ -162,7 +169,7 @@ def rule_lines():
     return [
         "  chain from_build {",
         "    meta nfproto ipv6 drop",
-        "    udp dport 67 accept",
+        f"    ip daddr {{ {ADDRESS}, 255.255.255.255 }} udp dport 67 accept",
         f"    ip daddr {ADDRESS} udp dport 53 accept",
         f"    ip daddr {ADDRESS} tcp dport 53 accept",
         "    drop",
@@ -206,9 +213,10 @@ def _interval(element):
     return int(net.network_address), int(net.broadcast_address)
 
 
-def _covers(found, wanted):
+def _same_set(found, wanted):
     """Whether the set rule `found` (as nft lists it, which may merge adjacent ranges) is the
-    rule `wanted` with every range of it covered."""
+    rule `wanted`, its set holding exactly the same addresses: no fewer (a drop that lets some
+    through) and no more (an accept that lets more in)."""
     head, _, rest = found.partition("{")
     elements, _, tail = rest.partition("}")
     w_head, _, w_rest = wanted.partition("{")
@@ -219,16 +227,17 @@ def _covers(found, wanted):
         have = sorted(_interval(e) for e in elements.split(",") if e.strip())
     except ValueError:
         return False
+    return _merged(have) == _merged(sorted(_interval(e) for e in w_elements.split(",")))
+
+
+def _merged(intervals):
     merged = []
-    for first, last in have:
+    for first, last in intervals:
         if merged and first <= merged[-1][1] + 1:
             merged[-1] = (merged[-1][0], max(merged[-1][1], last))
         else:
             merged.append((first, last))
-    for first, last in (_interval(e) for e in w_elements.split(",")):
-        if not any(a <= first and last <= b for a, b in merged):
-            return False
-    return True
+    return merged
 
 
 def rules_problem(listings):
@@ -249,7 +258,7 @@ def rules_problem(listings):
             if rules[0] not in got:
                 return "the input chain does not send the build network to from_build"
             continue
-        if len(got) != len(rules) or not all(g == w or "{" in w and _covers(g, w) for g, w in zip(got, rules)):
+        if len(got) != len(rules) or not all(g == w or "{" in w and _same_set(g, w) for g, w in zip(got, rules)):
             return f"the chain {chain} is not the build network's"
     return None
 
@@ -428,7 +437,8 @@ def _prepare(vm, image, job, context, hand_in, src, ids, say):
     """The VM's disks, its output directory and its run directory, all new. The disks are root's
     alone (0600, libvirt hands them to QEMU while the VM runs): the input disk holds a Recipe."""
     state_files.directory(paths.BUILD_VM, 0o711)
-    for path in (vm["work"], vm["out"], vm["run"]):
+    _drop_out(vm)
+    for path in (vm["work"], vm["run"]):
         shutil.rmtree(path, ignore_errors=True)
     state_files.directory(vm["work"], 0o711)
     umask = os.umask(0o077)
@@ -436,12 +446,46 @@ def _prepare(vm, image, job, context, hand_in, src, ids, say):
         _disks(vm, image, job, context, hand_in, src, say)
     finally:
         os.umask(umask)
-    os.mkdir(vm["out"], 0o700)
-    os.chown(vm["out"], *ids)
+    _out_fs(vm, ids)
     qemu_gid = state_files.group_id("qemu", "is libvirt installed?")
     state_files.directory(os.path.dirname(RUN), 0o755)
     state_files.directory(RUN, 0o755)
     state_files.directory(vm["run"], 0o770, qemu_gid)
+
+
+def _out_fs(vm, ids):
+    """The output directory, the root of a filesystem of its own of OUT_BYTES (ext4 in a sparse
+    image file, loop-mounted nosuid,nodev,noexec), USER's: virtiofs has no quota, this bounds
+    what the VM writes whatever it does between two checks. There must be room for all of it."""
+    st = os.statvfs(paths.BUILD_VM)
+    if st.f_bavail * st.f_frsize < OUT_BYTES + MIN_FREE:
+        raise Failed(f"not enough free space under {paths.BUILD_VM} for a build VM's output: it needs "
+                     f"{_size(OUT_BYTES + MIN_FREE)}")
+    fd = os.open(vm["out_image"], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        os.ftruncate(fd, OUT_BYTES)
+    finally:
+        os.close(fd)
+    uid, gid = ids
+    _run(["mkfs.ext4", "-q", "-F", "-m", "0", "-E", f"root_owner={uid}:{gid}", vm["out_image"]], 300,
+         "mkfs.ext4 of the output filesystem")
+    os.mkdir(vm["out"], 0o700)
+    _run(["mount", "-t", "ext4", "-o", "loop,nosuid,nodev,noexec", vm["out_image"], vm["out"]], 60,
+         "mount of the output filesystem")
+    os.chown(vm["out"], uid, gid)
+    os.chmod(vm["out"], 0o700)
+
+
+def _drop_out(vm):
+    """The output filesystem unmounted, its directory and image file deleted."""
+    if os.path.isdir(vm["out"]) and not os.path.islink(vm["out"]):
+        try:
+            programs.run(["umount", vm["out"]], 60, ok=None, c_locale=True)
+        except Fail:
+            pass
+        if not os.path.ismount(vm["out"]):
+            shutil.rmtree(vm["out"], ignore_errors=True)
+    state_files.remove(vm["out_image"], fail=False)
 
 
 def _disks(vm, image, job, context, hand_in, src, say):
@@ -458,7 +502,16 @@ def _disks(vm, image, job, context, hand_in, src, say):
 
 def virtiofsd_argv(vm, ids):
     """systemd-run of virtiofsd as USER, socket-activated: systemd makes the socket (root:qemu
-    0660) and hands it over as fd 3."""
+    0660) and hands it over as fd 3.
+
+    Unprivileged, virtiofsd's namespace sandbox makes a user namespace of its own; --uid-map and
+    --gid-map map USER, and only it, to root there (virtiofsd README, "--uid-map ... map your own
+    UID to a single UID in the namespace: --uid-map=:0:1000:1: would map UID 1000 to root's UID in
+    the namespace"; src/sandbox.rs, setup_id_mappings writes such a single own-id map itself, no
+    newuidmap, and enter_namespace then becomes root in the namespace). Its translation squashes
+    every guest uid and gid onto the namespace's 0, which is USER on the Host. Without the maps it
+    maps USER to itself and cannot become root in the namespace ("Couldn't set the process uid as
+    root", virtiofsd 1.14)."""
     uid, gid = ids
     return ["systemd-run", "--quiet", "--collect", f"--unit={vm['unit']}",
             f"--socket-property=ListenStream={vm['fs_socket']}", "--socket-property=SocketUser=root",
@@ -466,9 +519,9 @@ def virtiofsd_argv(vm, ids):
             f"--property=User={USER}", f"--property=Group={USER}", "--property=NoNewPrivileges=yes",
             "--property=ProtectSystem=strict", f"--property=ReadWritePaths={vm['out']}", "--property=ProtectHome=yes",
             "--property=PrivateTmp=yes", "--property=RestrictAddressFamilies=AF_UNIX", "--property=MemoryMax=2G",
-            f"--property=LimitFSIZE={MAX_ARCHIVE}",
             "--", VIRTIOFSD, "--fd=3", f"--shared-dir={vm['out']}", "--sandbox=namespace",
-            f"--translate-uid=squash-guest:0:{uid}:4294967295", f"--translate-gid=squash-guest:0:{gid}:4294967295"]
+            f"--uid-map=:0:{uid}:1:", f"--gid-map=:0:{gid}:1:",
+            "--translate-uid=squash-guest:0:0:4294967295", "--translate-gid=squash-guest:0:0:4294967295"]
 
 
 def virt_install_args(vm):
@@ -563,11 +616,11 @@ def _size(n):
 
 
 def _watch(vm):
-    if _held(vm["out"]) > MAX_OUT:
-        raise Failed(f"the build VM wrote more than {_size(MAX_OUT)} into its output directory")
     st = os.statvfs(paths.STATE)
     if st.f_bavail * st.f_frsize < MIN_FREE:
         raise Failed(f"less than {_size(MIN_FREE)} free under {paths.STATE}")
+    if _held(vm["out"]) > OUT_BYTES:
+        raise Failed(f"the build VM wrote more than {_size(OUT_BYTES)} into its output directory")
 
 
 def _connect(path):
@@ -591,10 +644,11 @@ def _emit(raw, say, seen, keep=True):
 
 
 def _log(line, logged, say, seen):
-    """One line of the VM's log into the journal while its log is within MAX_LOG bytes, then
-    one note and no more lines (their STEP lines still count); the bytes so far."""
-    logged += len(line) + 1
-    if MAX_LOG < logged <= MAX_LOG + len(line) + 1:
+    """One line of the VM's log into the journal while its log is within MAX_LOG bytes, each line
+    counting LINE_OVERHEAD more (so empty lines count), then one note and no more lines (their
+    STEP lines still count); the bytes so far."""
+    logged += len(line) + LINE_OVERHEAD
+    if MAX_LOG < logged <= MAX_LOG + len(line) + LINE_OVERHEAD:
         say(f"agentbox: the build VM wrote more than {_size(MAX_LOG)} to its log; its further lines are not kept")
     _emit(line, say, seen, keep=logged <= MAX_LOG)
     return logged
@@ -740,7 +794,7 @@ def _named(ident):
     """The domain, virtiofsd's unit and the directories of the build VM `ident`."""
     return {"id": ident, "name": NAME_PREFIX + ident, "domain": DOMAIN_PREFIX + ident, "unit": DOMAIN_PREFIX + ident,
             "work": os.path.join(paths.BUILD_VM, ident), "out": os.path.join(paths.BUILD_VM, f"out-{ident}"),
-            "run": os.path.join(RUN, ident)}
+            "out_image": os.path.join(paths.BUILD_VM, f"out-{ident}.img"), "run": os.path.join(RUN, ident)}
 
 
 def build_image(image, build, job, context, hand_in, src, say, seen):
@@ -770,22 +824,27 @@ def build_image(image, build, job, context, hand_in, src, say, seen):
         if left:
             # the VM or virtiofsd could still change what it handed out: nothing of it is taken
             raise Failed(f"{', '.join(left)} still runs after the build VM's teardown; its output is not taken")
+        # nothing changes what it handed out from here on
+        _run(["mount", "-o", "remount,ro,nosuid,nodev,noexec", vm["out"]], 60,
+             "read-only mount of the output filesystem")
         archive = _outcome(vm, ids[0])
         ok = True
     finally:
         if not ok:
-            shutil.rmtree(vm["out"], ignore_errors=True)
+            _drop_out(vm)
     say(f"== {image}: the build VM handed out its image archive ({archive})")
     return archive
 
 
 def leftovers(say):
     """Holding the run lock, before a Build: what a build VM left when its run ended without its
-    teardown (killed, the Host's crash): its domain destroyed, its virtiofsd stopped, its disks,
-    output and run directories deleted. The checked image and its record stay."""
+    teardown (killed, the Host's crash), or what a Build left on purpose (an archive the Host
+    does not import yet): its domain destroyed, its virtiofsd stopped, its output filesystem
+    unmounted, its disks, output and run directories deleted. The checked image and its record
+    stay."""
     found = set()
     for name in state_files.listdir(paths.BUILD_VM, fail=False):
-        ident = name.removeprefix("out-")
+        ident = name.removeprefix("out-").removesuffix(".img")
         if name not in ("images", os.path.basename(build_vm.RECORD)) and ID.fullmatch(ident):
             found.add(ident)
     for name in state_files.listdir(RUN, fail=False):
@@ -796,6 +855,7 @@ def leftovers(say):
         if not _gone(vm):
             virsh.run("destroy", vm["domain"])
         _stop(vm["unit"])     # what still runs is removed by the run after it
-        for path in (vm["work"], vm["out"], vm["run"]):
+        _drop_out(vm)
+        for path in (vm["work"], vm["run"]):
             shutil.rmtree(path, ignore_errors=True)
         say(f"Removed what the build VM {vm['domain']} left")
