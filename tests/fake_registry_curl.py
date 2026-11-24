@@ -20,10 +20,14 @@ registry.json:
               <namespace>/<repository>/tag/?specificTag=<tag>&limit=N&page=P answers
               {"tags": [the entries of that tag on page P, pages of N], "page": P,
               "has_additional": whether a page follows}
+  fedora     the list GET https://fedoraproject.org/releases.json answers (Fedora's releases),
+             or {"status": 500} for an error
   downloads  {"<url>": "<path of a file with its content>" or {"status": 404}}: what curl -o
               writes for that URL (-f: an error status fails with exit 22)
              {"flood": true} instead: a body without length that never ends, whatever
              --max-filesize says; -o - writes to stdout (a pipe) instead of a file
+             {"kill_parent": true} instead: kills the program that runs curl (SIGKILL), as
+             systemd ends a unit at its time limit
   exit       end with this exit code and no answer (no connection)
 Packages, repositories and URLs not named there get 404. Understands what agentbox passes:
 -s, -S, -f, -L, -m, --connect-timeout, --max-redirs, --proto and --proto-redir (which must
@@ -34,6 +38,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import sys
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -91,6 +96,10 @@ def answer(url, known):
         return releases(u, known)
     elif u.netloc == "quay.io":
         return tags(u, known)
+    elif u.netloc == "fedoraproject.org" and u.path == "/releases.json":
+        found = known.get("fedora")
+        if isinstance(found, list):
+            return 200, found
     else:
         return None
     if found is None:
@@ -107,6 +116,9 @@ def download(url, dest, opts, known):
     found = known.get("downloads", {}).get(url)
     if found is None:
         found = {"status": 404}
+    if isinstance(found, dict) and found.get("kill_parent"):
+        os.kill(os.getppid(), signal.SIGKILL)
+        return 1
     if isinstance(found, dict) and found.get("flood"):
         try:
             with (sys.stdout.buffer if dest == "-" else open(dest, "wb")) as out:

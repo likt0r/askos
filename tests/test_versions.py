@@ -472,7 +472,7 @@ class FetchTest(VersionsTest):
         code, out, err = self.run_agentbox("fetch-versions")
         self.assertEqual(code, 0, err)
         found = self.fetched()
-        self.assertEqual(set(found), {"fetched", "package_min_age_days", "npm", "orca", "digests"})
+        self.assertEqual(set(found), {"fetched", "package_min_age_days", "npm", "orca", "digests", "build_vm_image"})
         self.assertEqual(found["npm"]["claude-code"], {"version": "2.1.7", "error": None})
         self.assertEqual(found["orca"], {"version": "1.4.251", "error": None, "pin": None})
         self.assertIn("Orca: 1.4.251, the newest release at least 2 days old", out)
@@ -1610,6 +1610,11 @@ class TimerTest(VersionsTest):
         # only available/ of /var/lib/agentbox is visible; no denylist entry for the rest
         self.assertIn("TemporaryFileSystem=/var/lib/agentbox:ro\n", fetch)
         self.assertIn("BindPaths=/var/lib/agentbox/available\n", fetch)
+        # and, read-only, which build VM image is in use (build_vm.py), so only a new one is downloaded
+        self.assertIn("BindReadOnlyPaths=-/var/lib/agentbox/build-vm/image.json\n", fetch)
+        self.assertNotRegex(fetch, r"(?m)^(BindPaths|BindReadOnlyPaths)=.*/var/lib/agentbox/build-vm/images")
+        # time for the download of a new build VM image (test_build_vm.FetchTimeLimitTest)
+        self.assertIn("TimeoutStartSec=3600s\n", fetch)
         hidden = re.search(r"(?m)^InaccessiblePaths=(.*)$", fetch).group(1).split()
         for path in ("/etc/agentbox", "/var/lib/libvirt", "/var/lib/containers"):
             self.assertIn("-" + path, hidden)

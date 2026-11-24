@@ -73,6 +73,8 @@ BUILDS = host("/var/lib/agentbox/builds")    # a record per Build
 ARCHIVE = host("/var/lib/agentbox/archive")      # Data disks of deleted VMs
 FEEDS = host("/var/lib/agentbox/feeds")         # HaGeZi lists, written by agentbox-feeds
 TRANSFERS = host("/var/lib/agentbox/transfers")  # tar files of `agentbox import` while attached to a VM
+BUILD_VM = host("/var/lib/agentbox/build-vm")    # the build VMs' image (build_vm.py), root's only
+RPM_GPG = host("/etc/pki/rpm-gpg")               # the Host's Fedora keys (fedora-gpg-keys)
 ORCA = host("/opt/Orca/resources/bin/orca-ide")  # installed by the owner, not part of a Release
 # UID_MIN: the lowest uid of a person (agentbox setup, the owner user)
 LOGIN_DEFS = host("/etc/login.defs")
