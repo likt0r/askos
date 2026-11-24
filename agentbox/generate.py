@@ -28,7 +28,7 @@ import tempfile
 import time
 
 from . import activity, firewall, footprint, hostsetup, paths, programs, registry, settings, sshkeys, state_files
-from . import states, times, virsh, vmenv
+from . import states, times, versions, virsh, vmenv
 from .commands import declare
 from .errors import Fail, die
 from .registry import bridge, dom, guest_ip, host_ip, mac
@@ -920,7 +920,7 @@ SystemCallFilter=@system-service
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 MemoryMax=1G
 # a new build VM image is about 0.6 GB (curl's own limit: 40 minutes)
-TimeoutStartSec=1h
+TimeoutStartSec={timeout}s
 """
 
 # the version check: the second step of the Maintenance window, or at once by hand
@@ -1021,7 +1021,8 @@ def _versions(values):
     services = {f"{VERSIONS_FETCH}.service": VERSIONS_FETCH_SERVICE.format(program=paths.CLI,
                                                                             days=values["package_min_age_days"],
                                                                             orca=values["orca_version"],
-                                                                            playwright=values["playwright_version"]),
+                                                                            playwright=values["playwright_version"],
+                                                                            timeout=versions.FETCH_SECONDS),
                 f"{VERSIONS}.service": VERSIONS_SERVICE}
     for name, text in services.items():
         _write_if_changed(os.path.join(paths.SYSTEMD, name), text.encode(), 0o644, "versions")

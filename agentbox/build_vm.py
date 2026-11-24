@@ -20,8 +20,9 @@ The version check (versions.py) finds and checks it, in its two parts:
   without following a link, regular files only, bounded sizes, the name of the release's image
   and nothing else, the CHECKSUM's name built from it. gpgv runs as agentbox-feeds (setpriv),
   not root, with a keyring root makes from the Host's own RPM-GPG-KEY-fedora-<N>-primary
-  (fedora-gpg-keys, updated with the Host); only its exit 0 with a VALIDSIG counts, since gpgv
-  writes the text of a bad signature too, and --output - gives only the signed text. Root reads
+  (fedora-gpg-keys, updated with the Host); only its exit 0 with a VALIDSIG and none of
+  REFUSED_STATUS counts, since gpgv writes the text of a bad signature too and exits 0 for one
+  by an expired or revoked key, and --output - gives only the signed text. Root reads
   that text (at most MAX_TEXT), takes the one SHA-256 line of exactly the image's name, and
   copies the downloaded image into IMAGES while it hashes what it copies, so what it compares
   is what it keeps; then reads the copy's header with qemu-img info -f qcow2 under limits
@@ -70,6 +71,8 @@ ERRORS = (r"fedoraproject\.org not reachable|fedoraproject\.org answered [1-5][0
           r"more than one Cloud Base Generic qcow2 of the release in releases\.json|"
           r"download of the (image|CHECKSUM) failed|the download does not match releases\.json")
 NOT_FETCHED = "not fetched yet; the next fetch asks fedoraproject.org"
+# gpgv's status lines that refuse a signature even when it exits 0 with VALIDSIG
+REFUSED_STATUS = ("BADSIG", "ERRSIG", "EXPSIG", "EXPKEYSIG", "REVKEYSIG")
 SIGNED_LINE = re.compile(r"SHA256 \(([^()\s]{1,255})\) = ([0-9a-f]{64})")
 
 
@@ -283,9 +286,9 @@ def dearmor(armored):
     crc = body.pop()[1:] if body and body[-1].startswith("=") else None
     try:
         data = base64.b64decode("".join(body), validate=True)
+        if not data or crc is not None and base64.b64decode(crc, validate=True) != _crc24(data).to_bytes(3, "big"):
+            return None
     except ValueError:
-        return None
-    if not data or crc is not None and base64.b64decode(crc) != _crc24(data).to_bytes(3, "big"):
         return None
     return data
 
@@ -348,9 +351,12 @@ def signed_text(checksum):
     finally:
         shutil.rmtree(work, ignore_errors=True)
     status = r.stderr.decode("utf-8", "replace")
-    if r.returncode != 0 or not re.search(r"(?m)^\[GNUPG:\] VALIDSIG ", status):
+    # gpgv exits 0 with VALIDSIG also for a signature by an expired or revoked key
+    refused = re.findall(rf"(?m)^\[GNUPG:\] ({'|'.join(REFUSED_STATUS)}) ", status)
+    if r.returncode != 0 or refused or not re.search(r"(?m)^\[GNUPG:\] VALIDSIG ", status):
         said = [l for l in status.splitlines() if l.strip() and not l.startswith("[GNUPG:]")]
         return None, (f"the CHECKSUM's signature is not good (gpgv exit {r.returncode}"
+                      + (f", {refused[0]}" if refused else "")
                       + (f": {clean(said[-1][:200], False)}" if said else "") + ")")
     if len(r.stdout) > MAX_TEXT:
         return None, "the CHECKSUM's signed text is too long"
@@ -477,9 +483,13 @@ def _take(name, say):
 
 def remove_replaced(say):
     """Remove the images IMAGES holds besides the one in use, only when no Build runs, without
-    waiting for one: a build VM may still boot a replaced image, and the next check removes it."""
+    waiting for one: a build VM may still boot a replaced image, and the next check removes it.
+    A record that is there but cannot be read removes nothing: the image in use is not known."""
     from . import images            # the run lock; images uses versions, which uses this module
     rec = load()
+    if rec is None and os.path.lexists(RECORD):
+        say(f"{RECORD} cannot be read: no build VM image is removed")
+        return
     stale = [n for n in state_files.listdir(IMAGES, fail=False) if not rec or n != rec["name"]]
     if not stale:
         return

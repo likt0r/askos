@@ -1613,6 +1613,8 @@ class TimerTest(VersionsTest):
         # and, read-only, which build VM image is in use (build_vm.py), so only a new one is downloaded
         self.assertIn("BindReadOnlyPaths=-/var/lib/agentbox/build-vm/image.json\n", fetch)
         self.assertNotRegex(fetch, r"(?m)^(BindPaths|BindReadOnlyPaths)=.*/var/lib/agentbox/build-vm/images")
+        # time for the download of a new build VM image (test_build_vm.FetchTimeLimitTest)
+        self.assertIn("TimeoutStartSec=3600s\n", fetch)
         hidden = re.search(r"(?m)^InaccessiblePaths=(.*)$", fetch).group(1).split()
         for path in ("/etc/agentbox", "/var/lib/libvirt", "/var/lib/containers"):
             self.assertIn("-" + path, hidden)

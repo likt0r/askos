@@ -19,9 +19,9 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from fake_gpgv import sign  # noqa: E402
+from fake_gpgv import EXPIRED, sign  # noqa: E402
 from test_registry import fake  # noqa: E402
-from test_versions import AGENTBOX, NOTHING_NEW, REGISTRY, VERSIONS, VersionsTest  # noqa: E402
+from test_versions import AGENTBOX, NOTHING_NEW, REGISTRY, REPO, VERSIONS, VersionsTest  # noqa: E402
 
 KEY = {"44": b"\x99\x02\x0dfedora-44-primary", "43": b"\x99\x02\x0dfedora-43-primary"}
 DIRECTORY = "https://download.fedoraproject.org/pub/fedora/linux/releases/{}/Cloud/x86_64/images/"
@@ -75,7 +75,7 @@ class BuildVmImageTest(VersionsTest):
         return json.dumps({"fedora-cloud": True, **header}).encode()
 
     def publish(self, name, content=None, release="44", signed_by=None, signed_sha=None, extra=(),
-                listed_sha=None):
+                listed_sha=None, key=None):
         """Fedora publishes `name` with its CHECKSUM, signed by the release's key (or `signed_by`)
         and naming the image's SHA-256 (or `signed_sha`); releases.json lists it (with
         `listed_sha`) besides the entries `extra`."""
@@ -86,7 +86,7 @@ class BuildVmImageTest(VersionsTest):
         text = (f"# {name}: {len(content)} bytes\nSHA256 ({name}) = {signed_sha or sha}\n"
                 f"# Fedora-Cloud-Base-GCE-{release}-{compose}.x86_64.tar.gz: 5 bytes\n"
                 f"SHA256 (Fedora-Cloud-Base-GCE-{release}-{compose}.x86_64.tar.gz) = {'1' * 64}\n")
-        for file, data in ((name, content), (checksum, sign(KEY[signed_by or release], text).encode())):
+        for file, data in ((name, content), (checksum, sign(key or KEY[signed_by or release], text).encode())):
             with open(os.path.join(self.fedora_dir, file), "wb") as f:
                 f.write(data)
         self.registry({**REGISTRY, "fedora": [*extra, entry(release, name, listed_sha or sha, len(content))],
@@ -102,6 +102,11 @@ class BuildVmImageTest(VersionsTest):
 
     def kept(self):
         return sorted(os.listdir(self.path(f"{BUILD_VM}/images")))
+
+    def known(self):
+        """What the fake curl serves now (registry.json)."""
+        with open(os.path.join(self.dir, "registry.json")) as f:
+            return json.load(f)
 
     def image_record(self):
         with open(self.path(RECORD)) as f:
@@ -234,7 +239,7 @@ class RefuseTest(BuildVmImageTest):
         super().setUp()
         self.in_use(IMAGE_43, self.disk(release=43), "43")
 
-    BAD = "the CHECKSUM's signature is not good (gpgv exit 1: gpgv: BAD signature from \"Fedora\")"
+    BAD = "the CHECKSUM's signature is not good (gpgv exit 1, BADSIG: gpgv: BAD signature from \"Fedora\")"
 
     def test_a_signature_by_another_releases_key_is_refused(self):
         self.publish(IMAGE_44, signed_by="43")
@@ -262,6 +267,38 @@ class RefuseTest(BuildVmImageTest):
         with open(self.path(f"{DOWNLOADS}/{CHECKSUM.format('44', '1.7')}"), "w") as f:
             f.write(sign(KEY["43"], text))
         self.refused(self.BAD)
+
+    def test_a_signature_by_an_expired_or_revoked_key_is_refused(self):
+        """gpgv exits 0 with VALIDSIG for these: its other status lines refuse them."""
+        for marker, status in EXPIRED.items():
+            with self.subTest(status=status):
+                key = KEY["44"] + marker
+                self.write("etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-44-primary", armored(key))
+                self.publish(IMAGE_44, key=key)
+                self.fetch_only()
+                self.refused(f"the CHECKSUM's signature is not good (gpgv exit 0, {status}: "
+                             f"gpgv: Good signature from \"Fedora\")")
+
+    def test_a_key_with_a_broken_checksum_line_is_no_key(self):
+        key = self.path("etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-44-primary")
+        good = armored(KEY["44"])
+        crc = good.splitlines()[-2]
+        for line in ("=!!!!", "=AAAA", "=A"):
+            with self.subTest(line=line):
+                self.write("etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-44-primary", good.replace(crc, line))
+                self.fetch_only()
+                self.refused(f"the Host has no key of Fedora 44 ({key}, package fedora-gpg-keys)")
+                self.assertEqual(self.calls("gpgv"), [])
+
+    def test_an_unreadable_record_removes_no_image(self):
+        self.write(RECORD, "{broken")
+        known = self.known()
+        self.registry({**known, "fedora": {"status": 500}})
+        self.fetch_only()
+        code, out, err = self.run_agentbox("check-versions")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.kept(), [IMAGE_43])
+        self.assertIn("cannot be read: no build VM image is removed", out)
 
     def test_without_the_hosts_key_nothing_is_taken(self):
         os.remove(self.path("etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-44-primary"))
@@ -412,10 +449,6 @@ class FetchTest(BuildVmImageTest):
                 self.assertEqual((got["image"], got["error"]), (IMAGE_44, why))
                 self.assertEqual(self.kept(), [IMAGE_44])
 
-    def known(self):
-        with open(os.path.join(self.dir, "registry.json")) as f:
-            return json.load(f)
-
     def fetch_with(self, **extra):
         import subprocess
         return subprocess.run([AGENTBOX, "fetch-versions"], env=self.env(**extra), capture_output=True, text=True,
@@ -437,6 +470,27 @@ class NoUpdateTest(BuildVmImageTest):
         self.assertIn(f"Build VM image: checked and took {IMAGE_44}", out)
         self.assertIn("Automatic update: no Image needs a new Build", out)
         self.assertEqual([c for c in self.systemctl() if c[:2] == ["start", "--no-block"]], [])
+
+
+class FetchTimeLimitTest(unittest.TestCase):
+    """The fetch may now download the image: its unit's limit leaves curl's download time, and
+    Update now waits for the unit longer than that limit, so the root part never reads the
+    fetch's files while it still writes them."""
+
+    def test_update_now_waits_for_the_fetch_longer_than_its_unit_may_run(self):
+        from unittest import mock
+        sys.path.insert(0, REPO)
+        from agentbox import build_vm, generate, images, versions
+        unit = generate.VERSIONS_FETCH_SERVICE.format(program="/usr/bin/agentbox", days=2, orca="", playwright="",
+                                                      timeout=versions.FETCH_SECONDS)
+        self.assertIn(f"TimeoutStartSec={versions.FETCH_SECONDS}s\n", unit)
+        self.assertGreaterEqual(versions.FETCH_SECONDS, build_vm.DOWNLOAD_SECONDS + 10 * 60)
+        with mock.patch.object(images.programs, "systemctl", return_value=mock.Mock(returncode=0)) as systemctl, \
+                mock.patch.object(images.versions, "check") as check:
+            images._check_versions(lambda line: None)
+        self.assertEqual(systemctl.call_args.args, ("start", versions.FETCH_UNIT))
+        self.assertGreater(systemctl.call_args.kwargs["timeout"], versions.FETCH_SECONDS)
+        check.assert_called_once()
 
 
 class VersionsRecordTest(BuildVmImageTest):

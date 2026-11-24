@@ -926,9 +926,11 @@ def _check_versions(say):
     """The version check of Update now, as the Maintenance window runs it: the fetch as
     agentbox-feeds through its unit (systemctl start waits for it), then the root part
     (versions.check). What fails stays unknown and never stops the update."""
-    say(f"== Checking versions: asking npm, GitHub and quay.io ({versions.FETCH_UNIT}, as agentbox-feeds)")
+    say(f"== Checking versions: asking npm, GitHub, quay.io and fedoraproject.org ({versions.FETCH_UNIT}, "
+        "as agentbox-feeds)")
     try:
-        r = programs.systemctl("start", versions.FETCH_UNIT, timeout=20 * 60, ok=None)
+        # longer than the unit's own limit: systemd ends the fetch before the root part reads its files
+        r = programs.systemctl("start", versions.FETCH_UNIT, timeout=versions.FETCH_SECONDS + 60, ok=None)
         if r.returncode != 0:
             say("Fetch failed: " + programs.summary(r))
     except Fail as f:

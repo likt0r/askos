@@ -5,6 +5,9 @@ A fake signature is good when it names the SHA-256 of the keyring's bytes and th
 (sign() makes one): so a file signed with another key, or whose text was changed, is BAD. Like
 the real gpgv it writes the signed text to --output whatever the signature, takes no armored
 keyring ("invalid packet", exit 2) and says VALIDSIG on --status-fd only for a good one.
+A key whose bytes end in one of EXPIRED (":expired-key", ":revoked-key", ":expired-sig") makes
+a good signature come with EXPKEYSIG, REVKEYSIG or EXPSIG, and still VALIDSIG and exit 0, as
+gpgv 2.4.9 answers for a signature by an expired or revoked key or one that expired.
 
 Environment:
   FAKE_DIR   calls are recorded in calls.jsonl as {"cmd": "gpgv", "argv": [...], "user": the
@@ -21,6 +24,7 @@ DIR = os.environ.get("FAKE_DIR", "")       # tests import sign() from here
 HEAD = "-----BEGIN PGP SIGNED MESSAGE-----\n"
 SIGNATURE = "-----BEGIN PGP SIGNATURE-----\n"
 END = "-----END PGP SIGNATURE-----\n"
+EXPIRED = {b":expired-key": "EXPKEYSIG", b":revoked-key": "REVKEYSIG", b":expired-sig": "EXPSIG"}
 
 
 def signature(key, text):
@@ -73,7 +77,8 @@ def main(argv):
     if sig != signature(key, text):
         print("[GNUPG:] BADSIG 0123456789ABCDEF Fedora\ngpgv: BAD signature from \"Fedora\"", file=sys.stderr)
         return 1
-    print("[GNUPG:] GOODSIG 0123456789ABCDEF Fedora\ngpgv: Good signature from \"Fedora\"\n"
+    status = next((s for marker, s in EXPIRED.items() if key.endswith(marker)), "GOODSIG")
+    print(f"[GNUPG:] {status} 0123456789ABCDEF Fedora\ngpgv: Good signature from \"Fedora\"\n"
           "[GNUPG:] VALIDSIG 36F612DC0123456789ABCDEF0123456789ABCDEF 2026-04-24", file=sys.stderr)
     return 0
 

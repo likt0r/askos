@@ -201,11 +201,13 @@ Controls the agent VMs on this Host.
   agentbox set-image <vm> <image> [--build B] [--json]
                 a VM's Image, pinned to an earlier Build or not; applies from the next Reset
   agentbox build-run <image>|all                     (unit agentbox-build@) run a Build
-  agentbox fetch-versions [--json]                   (Maintenance window, as agentbox-feeds) ask npm, GitHub and
-                                                     quay.io for the versions and digests available
+  agentbox fetch-versions [--json]                   (Maintenance window, as agentbox-feeds) ask npm, GitHub,
+                                                     quay.io and fedoraproject.org for the versions and digests
+                                                     available, and download a new build VM image
   agentbox check-versions [--json]                   (Maintenance window, then as root) check and take over the answers,
                                                      pull and pin the digests of fedora-bootc and
-                                                     bootc-image-builder, package updates of the current Builds; with auto_update
+                                                     bootc-image-builder, check and keep the build VM image,
+                                                     package updates of the current Builds; with auto_update
                                                      then an Update of the Images with an update; everything
                                                      again: systemctl start agentbox-versions.service
   agentbox settings [--json]                         Settings (defaults, what applies only later)

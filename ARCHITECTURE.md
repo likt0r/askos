@@ -1347,9 +1347,14 @@ Host after every Build
     image the fetch downloaded (The build VMs' image above), only one whose name is that of the
     release's image, and reads the fetch's files through a directory it opens without following
     a link, regular files only, the CHECKSUM at most 64 KiB and the image at most 2 GiB; it
-    takes the signed text only from gpgv's exit 0 with a `VALIDSIG`, since gpgv writes the text
-    of a bad signature too, and hashes the image while it copies it, so what it compares is what
-    it keeps. It adds, for each Image
+    takes the signed text only from gpgv's exit 0 with a `VALIDSIG` and none of `BADSIG`,
+    `ERRSIG`, `EXPSIG`, `EXPKEYSIG` and `REVKEYSIG`, since gpgv writes the text of a bad
+    signature too and exits 0 for one by an expired or revoked key, and hashes the image while it
+    copies it, so what it compares is what it keeps. Which compose of the release the image is
+    (`1.7` in `Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2`) comes from the fetch and is
+    checked only against the name's pattern: a fetch that was taken over could offer an older
+    compose of the same release signed with the same key (its Beta's, say), and root would take
+    it like the released one. It adds, for each Image
     whose current Build's container image is kept (the Base image), the Fedora package updates
     counted with `dnf check-update` in a container from that Build (podman, out to the Fedora
     mirrors), named `agentbox-check-<image>`, with no capabilities, `no-new-privileges` and a

@@ -91,6 +91,9 @@ RECORD = os.path.join(paths.STATE, "versions.json")
 AVAILABLE_DIR = os.path.join(paths.STATE, "available")      # agentbox-feeds' (StateDirectory)
 AVAILABLE = os.path.join(AVAILABLE_DIR, "available.json")
 FETCH_UNIT = "agentbox-versions-fetch.service"          # the fetch as agentbox-feeds (generate.py)
+# the fetch's time limit, its unit's TimeoutStartSec: a new build VM image is about 0.6 GB
+# (build_vm.DOWNLOAD_SECONDS); whoever starts the unit and waits for it waits longer
+FETCH_SECONDS = 3600
 MAX_AVAILABLE = 64 << 10            # the fetch's file is a few hundred bytes
 STALE = 3 * 86400                   # a fetch older than this counts as none
 MIN_AGE_DAYS = os.environ.get("AGENTBOX_VERSIONS_MIN_AGE_DAYS")    # set by the fetch's unit
