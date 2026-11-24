@@ -18,7 +18,9 @@ builds the Base image, then every other Image), whose journal is its log
      Containerfile downloads Orca from its GitHub release, vm/build/orca-release; nothing of
      Orca comes from the Host), a derived Image on the Base image's current Build; its output
      passes through build-run into the journal, and the latest `STEP n/m: <command>` line goes
-     into the running Build's record (`progress`, cleaned like the log);
+     into the running Build's record (`progress`, cleaned like the log); with the internal
+     switch of build_vm_run.py on, this podman build runs in the Build's first build VM instead,
+     and the Build ends after it, since the Host does not import its image archive yet;
   3. safeguards.check reads the built filesystem (podman image mount) and discards the
      Build if a safeguard is missing or weakened; then the versions of its tools are read
      from the same files (versions.py);
@@ -74,8 +76,8 @@ import sys
 import threading
 import time
 
-from . import activity, digests, footprint, guest, options, paths, programs, registry, safeguards, settings
-from . import state_files, times, version
+from . import activity, build_vm_run, digests, footprint, guest, options, paths, programs, registry, safeguards
+from . import settings, state_files, times, version
 from . import states, versions
 from .commands import declare
 from .errors import Fail, die
@@ -616,6 +618,15 @@ def _build_container(image, src, release, days, orca, playwright, rec, tag, say,
             + (f"{orca}, pinned in orca_version" if orca else "the newest release at least that old")
             + "; Playwright: " + (f"{playwright}, pinned in playwright_version)" if playwright
                                   else "the newest version at least that old)"))
+        if build_vm_run.enabled():
+            # the VM gets the platform image of the pin from the Host's storage, under a local name
+            platform, why = digests.instance("fedora-bootc", rec["fedora_bootc_digest"])
+            if why:
+                raise _Failed(why)
+            local = build_vm_run.FEDORA_BOOTC.format(rec["build"])
+            _in_build_vm(image, rec, tag, [("FEDORA_BOOTC", local), ("PACKAGE_MIN_AGE_DAYS", days),
+                                           ("ORCA_VERSION", orca), ("PLAYWRIGHT_VERSION", playwright)],
+                         "vm/Containerfile", src, [(platform, local)], src, say)
         # the version check pulled the pinned digest; never anything by its tag
         _podman_build("--pull=missing", "--no-cache", "--build-arg", f"FEDORA_BOOTC={fedora}",
                       "--build-arg", f"PACKAGE_MIN_AGE_DAYS={days}",
@@ -635,16 +646,46 @@ def _build_container(image, src, release, days, orca, playwright, rec, tag, say,
                playwright_version=base.get("playwright_version"), fedora_bootc_digest=base["fedora_bootc_digest"])
     _save(rec)
     say(f"== {image}: building the container image on the Base Build {base_build}")
+    base_tag = CONTAINER.format(BASE, base_build)
     if recipe_data is not None:
         # One owned snapshot of the Recipe is handed over by a single call, never as a path.
         from . import recipes
         recipes.check(recipe_data)
+        if build_vm_run.enabled():
+            _in_build_vm(image, rec, tag, [("BASE", base_tag)], None, recipe_data, [(base_tag, base_tag)], src, say)
         _podman_build("--pull=missing", "--no-cache", "--build-arg", f"BASE={CONTAINER.format(BASE, base_build)}",
                       "-t", tag, "-", input=recipe_data, rec=rec)
     else:
+        if build_vm_run.enabled():
+            _in_build_vm(image, rec, tag, [("BASE", base_tag)], "Containerfile", context, [(base_tag, base_tag)],
+                         src, say)
         _podman_build("--pull=missing", "--no-cache", "--build-arg", f"BASE={CONTAINER.format(BASE, base_build)}",
                       "-t", tag, "-f", os.path.join(context, "Containerfile"), context, rec=rec)
     return base
+
+
+def _in_build_vm(image, rec, tag, build_args, containerfile, context, hand_in, src, say):
+    """The podman build of _build_container in the Build's first build VM (build_vm_run.py, the
+    internal switch on): the same build arguments, the same context (a Recipe's tar as it is),
+    the images it builds on handed in from the Host's storage; its log in the Build's journal,
+    its STEP lines the Build's progress. The Host does not import the image archive it hands
+    out yet: the Build fails after it (this never returns), the archive left in its output
+    directory for the next run to remove."""
+    steps = Steps()
+
+    def seen(line):
+        found = steps.take(line)
+        if found:
+            rec["progress"] = found
+            _save(rec)
+
+    job = {"tag": tag, "build_args": [[k, str(v)] for k, v in build_args], "containerfile": containerfile}
+    try:
+        archive = build_vm_run.build_image(image, rec["build"], job, context, hand_in, src, say, seen)
+    except build_vm_run.Failed as f:
+        raise _Failed(f.message)
+    raise _Failed(f"the build VM handed out {archive}; the Host does not import a build VM's image archive "
+                  "yet, so the Build ends here")
 
 
 def _make_disk(image, build, tag, out, rec, say):
@@ -785,6 +826,7 @@ def _cleanup(say):
             _save(rec)
             _rmi(CONTAINER.format(rec["image"], rec["build"]))
             say(f"Interrupted Build {rec['image']}-{rec['build']} marked as failed")
+    build_vm_run.leftovers(say)
     _remove_retired(say)
 
 

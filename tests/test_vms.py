@@ -211,7 +211,7 @@ class CreateTest(VmsTest):
         self.assertEqual(vm_records.read(self.root, "research-project")["network"], 3)
 
     def test_reserved_names_are_refused(self):
-        for name in ("off", "all", "new", "status", "login", "logout", "settings", "activity", "v1", "v2"):
+        for name in ("off", "all", "new", "status", "login", "logout", "settings", "activity", "build", "v1", "v2"):
             with self.subTest(name=name):
                 self.assertEqual(self.refused("create", name), f"agentbox: the name {name} is reserved\n")
 

@@ -1,0 +1,192 @@
+#!/usr/bin/python3 -I
+"""The driver of a build VM (ADR 0025, agentbox/build_vm_run.py on the Host): what the VM runs,
+as root, once cloud-init has brought it up (user-data, beside this file in the Release; both
+reach the VM on its seed). When it ends, also after a failure, cloud-init powers the VM off,
+which ends it for good.
+
+  1. its log: what it says and the output of every program it runs go to the virtio-serial
+     port LOG, whose other end the Host reads line by line into the Build's journal; a write
+     waits while the Host does not read
+  2. the scratch disk (serial agentbox-scratch), formatted, becomes /var/lib/containers:
+     Podman's storage, and WORK, where the input disk is unpacked
+  3. the output directory, the virtiofs tag agentbox-out, mounted at OUT
+  4. the input disk (serial agentbox-build-input), a tar the Host wrote, unpacked into WORK:
+     job.json, context.tar and images/<n>.oci.tar
+  5. each image handed in, loaded into Podman's storage under the name job.json gives it, so
+     nothing is pulled from a registry
+  6. the job "build": podman build --pull=never --no-cache with the job's build arguments and
+     tag, from the build context unpacked from context.tar with the job's Containerfile, or
+     with context.tar itself on stdin (a Recipe, which the Host never unpacks); then podman save
+     --format oci-archive of the image to OUT/image.oci.tar
+  7. OUT/result.json: {"status": "ok"}, or {"status": "failed", "error": "<why>"}, which the
+     Host takes only as text for the reason of a failure
+
+Exit 0 when the job is done, 1 otherwise. Without root (tests), AGENTBOX_BUILD_VM_ROOT puts every
+path under that directory.
+"""
+import json
+import os
+import subprocess
+import sys
+import tarfile
+import time
+
+LOG = "/dev/virtio-ports/org.agentbox.build-log"
+INPUT = "/dev/disk/by-id/virtio-agentbox-build-input"
+SCRATCH = "/dev/disk/by-id/virtio-agentbox-scratch"
+STORAGE = "/var/lib/containers"
+WORK = "/var/lib/containers/agentbox-build"
+OUT = "/run/agentbox-out"
+OUT_TAG = "agentbox-out"
+DEVICE_WAIT = 120
+JOBS = ("build",)
+SEAM = os.environ.get("AGENTBOX_BUILD_VM_ROOT", "") if os.geteuid() != 0 else ""
+
+
+class Failed(Exception):
+    pass
+
+
+def here(path):
+    return SEAM + path
+
+
+def wait_for(device):
+    deadline = time.monotonic() + DEVICE_WAIT
+    while not os.path.exists(here(device)):
+        if time.monotonic() > deadline:
+            raise Failed(f"{device} did not appear within {DEVICE_WAIT} s")
+        time.sleep(0.5)
+
+
+class Log:
+    """The log port: every line the Host gets."""
+
+    def __init__(self, port):
+        self.port = port
+
+    def say(self, text):
+        self.write(f"build-vm: {text}\n".encode("utf-8", "replace"))
+
+    def write(self, data):
+        self.port.write(data)
+
+
+def run(log, argv, what=None, stdin=None):
+    """argv with its output on the log; its output lines. Failed when it fails."""
+    what = what or os.path.basename(argv[0])
+    log.say(f"running {what}")
+    try:
+        proc = subprocess.Popen(argv, stdin=stdin if stdin is not None else subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    except OSError as e:
+        raise Failed(f"{what} cannot be started: {e.strerror or e}")
+    lines = []
+    for line in iter(lambda: proc.stdout.readline(65536), b""):
+        log.write(line if line.endswith(b"\n") else line + b"\n")
+        lines.append(line.decode("utf-8", "replace").rstrip("\n"))
+        del lines[:-50]
+    code = proc.wait()
+    if code != 0:
+        raise Failed(f"{what} failed (exit {code})")
+    return lines
+
+
+def inside(top, name):
+    """A path the job names, below top: relative, without . or .. parts."""
+    if not isinstance(name, str) or not name or name.startswith("/") or any(
+            p in ("", ".", "..") for p in name.split("/")):
+        raise Failed(f"job.json names an invalid path: {name!r}")
+    return os.path.join(top, name)
+
+
+def unpack(log, work):
+    """The input disk into WORK: its job.json."""
+    os.makedirs(work)
+    log.say("unpacking the input disk")
+    with open(here(INPUT), "rb") as disk, tarfile.open(fileobj=disk, mode="r|") as tar:
+        tar.extractall(work, filter="data")
+    try:
+        with open(os.path.join(work, "job.json")) as f:
+            job = json.load(f)
+    except (OSError, ValueError) as e:
+        raise Failed(f"job.json cannot be read: {e}")
+    if not isinstance(job, dict) or job.get("job") not in JOBS:
+        raise Failed("job.json names no job of a build VM")
+    return job
+
+
+def load(log, work, images):
+    """Each image handed in into Podman's storage, under its name in job.json."""
+    for entry in images:
+        archive = inside(work, entry.get("archive"))
+        name = entry.get("name")
+        lines = run(log, ["podman", "load", "-i", archive], f"podman load of {name}")
+        loaded = [l.split(":", 1)[1].strip() for l in lines
+                  if l.startswith(("Loaded image: ", "Loaded image(s): "))]
+        if not loaded:
+            raise Failed(f"podman load of {name} named no image")
+        first = loaded[0].split(",")[0].strip()
+        if first != name:
+            run(log, ["podman", "tag", first, name], f"podman tag {name}")
+        os.remove(archive)
+
+
+def build(log, work, job):
+    """podman build of the job, then podman save of its image to OUT/image.oci.tar."""
+    args = ["podman", "build", "--pull=never", "--no-cache"]
+    for key, value in job["build_args"]:
+        args += ["--build-arg", f"{key}={value}"]
+    args += ["-t", job["tag"]]
+    context = os.path.join(work, "context.tar")
+    if job.get("containerfile") is None:
+        with open(context, "rb") as stdin:
+            run(log, [*args, "-"], "podman build", stdin=stdin)
+    else:
+        folder = os.path.join(work, "context")
+        os.makedirs(folder)
+        with tarfile.open(context, "r:") as tar:
+            tar.extractall(folder, filter="tar")
+        os.remove(context)
+        run(log, [*args, "-f", inside(folder, job["containerfile"]), folder], "podman build")
+    run(log, ["podman", "save", "--format", "oci-archive", "-o", os.path.join(here(OUT), "image.oci.tar"),
+              job["tag"]], "podman save")
+
+
+def main():
+    wait_for(LOG)
+    with open(here(LOG), "wb", buffering=0) as port:
+        log = Log(port)
+        mounted, result = False, {"status": "failed", "error": "the driver ended early"}
+        try:
+            for device in (SCRATCH, INPUT):
+                wait_for(device)
+            os.makedirs(here(STORAGE), exist_ok=True)
+            run(log, ["mkfs.btrfs", "-q", "-f", here(SCRATCH)], "mkfs.btrfs of the scratch disk")
+            run(log, ["mount", here(SCRATCH), here(STORAGE)], "mount of the scratch disk")
+            os.makedirs(here(OUT), exist_ok=True)
+            run(log, ["mount", "-t", "virtiofs", OUT_TAG, here(OUT)], "mount of the output directory")
+            mounted = True
+            work = here(WORK)
+            job = unpack(log, work)
+            load(log, work, job.get("images") or [])
+            build(log, work, job)
+            result = {"status": "ok"}
+            log.say("done")
+        except Failed as e:
+            result = {"status": "failed", "error": str(e)}
+        except Exception as e:           # whatever else: said, and the VM still powers off
+            result = {"status": "failed", "error": f"{type(e).__name__}: {e}"}
+        if result["status"] != "ok":
+            log.say(f"failed: {result['error']}")
+        if mounted:
+            with open(os.path.join(here(OUT), "result.json"), "w") as f:
+                json.dump(result, f)
+            os.sync()
+        else:
+            log.say("no output directory: the Host gets no result")
+    return 0 if result["status"] == "ok" else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

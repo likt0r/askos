@@ -15,7 +15,7 @@ Environment:
              "corrupt": true, "format" (another than qcow2 fails) and "virtual-size". The call
              records the limits it ran under: "limits": {"as": bytes, "cpu": seconds};
              "compat": "0.10" makes it a version 2 qcow2, which has no "corrupt" flag
-  qemu-img create -q -f qcow2 -F qcow2 -b <base> <disk>   writes the fake disk
+  qemu-img create -q -f qcow2 -F qcow2 -b <base> <disk> [<size>]   writes the fake disk
   qemu-img create -q -f qcow2 <disk> <size>                a fake disk without backing file
 """
 import json
@@ -65,6 +65,8 @@ def main(args):
     with open(os.path.join(DIR, "calls.jsonl"), "a") as f:
         f.write(json.dumps({"cmd": "qemu-img", "argv": args, "limits": limits}) + "\n")
     disk = args[-1]
+    if args[:7] == ["create", "-q", "-f", "qcow2", "-F", "qcow2", "-b"] and len(args) == 10:
+        disk = args[8]
     if args[:4] == ["info", "-f", "qcow2", "--output=json"] and len(args) == 5:
         return info_qcow2(disk)
     if args[:3] == ["info", "-U", "--output=json"]:
@@ -85,14 +87,14 @@ def main(args):
                          "backing-filename": meta["backing-filename"], "backing-filename-format": "qcow2"})
         print(json.dumps(info, indent=4))
         return 0
-    if args[:6] == ["create", "-q", "-f", "qcow2", "-F", "qcow2"] and args[6] == "-b" and len(args) == 9:
+    if args[:6] == ["create", "-q", "-f", "qcow2", "-F", "qcow2"] and args[6] == "-b" and len(args) in (9, 10):
         time.sleep(float(os.environ.get("FAKE_QEMU_IMG_CREATE_SECONDS", "0")))
         if os.environ.get("FAKE_QEMU_IMG_CREATE_FAILS"):
             print(os.environ["FAKE_QEMU_IMG_CREATE_FAILS"], file=sys.stderr)
             return 1
         try:
             with open(disk, "w") as f:
-                json.dump({"backing-filename": args[7]}, f)
+                json.dump({"backing-filename": args[7], **({"size": args[9]} if len(args) == 10 else {})}, f)
         except OSError as e:
             print(f"qemu-img: {disk}: Could not create '{disk}': {e.strerror}", file=sys.stderr)
             return 1

@@ -6,6 +6,11 @@
       list when REF's digest is a key of the scenario's "manifest_lists", else an image manifest;
       fails when the image is not there, and for digests in the scenario's "skopeo_fails"
 
+  skopeo copy --quiet containers-storage:REF oci-archive:PATH:NAME
+      PATH: an archive of the fakes (fake_podman.write_archive) of REF in the fake container
+      storage, named NAME; fails when REF is not there, and for REF prefixes in the scenario's
+      "skopeo_copy_fails"
+
 Environment: FAKE_DIR (calls in calls.jsonl as {"cmd": "skopeo", "argv": [...]}, scenario.json).
 """
 import json
@@ -19,6 +24,17 @@ import fake_podman  # noqa: E402
 def main(argv):
     with open(os.path.join(fake_podman.DIR, "calls.jsonl"), "a") as f:
         f.write(json.dumps({"cmd": "skopeo", "argv": argv}) + "\n")
+    if argv[:2] == ["copy", "--quiet"] and len(argv) == 4 and argv[2].startswith("containers-storage:") \
+            and argv[3].startswith("oci-archive:"):
+        ref = argv[2][len("containers-storage:"):]
+        path, _, name = argv[3][len("oci-archive:"):].partition(":")
+        if any(ref.startswith(p) for p in fake_podman.scenario().get("skopeo_copy_fails", [])) \
+                or not os.path.isdir(fake_podman.image_dir(ref)):
+            print(f"FATA[0000] initializing source containers-storage:{ref}: reference does not exist",
+                  file=sys.stderr)
+            return 1
+        fake_podman.write_archive(name, path, source=ref)
+        return 0
     if argv[:2] != ["inspect", "--raw"] or len(argv) != 3 or not argv[2].startswith("containers-storage:"):
         print(f"fake skopeo: unsupported: {argv}", file=sys.stderr)
         return 2

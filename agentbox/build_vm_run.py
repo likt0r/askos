@@ -1,0 +1,657 @@
+"""The first build VM of a Build (ADR 0025, #144): `podman build` of an Image in a throwaway VM,
+whose result is an image archive in an output directory of the Host. build_vm.py checks the
+image it boots.
+
+Behind an internal switch, off: a Build runs its podman build in a build VM only when its run's
+environment says AGENTBOX_BUILD_VM=1 (enabled(); for the Build unit `systemctl set-environment
+AGENTBOX_BUILD_VM=1`); the Setting build_vm replaces it. The Host does not import the archive
+yet, so such a Build ends after the build VM with the archive left in its output directory,
+which the next Build run removes (images.py).
+
+One build VM, named DOMAIN_PREFIX + its id (<image>-<build>-build):
+
+  before   /dev/kvm; the checked image (build_vm.current()); MemAvailable of at least MEMORY_MIB;
+           the VM network rules loaded with the chains of the build network (rule_lines(), in
+           agentbox-vmnet's file, nothing pending); the network NETWORK, defined and started
+           when it is not, refused when it is not the one network_xml() describes
+  its disks, in BUILD_VM/<id>/ (root; BUILD_VM and it 0711, so QEMU, as qemu, reaches the
+           files libvirt hands it), made for it and deleted after it, whatever happened:
+             system.qcow2   a new qcow2 overlay of SYSTEM_GIB on the checked image (backing
+                            format named); cloud-init grows the root filesystem into it
+             scratch.qcow2  new, empty, sparse, SCRATCH_GIB: the VM's /var/lib/containers
+             input.tar      the input disk, raw and read-only (serial INPUT_SERIAL): job.json,
+                            context.tar (a Recipe's tar as it is, else a tar of the Release's
+                            build context) and images/<n>.oci.tar, the images it builds on as
+                            `skopeo copy` writes them from the Host's storage
+             seed.iso       the NoCloud seed (volume cidata, xorrisofs as virt-install writes
+                            it): user-data and build-vm-run of the run's copy of the Release
+                            (vm/build-vm/), meta-data naming the VM
+  its output directory BUILD_VM/out-<id>, new and empty, USER's (0700) while the VM runs,
+           served as the virtiofs tag OUT_TAG by a virtiofsd Agent Box starts, not libvirt's
+           (which runs as root): a transient unit (systemd-run) of USER, whose listening socket
+           systemd makes (root:qemu 0660, in RUN/<id>, root:qemu 0770) and hands it as fd 3,
+           so root never touches a file USER could replace; with virtiofsd's own sandbox
+           (namespace) and every guest uid and gid squashed onto USER's
+           (--translate-uid/--translate-gid squash-guest), so every file the VM writes is
+           USER's on the Host whatever uid or setuid bit the VM gives it
+  the domain: virt-install --print-xml (as every VM, ADR 0004) of MEMORY_MIB, as many vCPUs as
+           the Host has but at most MAX_VCPUS, memfd shared memory (virtiofs), no balloon, no
+           graphics, no console, no guest agent, the log channel (LOG_CHANNEL, a Unix socket
+           QEMU makes in RUN/<id>), started with `virsh create`: transient, destroyed on
+           power-off, reboot and crash
+  its log: the Build run reads the channel line by line, each line cleaned like any text
+           from a VM (control characters out, at most LINE_MAX characters) and written with
+           "vm: " in front to the run's output, the Build unit's journal; podman's STEP lines
+           among them go to the caller (seen), which keeps the Build's progress. The Host reads
+           at its own pace: a VM that writes faster waits.
+  limits:  no line within BOOT_SECONDS of the start (it did not boot), BUILD_SECONDS in all,
+           more than MAX_OUT bytes allocated in the output directory or less than MIN_FREE
+           bytes free under /var/lib/agentbox (checked every WATCH_SECONDS): the VM is
+           destroyed and the Build fails with that reason
+  after:   the domain destroyed if it is still there, virtiofsd's units stopped, the disks
+           and RUN/<id> deleted, the output directory taken back by root (0700); then, the VM
+           and virtiofsd gone, root opens exactly result.json and image.oci.tar in it, never
+           through a link: regular files of USER with one link, result.json at most
+           MAX_RESULT, the archive at most MAX_ARCHIVE. A failure deletes the output directory.
+
+An interruption (the run's SIGTERM handler, Ctrl+C) runs the same teardown; after a crash of
+the run, the next run removes whatever a build VM left (leftovers()).
+"""
+import json
+import os
+import pwd
+import re
+import select
+import shutil
+import socket
+import stat
+import tarfile
+import time
+
+from . import build_vm, paths, programs, state_files, states, virsh
+from .errors import Fail
+from .registry import dom
+from .sanitize import clean
+
+SWITCH = "AGENTBOX_BUILD_VM"
+NETWORK_NAME = "build"              # no VM can be named so (list_records.RESERVED_NAMES)
+NETWORK = dom(NETWORK_NAME)         # agentbox-build
+BRIDGE = "aboxbuild"                # outside the abox-* the VM networks' rules match
+ADDRESS = "10.77.0.1"               # no VM network has the number 0
+GUEST = "10.77.0.2"
+MAC = "52:54:00:77:00:02"
+# where a build VM's packets never go: the home network, the VMs, the Host's own and reserved ranges
+BLOCKED = ("0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12",
+           "192.168.0.0/16", "224.0.0.0/4", "240.0.0.0/4")
+USER = "agentbox-buildvm"           # rpm/agentbox.sysusers: runs nothing but virtiofsd
+NAME_PREFIX = "buildvm-"            # longer than any VM's name with the rest of an id
+DOMAIN_PREFIX = dom(NAME_PREFIX)    # agentbox-buildvm-
+ID = re.compile(r"[a-z0-9][a-z0-9-]{0,80}")
+MEMORY_MIB = 8192
+MAX_VCPUS = 8
+SYSTEM_GIB = 20
+SCRATCH_GIB = 40
+LOG_CHANNEL = "org.agentbox.build-log"
+INPUT_SERIAL = "agentbox-build-input"     # virtio-blk serials: at most 20 characters
+SCRATCH_SERIAL = "agentbox-scratch"
+OUT_TAG = "agentbox-out"
+SEED_LABEL = "cidata"
+VIRTIOFSD = "/usr/libexec/virtiofsd"
+RUN = paths.host("/run/agentbox/build-vm")
+SOURCE = os.path.join("vm", "build-vm")   # the seed's files in the Release
+FEDORA_BOOTC = "localhost/agentbox-input/fedora-bootc:{}"   # its name in a build VM, by Build
+BOOT_SECONDS = paths.tunable("AGENTBOX_BUILD_VM_BOOT_SECONDS", 600)
+BUILD_SECONDS = paths.tunable("AGENTBOX_BUILD_VM_SECONDS", 4 * 3600)
+WATCH_SECONDS = paths.tunable("AGENTBOX_BUILD_VM_WATCH_SECONDS", 5)
+END_SECONDS = paths.tunable("AGENTBOX_BUILD_VM_END_SECONDS", 60)   # from its log's end to its domain's
+MAX_OUT = paths.tunable("AGENTBOX_BUILD_VM_OUT_BYTES", 160 << 30)
+MIN_FREE = paths.tunable("AGENTBOX_BUILD_VM_MIN_FREE_BYTES", 10 << 30)
+MAX_ARCHIVE = 64 << 30
+MAX_RESULT = 64 << 10
+LINE_MAX = 4096
+SKOPEO_SECONDS = 3600
+
+
+class Failed(Exception):
+    """A build VM that did not hand out what it was to: the Build fails with this reason."""
+
+    def __init__(self, message):
+        super().__init__(message)
+        self.message = message
+
+
+def enabled():
+    """The internal switch: whether a Build's podman build runs in a build VM (AGENTBOX_BUILD_VM=1
+    in the run's environment). Off by default; turning it on only moves a Build off the Host."""
+    return os.environ.get(SWITCH) == "1"
+
+
+# --- the network ---------------------------------------------------------------------------------
+
+def network_xml():
+    """NAT, IPv4 only, DHCP for the one build VM; libvirt's dnsmasq resolves through the Host's
+    resolver. What it may reach is up to the VM network rules (rule_lines)."""
+    return f"""<network>
+  <name>{NETWORK}</name>
+  <forward mode='nat'/>
+  <bridge name='{BRIDGE}' stp='on' delay='0'/>
+  <ip address='{ADDRESS}' netmask='255.255.255.0'>
+    <dhcp>
+      <range start='{GUEST}' end='{GUEST}'/>
+      <host mac='{MAC}' ip='{GUEST}'/>
+    </dhcp>
+  </ip>
+</network>
+"""
+
+
+def input_jump():
+    """The line of the VM network rules' input chain that sends the build network to from_build."""
+    return f'    iifname "{BRIDGE}" jump from_build'
+
+
+def rule_lines():
+    """The chains of the build network in the VM network rules (generate.nft_rules): to the
+    Host only DHCP and DNS to ADDRESS; nothing forwarded to BLOCKED or over IPv6; nothing
+    forwarded to a build VM that it did not ask for. A drop in this table is final whatever
+    libvirt's own rules accept."""
+    return [
+        "  chain from_build {",
+        "    meta nfproto ipv6 drop",
+        "    udp dport 67 accept",
+        f"    ip daddr {ADDRESS} udp dport 53 accept",
+        f"    ip daddr {ADDRESS} tcp dport 53 accept",
+        "    drop",
+        "  }",
+        "  chain forward {",
+        "    type filter hook forward priority -5; policy accept",
+        f'    iifname "{BRIDGE}" meta nfproto ipv6 drop',
+        f'    iifname "{BRIDGE}" ip daddr {{ {", ".join(BLOCKED)} }} drop',
+        f'    oifname "{BRIDGE}" ct state established,related accept',
+        f'    oifname "{BRIDGE}" drop',
+        "  }",
+    ]
+
+
+def _rules():
+    """The VM network rules with the build network's chains are loaded: in agentbox-vmnet's
+    file, nothing of it pending, the service active."""
+    from . import generate            # generate builds the rules from rule_lines()
+    try:
+        with open(generate.VM_RULES) as f:
+            text = f.read().splitlines()
+    except OSError:
+        text = []
+    loaded = all(line in text for line in [input_jump(), *rule_lines()]) and not generate.is_pending("firewall")
+    try:
+        loaded = loaded and states.started(generate.VMNET, 30)
+    except Fail:
+        loaded = False
+    if not loaded:
+        raise Failed("the VM network rules with the build network's are not loaded "
+                     f"(sudo agentbox regenerate; systemctl status {generate.VMNET})")
+
+
+def _network():
+    """NETWORK defined and started when it is not; an existing one must be network_xml()'s."""
+    try:
+        found = states.network(NETWORK_NAME)
+    except Fail as f:
+        raise Failed(f.message)
+    if found is None:
+        _virsh_file("net-define", network_xml(), f"define the network {NETWORK}")
+        active = False
+    else:
+        xml = virsh.run("net-dumpxml", NETWORK).stdout
+        has = [re.search(rf"<{tag}\b[^>]*\b{attr}=['\"]([^'\"]+)", xml)
+               for tag, attr in (("bridge", "name"), ("ip", "address"), ("forward", "mode"))]
+        if [m.group(1) if m else None for m in has] != [BRIDGE, ADDRESS, "nat"] \
+                or re.search(r"<ip\b[^>]*\bfamily=['\"]ipv6", xml):
+            raise Failed(f"the network {NETWORK} is not the build network (bridge {BRIDGE}, {ADDRESS}, NAT, "
+                         "IPv4 only): remove it (virsh net-destroy, net-undefine)")
+        active = found[0]
+    if not active:
+        r = virsh.run("net-start", NETWORK)
+        if r.returncode != 0:
+            raise Failed(f"cannot start the network {NETWORK}: {programs.summary(r)}")
+
+
+def _virsh_file(cmd, xml, what):
+    """virsh <cmd> <file> with xml in a temporary file."""
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".xml") as f:
+        f.write(xml)
+        f.flush()
+        r = virsh.run(cmd, f.name)
+    if r.returncode != 0:
+        raise Failed(f"cannot {what}: {programs.summary(r)}")
+
+
+# --- before it starts ----------------------------------------------------------------------------
+
+def _memory_available():
+    """MemAvailable in MiB, or None."""
+    try:
+        with open(paths.host("/proc/meminfo")) as f:
+            m = re.search(r"^MemAvailable:\s+(\d+) kB$", f.read(), re.MULTILINE)
+    except OSError:
+        m = None
+    return int(m.group(1)) // 1024 if m else None
+
+
+def _host_ready():
+    """The checked image a build VM boots, once the Host can run one."""
+    if not os.path.exists(paths.host("/dev/kvm")):
+        raise Failed("the Host has no KVM (/dev/kvm): no build VM can run")
+    image = build_vm.current()
+    if not image:
+        raise Failed("there is no checked build VM image yet (the version check fetches and checks it: "
+                     "systemctl start agentbox-versions)")
+    available = _memory_available()
+    if available is None or available < MEMORY_MIB:
+        raise Failed(f"not enough free memory for a build VM: it needs {MEMORY_MIB >> 10} GiB, "
+                     f"the Host has {'an unknown amount' if available is None else f'{available} MiB'} available")
+    _rules()
+    _network()
+    return image
+
+
+def vcpus():
+    return max(1, min(os.cpu_count() or 1, MAX_VCPUS))
+
+
+def _ids():
+    """(uid, gid) of USER; without root (tests) the caller's own, the only ones it can give."""
+    if os.geteuid() != 0:
+        return os.getuid(), os.getgid()
+    try:
+        pw = pwd.getpwnam(USER)
+    except KeyError:
+        raise Failed(f"the user {USER} is missing (the package creates it)")
+    return pw.pw_uid, pw.pw_gid
+
+
+def _owned(tarinfo):
+    tarinfo.uid = tarinfo.gid = 0
+    tarinfo.uname = tarinfo.gname = "root"
+    return tarinfo
+
+
+def _tar_of(folder, path):
+    """A tar of folder's content (its entries at the top, links as links) at path."""
+    with tarfile.open(path, "x", format=tarfile.PAX_FORMAT) as tar:
+        for name in sorted(os.listdir(folder)):
+            tar.add(os.path.join(folder, name), arcname=name, filter=_owned)
+
+
+def _add_bytes(tar, name, data):
+    import io
+    info = _owned(tarfile.TarInfo(name))
+    info.size, info.mode, info.mtime = len(data), 0o644, int(time.time())
+    tar.addfile(info, io.BytesIO(data))
+
+
+def _input_disk(vm, job, context, hand_in, say):
+    """The input disk: job.json, context.tar and the images handed in, from the Host's storage
+    by skopeo (`hand_in`: [(reference in the Host's storage, name in the VM)])."""
+    images = []
+    for n, (ref, name) in enumerate(hand_in):
+        archive = os.path.join(vm["work"], f"image-{n}.oci.tar")
+        say(f"Handing in {ref} as {name}")
+        try:
+            programs.run(["skopeo", "copy", "--quiet", f"containers-storage:{ref}", f"oci-archive:{archive}:{name}"],
+                         SKOPEO_SECONDS, what=f"skopeo copy of {ref}")
+        except Fail as f:
+            raise Failed(f.message)
+        images.append((archive, {"archive": f"images/{n}.oci.tar", "name": name}))
+    job = {**job, "images": [entry for _, entry in images]}
+    with tarfile.open(vm["input"], "x", format=tarfile.PAX_FORMAT) as tar:
+        _add_bytes(tar, "job.json", json.dumps(job, indent=2).encode())
+        if isinstance(context, (bytes, bytearray)):
+            _add_bytes(tar, "context.tar", bytes(context))
+        else:
+            nested = os.path.join(vm["work"], "context.tar")
+            _tar_of(context, nested)
+            tar.add(nested, arcname="context.tar", filter=_owned)
+            os.remove(nested)
+        for archive, entry in images:
+            tar.add(archive, arcname=entry["archive"], filter=_owned)
+            os.remove(archive)
+
+
+def _seed(vm, src):
+    """The NoCloud seed: the Release's user-data and driver, and meta-data naming the VM."""
+    folder = os.path.join(vm["work"], "seed")
+    os.mkdir(folder, 0o700)
+    for name in ("user-data", "build-vm-run"):
+        try:
+            shutil.copyfile(os.path.join(src, SOURCE, name), os.path.join(folder, name))
+        except OSError as e:
+            raise Failed(f"{os.path.join(SOURCE, name)} of the Release cannot be read: {e.strerror or e}")
+    with open(os.path.join(folder, "meta-data"), "w") as f:
+        f.write(f"instance-id: {vm['domain']}\nlocal-hostname: agentbox-build\n")
+    _run(["xorrisofs", "-quiet", "-o", vm["seed"], "-J", "-input-charset", "utf8", "-rational-rock",
+          "-V", SEED_LABEL, folder], 120, "xorrisofs of the seed")
+    shutil.rmtree(folder)
+
+
+def _run(argv, timeout, what):
+    try:
+        return programs.run(argv, timeout, what=what, c_locale=True)
+    except Fail as f:
+        raise Failed(f.message)
+
+
+def _prepare(vm, image, job, context, hand_in, src, ids, say):
+    """The VM's disks, its output directory and its run directory, all new. The disks are root's
+    alone (0600, libvirt hands them to QEMU while the VM runs): the input disk holds a Recipe."""
+    state_files.directory(paths.BUILD_VM, 0o711)
+    for path in (vm["work"], vm["out"], vm["run"]):
+        shutil.rmtree(path, ignore_errors=True)
+    state_files.directory(vm["work"], 0o711)
+    umask = os.umask(0o077)
+    try:
+        _disks(vm, image, job, context, hand_in, src, say)
+    finally:
+        os.umask(umask)
+    os.mkdir(vm["out"], 0o700)
+    os.chown(vm["out"], *ids)
+    qemu_gid = state_files.group_id("qemu", "is libvirt installed?")
+    state_files.directory(os.path.dirname(RUN), 0o755)
+    state_files.directory(RUN, 0o755)
+    state_files.directory(vm["run"], 0o770, qemu_gid)
+
+
+def _disks(vm, image, job, context, hand_in, src, say):
+    _run(["qemu-img", "create", "-q", "-f", "qcow2", "-F", "qcow2", "-b", image, vm["system"], f"{SYSTEM_GIB}G"],
+         120, "qemu-img create of the system disk")
+    _run(["qemu-img", "create", "-q", "-f", "qcow2", vm["scratch"], f"{SCRATCH_GIB}G"], 120,
+         "qemu-img create of the scratch disk")
+    _input_disk(vm, job, context, hand_in, say)
+    _seed(vm, src)
+
+
+def virtiofsd_argv(vm, ids):
+    """systemd-run of virtiofsd as USER, socket-activated: systemd makes the socket (root:qemu
+    0660) and hands it over as fd 3."""
+    uid, gid = ids
+    return ["systemd-run", "--quiet", "--collect", f"--unit={vm['unit']}",
+            f"--socket-property=ListenStream={vm['fs_socket']}", "--socket-property=SocketUser=root",
+            "--socket-property=SocketGroup=qemu", "--socket-property=SocketMode=0660",
+            f"--property=User={USER}", f"--property=Group={USER}", "--property=NoNewPrivileges=yes",
+            "--property=ProtectSystem=strict", f"--property=ReadWritePaths={vm['out']}", "--property=ProtectHome=yes",
+            "--property=PrivateTmp=yes", "--property=RestrictAddressFamilies=AF_UNIX", "--property=MemoryMax=2G",
+            "--", VIRTIOFSD, "--fd=3", f"--shared-dir={vm['out']}", "--sandbox=namespace",
+            f"--translate-uid=squash-guest:0:{uid}:4294967295", f"--translate-gid=squash-guest:0:{gid}:4294967295"]
+
+
+def virt_install_args(vm):
+    disk = "path={},format=qcow2,bus=virtio,target.dev={},cache=none,io=native,discard=unmap"
+    return [
+        "--connect", "qemu:///system", "--print-xml", "--dry-run", "--check", "all=off",
+        "--name", vm["domain"], "--osinfo", "linux2024", "--memory", str(MEMORY_MIB), "--vcpus", str(vcpus()),
+        "--cpu", "host-passthrough", "--machine", "q35", "--boot", "hd", "--import", "--noautoconsole",
+        "--graphics", "none", "--video", "none", "--sound", "none", "--input", "none", "--console", "none",
+        "--controller", "usb,model=none",
+        "--events", "on_poweroff=destroy,on_reboot=destroy,on_crash=destroy",
+        "--features", "acpi=on,apic=on",
+        "--memorybacking", "source.type=memfd,access.mode=shared",
+        "--disk", disk.format(vm["system"], "vda"),
+        "--disk", disk.format(vm["scratch"], "vdb") + f",serial={SCRATCH_SERIAL}",
+        "--disk", f"path={vm['input']},format=raw,bus=virtio,target.dev=vdc,readonly=on,serial={INPUT_SERIAL}",
+        "--disk", f"path={vm['seed']},format=raw,bus=virtio,target.dev=vdd,readonly=on",
+        "--filesystem", f"type=mount,driver.type=virtiofs,source.socket={vm['fs_socket']},target.dir={OUT_TAG}",
+        "--network", f"network={NETWORK},mac={MAC},model=virtio",
+        "--channel", f"unix,mode=bind,path={vm['log_socket']},target.type=virtio,target.name={LOG_CHANNEL}",
+        "--memballoon", "none",
+        "--rng", "/dev/urandom",
+    ]
+
+
+def _start(vm, ids, say):
+    """virtiofsd, then the transient domain."""
+    _run(virtiofsd_argv(vm, ids), 60, "systemd-run of virtiofsd")
+    xml = _run(["virt-install", *virt_install_args(vm)], 120, "virt-install").stdout
+    path = os.path.join(vm["work"], "domain.xml")
+    with open(path, "w") as f:
+        f.write(xml)
+    _run(["virsh", "-q", "-c", "qemu:///system", "create", path], 120, f"virsh create {vm['domain']}")
+    say(f"== Build VM {vm['domain']} started ({MEMORY_MIB >> 10} GiB, {vcpus()} vCPUs, network {NETWORK})")
+
+
+# --- while it runs -------------------------------------------------------------------------------
+
+def _gone(vm):
+    """Whether libvirt no longer has the (transient) domain."""
+    return states.gone(vm["name"])
+
+
+def _held(folder):
+    """Bytes allocated under folder, links not followed."""
+    total = 0
+    for top, dirs, files in os.walk(folder):
+        for name in dirs + files:
+            try:
+                total += os.lstat(os.path.join(top, name)).st_blocks * 512
+            except OSError:
+                pass
+    return total
+
+
+def _size(n):
+    return f"{n >> 30} GiB" if n >= 1 << 30 and not n % (1 << 30) else f"{n} bytes"
+
+
+def _watch(vm):
+    if _held(vm["out"]) > MAX_OUT:
+        raise Failed(f"the build VM wrote more than {_size(MAX_OUT)} into its output directory")
+    st = os.statvfs(paths.STATE)
+    if st.f_bavail * st.f_frsize < MIN_FREE:
+        raise Failed(f"less than {_size(MIN_FREE)} free under {paths.STATE}")
+
+
+def _connect(path):
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        s.connect(path)
+    except OSError:
+        s.close()
+        return None
+    return s
+
+
+def _emit(raw, say, seen):
+    text = clean(raw.decode("utf-8", "replace").rstrip("\r"), False)[:LINE_MAX]
+    say("vm: " + text)
+    try:
+        seen(text)
+    except Exception as e:           # the progress is lost, never the log
+        say(f"agentbox: the Build's progress could not be saved: {e}")
+
+
+def _relay(vm, limit, say, seen):
+    """The log channel into the run's output until QEMU closes it (the VM ended), within the
+    limits; Failed when one is reached."""
+    started = time.monotonic()
+    conn, heard, pending, watched = None, False, b"", 0.0
+    try:
+        while True:
+            now = time.monotonic()
+            if not heard and now - started > BOOT_SECONDS:
+                raise Failed(f"the build VM did not boot: no line on its log channel within {BOOT_SECONDS} s")
+            if now - started > limit:
+                raise Failed(f"the build VM's time limit of {limit} s is exceeded")
+            if now - watched >= WATCH_SECONDS:
+                watched = now
+                _watch(vm)
+                if conn is None and _gone(vm):
+                    break
+            if conn is None:
+                conn = _connect(vm["log_socket"])
+                if conn is None:
+                    time.sleep(0.2)
+                    continue
+            ready, _, _ = select.select([conn], [], [], 1)
+            if not ready:
+                continue
+            data = conn.recv(65536)
+            if not data:
+                break
+            heard = True
+            pending += data
+            while True:
+                cut = pending.find(b"\n")
+                if cut < 0 and len(pending) < LINE_MAX:
+                    break
+                cut = cut if 0 <= cut < LINE_MAX else LINE_MAX
+                line, pending = pending[:cut], pending[cut + 1 if pending[cut:cut + 1] == b"\n" else cut:]
+                _emit(line, say, seen)
+        if pending:
+            _emit(pending, say, seen)
+    finally:
+        if conn is not None:
+            conn.close()
+    deadline = time.monotonic() + END_SECONDS
+    while not _gone(vm):
+        if time.monotonic() > deadline:
+            say(f"The build VM's log ended but its domain is still there: destroying {vm['domain']}")
+            break
+        time.sleep(0.5)
+
+
+# --- afterwards ----------------------------------------------------------------------------------
+
+def _stop(unit):
+    """virtiofsd's units stopped; whatever goes wrong is ignored (they may be gone already)."""
+    try:
+        programs.systemctl("stop", f"{unit}.socket", f"{unit}.service", timeout=60, ok=None)
+    except Fail:
+        pass
+
+
+def _end(vm):
+    """The domain destroyed, virtiofsd stopped, the disks and the run directory deleted, the
+    output directory taken back by root: whatever happened."""
+    if not _gone(vm):
+        virsh.run("destroy", vm["domain"])
+    _stop(vm["unit"])
+    shutil.rmtree(vm["work"], ignore_errors=True)
+    shutil.rmtree(vm["run"], ignore_errors=True)
+    if os.path.isdir(vm["out"]) and not os.path.islink(vm["out"]):
+        if os.geteuid() == 0:
+            os.chown(vm["out"], 0, 0)
+        os.chmod(vm["out"], 0o700)
+
+
+def _handed_out(dir_fd, name, cap, uid):
+    """The open file `name` of the output directory: a regular file of uid with one link, at most
+    cap bytes, never through a link; None otherwise."""
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY, dir_fd=dir_fd)
+    except OSError:
+        return None
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != uid or st.st_nlink != 1 or st.st_size > cap:
+        os.close(fd)
+        return None
+    return fd
+
+
+def _outcome(vm, uid):
+    """The image archive the VM handed out: its path; Failed with the VM's reason otherwise."""
+    try:
+        dir_fd = os.open(vm["out"], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as e:
+        raise Failed(f"the build VM's output directory cannot be opened: {e.strerror or e}")
+    try:
+        fd = _handed_out(dir_fd, "result.json", MAX_RESULT, uid)
+        if fd is None:
+            raise Failed("the build VM ended without a result (result.json; see its lines in this log)")
+        with os.fdopen(fd, "rb") as f:
+            data = f.read(MAX_RESULT + 1)
+        try:
+            result = json.loads(data.decode("utf-8", "replace"))
+        except (ValueError, RecursionError):
+            result = None
+        if not isinstance(result, dict) or result.get("status") not in ("ok", "failed"):
+            raise Failed("the build VM's result.json is not one")
+        if result["status"] != "ok":
+            why = result.get("error") if isinstance(result.get("error"), str) else "no reason given"
+            raise Failed("in the build VM: " + clean(" ".join(why.split()), False)[:300])
+        fd = _handed_out(dir_fd, "image.oci.tar", MAX_ARCHIVE, uid)
+        if fd is None:
+            raise Failed(f"the build VM handed out no image archive (image.oci.tar: a regular file of {USER} "
+                         f"with one link, at most {MAX_ARCHIVE >> 30} GiB)")
+        os.close(fd)
+    finally:
+        os.close(dir_fd)
+    return os.path.join(vm["out"], "image.oci.tar")
+
+
+def names(image, build, step="build"):
+    """The paths and names of the build VM of a Build's step."""
+    vm = _named(f"{image}-{build}-{step}")
+    work, run = vm["work"], vm["run"]
+    return {**vm, "system": os.path.join(work, "system.qcow2"), "scratch": os.path.join(work, "scratch.qcow2"),
+            "input": os.path.join(work, "input.tar"), "seed": os.path.join(work, "seed.iso"),
+            "log_socket": os.path.join(run, "log.sock"), "fs_socket": os.path.join(run, "virtiofs.sock")}
+
+
+def _named(ident):
+    """The domain, virtiofsd's unit and the directories of the build VM `ident`."""
+    return {"id": ident, "name": NAME_PREFIX + ident, "domain": DOMAIN_PREFIX + ident, "unit": DOMAIN_PREFIX + ident,
+            "work": os.path.join(paths.BUILD_VM, ident), "out": os.path.join(paths.BUILD_VM, f"out-{ident}"),
+            "run": os.path.join(RUN, ident)}
+
+
+def build_image(image, build, job, context, hand_in, src, say, seen):
+    """podman build in the first build VM of the Build: the path of the image archive it handed
+    out, in its output directory, which the caller removes. job: tag, build_args ([[name,
+    value]]) and containerfile (in the context; None: the context on stdin). context: the tar of
+    a Recipe (bytes) or a directory. hand_in: [(reference in the Host's storage, name in the
+    VM)]. src: the run's copy of the Release. seen(line): each line of the VM's log. Failed when
+    the build VM cannot run, or ends without the archive."""
+    image_file = _host_ready()
+    ids = _ids()
+    vm = names(image, build)
+    say(f"== {image}: the podman build runs in the build VM {vm['domain']} (image {os.path.basename(image_file)})")
+    ok = False
+    try:
+        try:
+            _prepare(vm, image_file, {"job": "build", "image": image, "build": build, **job}, context, hand_in,
+                     src, ids, say)
+            _start(vm, ids, say)
+            _relay(vm, BUILD_SECONDS, say, seen)
+        except OSError as e:
+            raise Failed(f"build VM: {e.strerror or e}" + (f" ({e.filename})" if e.filename else ""))
+        finally:
+            _end(vm)
+        archive = _outcome(vm, ids[0])
+        ok = True
+    finally:
+        if not ok:
+            shutil.rmtree(vm["out"], ignore_errors=True)
+    say(f"== {image}: the build VM handed out its image archive ({archive})")
+    return archive
+
+
+def leftovers(say):
+    """Holding the run lock, before a Build: what a build VM left when its run ended without its
+    teardown (killed, the Host's crash): its domain destroyed, its virtiofsd stopped, its disks,
+    output and run directories deleted. The checked image and its record stay."""
+    found = set()
+    for name in state_files.listdir(paths.BUILD_VM, fail=False):
+        ident = name.removeprefix("out-")
+        if name not in ("images", os.path.basename(build_vm.RECORD)) and ID.fullmatch(ident):
+            found.add(ident)
+    for name in state_files.listdir(RUN, fail=False):
+        if ID.fullmatch(name):
+            found.add(name)
+    for ident in sorted(found):
+        vm = _named(ident)
+        if not _gone(vm):
+            virsh.run("destroy", vm["domain"])
+        _stop(vm["unit"])
+        for path in (vm["work"], vm["out"], vm["run"]):
+            shutil.rmtree(path, ignore_errors=True)
+        say(f"Removed what the build VM {vm['domain']} left")

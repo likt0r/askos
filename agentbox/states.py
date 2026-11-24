@@ -81,6 +81,12 @@ def off(name):
     return False, "unknown"
 
 
+def gone(name):
+    """Whether libvirt has no domain of the name (a transient one that ended, a build VM's);
+    False when virsh cannot tell."""
+    return off(name)[1] == "not defined"
+
+
 def has_process(name):
     """Whether the VM has a QEMU process (running, or suspended in memory); False when
     libvirt cannot tell."""

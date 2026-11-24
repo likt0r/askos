@@ -68,6 +68,12 @@ attached file is kept in FAKE_VIRSH_DIR/attached/, so a test sees what the VM go
 
 `domblklist <domain>` lists the targets and sources of the System disk and the attached disks.
 
+`create <xml>` starts a transient domain from virt-install's XML (fake_virt_install.py): a
+build VM (agentbox-buildvm-*), as QEMU would, makes the listening socket of its log channel and
+runs as fake_build_vm.py in the background; scenario "create_fails" makes it fail as libvirt
+does. A transient domain is gone once it ends or `destroy` ends it (which kills fake_build_vm.py).
+Domains named agentbox-buildvm-* do not exist until created.
+
 `dumpxml` shows the System disk (under AGENTBOX_ROOT) and, while running, the
 backing file fixed at `start`. `start` adds the VM's QEMU process, started now, with
 libvirt's pid file to the /proc and /run under AGENTBOX_ROOT (fake_proc.py); a stop
@@ -162,12 +168,15 @@ def vm_config(scenario, domain):
     return (scenario.get("vms") or {}).get(domain.removeprefix("agentbox-"), {})
 
 
+BUILD_VM = "agentbox-buildvm-"
+
+
 def domain_state(scenario, domain):
     """The VM's current state: what changed so far, else the scenario."""
     conf = vm_config(scenario, domain)
     initial = {"state": conf.get("state", scenario.get("state", "running")),
-               "managed_save": conf.get("managed_save", False), "defined": conf.get("defined", True),
-               "disks": conf.get("disks") or {}}
+               "managed_save": conf.get("managed_save", False),
+               "defined": conf.get("defined", not domain.startswith(BUILD_VM)), "disks": conf.get("disks") or {}}
     st = {**initial, **load("domains.json", {}).get(domain, {})}
     if "uuid" not in st:
         st["uuid"] = conf.get("uuid") or derived_uuid(domain)
@@ -196,6 +205,46 @@ def define(scenario, path):
     save_state(domain, **{**st, "defined": True, "uuid": m.group(1) if m else st["uuid"]})
     print(f"Domain '{domain}' defined from {path}")
     return 0
+
+
+def create(scenario, path):
+    """virsh create: a transient domain, running at once. A build VM's log channel socket
+    (QEMU's, mode=bind) listens before this returns; fake_build_vm.py plays the VM."""
+    import socket
+    import subprocess
+    from xml.sax.saxutils import unescape
+    with open(path) as f:
+        xml = f.read()
+    domain = re.search(r"<name>([^<]+)</name>", xml).group(1)
+    record({"cmd": "create", "dom": domain, "xml": xml})
+    if scenario.get("create_fails"):
+        print(f"error: Failed to create domain from {path}", file=sys.stderr)
+        print("error: internal error: process exited while connecting to monitor: qemu: could not open "
+              "vhost-user socket: Permission denied", file=sys.stderr)
+        return 1
+    if domain_state(scenario, domain)["defined"]:
+        print(f"error: Failed to create domain from {path}\nerror: operation failed: domain '{domain}' already "
+              "exists", file=sys.stderr)
+        return 1
+    args = json.loads(unescape(re.search(r"<args>(.*)</args>", xml, re.S).group(1)))
+    channel = args[args.index("--channel") + 1]
+    socket_path = re.search(r"(?:^|,)path=([^,]+)", channel).group(1)
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(socket_path)
+    listener.listen(1)
+    with open(os.path.join(DIR, "guest-" + domain.removeprefix("agentbox-") + ".log"), "a") as log:
+        guest = subprocess.Popen([sys.executable, os.path.join(REPO, "tests", "fake_build_vm.py"), domain,
+                                  str(listener.fileno()), path], pass_fds=[listener.fileno()],
+                                 stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+    listener.close()
+    save_state(domain, state="running", defined=True, transient=True, pid=guest.pid, managed_save=False)
+    print(f"Domain '{domain}' created from {path}")
+    return 0
+
+
+def end_transient(domain):
+    """A transient domain that ended: libvirt forgets it."""
+    save_state(domain, state="shut off", defined=False, pid=None)
 
 
 def networks(scenario):
@@ -575,6 +624,22 @@ def libvirt(scenario, cmd, rest):
         return 0
     if cmd == "define":
         return define(scenario, rest[0])
+    if cmd == "create":
+        return create(scenario, rest[0])
+    if cmd == "destroy" and domain_state(scenario, rest[0]).get("transient"):
+        st = domain_state(scenario, rest[0])
+        if not st["defined"]:
+            return no_domain(rest[0])
+        record({"cmd": "destroy", "dom": rest[0]})
+        if st.get("pid"):
+            import signal
+            try:
+                os.killpg(st["pid"], signal.SIGKILL)
+            except OSError:
+                pass
+        end_transient(rest[0])
+        print(f"Domain '{rest[0]}' destroyed")
+        return 0
     if cmd == "dumpxml":
         return dumpxml(scenario, rest[0])
     if cmd in ("net-info", "net-dumpxml", "net-define", "net-autostart", "net-start", "net-destroy",

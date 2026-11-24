@@ -241,6 +241,7 @@ table inet agentbox_vm {
   chain input {
     type filter hook input priority -5; policy accept
     iifname "abox-*" jump from_vm
+    iifname "aboxbuild" jump from_build
   }
   chain from_vm {
     meta nfproto ipv6 drop
@@ -253,6 +254,20 @@ table inet agentbox_vm {
     meta l4proto tcp reject with tcp reset
     meta l4proto udp reject with icmp type port-unreachable
     drop
+  }
+  chain from_build {
+    meta nfproto ipv6 drop
+    udp dport 67 accept
+    ip daddr 10.77.0.1 udp dport 53 accept
+    ip daddr 10.77.0.1 tcp dport 53 accept
+    drop
+  }
+  chain forward {
+    type filter hook forward priority -5; policy accept
+    iifname "aboxbuild" meta nfproto ipv6 drop
+    iifname "aboxbuild" ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4 } drop
+    oifname "aboxbuild" ct state established,related accept
+    oifname "aboxbuild" drop
   }
 }
 """

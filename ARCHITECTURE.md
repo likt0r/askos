@@ -578,6 +578,15 @@ flowchart LR
   A connection to any other port of the Host's address is refused at once (a TCP reset, ICMP
   port unreachable for UDP), so a program fails without waiting for a timeout; packets to
   other addresses and IPv6 are dropped.
+- The build VMs' network `agentbox-build` (bridge `aboxbuild`, `10.77.0.0/24`, NAT, IPv4 only)
+  gives a build VM open egress, without the proxy or an Allowlist
+  ([ADR 0025](docs/adr/0025-builds-run-in-a-throwaway-build-vm.md)): the VM network rules let it
+  reach the Host only for DHCP and DNS on `10.77.0.1`, drop what it sends over IPv6 or to
+  private, shared, link-local, loopback, multicast and reserved addresses (the home network,
+  the VMs, every address of the Host), and forward nothing to a build VM that it did not ask
+  for. Its bridge is outside the `abox-*` names of the VM networks' rules. A build VM's start
+  defines and starts the network when it is not there and refuses one of that name that is not
+  it; no VM can be named `build`.
 - Containers in a VM are behind the same limits. They run on rootless Podman: `docker` is
   Podman under that name, and `podman compose` and `docker compose` run Docker Compose, which
   builds and starts containers through the agent's Podman socket. `guest-setup` writes the
@@ -1149,8 +1158,9 @@ Host after every Build
   it starts no Build, and the next Build (the weekly rebuild on `rebuild_day`, or an update of
   Orca, the agents or the packages) takes it.
 - **The build VMs' image** (#144, [ADR 0025](docs/adr/0025-builds-run-in-a-throwaway-build-vm.md),
-  `agentbox/build_vm.py`): Builds are to run in throwaway build VMs. So far only their image
-  is in place, and nothing boots it: Builds still run on the Host. It is the Fedora Cloud Base
+  `agentbox/build_vm.py`): Builds are to run in throwaway build VMs. The first build VM of a
+  Build boots it (below), behind an internal switch that is off: Builds run on the Host. It is
+  the Fedora Cloud Base
   Generic qcow2 of the release fedora-bootc's tag names (44), as Fedora publishes and signs it
   with the release under `releases/44/Cloud/x86_64/images/`; nothing is built or changed on
   the Host to make it. Fedora does not update that image during the release, so it is renewed
@@ -1169,6 +1179,51 @@ Host after every Build
   image leaves the one in use as it is. The image it replaces is removed once no Build runs (the
   run lock, not waited for), else by the next check. A new image is no update: it starts no
   Build.
+- **The first build VM** (#144, [ADR 0025](docs/adr/0025-builds-run-in-a-throwaway-build-vm.md),
+  `agentbox/build_vm_run.py`) runs a Build's `podman build` instead of the Host. It is behind an
+  internal switch that is off: only a Build run whose environment says `AGENTBOX_BUILD_VM=1`
+  builds in a build VM (for the Build unit, `systemctl set-environment AGENTBOX_BUILD_VM=1`), until
+  the Setting `build_vm` replaces it. The Host does not import the image archive the VM hands out
+  yet: such a Build fails after the build VM, the archive left in its output directory until the
+  next Build run removes it. The import, the Safeguard check of what comes out, the second,
+  offline build VM that makes the disk, and the Setting are to follow (#144).
+  - **What runs in it**: `podman build --pull=never --no-cache` with the build arguments the
+    Host gives `podman build` on the Host (the pinned fedora-bootc, under a local name in the
+    VM, `package_min_age_days`, `orca_version` and `playwright_version` of the Settings; `BASE`
+    for a derived Image), from the same build context, a Recipe's tar as it is (the Host still
+    never unpacks it), then `podman save --format oci-archive` into its output directory. The
+    images it builds on go in from the Host's storage (`skopeo copy` to an OCI archive): it pulls
+    nothing from a registry for them.
+  - **The VM**: a transient domain (`virsh create`, never defined) from virt-install's
+    `--print-xml`, destroyed on power-off, reboot and crash, with 8 GiB of memory, as many vCPUs
+    as the Host has but at most 8, no balloon, no graphics, no console and no guest agent
+    channel. Its disks are new and deleted after it, whatever happened: a qcow2 overlay of
+    20 GiB on the checked image (backing format named), an empty sparse scratch disk of 40 GiB
+    for its container storage, the input disk (one raw, read-only tar: `job.json`, the build
+    context, the images) and the NoCloud seed (`cidata`, written with `xorrisofs`), root's
+    alone (`0600`) while they are there. The seed holds the installed Release's
+    `vm/build-vm/user-data`, which creates no user, masks sshd and the guest agent, installs
+    and upgrades nothing and powers the VM off when the driver `build-vm-run` (also from the
+    seed) ends, also after a failure.
+  - **What comes out**: its output directory, new and empty, is served over virtiofs by a
+    virtiofsd Agent Box starts, not libvirt's, which runs as root: a transient unit of the
+    service user `agentbox-buildvm`, whose socket systemd makes (`root:qemu`, `0660`) and hands
+    over, with virtiofsd's own sandbox and every guest uid and gid squashed onto
+    `agentbox-buildvm`, so every file a build VM writes is that user's on the Host. Once the VM
+    and virtiofsd ended, root takes the directory back and opens exactly `result.json` and
+    `image.oci.tar` in it, never through a link: regular files of `agentbox-buildvm` with one
+    link, at most 64 KiB and 64 GiB. A failed VM's reason comes from `result.json`, as text.
+  - **Its log**: the virtio-serial channel `org.agentbox.build-log` reaches the Build run line
+    by line; each line, cleaned like any text from a VM (control characters out, at most
+    4 KiB), goes with `vm: ` in front into the Build's journal, so `agentbox build-log`,
+    `agentbox watch` and the Control Room show it, and podman's `STEP` lines there are the
+    Build's progress. A VM that writes faster than the Host reads waits.
+  - **Limits**: the VM is destroyed and the Build fails when it writes no line within
+    10 minutes of its start, runs longer than 4 hours, holds more than 160 GiB in its output
+    directory or leaves less than 10 GiB free under `/var/lib/agentbox`. Stopping the Build
+    destroys it and stops its virtiofsd; the next Build run removes whatever a killed run left.
+    A Host without KVM, without a checked image, with less than 8 GiB of memory available or
+    without the build network's rules loaded fails the Build: it never falls back to the Host.
 - What the Base image downloads, it downloads inside the Build container, where Fedora's
   packages, the npm tools and Orca are chosen, fetched and checked; no root process on the
   Host parses what the internet answers (#113). Orca comes from its GitHub release
@@ -1905,8 +1960,10 @@ need not be there or belong to another Release.
 | Units generated by `agentbox regenerate` | `/etc/systemd/system/` | `SYSTEMD` |
 
 The Host's records and state stay where they are: `/etc/agentbox` (`CONF`) and
-`/var/lib/agentbox` (`STATE`); the build VMs' image lies in `/var/lib/agentbox/build-vm`
-(`BUILD_VM`, root's only), and the version check reads the Host's Fedora keys from
+`/var/lib/agentbox` (`STATE`); the build VMs' image, their disks and output directories lie in
+`/var/lib/agentbox/build-vm` (`BUILD_VM`, root's, `0711` so that QEMU reaches a build VM's disks,
+nothing listable), their sockets in `/run/agentbox/build-vm`, and the version check reads the
+Host's Fedora keys from
 `/etc/pki/rpm-gpg` (`RPM_GPG`); `agentbox import` keeps its tar file in
 `/var/lib/agentbox/transfers` (`TRANSFERS`) while it is attached to the VM; the Control Room's
 sign-in links lie in `/run/agentbox-sign-in-links` (`SIGN_IN_LINKS`), which the package's
@@ -2238,8 +2295,9 @@ laptops.
   by digest; the Release's Containerfile pins the JDK and Orca's Node
   runtime by SHA-256 and cargo-ndk by version, a Recipe what its author pins; Fedora's packages
   are signed, with the keys that come in the base image. Containing Builds further (build VMs,
-  [ADR 0025](docs/adr/0025-builds-run-in-a-throwaway-build-vm.md)) is #144; so far only their
-  image is in place, which nothing boots yet. Checking it, root reads the header of a qcow2
+  [ADR 0025](docs/adr/0025-builds-run-in-a-throwaway-build-vm.md)) is #144; so far their image
+  and the first build VM are in place, behind an internal switch that is off. Checking the
+  image, root reads the header of a qcow2
   downloaded from Fedora's mirrors with `qemu-img info`, bounded, after the signature and the
   SHA-256 matched; `gpgv` parses the CHECKSUM as `agentbox-gpgv`, unprivileged.
 
@@ -2257,6 +2315,11 @@ laptops.
   documentation, not from a test), asks quay.io or pulls by digest (a fake plays quay.io's tag API), downloads the build VMs'
   image or checks a real Fedora signature or qcow2 header (fakes play `gpgv`, `setpriv` and
   `qemu-img`; a test runs the Host's own `gpg` and `gpgv`, when there are, on a throwaway key),
+  boots a build VM (that libvirt and SELinux let QEMU use the socket of an unprivileged
+  virtiofsd and the log channel's socket, that virtiofsd's sandbox works as `agentbox-buildvm`,
+  that the Fedora Cloud image runs `build-vm-run` from its seed with podman, btrfs and virtiofs,
+  and that the build network's rules hold in the kernel; fakes play `systemd-run`, `xorrisofs`,
+  `skopeo`, `virsh create` and the VM, which runs the real driver against a fake podman),
   shuts down or reboots a Host with `libvirt-guests`, or lets the proxy
   resolve a real name (the proxy's tests give it the addresses a name resolves to, and allowed
   tunnels go to a local server instead). What GitHub and Anthropic enforce, such as a token's

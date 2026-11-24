@@ -151,7 +151,8 @@ class TakeTest(BuildVmImageTest):
         with open(self.path(f"{BUILD_VM}/images/{IMAGE_44}"), "rb") as f:
             self.assertEqual(f.read(), content)
         self.assertEqual(os.stat(self.path(f"{BUILD_VM}/images/{IMAGE_44}")).st_mode & 0o777, 0o644)
-        self.assertEqual(os.stat(self.path(BUILD_VM)).st_mode & 0o777, 0o700)
+        # QEMU, as qemu, must reach the files of a build VM below it: search, not listing
+        self.assertEqual(os.stat(self.path(BUILD_VM)).st_mode & 0o777, 0o711)
         rec = self.image_record()
         self.assertEqual((rec["name"], rec["release"], rec["sha256"]),
                          (IMAGE_44, "44", hashlib.sha256(content).hexdigest()))
