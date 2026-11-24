@@ -1159,8 +1159,8 @@ Host after every Build
   it starts no Build, and the next Build (the weekly rebuild on `rebuild_day`, or an update of
   Orca, the agents or the packages) takes it.
 - **The build VMs' image** (#144, [ADR 0025](docs/adr/0025-builds-run-in-a-throwaway-build-vm.md),
-  `agentbox/build_vm.py`): Builds are to run in throwaway build VMs. The first build VM of a
-  Build boots it (below), behind an internal switch that is off: Builds run on the Host. It is
+  `agentbox/build_vm.py`): Builds are to run in throwaway build VMs. The build VMs of a Build
+  boot it (below), behind an internal switch that is off: Builds run on the Host. It is
   the Fedora Cloud Base
   Generic qcow2 of the release fedora-bootc's tag names (44), as Fedora publishes and signs it
   with the release under `releases/44/Cloud/x86_64/images/`; nothing is built or changed on
@@ -1180,21 +1180,77 @@ Host after every Build
   image leaves the one in use as it is. The image it replaces is removed once no Build runs (the
   run lock, not waited for), else by the next check. A new image is no update: it starts no
   Build.
-- **The first build VM** (#144, [ADR 0025](docs/adr/0025-builds-run-in-a-throwaway-build-vm.md),
-  `agentbox/build_vm_run.py`) runs a Build's `podman build` instead of the Host. It is behind an
-  internal switch that is off: only a Build run whose environment says `AGENTBOX_BUILD_VM=1`
-  builds in a build VM (for the Build unit, `systemctl set-environment AGENTBOX_BUILD_VM=1`), until
-  the Setting `build_vm` replaces it. The Host does not import the image archive the VM hands out
-  yet: such a Build fails after the build VM, the archive left in its output directory until the
-  next Build run removes it. The import, the Safeguard check of what comes out, the second,
-  offline build VM that makes the disk, and the Setting are to follow (#144).
-  - **What runs in it**: `podman build --pull=never --no-cache` with the build arguments the
+- **The build VMs** (#144, [ADR 0025](docs/adr/0025-builds-run-in-a-throwaway-build-vm.md),
+  `agentbox/build_vm_run.py`) run a Build instead of the Host: two per Build, one after the
+  other. They are behind an internal switch that is off: only a Build run whose environment says
+  `AGENTBOX_BUILD_VM=1` builds in build VMs (for the Build unit, `systemctl set-environment
+  AGENTBOX_BUILD_VM=1`), until the Setting `build_vm` replaces it (#144). The first, online, runs
+  `podman build` and hands out an image archive; the Host imports it and checks it; only then the
+  second, offline, makes the disk from the image the Host checked, and the Host takes that disk
+  only as a new file of its own. Such a Build records the steps `build` (the first build VM),
+  `import`, `check`, `disk` (the second build VM and taking its disk) and `done`.
+  - **What runs in the first**: `podman build --pull=never --no-cache` with the build arguments the
     Host gives `podman build` on the Host (the pinned fedora-bootc, under a local name in the
     VM, `package_min_age_days`, `orca_version` and `playwright_version` of the Settings; `BASE`
     for a derived Image), from the same build context, a Recipe's tar as it is (the Host still
     never unpacks it), then `podman save --format oci-archive` into its output directory. The
     images it builds on go in from the Host's storage (`skopeo copy` to an OCI archive): it pulls
     nothing from a registry for them.
+  - **The import**: root imports the image with `skopeo copy oci:<directory>
+    containers-storage:localhost/agentbox/<image>:<build>`, under the name the Host chose for the
+    Build, never one the archive names: `podman load` takes the name from the archive, so a
+    crafted archive could retag the current Base Build, the pinned fedora-bootc or any other image
+    in the Host's storage. skopeo never reads the archive. Root reads it first, in a child process
+    (1 GiB of address space, 30 minutes of CPU), and refuses an archive that is not one OCI image:
+    more than one image, a blob the archive does not hold, a descriptor that names URLs (skopeo
+    would fetch that layer from there, from the Host), a media type that is not an OCI manifest's,
+    config's or layer's, more than 128 layers, more than 10,000 entries, an entry that is sparse
+    or no regular file or directory, or anything but NUL bytes after the tar's end (where Python's
+    and Go's tar readers could part ways). Then root writes the image's files itself into a new
+    directory under `/var/lib/agentbox/build-vm`: its own `oci-layout` and an `index.json` naming
+    only the manifest it checked, and the manifest, config and layers copied out of the archive,
+    nothing else; skopeo copies from that directory, so it reads only the files root extracted and
+    checked. skopeo then runs in a network namespace of its own (`unshare --net`), so nothing an
+    archive names makes root on the Host send a request anywhere. The directory, with skopeo's
+    `--tmpdir` in it, is root's and deleted after the import, and by the next run if a run is
+    killed. The import starts only with room for the blobs there, as root extracts them, three
+    times the layers' size in the Host's container storage and 10 GiB besides on each; while
+    skopeo runs, root reads the free space of both every 2 seconds and kills skopeo when either
+    falls below 10 GiB (a layer that unpacks to far more than its size), and the Build fails at
+    `import`. What the killed skopeo left of the image goes with the failed Build, and
+    containers/storage deletes a layer left incomplete when it next opens the store. skopeo and
+    containers/storage check every blob against the manifest's digest, as for every pull, and
+    apply the layers as root; nothing from the image runs. The archive and its output filesystem
+    are deleted right after. The Safeguard check, the tool versions and a derived Image's
+    comparison with the Base Build then run on the imported image as they run on the Host's own
+    Builds; a rejected Build ends there, before any disk step.
+  - **What runs in the second**: it has no network device at all (`--network none`), and the
+    build network is neither checked nor started for it. The image the Host checked (from the
+    Host's storage, not the first build VM's archive), bootc-image-builder and the fedora-bootc
+    the Image is built on go in on its input disk under local names, the two pinned ones by
+    their platform images as the Host's own disk step names the buildroot. It runs
+    bootc-image-builder `--privileged --pull=never` with `label=type:unconfined_t` and the VM's
+    container storage, `--type qcow2 --rootfs xfs --build-container` naming the fedora-bootc
+    handed in and the same `config.toml` as the Host, and copies `disk.qcow2` into its output
+    directory, within 2 hours. The Image's own `bootupctl` runs there, as root in a VM that can
+    send nothing anywhere.
+  - **The disk**: root reads the header of the `disk.qcow2` it handed out with `qemu-img info -f
+    qcow2` (the format named, never guessed; 1 GiB of address space and 30 s of CPU) and refuses a
+    qcow2 that names a backing file or an external data file, one that is encrypted, marked
+    corrupt or larger than 160 GiB. The rewrite starts only with room under
+    `/var/lib/agentbox/images` for as much as the VM's file and 10 GiB besides. `qemu-img convert
+    -f qcow2 -O qcow2` then writes a new qcow2 from it, opened through a `json:` filename with
+    `"backing": null`. It parses what a VM wrote, so it runs as `agentbox-buildvm`, not root
+    (`setpriv`), without network (`unshare --net`), with at most 4 GiB of address space, and may
+    write a file no larger than the disk's virtual size and 1 GiB of metadata, nor than the room
+    there less 10 GiB; root opens both files and hands them over as file descriptors, so that user
+    needs no access to the directories they lie in. Root reads the new file's header as it read
+    the VM's, and only then it moves to `images/<image>-<build>.qcow2` in one rename: the Build's
+    disk is a file qemu-img wrote, with no backing file and no data file, holding the guest's
+    blocks and no header field a VM chose. `"backing": null` keeps a backing file from being
+    opened, but qemu-img still opens a data file the header names; the check refuses one, and
+    nothing changes the read-only output in between. The disk and its output filesystem are
+    deleted after it.
   - **The VM**: a transient domain (`virsh create`, never defined) from virt-install's
     `--print-xml`, destroyed on power-off, reboot and crash, with 8 GiB of memory, as many vCPUs
     as the Host has but at most 8, no balloon, no graphics, no console and no guest agent
@@ -1203,14 +1259,15 @@ Host after every Build
     grown to 20 GiB, with no backing file (libvirt hands every file of a disk's chain to QEMU's
     user and leaves a backing file so), an empty sparse scratch disk of 40 GiB for its container
     storage, which the driver labels for SELinux as `/var/lib/containers` (`restorecon -R`), the
-    input disk (one raw, read-only tar: `job.json`, the build context, the images) and the
+    input disk (one raw, read-only tar: `job.json`, the first's build context, the images) and the
     NoCloud seed (`cidata`, written with `xorrisofs`). The seed holds the installed Release's
     `vm/build-vm/user-data`, which creates no user, masks sshd and the guest agent, installs
     and upgrades nothing and powers the VM off when the driver `build-vm-run` (also from the
     seed) ends, also after a failure.
   - **What comes out**: its output directory is the root of a filesystem of its own, so what
-    the VM writes there is bounded however fast it writes: an ext4 of 66 GiB with one inode
-    per MiB and a 64 MiB journal (65.86 GiB free, so an archive at its 64 GiB cap fits) in a
+    the VM writes there is bounded however fast it writes: an ext4 of 66 GiB for the first build
+    VM and of 162 GiB for the second, with one inode per MiB and a 64 MiB journal (65.86 GiB and
+    161.83 GiB free, so an archive at its 64 GiB cap and a disk at its 160 GiB cap fit) in a
     sparse image file, made by root and loop-mounted `nosuid,nodev,noexec`; a build VM starts
     only with room for all of it and 10 GiB besides under `/var/lib/agentbox/build-vm`, checked
     before anything is written and again after each thing handed in.
@@ -1221,9 +1278,10 @@ Host after every Build
     every file a build VM writes is that user's on the Host. After the teardown the domain must
     be gone and virtiofsd's units inactive, else the Build fails and nothing of the output is
     taken. Then root takes the directory back, mounts the filesystem read-only and opens
-    exactly `result.json` and `image.oci.tar` in it, never through a link: regular files of
-    `agentbox-buildvm` with one link, at most 64 KiB and 64 GiB. A failed VM's reason comes
-    from `result.json`, as text; a failure unmounts and deletes the filesystem.
+    exactly `result.json` and `image.oci.tar` (the first build VM) or `disk.qcow2` (the second)
+    in it, never through a link: regular files of `agentbox-buildvm` with one link, at most
+    64 KiB, 64 GiB and 160 GiB. A failed VM's reason comes from `result.json`, as text. The
+    filesystem is unmounted and deleted once the Host took the file, and after a failure.
   - **Its log**: the virtio-serial channel `org.agentbox.build-log` reaches the Build run line
     by line; each line, cleaned like any text from a VM (control characters out, at most
     4 KiB), goes with `vm: ` in front into the Build's journal, so `agentbox build-log`,
@@ -1232,16 +1290,17 @@ Host after every Build
     build VM, each line counting 64 bytes more (so empty lines count too), the rest is not
     kept: one note says so, its `STEP` lines still count.
   - **Limits**: the VM is destroyed and the Build fails when it writes no line within
-    10 minutes of its start, runs longer than 4 hours or leaves less than 10 GiB free under
+    10 minutes of its start, runs longer than 4 hours (the first build VM) or 2 hours (the
+    second) or leaves less than 10 GiB free under
     `/var/lib/agentbox/build-vm`. Its output directory is measured every 2 seconds through directory
     file descriptors, links not followed; more than 10,000 files and directories in it,
     directories deeper than 32, or a walk that cannot finish fail the Build as well. Stopping
     the Build destroys it and stops its virtiofsd before the Build is marked failed: the Build
     unit's `TimeoutStopSec` covers every wait of that teardown and a minute more, so systemd
-    does not kill the run first. The next Build run removes whatever a killed run left, and the
-    output a Build left. A Host without KVM, without a checked image, with
-    less than 8 GiB of memory available or without the build network's rules loaded in the
-    kernel (as `nft list chain` shows them) fails the Build: it never falls back to the Host.
+    does not kill the run first. The next Build run removes whatever a killed run left. A Host
+    without KVM, without a checked image, with less than 8 GiB of memory available or, for the
+    first build VM, without the build network's rules loaded in the kernel (as `nft list chain`
+    shows them) fails the Build: it never falls back to the Host.
 - What the Base image downloads, it downloads inside the Build container, where Fedora's
   packages, the npm tools and Orca are chosen, fetched and checked; no root process on the
   Host parses what the internet answers (#113). Orca comes from its GitHub release
@@ -2314,7 +2373,13 @@ laptops.
   runtime by SHA-256 and cargo-ndk by version, a Recipe what its author pins; Fedora's packages
   are signed, with the keys that come in the base image. Containing Builds further (build VMs,
   [ADR 0025](docs/adr/0025-builds-run-in-a-throwaway-build-vm.md)) is #144; so far their image
-  and the first build VM are in place, behind an internal switch that is off. Checking the
+  and a Build's two build VMs are in place, behind an internal switch that is off. With it on, a
+  Build's `podman build` and its disk step, the Image's `bootupctl` included, run in build VMs,
+  not on the Host; what root runs on what they hand out are parsers: skopeo and
+  containers/storage importing the image (in a network namespace of its own, from the files root
+  checked and took out of the archive), `podman image mount` and the Safeguard check, and qemu-img
+  reading the disk's header, bounded; qemu-img rewrites the disk as `agentbox-buildvm`, without
+  network. Checking the
   image, root reads the header of a qcow2
   downloaded from Fedora's mirrors with `qemu-img info`, bounded, after the signature and the
   SHA-256 matched; `gpgv` parses the CHECKSUM as `agentbox-gpgv`, unprivileged.
@@ -2338,8 +2403,15 @@ laptops.
   with its uid and gid maps on the loop-mounted output filesystem (whose SELinux labels it must
   accept), that `restorecon` labels the scratch disk as podman needs it,
   that the Fedora Cloud image runs `build-vm-run` from its seed with podman, btrfs and virtiofs,
-  and that the build network's rules hold in the kernel; fakes play `systemd-run`, `xorrisofs`,
-  `skopeo`, `virsh create` and the VM, which runs the real driver against a fake podman),
+  that bootc-image-builder makes a disk in the offline build VM from the images handed in under
+  local names (loop devices in the guest, `--build-container` by a local name, nothing pulled),
+  that skopeo imports an OCI layout under the name given and without network, that the archive
+  `podman save` writes passes root's check (OCI media types, every blob in it, nothing after
+  its tar's end), that qemu-img as `agentbox-buildvm` reads and writes the files root hands it as
+  `/dev/fd/N`, and that the build network's rules hold in the kernel; the check and rewrite of a
+  disk with a backing file or a data file run with the Host's own qemu-img where there is one
+  (as the test's own user, `unshare` and `setpriv` played by fakes); fakes play `systemd-run`, `xorrisofs`, `skopeo`, `qemu-img`, `virsh create` and the VM, which
+  runs the real driver against a fake podman),
   shuts down or reboots a Host with `libvirt-guests`, or lets the proxy
   resolve a real name (the proxy's tests give it the addresses a name resolves to, and allowed
   tunnels go to a local server instead). What GitHub and Anthropic enforce, such as a token's

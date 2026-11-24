@@ -21,7 +21,8 @@ The VM has a root of its own, FAKE_VIRSH_DIR/guest-<domain without "agentbox-">:
 It waits for the Host to connect to the log channel, then runs the seed's build-vm-run there as
 the VM would (AGENTBOX_BUILD_VM_ROOT), and ends the domain when it ends.
 
-scenario.json "build_vm":
+scenario.json "build_vm" (the first build VM of a Build, <image>-<build>-build) and "disk_vm"
+(the second, <image>-<build>-disk), each:
   boots       false: the VM says nothing and runs until destroyed (default true)
   driver      false: no driver runs; the VM writes "lines" and ends (default true)
   lines       lines the VM writes to its log before the driver (bytes as latin-1 text)
@@ -32,8 +33,18 @@ scenario.json "build_vm":
   out_space   bytes it allocates (fallocate) in its output directory once the Host reads its log
   stays       true: the domain does not end when the driver ends (as if QEMU hung)
   podman      the scenario of the VM's podman (fake_podman.py), e.g. build_waits, podman_fails
-  tamper      after the driver: "symlink" puts a link to a Host file in place of
-              image.oci.tar, "hardlink" adds a second link to it
+  tamper      after the driver: "symlink" puts a link to a Host file in place of the file it
+              hands out (image.oci.tar, disk.qcow2), "hardlink" adds a second link to it; of
+              image.oci.tar (fake_podman.edit_archive): "second_image" names a second image in its
+              index, "layer_urls" drops its layer and names a URL to fetch it from instead,
+              "many_layers" gives it 129 layers, "media_type" a layer type that is no OCI layer's,
+              "link_member" adds a symbolic link to it, "sparse_member" a GNU sparse member,
+              "pax_sparse" a PAX sparse member, "extra_member" a harmless file of no image's,
+              "hidden_index" a V7 header Python's tarfile stops at (non-octal devmajor) and
+              after it a second index.json naming another manifest, which Go's archive/tar reads
+  names       after the driver: image.oci.tar names this image instead of the one podman saved
+  disk_meta   after the driver: these keys of a fake disk (fake_qemu_img.py) added to disk.qcow2,
+              e.g. {"backing-filename": "/etc/shadow"}
 """
 import json
 import os
@@ -42,9 +53,12 @@ import shutil
 import socket
 import subprocess
 import sys
+import tarfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+os.environ.setdefault("FAKE_DIR", os.environ["FAKE_VIRSH_DIR"])
+import fake_podman  # noqa: E402
 import fake_virsh  # noqa: E402
 
 DIR = os.environ["FAKE_VIRSH_DIR"]
@@ -136,6 +150,35 @@ def prepare(root, args, conf):
     return out
 
 
+def v7_header(name, data, garbage):
+    """A V7 tar header (no ustar magic) of a file, and its data; with garbage, non-octal bytes in
+    the devmajor field, which Go's archive/tar ignores in a V7 header and Python's tarfile takes
+    for an invalid header, and so for the end of the archive."""
+    h = bytearray(512)
+    h[0:len(name)] = name.encode()
+    h[100:108], h[108:116], h[116:124] = b"0000644\0", b"0000000\0", b"0000000\0"
+    h[124:136], h[136:148] = ("%011o\0" % len(data)).encode(), b"00000000000\0"
+    h[148:156], h[156] = b"        ", ord("0")
+    if garbage:
+        h[329:337] = b"zzzzzzz\0"
+    h[148:156] = ("%06o\0 " % sum(h)).encode()
+    return bytes(h) + data + b"\0" * (-len(data) % 512)
+
+
+def hide_index(archive):
+    """After the archive's last entry: a header Python stops at, then a second index.json."""
+    index, _ = fake_podman.read_oci(archive)
+    index["manifests"][0]["digest"] = "sha256:" + "1" * 64
+    with tarfile.open(archive) as tar:
+        tar.getmembers()
+        end = tar.offset                 # where its end-of-archive blocks begin
+    with open(archive, "rb") as f:
+        raw = f.read()[:end]
+    raw += v7_header("junk", b"", True) + v7_header("index.json", json.dumps(index).encode(), False) + b"\0" * 1024
+    with open(archive, "wb") as f:
+        f.write(raw)
+
+
 def forward(port, conn, driver):
     """The FIFO into the log channel until the driver has ended and said all."""
     while True:
@@ -156,7 +199,8 @@ def main(domain, fd, xml_file):
     from xml.sax.saxutils import unescape
     import re
     args = json.loads(unescape(re.search(r"<args>(.*)</args>", xml, re.S).group(1)))
-    conf = fake_virsh.load("scenario.json", {}).get("build_vm") or {}
+    disk = domain.endswith("-disk")
+    conf = fake_virsh.load("scenario.json", {}).get("disk_vm" if disk else "build_vm") or {}
     root = os.path.join(DIR, "guest-" + domain.removeprefix("agentbox-"))
     out = prepare(root, args, conf)
     conn, _ = listener.accept()
@@ -180,12 +224,47 @@ def main(domain, fd, xml_file):
         forward(port, conn, driver)
         with open(os.path.join(root, "driver.exit"), "w") as f:
             f.write(str(driver.returncode))
-    archive = os.path.join(out, "image.oci.tar")
+    handed = os.path.join(out, "disk.qcow2" if disk else "image.oci.tar")
     if conf.get("tamper") == "symlink":
-        os.remove(archive)
-        os.symlink(os.path.join(DIR, "scenario.json"), archive)
+        os.remove(handed)
+        os.symlink(os.path.join(DIR, "scenario.json"), handed)
     elif conf.get("tamper") == "hardlink":
-        os.link(archive, os.path.join(out, "second-link"))
+        os.link(handed, os.path.join(out, "second-link"))
+    elif conf.get("tamper") == "second_image":
+        fake_podman.edit_archive(handed, index=lambda i: i["manifests"].append(dict(i["manifests"][0])))
+    elif conf.get("tamper") == "layer_urls":
+        fake_podman.edit_archive(handed, drop_layers=True,
+                                 manifest=lambda m: m["layers"][0].update(urls=["http://127.0.0.1:18765/layer"]))
+    elif conf.get("tamper") == "many_layers":
+        fake_podman.edit_archive(handed, manifest=lambda m: m.update(layers=m["layers"] * 129))
+    elif conf.get("tamper") == "media_type":
+        fake_podman.edit_archive(handed, manifest=lambda m: m["layers"][0].update(
+            mediaType="application/vnd.oci.image.layer.nondistributable.v1.tar+gzip"))
+    elif conf.get("tamper") == "link_member":
+        link = tarfile.TarInfo("blobs/sha256/passwd")
+        link.type, link.linkname = tarfile.SYMTYPE, "/etc/passwd"
+        fake_podman.edit_archive(handed, extra=[link])
+    elif conf.get("tamper") == "sparse_member":
+        sparse = tarfile.TarInfo("blobs/sha256/sparse")
+        sparse.type = tarfile.GNUTYPE_SPARSE
+        fake_podman.edit_archive(handed, extra=[sparse])
+    elif conf.get("tamper") == "pax_sparse":
+        sparse = tarfile.TarInfo("blobs/sha256/pax-sparse")
+        sparse.pax_headers = {"GNU.sparse.map": "0,0", "GNU.sparse.size": "0"}
+        fake_podman.edit_archive(handed, extra=[sparse])
+    elif conf.get("tamper") == "extra_member":
+        extra = tarfile.TarInfo("evil.txt")
+        fake_podman.edit_archive(handed, extra=[extra])
+    elif conf.get("tamper") == "hidden_index":
+        hide_index(handed)
+    if conf.get("names"):
+        fake_podman.edit_archive(handed, index=lambda i: i["manifests"][0]["annotations"].update(
+            {fake_podman.REF_NAME: conf["names"]}))
+    if conf.get("disk_meta"):
+        with open(handed) as f:
+            meta = json.load(f)
+        with open(handed, "w") as f:
+            json.dump({**meta, **conf["disk_meta"]}, f)
     # power-off: the transient domain is gone, then QEMU's end closes the channel
     if not conf.get("stays"):
         with fake_virsh.changing():

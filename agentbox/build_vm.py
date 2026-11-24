@@ -396,7 +396,7 @@ def signed_text(checksum):
     return r.stdout.decode("utf-8", "replace"), None
 
 
-def _lower(limits):
+def lower(limits):
     """Set these rlimits (soft and hard), never above a lower one already in force."""
     for which, value in limits.items():
         hard = resource.getrlimit(which)[1]
@@ -405,7 +405,7 @@ def _lower(limits):
 
 
 def _gpgv_limits():
-    _lower(GPGV_LIMITS)
+    lower(GPGV_LIMITS)
 
 
 def signed_sha256(text, name):
@@ -415,7 +415,7 @@ def signed_sha256(text, name):
 
 
 def _limits():
-    _lower(QEMU_IMG_LIMITS)
+    lower(QEMU_IMG_LIMITS)
 
 
 def qcow2_problem(path, max_virtual):
@@ -423,40 +423,46 @@ def qcow2_problem(path, max_virtual):
     of a virtual size of at most max_virtual bytes, by qemu-img info with the format named
     (never guessed) under QEMU_IMG_LIMITS; else what is wrong. qemu-img opens neither a backing
     file nor a data file for info."""
+    return qcow2_check(path, max_virtual)[0]
+
+
+def qcow2_check(path, max_virtual):
+    """(None, its virtual size in bytes) when qcow2_problem finds nothing wrong with the file at
+    `path`, else (what is wrong, None)."""
     try:
         r = subprocess.run(["qemu-img", "info", "-f", "qcow2", "--output=json", path], stdin=subprocess.DEVNULL,
                            capture_output=True, text=True, errors="replace", timeout=QEMU_IMG_SECONDS,
                            preexec_fn=_limits)
     except FileNotFoundError:
-        return "qemu-img is missing"
+        return "qemu-img is missing", None
     except subprocess.TimeoutExpired:
-        return "qemu-img info: time limit exceeded"
+        return "qemu-img info: time limit exceeded", None
     except (OSError, subprocess.SubprocessError):
-        return "qemu-img info cannot be started"
+        return "qemu-img info cannot be started", None
     if r.returncode != 0:
-        return "not a qcow2 by qemu-img info: " + clean(" ".join(r.stderr.split())[-200:], False)
+        return "not a qcow2 by qemu-img info: " + clean(" ".join(r.stderr.split())[-200:], False), None
     try:
         info = json.loads(r.stdout[:1 << 20])
     except (ValueError, RecursionError):
         info = None
     if not isinstance(info, dict) or info.get("format") != "qcow2":
-        return "not a qcow2 by qemu-img info"
+        return "not a qcow2 by qemu-img info", None
     specific = info.get("format-specific")
     data = specific.get("data") if isinstance(specific, dict) and specific.get("type") == "qcow2" else None
     if not isinstance(data, dict):
-        return "not a qcow2 by qemu-img info"
+        return "not a qcow2 by qemu-img info", None
     if any(k.startswith("backing") or k.startswith("full-backing") for k in info):
-        return "the qcow2 names a backing file"
+        return "the qcow2 names a backing file", None
     if "data-file" in data or "data-file-raw" in data:
-        return "the qcow2 names an external data file"
+        return "the qcow2 names an external data file", None
     if info.get("encrypted") or "encrypt" in data:
-        return "the qcow2 is encrypted"
+        return "the qcow2 is encrypted", None
     if data.get("corrupt"):             # a qcow2 v2 (compat 0.10) has no such flag
-        return "the qcow2 is marked corrupt"
+        return "the qcow2 is marked corrupt", None
     size = info.get("virtual-size")
     if not isinstance(size, int) or isinstance(size, bool) or not 0 < size <= max_virtual:
-        return f"the qcow2's virtual size is not between 1 byte and {max_virtual >> 30} GiB"
-    return None
+        return f"the qcow2's virtual size is not between 1 byte and {max_virtual >> 30} GiB", None
+    return None, size
 
 
 def _copy(dir_fd, name, part):

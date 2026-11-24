@@ -9,6 +9,8 @@ Environment: FAKE_DIR (calls in calls.jsonl as {"cmd": <program>, "argv": [...]}
 
 scenario.json:
   mount_fails   programs (e.g. ["mkfs.ext4"]) that fail
+
+A call of mkfs.ext4 also records "file": the size, mode and allocated bytes of its image file.
 """
 import json
 import os
@@ -16,8 +18,12 @@ import sys
 
 
 def main(program, argv):
+    call = {"cmd": program, "argv": argv}
+    if program == "mkfs.ext4" and argv and os.path.isfile(argv[-1]):
+        st = os.stat(argv[-1])       # the image file as root made it: it is gone after the Build
+        call["file"] = {"size": st.st_size, "mode": st.st_mode & 0o777, "allocated": st.st_blocks * 512}
     with open(os.path.join(os.environ["FAKE_DIR"], "calls.jsonl"), "a") as f:
-        f.write(json.dumps({"cmd": program, "argv": argv}) + "\n")
+        f.write(json.dumps(call) + "\n")
     try:
         with open(os.path.join(os.environ["FAKE_DIR"], "scenario.json")) as f:
             fails = json.load(f).get("mount_fails") or []

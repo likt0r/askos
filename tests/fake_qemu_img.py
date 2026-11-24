@@ -12,12 +12,21 @@ Environment:
   qemu-img info -U --output=json <disk>
   qemu-img info -f qcow2 --output=json <disk>   with the format named, as qemu-img 10 answers
              it; the fake disk may hold "backing-filename", "data-file", "encrypted": true,
-             "corrupt": true, "format" (another than qcow2 fails) and "virtual-size". The call
-             records the limits it ran under: "limits": {"as": bytes, "cpu": seconds};
+             "corrupt": true, "format" (another than qcow2 fails) and "virtual-size". Each call
+             records the limits it ran under: "limits": {"as": bytes, "cpu": seconds}, and
+             "fsize": bytes (None: none);
              "compat": "0.10" makes it a version 2 qcow2, which has no "corrupt" flag
   qemu-img create -q -f qcow2 -F qcow2 -b <base> <disk> [<size>]   writes the fake disk
   qemu-img create -q -f qcow2 <disk> <size>                a fake disk without backing file
   qemu-img resize -q -f qcow2 <disk> <size>                the fake disk gets that "size"
+  qemu-img convert -q -f qcow2 -O qcow2 <source> <disk>    a new fake disk of the source's
+             metadata: no data file, no encryption, and no backing file when the source is a
+             json: filename that says "backing": null (else qemu-img follows it, and so does
+             the fake: the backing file stays); "converted-from" names the source file (a
+             /dev/fd/N resolved to the file it is). It also records {"cmd": "qemu-img-convert",
+             "user", "unshare", "source", "target"}: what fake_setpriv.py and fake_unshare.py said
+             and both files resolved; scenario.json "convert_adds": these keys added to the new
+             disk, as a qemu-img taken over by the disk could
 """
 import json
 import os
@@ -64,7 +73,9 @@ def info_qcow2(disk):
 def main(args):
     limits = {"as": resource.getrlimit(resource.RLIMIT_AS)[0], "cpu": resource.getrlimit(resource.RLIMIT_CPU)[0]}
     with open(os.path.join(DIR, "calls.jsonl"), "a") as f:
-        f.write(json.dumps({"cmd": "qemu-img", "argv": args, "limits": limits}) + "\n")
+        fsize = resource.getrlimit(resource.RLIMIT_FSIZE)[0]
+        f.write(json.dumps({"cmd": "qemu-img", "argv": args, "limits": limits,
+                            "fsize": None if fsize == resource.RLIM_INFINITY else fsize}) + "\n")
     disk = args[-1]
     if args[:7] == ["create", "-q", "-f", "qcow2", "-F", "qcow2", "-b"] and len(args) == 10:
         disk = args[8]
@@ -109,6 +120,32 @@ def main(args):
     if args[:4] == ["create", "-q", "-f", "qcow2"] and len(args) == 6:
         with open(args[4], "w") as f:
             json.dump({"size": args[5]}, f)
+        return 0
+    if args[:6] == ["convert", "-q", "-f", "qcow2", "-O", "qcow2"] and len(args) == 8:
+        source, options = args[6], {}
+        if source.startswith("json:"):
+            options = json.loads(source[len("json:"):])
+            source = options["file"]["filename"]
+        with open(os.path.join(DIR, "calls.jsonl"), "a") as f:
+            f.write(json.dumps({"cmd": "qemu-img-convert", "user": os.environ.get("FAKE_SETPRIV_USER"),
+                                "unshare": os.environ.get("FAKE_UNSHARE"), "source": os.path.realpath(source),
+                                "target": os.path.realpath(args[7])}) + "\n")
+        try:
+            with open(source) as f:
+                meta = json.load(f)
+        except (OSError, ValueError) as e:
+            print(f"qemu-img: Could not open '{source}': {e}", file=sys.stderr)
+            return 1
+        meta = {k: v for k, v in meta.items() if k not in ("data-file", "encrypted", "compat")}
+        if "backing" in options and options["backing"] is None:
+            meta.pop("backing-filename", None)
+        try:
+            with open(os.path.join(DIR, "scenario.json")) as f:
+                meta.update(json.load(f).get("convert_adds") or {})
+        except FileNotFoundError:
+            pass
+        with open(args[7], "w") as f:
+            json.dump({**meta, "converted-from": os.path.realpath(source)}, f)
         return 0
     print("qemu-img (fake): unexpected arguments", file=sys.stderr)
     return 1

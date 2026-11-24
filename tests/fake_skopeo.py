@@ -11,6 +11,19 @@
       storage, named NAME; fails when REF is not there, and for REF prefixes in the scenario's
       "skopeo_copy_fails"
 
+  skopeo copy --quiet oci:DIR containers-storage:REF
+      the image of the OCI layout DIR into the fake container storage as REF, whatever name
+      the layout gives it; the call records "layout": the files in DIR, and "index": its
+      index.json. As skopeo with no image named in the oci reference, it refuses a layout with
+      more than one image. As skopeo 1.22 does, it fetches a layer the layout does not hold from
+      the URLs its descriptor names (recorded as {"cmd": "skopeo-fetch"}, with whether it had a
+      network). It fails when the scenario says "skopeo_import_fails"; with "import_fills": n it
+      first allocates n bytes in REF's directory of the store, then waits up to 60 s, as a layer
+      that unpacks to much more than its size (to be stopped by the Host)
+
+  skopeo --tmpdir DIR ...   the global option: the call also records "tmpdir": {"exists": bool,
+      "mode": its permissions}, and the fake unpacks an imported archive there, as skopeo does
+
 Environment: FAKE_DIR (calls in calls.jsonl as {"cmd": "skopeo", "argv": [...]}, scenario.json).
 """
 import json
@@ -22,8 +35,19 @@ import fake_podman  # noqa: E402
 
 
 def main(argv):
+    call = {"cmd": "skopeo", "argv": argv, "net": os.environ.get("FAKE_UNSHARE") != "net"}
+    if argv[:1] == ["--tmpdir"]:
+        tmpdir, argv = argv[1], argv[2:]
+        call["tmpdir"] = {"exists": os.path.isdir(tmpdir),
+                          "mode": os.stat(tmpdir).st_mode & 0o777 if os.path.isdir(tmpdir) else None}
+    if argv[:2] == ["copy", "--quiet"] and len(argv) == 4 and argv[2].startswith("oci:"):
+        layout = argv[2][len("oci:"):]
+        call["layout"] = sorted(os.path.relpath(os.path.join(d, f), layout)
+                                for d, _, names in os.walk(layout) for f in names)
+        with open(os.path.join(layout, "index.json")) as f:
+            call["index"] = json.load(f)
     with open(os.path.join(fake_podman.DIR, "calls.jsonl"), "a") as f:
-        f.write(json.dumps({"cmd": "skopeo", "argv": argv}) + "\n")
+        f.write(json.dumps(call) + "\n")
     if argv[:2] == ["copy", "--quiet"] and len(argv) == 4 and argv[2].startswith("containers-storage:") \
             and argv[3].startswith("oci-archive:"):
         ref = argv[2][len("containers-storage:"):]
@@ -34,6 +58,33 @@ def main(argv):
                   file=sys.stderr)
             return 1
         fake_podman.write_archive(name, path, source=ref)
+        return 0
+    if argv[:2] == ["copy", "--quiet"] and len(argv) == 4 and argv[2].startswith("oci:") \
+            and argv[3].startswith("containers-storage:"):
+        path, ref = argv[2][len("oci:"):], argv[3][len("containers-storage:"):]
+        if fake_podman.scenario().get("skopeo_import_fails"):
+            print("FATA[0000] writing blob: storing blob to file: digest mismatch", file=sys.stderr)
+            return 1
+        index, blobs = fake_podman.read_oci(path)
+        if len(index["manifests"]) != 1:
+            print(f"FATA[0000] initializing source oci:{path}: more than one image in oci, choose an image",
+                  file=sys.stderr)
+            return 1
+        manifest = json.loads(blobs[index["manifests"][0]["digest"]])
+        fetched = [u for layer in manifest["layers"] if layer["digest"] not in blobs for u in layer.get("urls", [])]
+        if fetched:
+            with open(os.path.join(fake_podman.DIR, "calls.jsonl"), "a") as f:
+                f.write(json.dumps({"cmd": "skopeo-fetch", "urls": fetched, "net": call["net"]}) + "\n")
+            return 0
+        fills = fake_podman.scenario().get("import_fills")
+        if fills:
+            os.makedirs(fake_podman.image_dir(ref), exist_ok=True)
+            fd = os.open(os.path.join(fake_podman.image_dir(ref), "fill"), os.O_WRONLY | os.O_CREAT, 0o644)
+            os.posix_fallocate(fd, 0, fills)
+            os.close(fd)
+            import time
+            time.sleep(60)
+        fake_podman.load(path, ref)
         return 0
     if argv[:2] != ["inspect", "--raw"] or len(argv) != 3 or not argv[2].startswith("containers-storage:"):
         print(f"fake skopeo: unsupported: {argv}", file=sys.stderr)

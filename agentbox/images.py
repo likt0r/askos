@@ -19,8 +19,9 @@ builds the Base image, then every other Image), whose journal is its log
      Orca comes from the Host), a derived Image on the Base image's current Build; its output
      passes through build-run into the journal, and the latest `STEP n/m: <command>` line goes
      into the running Build's record (`progress`, cleaned like the log); with the internal
-     switch of build_vm_run.py on, this podman build runs in the Build's first build VM instead,
-     and the Build ends after it, since the Host does not import its image archive yet;
+     switch of build_vm_run.py on, this podman build runs in the Build's first build VM instead
+     (online), and the Host imports the image archive it hands out with skopeo copy under the
+     name it chose for the Build, never the archive's (the step import);
   3. safeguards.check reads the built filesystem (podman image mount) and discards the
      Build if a safeguard is missing or weakened; then the versions of its tools are read
      from the same files (versions.py);
@@ -28,7 +29,10 @@ builds the Base image, then every other Image), whose journal is its log
      images/<image>-<build>.qcow2, with the fedora-bootc the Image is built on as its
      buildroot (--build-container): bootc, osbuild's stages and the tools that make the
      filesystems come from that pristine image, not from the Image (bootc still runs the
-     Image's own bootupctl to install the bootloader, see ARCHITECTURE.md);
+     Image's own bootupctl to install the bootloader, see ARCHITECTURE.md); with the switch on,
+     in the Build's second build VM (offline: no network device) from the image the Host
+     checked, and the Host takes its disk.qcow2 only once qemu-img read its header (no backing
+     file, no data file, not encrypted) and only as a new qcow2 its own qemu-img writes from it;
   5. the link images/<image>.qcow2 moves to it (one rename) and old Builds go.
 
 The pinned digests are read once at the start of a run; with one it needs not pinned yet
@@ -68,6 +72,7 @@ of the Release (or the commit) its current Build came from. Nothing is fetched f
 import json
 import os
 import re
+import resource
 import shutil
 import signal
 import stat
@@ -76,7 +81,7 @@ import sys
 import threading
 import time
 
-from . import activity, build_vm_run, digests, footprint, guest, options, paths, programs, registry, safeguards
+from . import activity, build_vm, build_vm_run, digests, footprint, guest, options, paths, programs, registry, safeguards
 from . import settings, state_files, times, version
 from . import states, versions
 from .commands import declare
@@ -93,7 +98,7 @@ STATUS = {"ok": "ok", "migrated": "from before", "running": "running", "failed":
           "rejected": "rejected", "missing": "file missing"}
 # a run that fails before its Builds records one failed Build at "pins" (the pinned images it
 # needs, _pins) or "source" (the Release, the Settings); a Build runs "build" to "done"
-STEPS = ("pins", "source", "build", "check", "disk", "done")
+STEPS = ("pins", "source", "build", "import", "check", "disk", "done")    # import: in build VMs only
 TEMPLATE = "agentbox-build@.service"
 CONTAINER = "localhost/agentbox/{}:{}"
 STORAGE = "/var/lib/containers/storage"
@@ -107,6 +112,32 @@ COMMIT = re.compile(r"[0-9a-f]{7,40}")      # of main, named by Builds from befo
 STEP_LINE = re.compile(r"(?:\[(\d{1,4})/(\d{1,4})\] )?STEP (\d{1,4})/(\d{1,4}): ?(.*)")
 COMMAND_MAX = 200                 # characters of a step's command a running Build carries
 CONTAINERFILE_MAX = 64 * 1024     # bytes of a Containerfile `agentbox containerfile` shows at most
+IMPORT_SECONDS = 3600            # skopeo copy of a build VM's image archive into the Host's storage
+# the room an import must find before it starts: in the Host's storage IMPORT_FACTOR times the
+# size of the image's layers (a filesystem compresses to about a third), and IMPORT_RESERVE on
+# each filesystem it writes to, below which the import is stopped while it runs
+IMPORT_FACTOR = 3
+IMPORT_RESERVE = paths.tunable("AGENTBOX_BUILD_IMPORT_RESERVE_BYTES", 10 << 30)
+# a build VM's image archive, which root checks and takes the image's files out of (_unpack):
+# its tar's entries, the NUL bytes after its end, the size of index.json, its manifest and its
+# config, its layers; in a child process under these limits (copying 64 GiB costs CPU time)
+ARCHIVE_ENTRIES = 10000
+ARCHIVE_TRAIL = 1 << 20
+ARCHIVE_JSON = 4 << 20
+ARCHIVE_LAYERS = 128
+ARCHIVE_LIMITS = {resource.RLIMIT_AS: 1 << 30, resource.RLIMIT_CPU: 1800}
+OCI_MANIFEST = "application/vnd.oci.image.manifest.v1+json"
+OCI_CONFIG = "application/vnd.oci.image.config.v1+json"
+OCI_LAYERS = ("application/vnd.oci.image.layer.v1.tar", "application/vnd.oci.image.layer.v1.tar+gzip",
+              "application/vnd.oci.image.layer.v1.tar+zstd")
+SHA256 = re.compile(r"sha256:([0-9a-f]{64})")
+CONVERT_SECONDS = 3600           # qemu-img convert of a build VM's disk
+DISK_RESERVE = paths.tunable("AGENTBOX_BUILD_DISK_RESERVE_BYTES", 10 << 30)       # left free by the rewrite
+# qemu-img convert as root on a disk a VM wrote: at most 4 GiB of address space (it aborts below
+# 2 GiB once its thread pool grows, qemu-img 10.2) and a file no larger than the disk's virtual
+# size and its metadata, nor than the room under images/ less DISK_RESERVE
+CONVERT_AS = 4 << 30
+CONVERT_MARGIN = 1 << 30         # qcow2 metadata beyond the guest's blocks: 20 MiB at 160 GiB
 DISK_CONFIG = """\
 # room for container images, node_modules, build caches (all disposable)
 [[customizations.filesystem]]
@@ -627,6 +658,7 @@ def _build_container(image, src, release, days, orca, playwright, rec, tag, say,
             _in_build_vm(image, rec, tag, [("FEDORA_BOOTC", local), ("PACKAGE_MIN_AGE_DAYS", days),
                                            ("ORCA_VERSION", orca), ("PLAYWRIGHT_VERSION", playwright)],
                          "vm/Containerfile", src, [(platform, local)], src, say)
+            return None
         # the version check pulled the pinned digest; never anything by its tag
         _podman_build("--pull=missing", "--no-cache", "--build-arg", f"FEDORA_BOOTC={fedora}",
                       "--build-arg", f"PACKAGE_MIN_AGE_DAYS={days}",
@@ -653,12 +685,14 @@ def _build_container(image, src, release, days, orca, playwright, rec, tag, say,
         recipes.check(recipe_data)
         if build_vm_run.enabled():
             _in_build_vm(image, rec, tag, [("BASE", base_tag)], None, recipe_data, [(base_tag, base_tag)], src, say)
+            return base
         _podman_build("--pull=missing", "--no-cache", "--build-arg", f"BASE={CONTAINER.format(BASE, base_build)}",
                       "-t", tag, "-", input=recipe_data, rec=rec)
     else:
         if build_vm_run.enabled():
             _in_build_vm(image, rec, tag, [("BASE", base_tag)], "Containerfile", context, [(base_tag, base_tag)],
                          src, say)
+            return base
         _podman_build("--pull=missing", "--no-cache", "--build-arg", f"BASE={CONTAINER.format(BASE, base_build)}",
                       "-t", tag, "-f", os.path.join(context, "Containerfile"), context, rec=rec)
     return base
@@ -668,9 +702,8 @@ def _in_build_vm(image, rec, tag, build_args, containerfile, context, hand_in, s
     """The podman build of _build_container in the Build's first build VM (build_vm_run.py, the
     internal switch on): the same build arguments, the same context (a Recipe's tar as it is),
     the images it builds on handed in from the Host's storage; its log in the Build's journal,
-    its STEP lines the Build's progress. The Host does not import the image archive it hands
-    out yet: the Build fails after it (this never returns), the archive left in its output
-    directory for the next run to remove."""
+    its STEP lines the Build's progress. Then the image archive it hands out goes into the
+    Host's storage as `tag` (_import, the step import), and is deleted with its output."""
     steps = Steps()
 
     def seen(line):
@@ -679,20 +712,343 @@ def _in_build_vm(image, rec, tag, build_args, containerfile, context, hand_in, s
             rec["progress"] = found
             _save(rec)
 
+    def take(archive):
+        rec.update(step="import")
+        _save(rec)
+        _import(image, rec["build"], archive, tag, say)
+
     job = {"tag": tag, "build_args": [[k, str(v)] for k, v in build_args], "containerfile": containerfile}
     try:
-        archive = build_vm_run.build_image(image, rec["build"], job, context, hand_in, src, say, seen)
+        build_vm_run.build_image(image, rec["build"], job, context, hand_in, src, say, seen, take)
     except build_vm_run.Failed as f:
         raise _Failed(f.message)
-    raise _Failed(f"the build VM handed out {archive}; the Host does not import a build VM's image archive "
-                  "yet, so the Build ends here")
 
 
-def _make_disk(image, build, tag, out, rec, say):
+def _import(image, build, archive, tag, say):
+    """The image archive of a first build VM into the Host's storage under the name the Host
+    chose for the Build (`tag`), never one the archive names: not podman load, which takes the
+    name from the archive and so could retag the current Base Build or any other image there.
+
+    skopeo never reads the archive. Root reads it (_unpack, in a child process under
+    ARCHIVE_LIMITS) and writes the image's files itself into a new directory, the OCI layout
+    `layout` in build_vm_run.import_dir: its own oci-layout and index.json, which names the one
+    manifest it checked and nothing else, and the manifest, the config and the layers copied out
+    of the archive. Then `skopeo copy oci:<layout> containers-storage:<tag>`: skopeo reads only
+    files root wrote and checked, so no difference between how Python and Go read a tar
+    reaches it. skopeo and containers/storage check every blob against the manifest's digest;
+    nothing from the image runs. skopeo runs in a network namespace of its own (unshare --net),
+    so nothing an archive names makes root on the Host send a request anywhere.
+
+    The import starts only with room for the blobs on the filesystem of the build VMs (as
+    root extracts them), IMPORT_FACTOR times the layers' size in the Host's storage, and
+    IMPORT_RESERVE left on each; while skopeo runs, the free space of both is read every
+    build_vm_run.WATCH_SECONDS, and skopeo is killed and the import fails when either falls
+    below IMPORT_RESERVE (a layer that unpacks to far more than its size). What a killed skopeo
+    left of the image goes with the failed Build (podman rmi of tag); containers/storage deletes
+    a layer it left incomplete when it next opens the store. The directory goes afterwards,
+    whatever happened, and with leftovers() after a killed run."""
+    work = build_vm_run.import_dir(image, build)
+    layout, tmp = os.path.join(work, "layout"), os.path.join(work, "tmp")
+    storage = paths.host(STORAGE)
+    shutil.rmtree(work, ignore_errors=True)
+    os.mkdir(work, 0o700)
+    try:
+        say(f"== {image}: checking the build VM's image archive and taking its image's files out of it")
+        answer = _in_child(_unpack, archive, layout, storage)
+        if answer:
+            raise _Failed(answer["failed"] if "failed" in answer
+                          else f"the build VM's image archive is refused: {answer['refused']}")
+        os.mkdir(tmp, 0o700)
+        say(f"== {image}: importing the image as {tag}")
+        _watched(["unshare", "--net", "--", "skopeo", "--tmpdir", tmp, "copy", "--quiet", f"oci:{layout}",
+                  f"containers-storage:{tag}"], (storage, paths.BUILD_VM))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _watched(argv, places):
+    """The import's skopeo to its end, within IMPORT_SECONDS and while every filesystem of
+    `places` keeps IMPORT_RESERVE free; _Failed otherwise, skopeo killed."""
+    import tempfile
+    with tempfile.TemporaryFile() as err:
+        try:
+            p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err,
+                                 env=dict(os.environ, LC_ALL="C"))
+        except OSError as e:
+            raise _Failed(f"the build VM's image archive cannot be imported: {argv[0]}: {e.strerror or e}")
+        deadline = time.monotonic() + IMPORT_SECONDS
+        try:
+            while True:
+                try:
+                    code = p.wait(timeout=build_vm_run.WATCH_SECONDS)
+                    break
+                except subprocess.TimeoutExpired:
+                    pass
+                short = [path for path in places if _free_at(path)[1] < IMPORT_RESERVE]
+                if short:
+                    raise _Failed(f"the import of the build VM's image archive was stopped: less than "
+                                  f"{IMPORT_RESERVE} bytes free under {short[0]}")
+                if time.monotonic() > deadline:
+                    raise _Failed(f"the import of the build VM's image archive does not end within {IMPORT_SECONDS} s")
+        finally:
+            if p.poll() is None:
+                p.kill()
+                p.wait()
+        if code != 0:
+            err.seek(0)
+            said = clean(" ".join(err.read(1 << 16).decode("utf-8", "replace").split())[-200:], False)
+            raise _Failed(f"the build VM's image archive cannot be imported: skopeo copy failed (exit {code})"
+                          + (f": {said}" if said else ""))
+
+
+def _in_child(fn, *args):
+    """fn(*args) in a child process under ARCHIVE_LIMITS: its answer (JSON), which a _Failed
+    there turns into {"failed": its message}; {"refused": ...} when the child dies or answers
+    nothing (Python's tarfile holds a member's extended header in memory, whatever its size).
+    The child never outlives the run: the kernel kills it when the run ends (_die_with), and
+    the run kills it when it is interrupted while it waits."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    parent = os.getpid()
+    r, w = os.pipe()
+    pid = os.fork()
+    if pid == 0:                         # the child: its answer as JSON on the pipe, then gone
+        _die_with(parent)
+        try:
+            os.close(r)
+            build_vm.lower(ARCHIVE_LIMITS)
+            answer = fn(*args)
+        except _Failed as f:
+            answer = {"failed": f.message}
+        except BaseException as e:       # MemoryError among them: whatever it is, the archive is refused
+            answer = {"refused": f"it cannot be read within its limits ({type(e).__name__})"}
+        try:
+            os.write(w, json.dumps(answer).encode()[:1 << 12])
+        finally:
+            os._exit(0)
+    os.close(w)
+    answered = False
+    try:
+        with os.fdopen(r, "rb") as f:
+            data = f.read(1 << 12)
+        answered = True
+    finally:
+        if not answered:                 # interrupted (the run's SIGTERM handler): no child copies on
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        os.waitpid(pid, 0)
+    try:
+        answer = json.loads(data)
+    except ValueError:                   # no answer: the child was ended (its CPU time, say)
+        answer = {"refused": "it cannot be read within its limits"}
+    return answer if answer is None or isinstance(answer, dict) else {"refused": "it cannot be read"}
+
+
+PR_SET_PDEATHSIG = 1                 # prctl(2), linux/prctl.h
+
+
+def _die_with(parent):
+    """In a child just forked: SIGKILL from the kernel when the process that forked it ends
+    (prctl PR_SET_PDEATHSIG), so a run killed mid-import leaves no root process copying an
+    archive; gone at once when that process ended before this was set, or when it cannot be
+    set."""
+    import ctypes
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        failed = libc.prctl(PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0) != 0
+    except (OSError, AttributeError):
+        failed = True
+    if failed or os.getppid() != parent:
+        os._exit(1)
+
+
+def _unpack(path, layout, storage):
+    """In the child of _in_child: the OCI archive at `path` checked, then the files of its one
+    image written into the new directory `layout` (root's, 0700; files 0600, never through a
+    link): None, or {"refused": why}. _Failed without room for them.
+
+    The tar: at most ARCHIVE_ENTRIES entries, each a regular file or a directory (no link,
+    device, FIFO, sparse member or continuation) under a name with no empty, . or .. part,
+    none twice, and nothing but NUL bytes after its end, at most ARCHIVE_TRAIL of them, so that
+    no reader of the tar finds entries this one did not see. Its image: index.json names exactly
+    one manifest; the manifest (at most ARCHIVE_JSON, matching its digest) an OCI config (at
+    most ARCHIVE_JSON, matching its digest) and 1 to ARCHIVE_LAYERS OCI layers; every
+    descriptor names its blob by a sha256 digest and its size, no URL to fetch it from, and the
+    blob is in the archive with that size. Root writes oci-layout and index.json itself (the
+    one manifest, its media type, digest and size) and copies the manifest, config and layer
+    blobs out of the archive; nothing else."""
+    import hashlib
+    import tarfile
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as e:
+        return {"refused": f"it cannot be opened: {e.strerror or e}"}
+    with os.fdopen(fd, "rb") as raw:
+        try:
+            tar = tarfile.open(fileobj=raw, mode="r:")
+            files = {}
+            for count, m in enumerate(iter(tar.next, None), 1):
+                if count > ARCHIVE_ENTRIES:
+                    return {"refused": f"it holds more than {ARCHIVE_ENTRIES} entries"}
+                name = m.name[2:] if m.name.startswith("./") else m.name
+                name = name.rstrip("/") if m.isdir() else name
+                shown = repr(clean(name[:100], False))
+                if name.startswith("/") or any(p in ("", ".", "..") for p in name.split("/")):
+                    return {"refused": f"it holds an entry named {shown}"}
+                if m.sparse is not None or any(k.startswith("GNU.sparse.") for k in m.pax_headers):
+                    return {"refused": f"it holds {shown}, which is sparse"}
+                if m.type not in (tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.DIRTYPE):
+                    return {"refused": f"it holds {shown}, which is no regular file or directory"}
+                if name in files:
+                    return {"refused": f"it holds {shown} twice"}
+                if not m.isdir():
+                    files[name] = m
+            end = tar.offset
+        except tarfile.TarError:
+            return {"refused": "it is no tar"}
+        raw.seek(end)
+        trail = raw.read(ARCHIVE_TRAIL + 1)
+        if len(trail) > ARCHIVE_TRAIL or trail.strip(b"\0"):
+            return {"refused": "it holds more after the end of its tar"}
+
+        def read(name):
+            m = files.get(name)
+            return tar.extractfile(m).read(ARCHIVE_JSON + 1) if m is not None and m.size <= ARCHIVE_JSON else None
+
+        def blob(d, types, what):
+            """The blob's name in the archive of the descriptor d; _Refused otherwise."""
+            if not isinstance(d, dict):
+                raise _Refused(f"its {what} is no descriptor")
+            if "urls" in d:
+                raise _Refused(f"its {what} names URLs to fetch it from")
+            if d.get("mediaType") not in types:
+                raise _Refused(f"its {what} has the media type {clean(str(d.get('mediaType'))[:100], False)!r}")
+            m = SHA256.fullmatch(d["digest"]) if isinstance(d.get("digest"), str) else None
+            size = d.get("size")
+            if not m or not isinstance(size, int) or isinstance(size, bool):
+                raise _Refused(f"its {what} names no sha256 digest and size")
+            name = f"blobs/sha256/{m.group(1)}"
+            if name not in files or files[name].size != size:
+                raise _Refused(f"its {what} is not in the archive")
+            return name
+
+        def checked_json(name, digest, what):
+            data = read(name)
+            if data is None or "sha256:" + hashlib.sha256(data).hexdigest() != digest:
+                raise _Refused(f"its {what} does not match its digest, or is larger than {ARCHIVE_JSON} bytes")
+            try:
+                found = json.loads(data.decode("utf-8"))
+            except (ValueError, RecursionError):
+                found = None
+            if not isinstance(found, dict):
+                raise _Refused(f"its {what} is no JSON object")
+            return found
+
+        try:
+            index = read("index.json")
+            try:
+                index = json.loads(index.decode("utf-8")) if index is not None else None
+            except (ValueError, RecursionError):
+                index = None
+            if not isinstance(index, dict):
+                raise _Refused(f"its index.json is missing, larger than {ARCHIVE_JSON} bytes or no JSON object")
+            manifests = index.get("manifests")
+            if not isinstance(manifests, list) or len(manifests) != 1:
+                raise _Refused(f"it holds {len(manifests) if isinstance(manifests, list) else 'no list of'} "
+                               "images, not one")
+            entry = manifests[0]
+            name = blob(entry, (OCI_MANIFEST,), "image's manifest")
+            manifest = checked_json(name, entry["digest"], "manifest")
+            if manifest.get("schemaVersion") != 2 or manifest.get("mediaType") not in (None, OCI_MANIFEST):
+                raise _Refused("its manifest is no OCI image manifest")
+            config = blob(manifest.get("config"), (OCI_CONFIG,), "config")
+            checked_json(config, manifest["config"]["digest"], "config")
+            layers = manifest.get("layers")
+            if not isinstance(layers, list) or not layers:
+                raise _Refused("its manifest names no layers")
+            if len(layers) > ARCHIVE_LAYERS:
+                raise _Refused(f"it has {len(layers)} layers, more than {ARCHIVE_LAYERS}")
+            layer_blobs = [blob(layer, OCI_LAYERS, f"layer {n + 1}") for n, layer in enumerate(layers)]
+        except _Refused as r:
+            return {"refused": r.why}
+        wanted = list(dict.fromkeys([name, config, *layer_blobs]))
+        total = sum(files[n].size for n in wanted)
+        layer_bytes = sum(files[n].size for n in dict.fromkeys(layer_blobs))
+        _room_for(f"to import the build VM's image archive ({total} bytes, {layer_bytes} of them layers)",
+                  [(paths.BUILD_VM, total), (storage, IMPORT_FACTOR * layer_bytes)], IMPORT_RESERVE)
+        for folder in (layout, os.path.join(layout, "blobs"), os.path.join(layout, "blobs", "sha256")):
+            os.mkdir(folder, 0o700)
+        _write_new(os.path.join(layout, "oci-layout"), b'{"imageLayoutVersion": "1.0.0"}')
+        _write_new(os.path.join(layout, "index.json"), json.dumps(
+            {"schemaVersion": 2, "manifests": [{"mediaType": OCI_MANIFEST, "digest": entry["digest"],
+                                                "size": entry["size"]}]}).encode())
+        for n in wanted:
+            out = os.open(os.path.join(layout, n), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            try:
+                _copy_range(raw.fileno(), out, files[n].offset_data, files[n].size)
+            finally:
+                os.close(out)
+    return None
+
+
+class _Refused(Exception):
+    def __init__(self, why):
+        super().__init__(why)
+        self.why = why
+
+
+def _write_new(path, data):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+
+
+def _copy_range(src, dst, offset, size):
+    """size bytes of the file src from offset to the file dst, in the kernel where it can."""
+    done = 0
+    while done < size:
+        try:
+            n = os.copy_file_range(src, dst, min(size - done, 1 << 30), offset + done)
+        except OSError:                  # an older kernel across filesystems
+            data = os.pread(src, min(size - done, 1 << 20), offset + done)
+            n = os.write(dst, data) if data else 0
+        if n <= 0:
+            raise OSError(f"the archive ended {size - done} bytes early")
+        done += n
+
+
+def _free_at(path):
+    """(device, bytes free) of the filesystem of path, or of its nearest parent that exists."""
+    while not os.path.exists(path) and os.path.dirname(path) != path:
+        path = os.path.dirname(path)
+    st = os.statvfs(path)
+    return os.stat(path).st_dev, st.f_bavail * st.f_frsize
+
+
+def _room_for(what, needs, reserve):
+    """_Failed unless each filesystem has room for what it is to take ([(path, bytes)], summed
+    where two paths share one) and `reserve` besides."""
+    wanted, free, where = {}, {}, {}
+    for path, need in needs:
+        dev, free[dev] = _free_at(path)
+        wanted[dev] = wanted.get(dev, 0) + need
+        where.setdefault(dev, path)
+    short = [f"{where[dev]} needs {wanted[dev] + reserve} bytes free, has {free[dev]}"
+             for dev in wanted if free[dev] < wanted[dev] + reserve]
+    if short:
+        raise _Failed(f"not enough free space {what}: " + "; ".join(short))
+
+
+def _make_disk(image, build, tag, out, rec, src, say):
     """Create the Image's System disk from its checked container image: bootc-image-builder by
     its pinned digest, with the pristine fedora-bootc the Image is built on as the buildroot
     (--build-container), so the bootc that installs the Image, osbuild's stages and the tools
-    that make the filesystems do not come from the Image."""
+    that make the filesystems do not come from the Image. With the internal switch on, in the
+    Build's second build VM (_disk_in_build_vm)."""
+    if build_vm_run.enabled():
+        return _disk_in_build_vm(image, build, tag, out, rec, src, say)
     builder = digests.reference("bootc-image-builder", rec["builder_digest"])
     buildroot, why = digests.instance("fedora-bootc", rec["fedora_bootc_digest"])
     if why:
@@ -710,6 +1066,112 @@ def _make_disk(image, build, tag, out, rec, say):
         raise _Failed("bootc-image-builder created no disk")
     os.chmod(disk, 0o644)
     os.replace(disk, build_file(image, build))
+
+
+def _disk_in_build_vm(image, build, tag, out, rec, src, say):
+    """The disk step in the Build's second build VM, offline (build_vm_run.make_disk): the image
+    the Host checked, bootc-image-builder and the buildroot go in from the Host's storage, each
+    by its platform image as the Host's own disk step names the buildroot, under local names;
+    the same arguments and config.toml as on the Host. Its disk.qcow2 becomes the Build's disk
+    only as a new file the Host's qemu-img writes (_take_disk)."""
+    builder, why = digests.instance("bootc-image-builder", rec["builder_digest"])
+    if why:
+        raise _Failed(why)
+    buildroot, why = digests.instance("fedora-bootc", rec["fedora_bootc_digest"])
+    if why:
+        raise _Failed(why)
+    say(f"== {image}: all Safeguards present. Creating the disk in a build VM ({builder}, buildroot {buildroot})")
+    local_builder, local_root = build_vm_run.BUILDER.format(build), build_vm_run.FEDORA_BOOTC.format(build)
+    job = {"tag": tag, "builder": local_builder, "buildroot": local_root, "config": DISK_CONFIG}
+    hand_in = [(tag, tag), (builder, local_builder), (buildroot, local_root)]
+    try:
+        build_vm_run.make_disk(image, build, job, hand_in, src, say,
+                               lambda disk: _take_disk(image, build, disk, out, say))
+    except build_vm_run.Failed as f:
+        raise _Failed(f.message)
+
+
+def _take_disk(image, build, disk, out, say):
+    """A build VM's disk.qcow2 as the Build's disk: its header read with the format named, never
+    guessed (build_vm.qcow2_check: a qcow2 naming no backing file and no external data file,
+    not encrypted, of at most build_vm_run.MAX_DISK), then rewritten into a new qcow2 in `out`
+    (rewrite), which moves into place in one rename. Only with room under images/ for as much
+    as the VM's file and DISK_RESERVE besides; the new file may grow to the disk's virtual size
+    (and CONVERT_MARGIN), never beyond the room there less DISK_RESERVE."""
+    problem, virtual = build_vm.qcow2_check(disk, build_vm_run.MAX_DISK)
+    if problem:
+        raise _Failed(f"the build VM's disk is refused: {problem}")
+    _room_for("to write the Build's disk", [(paths.IMAGES, os.stat(disk).st_size)], DISK_RESERVE)
+    say(f"== {image}: the disk's header is checked; writing the Build's disk from it")
+    part = os.path.join(out, "disk.qcow2.part")
+    problem = rewrite(disk, part, min(virtual + CONVERT_MARGIN, _free_at(paths.IMAGES)[1] - DISK_RESERVE))
+    if problem:
+        raise _Failed(f"the build VM's disk cannot be rewritten: {problem}")
+    # root's alone before it is read: the unprivileged qemu-img that wrote it can change it no more
+    if os.geteuid() == 0:
+        os.chown(part, 0, 0)
+    os.chmod(part, 0o600)
+    # what that qemu-img wrote is checked as the VM's disk was before it becomes the Build's
+    problem = build_vm.qcow2_problem(part, build_vm_run.MAX_DISK)
+    if problem:
+        raise _Failed(f"the rewritten disk is refused: {problem}")
+    os.chmod(part, 0o644)
+    os.replace(part, build_file(image, build))
+
+
+def rewrite(disk, part, max_size):
+    """qemu-img convert of the qcow2 `disk` into a new qcow2 `part`: None, or what went wrong.
+
+    qemu-img parses bytes a VM chose, so it runs as build_vm_run.USER (setpriv), in a network
+    namespace of its own (root's unshare --net before that), with at most CONVERT_AS of address
+    space and files of at most max_size bytes. Root opens both files and hands them over as
+    file descriptors (/dev/fd/N): the VM's disk read-only, never through a link, and `part`,
+    which root makes (0600) and gives USER; USER needs no access to the directories they lie
+    in. The json: filename opens the disk with "backing": null, so no backing file is opened
+    even if one were named (an external data file it would still open: the caller's check
+    refuses one, and nothing changes the read-only output in between); the new file has
+    neither, and holds the guest's blocks and no header field the VM chose."""
+    uid, gid = build_vm_run.ids()
+    try:
+        src = os.open(disk, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as e:
+        return f"{disk} cannot be opened: {e.strerror or e}"
+    try:
+        dst = os.open(part, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except OSError as e:
+        os.close(src)
+        return f"{part} cannot be made: {e.strerror or e}"
+    try:
+        if os.geteuid() == 0:
+            os.fchown(dst, uid, gid)
+        source = "json:" + json.dumps({"driver": "qcow2", "file": {"driver": "file", "filename": f"/dev/fd/{src}"},
+                                       "backing": None})
+        argv = ["unshare", "--net", "--", "setpriv", f"--reuid={build_vm_run.USER}", f"--regid={build_vm_run.USER}",
+                "--clear-groups", "--no-new-privs", "--", "qemu-img", "convert", "-q", "-f", "qcow2", "-O", "qcow2",
+                source, f"/dev/fd/{dst}"]
+
+        def limits():
+            build_vm.lower({resource.RLIMIT_AS: CONVERT_AS, resource.RLIMIT_FSIZE: max(0, max_size)})
+        try:
+            r = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, errors="replace",
+                               timeout=CONVERT_SECONDS, preexec_fn=limits, pass_fds=(src, dst), cwd="/",
+                               env=dict(os.environ, LC_ALL="C"))
+        except FileNotFoundError:
+            return "unshare is missing"
+        except subprocess.TimeoutExpired:
+            return f"qemu-img convert does not end within {CONVERT_SECONDS} s"
+        except (OSError, subprocess.SubprocessError) as e:
+            return f"qemu-img convert cannot be started: {e}"
+        written = os.fstat(dst).st_size
+    finally:
+        os.close(src)
+        os.close(dst)
+    # at its file size limit qemu-img's write fails with EFBIG ("File too large"): it ignores SIGXFSZ
+    if r.returncode != 0 and ("File too large" in r.stderr or written >= max_size):
+        return f"it would be larger than {max_size} bytes"
+    if r.returncode != 0:
+        return f"qemu-img convert failed (exit {r.returncode}): " + clean(" ".join(r.stderr.split())[-200:], False)
+    return None
 
 
 def _failed(image, build, rec, tag, f, what, actor, reason, say):
@@ -797,7 +1259,7 @@ def _build_one(image, src, release, days, orca, playwright, pins, actor, unit_na
             manifest, agents, tools = _check(image, tag, rec["package_min_age_days"], base)
             rec.update(step="disk", agents=agents, tools=tools, safeguards=manifest if image == BASE else None)
             _save(rec)
-            _make_disk(image, build, tag, out, rec, say)
+            _make_disk(image, build, tag, out, rec, src, say)
             rec.update(status="ok", step="done", finished=int(time.time()), container=image == BASE)
             _save(rec)
             with state_files.locked(paths.IMAGES):
