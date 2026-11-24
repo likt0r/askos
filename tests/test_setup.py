@@ -725,7 +725,8 @@ class BuildVmStepTest(SetupTest):
         # a 16 GiB machine: MemTotal is less than 16 GiB
         self.write("proc/meminfo", "MemTotal:       16099652 kB\nMemAvailable:   14000000 kB\n")
         out = self.ok("--password-file", self.password_file, "--json")
-        self.assertEqual(self.step(out), ["Builds run in throwaway build VMs (build_vm is on by default)"])
+        self.assertEqual(self.step(out), [])
+        self.assertEqual(json.loads(out)["warnings"], [])
         self.assertIsNone(self.stored())
         code, out, err = self.run_agentbox("settings", "--json")
         self.assertEqual(json.loads(out)["settings"]["build_vm"]["value"], True)
@@ -758,15 +759,17 @@ class BuildVmStepTest(SetupTest):
 
     def test_a_stored_value_is_never_changed(self):
         os.remove(self.path("dev/kvm"))         # a Host that could not run them keeps an owner's on, too
-        for stored, said in ((True, []), (False, ["build_vm is off, as stored: Builds run as root on the Host "
-                                                  "(sudo agentbox set-settings build_vm=true runs them in build "
-                                                  "VMs)"])):
+        for stored, warned in ((True, []), (False, ["build_vm is off, as stored: Builds run as root on the Host "
+                                                    "(sudo agentbox set-settings build_vm=true runs them in build "
+                                                    "VMs)"])):
             with self.subTest(stored=stored):
                 os.makedirs(self.path("etc/agentbox"), exist_ok=True)
                 self.write("etc/agentbox/settings.json", json.dumps({"build_vm": stored}))
                 first = not os.path.exists(self.path("etc/agentbox/host.json"))
                 out = self.ok(*(["--password-file", self.password_file] if first else []), "--json")
-                self.assertEqual(self.step(out), said)
+                # it changes nothing, so it reports no change; a stored off warns on every run
+                self.assertEqual(self.step(out), [])
+                self.assertEqual(json.loads(out)["warnings"], warned)
                 self.assertEqual(self.stored(), {"build_vm": stored})
 
 

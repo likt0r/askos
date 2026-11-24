@@ -406,19 +406,21 @@ def proxies_before_lists():
     return ["running proxies restarted before the lists are taken over"]
 
 
-def build_vms():
+def build_vms(warn):
     """Whether Builds run in build VMs (the Setting build_vm, ADR 0025), decided once: with no
     value stored, a Host without KVM or with less than 16 GiB of memory
     (build_vm_run.host_unfit) gets build_vm false, written to the Settings, and the reason; any
-    other keeps the built-in default, on. A stored value is never changed."""
+    other keeps the built-in default, on, and changes nothing. A stored value is never changed;
+    a stored off is a warning on every run."""
     stored = settings.stored()
     if "build_vm" in stored:
-        return [] if stored["build_vm"] else [
-            "build_vm is off, as stored: Builds run as root on the Host (sudo agentbox set-settings build_vm=true "
-            "runs them in build VMs)"]
+        if not stored["build_vm"]:
+            warn("build_vm is off, as stored: Builds run as root on the Host (sudo agentbox set-settings "
+                 "build_vm=true runs them in build VMs)")
+        return []
     why = build_vm_run.host_unfit()
     if why is None:
-        return ["Builds run in throwaway build VMs (build_vm is on by default)"]
+        return []
     settings.save({"build_vm": "false"})
     return [f"build_vm set to false: {why}; Builds run as root on the Host"]
 

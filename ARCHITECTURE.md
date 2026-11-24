@@ -2006,8 +2006,8 @@ certificate name, owner user) and does the Host steps, in this order
     with less than 16 GiB of memory (`MemTotal` below 15 GiB: a machine of 16 GiB shows less,
     what firmware and the kernel keep; also when it cannot be read) gets `build_vm: false`
     written, and setup says why and that Builds run as root on the Host; any other Host keeps
-    the built-in default, on, and setup says that Builds run in throwaway build VMs. A stored
-    value is never changed (see [Settings](#settings)). Before `regenerate`, which removes the
+    the built-in default, on, and setup changes nothing. A stored value is never changed; a
+    stored off is a warning on every run (see [Settings](#settings)). Before `regenerate`, which removes the
     build VMs' network while it is off.
 12. **`agentbox migrate`** and **`agentbox migrate-allowlist`**.
 13. **Certificate and password** of the Control Room: the certificate unless there is one; the

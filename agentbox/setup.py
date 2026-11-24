@@ -364,7 +364,7 @@ def setup(args):
     steps.run("Container image cleanup", hoststeps.container_image_cleanup_timer)
     steps.run("Pause on Alerts", hoststeps.alert_watch)
     # before regenerate, which removes the build VMs' network while build_vm is off
-    steps.run("Build VMs", hoststeps.build_vms)
+    steps.run("Build VMs", hoststeps.build_vms, steps.warn)
     steps.run("migrate", hoststeps.migrate)
     steps.run("migrate-allowlist", hoststeps.migrate_allowlist)
 

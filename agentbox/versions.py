@@ -662,9 +662,9 @@ def fetched(now):
 
 def check(say, count=True):
     """Determine what is available and save it (versions.json); returns the record. One
-    check at a time (the record's lock, which no Build takes). Without `count` (the check a
-    Build run starts for a missing pin or build VM image, holding the run lock) no package
-    update is counted: the counts of the check before stay as they were."""
+    check at a time (the record's lock). Without `count` (the check a Build run starts for a
+    missing pin or build VM image, holding the run lock, so it may wait for a running check)
+    no package update is counted: the counts of the check before stay as they were."""
     with state_files.locked(RECORD):
         return _check(say, count)
 
