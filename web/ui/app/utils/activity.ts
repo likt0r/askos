@@ -360,7 +360,9 @@ export function activityText(e: ActivityEntry, tr: Translator): string {
   if (!text) return e.description
   if (e.outcome !== 'failed') return text
   if (!e.error) return has(p, 'message') && !SAYS_WHY.has(e.code ?? '') ? `${text}: ${p.message}` : text
-  const key = `errors.${e.error}`
+  // the Host's free memory could not be read: the sentence without its number
+  const unknownMemory = e.error === 'build_vm_memory' && !has(e.error_params ?? {}, 'available_mib')
+  const key = `errors.${unknownMemory ? 'build_vm_memory_unknown' : e.error}`
   if (e.error === GENERIC_ERROR || !tr.te(key)) return e.description
   return `${text}: ${tr.t(key, { field: '', ...(e.error_params ?? {}) })}`
 }

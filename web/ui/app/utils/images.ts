@@ -69,7 +69,7 @@ export interface Build {
   base_build: string | null
   /** the SHA-256 of the Recipe tar the Build came from; null for an Image of the Release */
   recipe_sha256?: string | null
-  /** whether it ran in build VMs (the Setting build_vm, ADR 0025); null: made before the Setting, or a run that failed before it could read the Settings */
+  /** whether it ran in build VMs (the Setting build_vm, ADR 0025); null: a run that failed at `source` because it could not read the Settings */
   build_vm?: boolean | null
   package_min_age_days?: number | null
   /** the Orca version pinned when the Build was made; null: the newest old enough */

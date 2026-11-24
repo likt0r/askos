@@ -317,6 +317,16 @@ describe('Activity text (unit)', () => {
     expect(activityText(refused, tr)).toBe(`${say('setEnv', { env: 'NODE_OPTIONS=' })}: errors.env_name_reserved {"field":"","name":"NODE_OPTIONS"}`)
   })
 
+  it('words a build VM without enough memory with the Host\'s free memory, or without it when it is unknown', () => {
+    const failed = (error_params: Record<string, string>) => coded(0, 'build.failed', { image: 'base', build: '20261109-120000' }, 'stored',
+      { vm: null, outcome: 'failed', error: 'build_vm_memory', error_params })
+    const sentence = activityText(coded(0, 'build.failed', { image: 'base', build: '20261109-120000' }, 'stored', { vm: null }), tr)
+    expect(activityText(failed({ needed_mib: '8192', available_mib: '4096' }), tr))
+      .toBe(`${sentence}: errors.build_vm_memory {"field":"","needed_mib":"8192","available_mib":"4096"}`)
+    expect(activityText(failed({ needed_mib: '8192' }), tr))
+      .toBe(`${sentence}: errors.build_vm_memory_unknown {"field":"","needed_mib":"8192"}`)
+  })
+
   it('words a secret by its name only', () => {
     const say = (key: string, values: Record<string, string>) => `activity.actions.${key} ${JSON.stringify(values)}`
     expect(activityText(coded(0, 'set-secret', { name: 'API_KEY' }, 'stored'), tr)).toBe(say('setSecret', { name: 'API_KEY' }))

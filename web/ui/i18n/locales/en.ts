@@ -217,6 +217,7 @@ export default {
     build_vm_no_kvm: 'The Host has no KVM, so no build VM can run. The Build does not fall back to the Host.',
     build_vm_no_image: 'There is no checked build VM image yet; the version check fetches and checks it.',
     build_vm_memory: 'Not enough free memory for a build VM: it needs {needed_mib} MiB, the Host has {available_mib} MiB available.',
+    build_vm_memory_unknown: 'Not enough free memory for a build VM: it needs {needed_mib} MiB, and the Host\'s free memory cannot be read.',
     action_failed: 'agentbox reported an error.',
     // only in Activity: a command that was interrupted, or ended on an error of agentbox itself
     interrupted: 'Interrupted.',

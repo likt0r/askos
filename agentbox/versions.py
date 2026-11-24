@@ -49,7 +49,7 @@ two parts, so that nothing from the internet is parsed as root:
              check-update` in a container from it. With the Setting build_vm on in a build VM
              (count_in_build_vm, build_vm_run.count), which takes the Build run lock without
              waiting: while a Build runs the count is unknown, and once a Build run waits for
-             the lock (build_vm_run.WANTED) no count starts and a running one gives way. Off
+             the lock (build_vm_run.WANT) no count starts and a running one gives way. Off
              on the Host (podman as root, like the Build), named agentbox-check-<image>,
              without capabilities and with a read-only root, for at most
              CHECK_UPDATE_SECONDS; it never waits for a Build, and a Build never waits for it:
@@ -688,6 +688,13 @@ def _check(say, count=True):
         rec["packages"] = (load() or {}).get("packages") or {}
         say("Package updates: not counted while a Build runs; the counts of the check before stay")
     in_vm = settings.load()["build_vm"]
+    # everything but the new counts is saved before the counts start (the previous counts stay in
+    # it): a count can take long (a build VM boots) and must not cost the rest if the service's
+    # time runs out or it is killed meanwhile
+    os.makedirs(paths.STATE, exist_ok=True)
+    if count:
+        state_files.write_json(RECORD, dict(rec, packages=(load() or {}).get("packages") or {}),
+                               ensure_ascii=False)
     for image in images.available() if count else ():
         build = images.current(image)
         tag = images.CONTAINER.format(image, build)
@@ -702,7 +709,6 @@ def _check(say, count=True):
         rec["packages"][image] = {"build": build, "updates": n, "error": error}
         say(f"Package updates for {image}-{build}: " + (str(n) if n is not None else "unknown")
             + (f" ({error})" if error else ""))
-    os.makedirs(paths.STATE, exist_ok=True)
     state_files.write_json(RECORD, rec, ensure_ascii=False)
     return rec
 
