@@ -13,13 +13,16 @@ itself, test_build_vm.RealGpgvTest).
 
 Environment:
   FAKE_DIR   calls are recorded in calls.jsonl as {"cmd": "gpgv", "argv": [...], "user": the
-             user fake_setpriv.py ran it as, or null}
+             user fake_setpriv.py ran it as, or null, "unshared": the namespaces
+             fake_unshare.py left, or null, "limits": {"as", "nproc", "fsize", "cpu"}: the
+             rlimits it ran under}
 
   gpgv --homedir <dir> --status-fd 2 --keyring <file> --output - <file>
 """
 import hashlib
 import json
 import os
+import resource
 import sys
 
 DIR = os.environ.get("FAKE_DIR", "")       # tests import sign() from here
@@ -39,6 +42,12 @@ def sign(key, text):
     return f"{HEAD}Hash: SHA256\n\n{text}{SIGNATURE}\n{signature(key, text)}\n{END}"
 
 
+def limits():
+    return {name: resource.getrlimit(which)[0] for name, which in (
+        ("as", resource.RLIMIT_AS), ("nproc", resource.RLIMIT_NPROC), ("fsize", resource.RLIMIT_FSIZE),
+        ("cpu", resource.RLIMIT_CPU))}
+
+
 def split(doc):
     """(signed text, signature) of a clearsigned file, or None."""
     if not doc.startswith(HEAD) or SIGNATURE not in doc:
@@ -51,7 +60,8 @@ def split(doc):
 
 def main(argv):
     with open(os.path.join(DIR, "calls.jsonl"), "a") as f:
-        f.write(json.dumps({"cmd": "gpgv", "argv": argv, "user": os.environ.get("FAKE_SETPRIV_USER")}) + "\n")
+        f.write(json.dumps({"cmd": "gpgv", "argv": argv, "user": os.environ.get("FAKE_SETPRIV_USER"),
+                            "unshared": os.environ.get("FAKE_UNSHARE"), "limits": limits()}) + "\n")
     opts, files, i = {}, [], 0
     while i < len(argv):
         if argv[i] in ("--homedir", "--status-fd", "--keyring", "--output"):

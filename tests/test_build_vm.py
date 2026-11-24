@@ -16,6 +16,7 @@ import base64
 import hashlib
 import json
 import os
+import resource
 import shutil
 import subprocess
 import sys
@@ -67,6 +68,7 @@ class BuildVmImageTest(VersionsTest):
     def setUp(self):
         super().setUp()
         fake(os.path.join(self.dir, "bin", "setpriv"), "fake_setpriv.py")
+        fake(os.path.join(self.dir, "bin", "unshare"), "fake_unshare.py")
         fake(os.path.join(self.dir, "bin", "gpgv"), "fake_gpgv.py")
         for release, key in KEY.items():
             self.write(f"etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-{release}-primary", armored(key))
@@ -188,6 +190,12 @@ class TakeTest(BuildVmImageTest):
                                    "--no-new-privs"])
         gpgv = self.calls("gpgv")
         self.assertEqual([c["user"] for c in gpgv], ["agentbox-gpgv"])
+        # in a network namespace of its own, entered as root before setpriv drops: no network
+        [unshare] = self.calls("unshare")
+        self.assertEqual(unshare["argv"][:4], ["--net", "--", "setpriv", "--reuid=agentbox-gpgv"])
+        self.assertEqual(gpgv[0]["unshared"], "net")
+        # and bounded: memory, processes, file size, CPU time
+        self.assertEqual(gpgv[0]["limits"], {"as": 512 << 20, "nproc": 4, "fsize": 1 << 20, "cpu": 30})
         # the keyring is the Host's key of release 44, dearmored, and nothing else
         argv = gpgv[0]["argv"]
         self.assertEqual(argv[argv.index("--output") + 1], "-")
@@ -224,6 +232,37 @@ class TakeTest(BuildVmImageTest):
         lock.close()
         self.check()
         self.assertEqual(self.kept(), [IMAGE_44])
+
+    def test_a_failure_of_the_hosts_own_keeps_the_other_answers(self):
+        """After the checks passed, the Host fails to keep the image (here its record cannot be
+        written: a directory in its place): only the image's answer fails, and versions.json is
+        written with everything else."""
+        os.makedirs(self.path(RECORD))
+        self.fetch_only()
+        code, out, err = self.run_agentbox("check-versions")
+        self.assertEqual(code, 0, err)
+        rec = self.record()
+        self.assertTrue(rec["build_vm_image"]["error"].startswith("cannot keep the image: "),
+                        rec["build_vm_image"]["error"])
+        self.assertEqual(rec["npm"]["claude-code"]["version"], "2.1.7")
+        self.assertIn("build_vm_image", err)
+
+    def test_a_copy_the_host_cannot_write_says_so(self):
+        """A write error of the copy (here EFBIG: a file size limit below the image's size; on a
+        Host, a full disk) is the Host's, not the fetch's file's."""
+        self.publish(IMAGE_44, content=self.disk() + b" " * (256 << 10))
+        self.fetch_only()
+        self.forget_calls()
+
+        def small_files():
+            resource.setrlimit(resource.RLIMIT_FSIZE, (128 << 10, 128 << 10))
+        r = subprocess.run([AGENTBOX, "check-versions"], env=self.env(), capture_output=True, text=True,
+                           timeout=60, preexec_fn=small_files)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        why = self.record()["build_vm_image"]["error"]
+        self.assertEqual(why, f"cannot copy the image to {self.path(BUILD_VM + '/images')}: File too large")
+        self.assertFalse(os.path.exists(self.path(RECORD)))
+        self.assertEqual(self.kept(), [])
 
     def test_a_record_without_its_image_is_dropped_and_the_image_fetched_again(self):
         self.check()
@@ -569,6 +608,7 @@ class RealGpgvTest(unittest.TestCase):
         self.dir = tmp.name
         self.bin = os.path.join(self.dir, "bin")
         fake(os.path.join(self.bin, "setpriv"), "fake_setpriv.py")
+        fake(os.path.join(self.bin, "unshare"), "fake_unshare.py")
         self.keys = {name: self.new_key(name) for name in ("fedora", "other")}
 
     def gpg(self, home, *args, data=None):

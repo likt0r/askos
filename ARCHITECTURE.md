@@ -1354,7 +1354,11 @@ Host after every Build
     signature, a `VALIDSIG` and none of `BADSIG`, `ERRSIG`, `EXPSIG`, `EXPKEYSIG`, `REVKEYSIG`
     and `ERROR`, since gpgv writes the text of a bad signature too and exits 0 for one by an
     expired or revoked key, and hashes the image while it copies it, so what it compares is
-    what it keeps. Which compose of the release the image is
+    what it keeps. gpgv runs without any network, in a network namespace of its own that root
+    enters with `unshare --net` before `setpriv` drops to `agentbox-gpgv`, and with at most
+    512 MiB of address space, four processes of its user, files of 1 MiB and 30 s of CPU,
+    ended after a minute. A failure of the Host's own once the checks passed (a full disk, a
+    record it cannot write) fails only the image's answer; the rest of the check is written. Which compose of the release the image is
     (`1.7` in `Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2`) comes from the fetch and is
     checked only against the name's pattern: a fetch that was taken over could offer an older
     compose of the same release signed with the same key (its Beta's, say), and root would take

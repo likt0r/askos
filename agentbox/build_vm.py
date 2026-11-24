@@ -21,7 +21,8 @@ The version check (versions.py) finds and checks it, in its two parts:
   one by one from root's own STATE without following a link, regular files only, bounded
   sizes, the name of the release's image and nothing else, the CHECKSUM's name built from it.
   gpgv runs as GPGV_USER (setpriv), a user of the package's that nothing else runs as, so no
-  other process can trace it, not as root, with a keyring root makes from the Host's own
+  other process can trace it, not as root, without network (a network namespace of its own,
+  unshare) and under GPGV_LIMITS, with a keyring root makes from the Host's own
   RPM-GPG-KEY-fedora-<N>-primary (fedora-gpg-keys, updated with the Host), on copies root wrote
   into a directory of its own; only its exit 0 with one signature, a VALIDSIG and none of
   REFUSED_STATUS counts, since gpgv writes the text of a bad signature too and exits 0 for one
@@ -49,6 +50,7 @@ import tempfile
 import time
 
 from . import digests, paths, state_files
+from .errors import Fail
 from .sanitize import clean
 
 RELEASE = digests.UPSTREAM["fedora-bootc"][1]
@@ -65,6 +67,10 @@ MAX_TEXT = 64 << 10             # the CHECKSUM and its signed text: a few hundre
 MAX_VIRTUAL = 20 << 30          # Fedora 44's image: 5 GiB; the system disk on it is 20 GiB
 DOWNLOAD_SECONDS = paths.tunable("AGENTBOX_BUILD_VM_DOWNLOAD_SECONDS", 2400)
 GPGV_SECONDS = 60
+# gpgv on a file from the internet: its address space, processes of its user (it starts none),
+# the size of a file it writes (it writes none: --output - is a pipe) and CPU time
+GPGV_LIMITS = {resource.RLIMIT_AS: 512 << 20, resource.RLIMIT_NPROC: 4, resource.RLIMIT_FSIZE: 1 << 20,
+               resource.RLIMIT_CPU: 30}
 # qemu-img on a qcow2 the Host did not write: its address space and CPU time
 QEMU_IMG_LIMITS = {resource.RLIMIT_AS: 1 << 30, resource.RLIMIT_CPU: 30}
 QEMU_IMG_SECONDS = 60
@@ -357,17 +363,21 @@ def signed_text(checksum):
         for name, data in (("fedora.gpg", key), ("CHECKSUM", checksum)):
             with open(os.open(os.path.join(work, name), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644), "wb") as f:
                 f.write(data)
-        argv = ["setpriv", f"--reuid={GPGV_USER}", f"--regid={GPGV_USER}", "--clear-groups", "--no-new-privs",
-                "--", "gpgv", "--homedir", work, "--status-fd", "2", "--keyring", os.path.join(work, "fedora.gpg"),
-                "--output", "-", os.path.join(work, "CHECKSUM")]
+        # a network namespace of its own (root's unshare, before setpriv drops to GPGV_USER): gpgv
+        # has no network at all, not even loopback, under GPGV_LIMITS
+        argv = ["unshare", "--net", "--", "setpriv", f"--reuid={GPGV_USER}", f"--regid={GPGV_USER}",
+                "--clear-groups", "--no-new-privs", "--", "gpgv", "--homedir", work, "--status-fd", "2",
+                "--keyring", os.path.join(work, "fedora.gpg"), "--output", "-", os.path.join(work, "CHECKSUM")]
         env = dict(os.environ, LC_ALL="C", HOME=work)        # --homedir: no GNUPGHOME of root's
         try:
             r = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, env=env, cwd=work,
-                               timeout=GPGV_SECONDS)
+                               timeout=GPGV_SECONDS, preexec_fn=_gpgv_limits)
         except FileNotFoundError:
-            return None, "setpriv is missing"
-        except (OSError, subprocess.TimeoutExpired):
+            return None, "unshare is missing"
+        except subprocess.TimeoutExpired:
             return None, "gpgv: time limit exceeded"
+        except (OSError, subprocess.SubprocessError):
+            return None, "gpgv cannot be started"
     finally:
         shutil.rmtree(work, ignore_errors=True)
     status = r.stderr.decode("utf-8", "replace")
@@ -385,6 +395,18 @@ def signed_text(checksum):
     return r.stdout.decode("utf-8", "replace"), None
 
 
+def _lower(limits):
+    """Set these rlimits (soft and hard), never above a lower one already in force."""
+    for which, value in limits.items():
+        hard = resource.getrlimit(which)[1]
+        value = value if hard == resource.RLIM_INFINITY else min(value, hard)
+        resource.setrlimit(which, (value, value))
+
+
+def _gpgv_limits():
+    _lower(GPGV_LIMITS)
+
+
 def signed_sha256(text, name):
     """The SHA-256 the signed text names for the file `name`, or None (none, or two)."""
     found = {m.group(2) for m in map(SIGNED_LINE.fullmatch, text.splitlines()) if m and m.group(1) == name}
@@ -392,8 +414,7 @@ def signed_sha256(text, name):
 
 
 def _limits():
-    for which, value in QEMU_IMG_LIMITS.items():
-        resource.setrlimit(which, (value, value))
+    _lower(QEMU_IMG_LIMITS)
 
 
 def qcow2_problem(path, max_virtual):
@@ -407,8 +428,10 @@ def qcow2_problem(path, max_virtual):
                            preexec_fn=_limits)
     except FileNotFoundError:
         return "qemu-img is missing"
-    except (OSError, subprocess.TimeoutExpired):
+    except subprocess.TimeoutExpired:
         return "qemu-img info: time limit exceeded"
+    except (OSError, subprocess.SubprocessError):
+        return "qemu-img info cannot be started"
     if r.returncode != 0:
         return "not a qcow2 by qemu-img info: " + clean(" ".join(r.stderr.split())[-200:], False)
     try:
@@ -437,30 +460,44 @@ def qcow2_problem(path, max_virtual):
 
 def _copy(dir_fd, name, part):
     """Copy the fetch's regular file `name` (never through a link, at most MAX_IMAGE bytes) to
-    root's new file `part`, hashing what it copies: its SHA-256, or None."""
+    root's new file `part`, hashing what it copies: (its SHA-256, None), or (None, why)."""
+    unfit = f"the fetch's image is missing or no regular file of at most {MAX_IMAGE} bytes"
     try:
         src = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY, dir_fd=dir_fd)
     except OSError:
-        return None
+        return None, unfit
     h, size = hashlib.sha256(), 0
     try:
         st = os.fstat(src)
         if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_IMAGE:
-            return None
-        with open(os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "wb") as out:
-            while chunk := os.read(src, CHUNK):
+            return None, unfit
+        try:
+            out = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        except OSError as e:
+            return None, f"cannot copy the image to {IMAGES}: {e.strerror}"
+        try:
+            while True:
+                try:
+                    chunk = os.read(src, CHUNK)
+                except OSError as e:
+                    return None, f"cannot read the fetch's image: {e.strerror}"
+                if not chunk:
+                    break
                 size += len(chunk)
                 if size > MAX_IMAGE:
-                    return None
+                    return None, unfit
                 h.update(chunk)
-                out.write(chunk)
-            out.flush()
-            os.fsync(out.fileno())
-    except OSError:
-        return None
+                view = memoryview(chunk)
+                while view:
+                    view = view[os.write(out, view):]
+            os.fsync(out)
+        except OSError as e:              # ENOSPC, EFBIG, EIO: the Host's, not the fetch's
+            return None, f"cannot copy the image to {IMAGES}: {e.strerror}"
+        finally:
+            os.close(out)
     finally:
         os.close(src)
-    return h.hexdigest()
+    return h.hexdigest(), None
 
 
 def _open_downloads():
@@ -504,9 +541,9 @@ def _take(name, say):
         part = os.path.join(IMAGES, f".{name}.part")
         state_files.remove(part, fail=False)
         try:
-            sha = _copy(dir_fd, name, part)
-            if sha is None:
-                return f"the fetch's image is missing or no regular file of at most {MAX_IMAGE} bytes"
+            sha, why = _copy(dir_fd, name, part)
+            if why:
+                return why
             if sha != wanted:
                 return "the image does not match the signed CHECKSUM"
             problem = qcow2_problem(part, MAX_VIRTUAL)
@@ -556,7 +593,13 @@ def check(found, say):
     in_use = rec["name"] if rec and rec["release"] == RELEASE else None
     got = {"release": RELEASE, "image": in_use, "offered": found["image"], "state": None, "error": found["error"]}
     if found["image"] and found["image"] != in_use:
-        got["error"] = _take(found["image"], say)
+        try:
+            got["error"] = _take(found["image"], say)
+        except OSError as e:
+            # the Host's own failure (its directories, a rename, the record): only this answer fails
+            got["error"] = f"cannot keep the image: {e.strerror or e}"
+        except Fail as e:
+            got["error"] = f"cannot keep the image: {e.message}"
         if got["error"]:
             say(f"Build VM image: {found['image']} refused: {got['error']}; "
                 + (f"{rec['name']} stays in use" if rec else "there is none yet"))
