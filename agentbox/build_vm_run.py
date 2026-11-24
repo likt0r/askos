@@ -361,18 +361,19 @@ def _network():
 def remove_network():
     """With build_vm off (generate.apply): NETWORK stopped and undefined when libvirt has it;
     whether it had. A network of that name with another bridge is not the build network and
-    stays. Not while the run lock is held: a Build or a count read build_vm on and its build VM
-    may be on the network; the next apply removes it."""
-    if state_files.held(RUN_LOCK) or states.network(NETWORK_NAME) is None:
-        return False
-    xml = virsh.run("net-dumpxml", NETWORK).stdout
-    if not re.search(rf"<bridge\b[^>]*\bname=['\"]{BRIDGE}['\"]", xml):
-        return False
-    virsh.run("net-destroy", NETWORK)       # an inactive one says so, which changes nothing
-    r = virsh.run("net-undefine", NETWORK)
-    if r.returncode != 0:
-        raise Fail(f"cannot remove the network {NETWORK}: {programs.summary(r)}", error="action_failed")
-    return True
+    stays. Removed under the run lock, and not while another holds it: a Build or a count read
+    build_vm on and its build VM may be on the network; the next apply removes it."""
+    with state_files.locked_unless_held(RUN_LOCK) as free:
+        if not free or states.network(NETWORK_NAME) is None:
+            return False
+        xml = virsh.run("net-dumpxml", NETWORK).stdout
+        if not re.search(rf"<bridge\b[^>]*\bname=['\"]{BRIDGE}['\"]", xml):
+            return False
+        virsh.run("net-destroy", NETWORK)       # an inactive one says so, which changes nothing
+        r = virsh.run("net-undefine", NETWORK)
+        if r.returncode != 0:
+            raise Fail(f"cannot remove the network {NETWORK}: {programs.summary(r)}", error="action_failed")
+        return True
 
 
 def _virsh_file(cmd, xml, what):

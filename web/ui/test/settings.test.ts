@@ -409,6 +409,21 @@ describe('Settings page', () => {
       expect(field(on.wrapper, 'build_vm').find('[data-testid="setting-later"]').text()).toBe('Applies from the next Build.')
     })
 
+    it('renders a choice Setting as one select, and build VMs on as the select plus the CLI-only note', async () => {
+      const { wrapper } = await openPage('/settings', { 'GET /settings': ok(settingsBody()) })
+      const auto = field(wrapper, 'auto_update').findAll('[data-testid="setting-input"]')
+      expect(auto.length).toBe(1)
+      expect(auto[0]!.element.tagName).toBe('SELECT')
+      expect(field(wrapper, 'auto_update').find('[data-testid="setting-cli-only"]').exists()).toBe(false)
+      const vm = field(wrapper, 'build_vm')
+      expect(vm.findAll('[data-testid="setting-input"]').length).toBe(1)
+      expect(vm.find('select').exists()).toBe(true)
+      expect(vm.find('input').exists()).toBe(false)
+      expect(vm.find('[data-testid="setting-cli-only"]').exists()).toBe(true)
+      expect(field(wrapper, 'reset_age_days').find('input[data-testid="setting-input"]').exists()).toBe(true)
+      expect(field(wrapper, 'reset_age_days').find('select').exists()).toBe(false)
+    })
+
     it('turns build VMs on again once root turned them off', async () => {
       // shown as Off, and turned on (`default`, as on is the default)
       const off = await openPage('/settings', { 'GET /settings': ok(settingsBody({ build_vm: false })), 'PATCH /settings': ok(changedBody) })

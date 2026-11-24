@@ -76,24 +76,25 @@ const hint = computed(() => {
       </p>
     </div>
     <div class="flex min-w-0 flex-col gap-1">
-      <select
-        v-if="spec?.type === 'choice'"
-        :id="id"
-        :value="modelValue"
-        class="w-full rounded-md border bg-default px-2.5 py-1.5 text-sm text-highlighted focus-visible:outline-2 focus-visible:outline-primary"
-        :class="error ? 'border-error' : 'border-default'"
-        :aria-invalid="!!error"
-        :aria-describedby="`${id}-note`"
-        data-testid="setting-input"
-        @change="emit('update:modelValue', ($event.target as HTMLSelectElement).value)"
-      >
-        <option v-for="o in spec.options" :key="o" :value="o" :disabled="optionRefused(name, o, info)">
-          {{ optionLabel(o) }}
-        </option>
-      </select>
-      <p v-if="onOnly" class="text-xs text-muted" data-testid="setting-cli-only">
-        {{ t(`settings.fields.${name}.cliOnly`) }}
-      </p>
+      <template v-if="spec?.type === 'choice'">
+        <select
+          :id="id"
+          :value="modelValue"
+          class="w-full rounded-md border bg-default px-2.5 py-1.5 text-sm text-highlighted focus-visible:outline-2 focus-visible:outline-primary"
+          :class="error ? 'border-error' : 'border-default'"
+          :aria-invalid="!!error"
+          :aria-describedby="`${id}-note`"
+          data-testid="setting-input"
+          @change="emit('update:modelValue', ($event.target as HTMLSelectElement).value)"
+        >
+          <option v-for="o in spec.options" :key="o" :value="o" :disabled="optionRefused(name, o, info)">
+            {{ optionLabel(o) }}
+          </option>
+        </select>
+        <p v-if="onOnly" class="text-xs text-muted" data-testid="setting-cli-only">
+          {{ t(`settings.fields.${name}.cliOnly`) }}
+        </p>
+      </template>
       <UInput
         v-else
         :id="id"
