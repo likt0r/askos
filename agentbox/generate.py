@@ -24,6 +24,7 @@ import json
 import os
 import re
 import stat
+import sys
 import tempfile
 import time
 
@@ -1151,8 +1152,10 @@ def ports_free():
 def apply():
     """The Host configuration of every VM from the registry; what changed as
     {"vms": {vm: [step, ...]}, "firewall": bool, "ssh_rules": int, "storage": bool,
-    "retention": days or None, "timers": bool}: "firewall" whether the VM networks' rules were
-    loaded, "ssh_rules" how many firewall rules of the SSH ports were added (Network mode).
+    "retention": days or None, "timers": bool, "build_network_removed": bool}: "firewall" whether
+    the VM networks' rules were loaded, "ssh_rules" how many firewall rules of the SSH ports were
+    added (Network mode), "build_network_removed" whether the build VMs' network went (build_vm
+    off).
     Callers hold state_files.locked(paths.REGISTRY), like create and delete, so runs never overlap."""
     records = registry.all_records()     # a broken registry stops everything before any change
     values = settings.load()             # so do broken settings
@@ -1181,6 +1184,14 @@ def apply():
         if defined:
             done.append(defined)
         changes[rec["name"]] = done
+    # the build VMs' network exists only while build_vm is on; a build VM's start makes it
+    # (best effort: libvirt failing here says so and fails nothing; the next apply tries again)
+    try:
+        build_network = False if values["build_vm"] else build_vm_run.remove_network()
+    except Fail as f:
+        build_network = False
+        print(f"agentbox: the network {build_vm_run.NETWORK} of the build VMs was not removed: {f.message}; "
+              "the next regenerate tries again", file=sys.stderr)
     timers = _feeds(values)
     timers = _builds() or timers
     timers = _versions(values) or timers
@@ -1192,7 +1203,7 @@ def apply():
     if records:
         programs.systemctl("enable", "--now", *[s for rec in records for s in footprint.sockets(rec)])
     return {"vms": changes, "firewall": nft, "ssh_rules": ssh_rules, "storage": storage,
-            "retention": retention, "timers": timers}
+            "retention": retention, "timers": timers, "build_network_removed": build_network}
 
 
 def report(result):
@@ -1209,6 +1220,8 @@ def report(result):
     if result["timers"]:
         lines.append("timers and services for the Maintenance window, lists, Builds and versions written again "
                      "and restarted")
+    if result.get("build_network_removed"):
+        lines.append(f"network {build_vm_run.NETWORK} of the build VMs removed (build_vm is off)")
     return lines
 
 

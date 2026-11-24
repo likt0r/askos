@@ -9,7 +9,7 @@
   skopeo copy --quiet containers-storage:REF oci-archive:PATH:NAME
       PATH: an archive of the fakes (fake_podman.write_archive) of REF in the fake container
       storage, named NAME; fails when REF is not there, and for REF prefixes in the scenario's
-      "skopeo_copy_fails"
+      "skopeo_copy_fails"; with "skopeo_copy_waits": n it takes n seconds more
 
   skopeo copy --quiet oci:DIR containers-storage:REF
       the image of the OCI layout DIR into the fake container storage as REF, whatever name
@@ -29,6 +29,7 @@ Environment: FAKE_DIR (calls in calls.jsonl as {"cmd": "skopeo", "argv": [...]},
 import json
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fake_podman  # noqa: E402
@@ -58,6 +59,7 @@ def main(argv):
                   file=sys.stderr)
             return 1
         fake_podman.write_archive(name, path, source=ref)
+        time.sleep(fake_podman.scenario().get("skopeo_copy_waits", 0))
         return 0
     if argv[:2] == ["copy", "--quiet"] and len(argv) == 4 and argv[2].startswith("oci:") \
             and argv[3].startswith("containers-storage:"):
@@ -82,7 +84,6 @@ def main(argv):
             fd = os.open(os.path.join(fake_podman.image_dir(ref), "fill"), os.O_WRONLY | os.O_CREAT, 0o644)
             os.posix_fallocate(fd, 0, fills)
             os.close(fd)
-            import time
             time.sleep(60)
         fake_podman.load(path, ref)
         return 0

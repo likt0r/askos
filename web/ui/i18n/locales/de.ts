@@ -213,6 +213,11 @@ export default {
     invalid_argument: 'agentbox hat einen Wert abgelehnt.',
     sudo_failed: 'sudo hat agentbox für den Control Room nicht ausgeführt (seine sudo-Regel fehlt oder erlaubt diesen Aufruf nicht).',
     control_room_refused: 'Das darf nur die CLI auf dem Host, nicht der Control Room.',
+    setting_cli_only: 'Ausschalten kann das nur root auf dem Host (sudo agentbox set-settings build_vm=false), nicht der Control Room: Builds liefen dann als root auf dem Host.',
+    build_vm_no_kvm: 'Der Host hat kein KVM, also kann keine Build-VM laufen. Der Build weicht nicht auf den Host aus.',
+    build_vm_no_image: 'Es gibt noch kein geprüftes Image für die Build-VMs; die Versionsprüfung lädt und prüft es.',
+    build_vm_memory: 'Nicht genug freier Speicher für eine Build-VM: Sie braucht {needed_mib} MiB, der Host hat {available_mib} MiB frei.',
+    build_vm_memory_unknown: 'Nicht genug freier Speicher für eine Build-VM: Sie braucht {needed_mib} MiB, und der freie Speicher des Hosts lässt sich nicht lesen.',
     action_failed: 'agentbox hat einen Fehler gemeldet.',
     // nur in der Aktivität: ein Befehl, der abgebrochen wurde oder an einem Fehler von agentbox selbst endete
     interrupted: 'Abgebrochen.',

@@ -16,6 +16,7 @@ import en from '../i18n/locales/en'
 // as agentbox/settings.py describes them (German `allowed` and `applies_later` texts included)
 const LATER = {
   builds_kept: 'ab dem naechsten Build',
+  build_vm: 'ab dem naechsten Build',
   package_min_age_days: 'ab dem naechsten Build',
   orca_version: 'ab dem naechsten Build',
   playwright_version: 'ab dem naechsten Build',
@@ -31,7 +32,7 @@ const LATER = {
 } as Record<string, string>
 
 const DEFAULTS: Record<string, string | number | boolean> = {
-  maintenance_time: '02:00', reset_age_days: 7, auto_update: true, rebuild_day: 'sun', builds_kept: 3,
+  maintenance_time: '02:00', reset_age_days: 7, auto_update: true, rebuild_day: 'sun', builds_kept: 3, build_vm: true,
   default_memory_mib: 26624, default_data_disk_gib: 300, default_image: 'base', default_container_image_cleanup: true, default_container_image_cleanup_days: 7, open_web_max_minutes: 240,
   hold_seconds: 30, alert_action: 'pause',
   temporary_entry_default: '1h', young_domain_days: 14, feed_interval_hours: 12, package_min_age_days: 2,
@@ -69,7 +70,7 @@ describe('settings (units)', () => {
   const listed = [...section.slice(0, section.indexOf('The password')).matchAll(/`([a-z_]+)`/g)].map(m => m[1]!)
 
   it('knows the keys of docs/control-room-api.md, no more and no fewer', () => {
-    expect(listed.length).toBe(22)
+    expect(listed.length).toBe(23)
     expect([...listed].sort()).toEqual(Object.keys(SETTING_SPECS).sort())
     expect(Object.keys(SETTING_SPECS).sort()).toEqual(Object.keys(DEFAULTS).sort())
   })
@@ -163,12 +164,12 @@ describe('settings (units)', () => {
 describe('Settings page', () => {
   useFreshApp()
 
-  it('shows all 22 settings with label, current value and default, and when a change applies', async () => {
+  it('shows all 23 settings with label, current value and default, and when a change applies', async () => {
     const { wrapper } = await openPage('/settings', {
       'GET /settings': ok(settingsBody({ reset_age_days: 14, rebuild_day: 'fri', temporary_entry_default: '8h', young_domain_days: 28, default_language: 'en' })),
     })
     const rows = wrapper.findAll('[data-testid="setting"]')
-    expect(rows).toHaveLength(22)
+    expect(rows).toHaveLength(23)
     expect(new Set(rows.map(r => r.attributes('data-key')))).toEqual(new Set(Object.keys(DEFAULTS)))
     expect(wrapper.find('[data-testid="settings-load-error"]').exists()).toBe(false)
 
@@ -394,6 +395,55 @@ describe('Settings page', () => {
       await save(wrapper).trigger('click')
       await flushPromises()
       expect(patches(api.calls)[0]!.body).toEqual({ auto_update: false })
+    })
+
+    it('offers build VMs on but never off (ADR 0025), and says how root turns them off', async () => {
+      // on: Off is not offered, and the note names the command on the Host
+      const on = await openPage('/settings', { 'GET /settings': ok(settingsBody()) })
+      const options = field(on.wrapper, 'build_vm').findAll('option')
+      expect(options.map(o => [o.attributes('value'), o.text(), o.attributes('disabled') !== undefined]))
+        .toEqual([['true', 'On', false], ['false', 'Off', true]])
+      expect(field(on.wrapper, 'build_vm').text()).toContain('Build VMs')
+      expect(field(on.wrapper, 'build_vm').find('[data-testid="setting-cli-only"]').text())
+        .toBe('Turning it off is only possible on the Host: sudo agentbox set-settings build_vm=false')
+      expect(field(on.wrapper, 'build_vm').find('[data-testid="setting-later"]').text()).toBe('Applies from the next Build.')
+    })
+
+    it('renders a choice Setting as one select, and build VMs on as the select plus the CLI-only note', async () => {
+      const { wrapper } = await openPage('/settings', { 'GET /settings': ok(settingsBody()) })
+      const auto = field(wrapper, 'auto_update').findAll('[data-testid="setting-input"]')
+      expect(auto.length).toBe(1)
+      expect(auto[0]!.element.tagName).toBe('SELECT')
+      expect(field(wrapper, 'auto_update').find('[data-testid="setting-cli-only"]').exists()).toBe(false)
+      const vm = field(wrapper, 'build_vm')
+      expect(vm.findAll('[data-testid="setting-input"]').length).toBe(1)
+      expect(vm.find('select').exists()).toBe(true)
+      expect(vm.find('input').exists()).toBe(false)
+      expect(vm.find('[data-testid="setting-cli-only"]').exists()).toBe(true)
+      expect(field(wrapper, 'reset_age_days').find('input[data-testid="setting-input"]').exists()).toBe(true)
+      expect(field(wrapper, 'reset_age_days').find('select').exists()).toBe(false)
+    })
+
+    it('turns build VMs on again once root turned them off', async () => {
+      // shown as Off, and turned on (`default`, as on is the default)
+      const off = await openPage('/settings', { 'GET /settings': ok(settingsBody({ build_vm: false })), 'PATCH /settings': ok(changedBody) })
+      expect((input(off.wrapper, 'build_vm').element as HTMLSelectElement).value).toBe('false')
+      expect(field(off.wrapper, 'build_vm').find('[data-testid="setting-cli-only"]').exists()).toBe(false)
+      await type(off.wrapper, 'build_vm', 'true')
+      await save(off.wrapper).trigger('click')
+      await flushPromises()
+      expect(patches(off.api.calls)[0]!.body).toEqual({ build_vm: 'default' })
+    })
+
+    it('shows the refusal to turn build VMs off at their field', async () => {
+      const { wrapper } = await openPage('/settings', {
+        'GET /settings': ok(settingsBody({ build_vm: false })),
+        'PATCH /settings': { status: 409, body: { error: { code: 'setting_cli_only', message: 'Only root on the CLI at the Host can turn this Setting off', field: 'build_vm' } } },
+      })
+      await type(wrapper, 'reset_age_days', '9')
+      await save(wrapper).trigger('click')
+      await flushPromises()
+      expect(field(wrapper, 'build_vm').find('[data-testid="setting-error"]').text()).toContain('Only root on the Host can turn this off')
     })
 
     describe('the default language', () => {
@@ -626,7 +676,7 @@ describe('Settings page', () => {
       'PATCH /settings': ok(changedBody),
     })
     const rows = wrapper.findAll('[data-testid="setting"]')
-    expect(rows).toHaveLength(23)
+    expect(rows).toHaveLength(24)
     expect(rows.at(-1)!.attributes('data-key')).toBe('future_key')
     expect(rows.at(-1)!.text()).toContain('future_key')
     expect(rows.at(-1)!.find('[data-testid="setting-later"]').text()).toBe('beim naechsten Mal')

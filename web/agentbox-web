@@ -227,8 +227,9 @@ ACTIVITY_FILTERS = {"kind": "--kind", "vm": "--vm", "since": "--since", "until":
                     "search": "--search", "lines": "--lines"}
 
 
-# The Settings the Control Room may change: all of them (agentbox checks the values). The
-# password, the home network and the ports are no Settings.
+# The Settings the Control Room may change: all of them (agentbox checks the values), those of
+# settings.CONTROL_ROOM_OFF (build_vm) only to on. The password, the home network and the ports
+# are no Settings.
 SETTING_KEYS = tuple(settings.SPEC)
 # Settings whose value is true or false; JSON true/false becomes text for agentbox
 BOOL_SETTINGS = tuple(k for k, s in settings.SPEC.items() if isinstance(s.default, bool))
@@ -971,6 +972,12 @@ def invalid(field, message):
 AGENTBOX_ERRORS = {
     "sudo_failed": (500, "The Control Room may not run agentbox (sudo)"),
     "control_room_refused": (500, "Only the CLI on the Host can do this, not the Control Room"),
+    "setting_cli_only": (409, "Only root on the CLI at the Host can turn this Setting off, not the Control Room "
+                              "(build_vm: Builds would run as root on the Host)"),
+    # a Build in build VMs that cannot run one (ADR 0025), in its Activity entry: no fallback to the Host
+    "build_vm_no_kvm": (409, "The Host has no KVM: no build VM can run"),
+    "build_vm_no_image": (409, "There is no checked build VM image yet"),
+    "build_vm_memory": (503, "Not enough free memory on the Host for a build VM"),
     "vm_not_found": (404, "No such VM"),
     "name_reserved": (400, "This name is reserved"),
     "invalid_name": (400, "Invalid VM name (a-z, 0-9 and -, 2 to 16 characters, starting with a letter)"),
@@ -2071,6 +2078,9 @@ def patch_settings(h, m, url, body):
         if setting_text(key, v) is None:
             raise invalid(key, f"{key} must be " + ("true or false" if key in BOOL_SETTINGS
                                                      else "text or a whole number"))
+        if key in settings.CONTROL_ROOM_OFF and setting_text(key, v) == "false":
+            # agentbox refuses it too, for every caller through the Control Room's sudo rule
+            raise refused("setting_cli_only", field=key)
         args.append(f"{key}={setting_text(key, v)}")
     return 200, run_json("set-settings", *args, "--json", timeout=120)
 

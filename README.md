@@ -28,8 +28,9 @@ access its work needs.
   that goes wrong)
 - **Supply-chain attacks through packages** in the daily work in a VM (install scripts stealing
   tokens): a minimum package age, the VM bounding what malicious code reaches, and detection of
-  known malware and exfiltration destinations at the proxy; building an Image is only guarded by
-  the minimum package age and pins
+  known malware and exfiltration destinations at the proxy; building an Image is guarded by the
+  minimum package age and pins, and runs in throwaway build VMs, not as root on the Host (unless
+  the Setting `build_vm` is off)
 - **Credentials leaked by accident**: what a VM holds is narrow and, where it can be, short-lived
 
 It trusts the machine it runs on, whoever administers it (not someone who only gets hold of that
@@ -45,7 +46,9 @@ see [SECURITY.md](SECURITY.md).
 - Fedora, the current or the previous release (tested on Fedora 44), on a machine with KVM
   (AMD-V/VT-x enabled in the firmware): a home server, or the laptop you work on
 - Enough memory for the VMs you want to run (each VM needs roughly 1 GB on top of
-  what its projects use)
+  what its projects use); for Builds in build VMs 16 GiB in all, with 8 GiB free while a
+  Build runs (below that, Builds run as root on the Host, see
+  [Builds in build VMs](#builds-in-build-vms))
 - Orca on your laptops, and on the Host (`/opt/Orca`) for the Observer, which reads the agents'
   status (the Images take Orca from its GitHub release, not from the Host)
 - A GitHub App you own (see below) and a Claude subscription or API account
@@ -789,6 +792,28 @@ the log and in Activity (kind `build`). Builds run one at a time; `agentbox buil
 (and the Maintenance window on `rebuild_day` of the Settings) builds the Base image first,
 then every other Image on it.
 
+#### Builds in build VMs
+
+What a Build runs (package scriptlets, install scripts, downloads, a Recipe's `RUN` lines) is
+not trusted, so with the Setting `build_vm` on, the default, it runs in two throwaway **build
+VMs** instead of as root on the Host
+([ADR 0025](docs/adr/0025-builds-run-in-a-throwaway-build-vm.md)): the first, with internet
+access but nothing of the Host, your home network or the other VMs to reach, runs `podman
+build`; the Host imports and checks the image it hands out; the second, without any network,
+makes the disk from exactly the image the Host checked. Each starts from Fedora's signed Cloud
+image (fetched and checked by the version check) with new, empty disks and is gone afterwards.
+The daily count of package updates runs in a build VM too. A build VM needs KVM and 8 GiB of
+free memory while it runs, so `sudo agentbox setup` turns `build_vm` off on a Host without KVM
+or with less than 16 GiB of memory, and says so. A Build that cannot start a build VM (no KVM,
+not enough free memory, no checked image even after the version check ran for it) fails with
+that reason; it never falls back to the Host. Steps of such a Build: `build`, `import`, `check`,
+`disk`, `done`.
+
+Turning `build_vm` off is only for root at the Host (`sudo agentbox set-settings
+build_vm=false`); the Control Room can turn it on but not off. While it is off, Builds run as
+root on the Host, and `agentbox status` and the Control Room's System page say so until it is
+on again.
+
 The check verifies, in every Build: npm's global configuration ignores install scripts and
 has `min-release-age` (and npm is at least version 12), uv, pnpm and Bun have the same
 minimum age, Git takes hooks only from the Image and its `pre-push` hook refuses `main` and
@@ -844,7 +869,9 @@ agentbox-versions`) the Host checks what a new Build would
 bring: for the npm tools the version the Build would pick now, from the npm registry (for
 Playwright the pinned one, if set); for Orca the release the Build would take now, from GitHub
 (by the same rule, or the pinned one); for the Base image the number of Fedora package updates for its
-current Build, counted with `dnf check-update` in a container from it. It also pins the
+current Build, counted with `dnf check-update` in a container from it (in a build VM while
+`build_vm` is on; while a Build runs or waits to run, the count is unknown until the next
+check, and a check a Build starts itself keeps the counts before). It also pins the
 digests of the two images a Build takes from quay.io, `quay.io/fedora/fedora-bootc:44` and
 `quay.io/centos-bootc/bootc-image-builder:latest`: a Build never pulls them by their tags.
 bootc-image-builder's is the digest its tag pointed to `package_min_age_days` ago;
@@ -962,6 +989,7 @@ no longer counts; the next change writes the file without both.
 | `auto_update` | true | true, false: Images with an update are built after the version check of the Maintenance window, and once they are done its Reset check moves idle VMs onto the new Build (see [Tool versions](#tool-versions)) |
 | `rebuild_day` | sun | mon…sun, the day the Maintenance window builds every Image; when that day's window did not, the next window does, once |
 | `builds_kept` | 3 | 1–20, Builds kept per Image (from the next Build) |
+| `build_vm` | true | true, false: Builds and the daily package count run in throwaway build VMs (see [Builds in build VMs](#builds-in-build-vms)); false runs them as root on the Host. `agentbox setup` sets it to false on a Host without KVM or 16 GiB of memory. Only `sudo agentbox set-settings build_vm=false` at the Host turns it off, never the Control Room (from the next Build) |
 | `default_memory_mib`, `default_data_disk_gib`, `default_image` | 26624, 300, base | defaults of `create` |
 | `default_container_image_cleanup`, `default_container_image_cleanup_days` | true, 7 | true, false and 1–365: the Container image cleanup a new VM starts with (for new VMs) |
 | `open_web_max_minutes` | 240 | 1–1440, longest Open web |

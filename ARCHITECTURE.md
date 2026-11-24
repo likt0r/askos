@@ -31,8 +31,8 @@ access its work needs, so that what goes wrong in one VM stays in it. It is buil
    the proxy knows malware, phishing and exfiltration destinations (the Watchlist and its
    Feeds), keeps those with strong Signals blocked, raises an Alert and pauses the VM
    ([Detection](#detection)). In the Build of an Image only the package minimum age and the pins
-   stand against such code, and it runs as root on the Host there ([Agent Box's own
-   code](#agent-boxs-own-code)).
+   stand against such code, and it runs in throwaway build VMs there, or as root on the Host
+   while the Setting `build_vm` is off ([Agent Box's own code](#agent-boxs-own-code)).
 5. **Credentials leaked by accident.** A token ends up in a commit, a log, an issue or a web
    page. What a VM holds is narrow and, where it can be, short-lived.
 
@@ -587,7 +587,8 @@ flowchart LR
   for. Its bridge is outside the `abox-*` names of the VM networks' rules. A build VM's start
   defines and starts the network when it is not there and refuses one of that name that is not
   it (another bridge, more than its one IPv4 address `10.77.0.1/24`, no NAT); no VM can be named
-  `build`.
+  `build`. It exists only while the Setting `build_vm` is on: `regenerate` (also after
+  `set-settings`) removes it while it is off, once no Build or count holds the run lock.
 - Containers in a VM are behind the same limits. They run on rootless Podman: `docker` is
   Podman under that name, and `podman compose` and `docker compose` run Docker Compose, which
   builds and starts containers through the agent's Podman socket. `guest-setup` writes the
@@ -1159,9 +1160,8 @@ Host after every Build
   it starts no Build, and the next Build (the weekly rebuild on `rebuild_day`, or an update of
   Orca, the agents or the packages) takes it.
 - **The build VMs' image** (#144, [ADR 0025](docs/adr/0025-builds-run-in-a-throwaway-build-vm.md),
-  `agentbox/build_vm.py`): Builds are to run in throwaway build VMs. The build VMs of a Build
-  boot it (below), behind an internal switch that is off: Builds run on the Host. It is
-  the Fedora Cloud Base
+  `agentbox/build_vm.py`): with the Setting `build_vm` on, Builds run in throwaway build VMs,
+  which boot it (below). It is the Fedora Cloud Base
   Generic qcow2 of the release fedora-bootc's tag names (44), as Fedora publishes and signs it
   with the release under `releases/44/Cloud/x86_64/images/`; nothing is built or changed on
   the Host to make it. Fedora does not update that image during the release, so it is renewed
@@ -1182,9 +1182,12 @@ Host after every Build
   Build.
 - **The build VMs** (#144, [ADR 0025](docs/adr/0025-builds-run-in-a-throwaway-build-vm.md),
   `agentbox/build_vm_run.py`) run a Build instead of the Host: two per Build, one after the
-  other. They are behind an internal switch that is off: only a Build run whose environment says
-  `AGENTBOX_BUILD_VM=1` builds in build VMs (for the Build unit, `systemctl set-environment
-  AGENTBOX_BUILD_VM=1`), until the Setting `build_vm` replaces it (#144). The first, online, runs
+  other. Builds run in them while the Setting `build_vm` is on, its built-in default
+  ([Settings](#settings)); with it off they run on the Host as described above. A Build run
+  reads it once at its start, like the other Settings it takes, so a change applies from the
+  next run, and its record keeps it (`build_vm`, also in `GET /images`). Turning it off is
+  root's on the CLI only (`sudo agentbox set-settings build_vm=false`): the Control Room shows
+  it and turns it on, never off. The first, online, runs
   `podman build` and hands out an image archive; the Host imports it and checks it; only then the
   second, offline, makes the disk from the image the Host checked, and the Host takes that disk
   only as a new file of its own. Such a Build records the steps `build` (the first build VM),
@@ -1298,9 +1301,37 @@ Host after every Build
     the Build destroys it and stops its virtiofsd before the Build is marked failed: the Build
     unit's `TimeoutStopSec` covers every wait of that teardown and a minute more, so systemd
     does not kill the run first. The next Build run removes whatever a killed run left. A Host
-    without KVM, without a checked image, with less than 8 GiB of memory available or, for the
-    first build VM, without the build network's rules loaded in the kernel (as `nft list chain`
-    shows them) fails the Build: it never falls back to the Host.
+    without KVM (`build_vm_no_kvm`), with less than 8 GiB of memory available
+    (`build_vm_memory`), or, for the first build VM, without the build network's rules loaded in
+    the kernel (as `nft list chain` shows them), or one where libvirt refuses the VM, fails the
+    Build with that reason, its code in the Build's Activity entry: it never falls back to the
+    Host. A run with `build_vm` on that finds no checked image first runs the version check, as
+    for a missing pin, and fails at the step `pins` (`build_vm_no_image`) when there is still
+    none.
+  - **The package count**: with `build_vm` on, the version check's daily count of Fedora package
+    updates runs in a build VM of its own, never on the Host: online like the first build VM of
+    a Build, with the Image's current Build handed in under its own name, it runs `dnf -q
+    check-update` in a container from it as the Host would (no capabilities, `no-new-privileges`,
+    a read-only root) and hands out what dnf wrote, `check-update.txt` (at most 1 MiB, in an
+    output filesystem of 256 MiB), which the Host counts as it counts dnf's output on the Host;
+    the VM's limit is 15 minutes. The count takes the Build run lock without waiting, so only
+    one build VM runs at a time: while a Build runs, the count is unknown for that check. Every
+    Build run holds the lock `build-wanted` shared while it waits for the run lock, taken before
+    it blocks, and lets it go once it holds the run lock; the kernel drops it with a run stopped
+    or killed while it waits, so no claim outlives its Build. While any Build run waits, the check
+    starts no count (the rest are unknown for that check), and a count that sees one (between the
+    steps of its preparation, every 2 seconds while skopeo hands in the image or the input disk
+    is written, and while its VM runs) stops, ends its VM and leaves the count unknown, so a
+    count holds up a Build for no longer than a step of seconds (copying the 0.6 GB image, a
+    qemu-img, mkfs.ext4 or the seed) and its teardown. While the count holds the run lock it
+    holds the lock `build-count` too, so the Maintenance window and the removal of a Recipe do
+    not take it for a Build. The version check a Build run starts itself, holding the lock (a
+    missing pin or build VM image), counts nothing and keeps the counts of the check before.
+  - **The network** `agentbox-build` exists only while `build_vm` is on: a build VM's start
+    defines and starts it when it is not there, and `regenerate` (also after `set-settings`)
+    removes it while `build_vm` is off, but not while the run lock is held (a Build or a count may
+    still use it; the next `regenerate` removes it). It is best effort: when libvirt fails there,
+    `set-settings` and `regenerate` say so and fail nothing, and the next one tries again.
 - What the Base image downloads, it downloads inside the Build container, where Fedora's
   packages, the npm tools and Orca are chosen, fetched and checked; no root process on the
   Host parses what the internet answers (#113). Orca comes from its GitHub release
@@ -1496,12 +1527,14 @@ Host after every Build
     compose of the same release signed with the same key (its Beta's, say), and root would take
     it like the released one. It adds, for each Image
     whose current Build's container image is kept (the Base image), the Fedora package updates
-    counted with `dnf check-update` in a container from that Build (podman, out to the Fedora
-    mirrors), named `agentbox-check-<image>`, with no capabilities, `no-new-privileges` and a
-    read-only root, and ended after five minutes. It alone writes
-    `/var/lib/agentbox/versions.json`, in one rename. The count takes no lock a Build waits
-    for: a Build removes container images with `podman rmi --force`, which ends a count still
-    running from one, and that count is then unknown. Checks run one at a time.
+    counted with `dnf check-update` in a container from that Build: with `build_vm` on in a
+    build VM of its own ([Images and Builds](#images-and-builds), "The package count"), which
+    takes the Build run lock without waiting and gives way to a Build; with it off on the Host
+    (podman, out to the Fedora mirrors), named `agentbox-check-<image>`, with no capabilities,
+    `no-new-privileges` and a read-only root, and ended after five minutes. It alone writes
+    `/var/lib/agentbox/versions.json`, in one rename. The count on the Host takes no lock a
+    Build waits for: a Build removes container images with `podman rmi --force`, which ends a
+    count still running from one, and that count is then unknown. Checks run one at a time.
   Whatever fails stays unknown (`null`), is said once on stderr and never blocks a Build or a
   Reset; the check records no Activity of its own, only the start of an automatic update
   (below).
@@ -1813,11 +1846,24 @@ Maintenance window (`rebuild_day`; its Reset check
 applies it before a page shows, likewise `browser`; a file agentbox refuses stops the Control
 Room instead of giving it the defaults, which can be wider than what the owner set, see
 Control Room), the Builds
-(`package_min_age_days`, `orca_version`, `playwright_version`, `builds_kept`) and temporary
-Allowlist entries
+(`package_min_age_days`, `orca_version`, `playwright_version`, `builds_kept`, `build_vm`), the
+version check's package count (`build_vm`), `agentbox status` and the `services` event
+(`build_vm`) and temporary Allowlist entries
 (`temporary_entry_default`). The Control Room API (`GET`/`PATCH /api/v1/settings`) passes every change to `agentbox set-settings`, accepts
 only the known keys, and so cannot change the password, the home network or the ports, which
-are not Settings. Changing Settings is recorded in Activity as kind `settings`. A
+are not Settings.
+`build_vm` (on by default, [ADR 0025](docs/adr/0025-builds-run-in-a-throwaway-build-vm.md)):
+Builds and the version check's package count run in throwaway build VMs
+([Images and Builds](#images-and-builds)); off, as root on the Host. `agentbox setup` writes it
+off on a Host without KVM or with less than 16 GiB of memory, while no value is stored
+([Setting a Host up](#setting-a-host-up)). Only root on the CLI turns it off: the Control Room
+may turn it on, but its `PATCH` refuses `false` (`409 setting_cli_only`), and `agentbox
+set-settings` itself refuses it when the Control Room's sudo rule calls it, so a stolen session
+cannot make the next Build, a Recipe's included, run as root on the Host. While it is off,
+`agentbox status` (`host_warnings` with `--json`, and in text after the table) and the
+`services` event's `warnings` carry `builds_on_host`, and the Control Room's System page shows
+a lasting notice that Builds run as root on the Host, with the command that turns the build VMs
+on; it goes only when the Setting is on. Changing Settings is recorded in Activity as kind `settings`. A
 `settings.json` that still holds `reset_time` (from before the Maintenance window) reads as
 `maintenance_time` two hours before it, when the version check ran, and `rebuild_time` is
 ignored; the next write leaves both out, and `set-settings` refuses them as unknown.
@@ -1956,30 +2002,37 @@ certificate name, owner user) and does the Host steps, in this order
    started.
 9. **Container image cleanup**: `agentbox-container-image-cleanup.timer` enabled and started.
 10. **Pause on Alerts**: `agentbox-alert-watch.service` enabled and started (see Detection).
-11. **`agentbox migrate`** and **`agentbox migrate-allowlist`**.
-12. **Certificate and password** of the Control Room: the certificate unless there is one; the
+11. **Build VMs**: while the Settings hold no `build_vm`, a Host without KVM (`/dev/kvm`) or
+    with less than 16 GiB of memory (`MemTotal` below 15 GiB: a machine of 16 GiB shows less,
+    what firmware and the kernel keep; also when it cannot be read) gets `build_vm: false`
+    written, and setup says why and that Builds run as root on the Host; any other Host keeps
+    the built-in default, on, and setup changes nothing. A stored value is never changed; a
+    stored off is a warning on every run (see [Settings](#settings)). Before `regenerate`, which removes the
+    build VMs' network while it is off.
+12. **`agentbox migrate`** and **`agentbox migrate-allowlist`**.
+13. **Certificate and password** of the Control Room: the certificate unless there is one; the
     password, a new one only with `--new-password` (see below).
-13. **Firewall for the home network**: in Network mode the rules of the Control Room's, the
+14. **Firewall for the home network**: in Network mode the rules of the Control Room's, the
     Orca and the SSH ports, before any of them listens on every address; none in Local-only.
     Every rule it adds and every rule of a Host setup `--force` replaces that the new one does
-    not have is noted under `/var/lib/agentbox/pending` for step 20, before the firewall changes.
-14. **`regenerate`**: the Host setup written, then the VMs' networks, units, disks and
+    not have is noted under `/var/lib/agentbox/pending` for step 21, before the firewall changes.
+15. **`regenerate`**: the Host setup written, then the VMs' networks, units, disks and
     definitions from the VM registry. It loads the VM network rules before it brings up a VM
     network, so steps 5 and 6 and the rules are in place before any VM can start.
-15. **Proxies**, only while there are text lists to migrate (`suspicious-domains`,
+16. **Proxies**, only while there are text lists to migrate (`suspicious-domains`,
     `legitimate-domains`): the running proxies restarted onto the installed code and the units
     `regenerate` loaded. Code from before the records reads only those files and would go on
     without the Host's Watchlist and Legitimate domains once the next step moves them aside.
     A restart that fails stops setup before the lists move.
-16. **`agentbox migrate-lists`**.
-17. **Activity journal**: the namespace's runtime directory owned as journald owns it, its
+17. **`agentbox migrate-lists`**.
+18. **Activity journal**: the namespace's runtime directory owned as journald owns it, its
     running sockets with group and mode of the drop-in, in place; the proxies and the Control
     Room restart when a socket's group changed, and in the next run when that restart failed
     (see Activity).
-18. **Feeds**: the first fetch started at once, while none has run yet.
-19. **Control Room**: `agentbox-web.service` enabled and started; restarted after a new Host
+19. **Feeds**: the first fetch started at once, while none has run yet.
+20. **Control Room**: `agentbox-web.service` enabled and started; restarted after a new Host
     setup, also by the run that goes on after one that stopped before this step.
-20. **Firewall rules taken back**: every rule step 13 noted that the recorded Host setup does
+21. **Firewall rules taken back**: every rule step 14 noted that the recorded Host setup does
     not need is removed, only now that `regenerate` has moved the Orca and SSH port sockets and
     the Control Room has restarted, so on a switch to Local-only no port listens on every
     address without its rules. A run that stops before leaves them in place, and running setup
@@ -2039,7 +2092,9 @@ need not be there or belong to another Release.
 The Host's records and state stay where they are: `/etc/agentbox` (`CONF`) and
 `/var/lib/agentbox` (`STATE`); the build VMs' image, their disks and output directories lie in
 `/var/lib/agentbox/build-vm` (`BUILD_VM`, root's, `0711` so that QEMU reaches a build VM's disks,
-nothing listable), their sockets in `/run/agentbox/build-vm`, and the version check reads the
+nothing listable), their sockets in `/run/agentbox/build-vm`, the locks of
+agentbox calls in `/var/lib/agentbox/locks` (among them `build-run`, `build-wanted` and
+`build-count`, see Images and Builds), and the version check reads the
 Host's Fedora keys from
 `/etc/pki/rpm-gpg` (`RPM_GPG`); `agentbox import` keeps its tar file in
 `/var/lib/agentbox/transfers` (`TRANSFERS`) while it is attached to the VM; the Control Room's
@@ -2343,14 +2398,31 @@ laptops.
   download, not a release changed by someone who can write to the repository. The package runs
   as root on the Host. Mitigation: none yet; ADR 0009's signed packages through COPR are to
   follow.
-- **Builds run as root on the Host** (podman, bootc-image-builder) from the installed Release's
+- **What a Build runs** (podman, bootc-image-builder) comes from the installed Release's
   Containerfiles and from Recipes the owner writes ([Images and Builds](#images-and-builds)).
   The [threat model](#threat-model) trusts what these say: branch protection on `main` and
   installing only reviewed code keep agents' branches out of Release Images, and a Recipe is the
   owner's reviewed input, not an agent's. What a stolen Control Room session builds is under
   [The Host](#the-host). The code a Build runs is not trusted (package scriptlets, downloads,
-  install scripts): it runs in a rootful container on the Host, with the internet open and no
-  Allowlist, and a container escape there is root on the Host, which ADR 0002 keeps agents away
+  install scripts), and it runs with the internet open and no Allowlist.
+  **With `build_vm` on** (the default, [ADR 0025](docs/adr/0025-builds-run-in-a-throwaway-build-vm.md)),
+  it runs in throwaway build VMs behind KVM, as agents do: `podman build` in an online one with
+  nothing of the Host, the home network or the VMs to reach, the disk step, the Image's
+  `bootupctl` included, in an offline one, each started from the checked Fedora Cloud image with
+  new, empty disks; the version check's package count runs in one too. What root runs on what
+  they hand out are parsers: skopeo and containers/storage importing the image (in a network
+  namespace of its own, from the files root checked and took out of the archive), `podman image
+  mount` and the Safeguard check, and qemu-img reading the disk's header, bounded; qemu-img
+  rewrites the disk as `agentbox-buildvm`, without network. Root on the Host a Build then
+  reaches only through an escape from KVM and QEMU, through virtiofsd (sandboxed, as
+  `agentbox-buildvm`) or through a flaw in those parsers. It still reaches the Image it makes
+  and so the VMs reset onto it (behind their Allowlists), and the online build VM can send out
+  what it holds: the Release's files, the Recipe, the images handed in, no credential. A stolen
+  Control Room session cannot turn `build_vm` off.
+  **With `build_vm` off** (setup's choice on a Host without KVM or 16 GiB of memory, or root's),
+  Builds run as root on the Host, and `agentbox status` and the System page say so for as long
+  as it is off: the code runs in a rootful container on the Host, and a container escape there
+  is root on the Host, which ADR 0002 keeps agents away
   from by giving them VMs. The disk step goes further: bootc-image-builder runs privileged and
   unconfined. Its buildroot is the pristine fedora-bootc, so the Image's `bootc`, Python and
   filesystem tools no longer run there, but bootc (since 1.13, by design, to install the
@@ -2366,20 +2438,13 @@ laptops.
   (`quay.io/fedora/fedora-bootc:44`, which brings dnf with its repositories and keys) pinned
   on the day its tag moves, with no minimum age. pnpm and Bun have
   no minimum age in a Build (theirs is set for the VM's services and the agent's home), Fedora's
-  packages none at all. A Recipe an agent drafted and the owner saved unread reaches as far.
-  Mitigation: the owner reads a Recipe before saving it; the minimum age where a Build installs
-  through npm or uv, and for Orca and bootc-image-builder; fedora-bootc and bootc-image-builder
-  by digest; the Release's Containerfile pins the JDK and Orca's Node
+  packages none at all; the package count runs `dnf` of the Base Build in a rootful container
+  on the Host. A Recipe an agent drafted and the owner saved unread reaches as far.
+  Mitigation, either way: the owner reads a Recipe before saving it; the minimum age where a
+  Build installs through npm or uv, and for Orca and bootc-image-builder; fedora-bootc and
+  bootc-image-builder by digest; the Release's Containerfile pins the JDK and Orca's Node
   runtime by SHA-256 and cargo-ndk by version, a Recipe what its author pins; Fedora's packages
-  are signed, with the keys that come in the base image. Containing Builds further (build VMs,
-  [ADR 0025](docs/adr/0025-builds-run-in-a-throwaway-build-vm.md)) is #144; so far their image
-  and a Build's two build VMs are in place, behind an internal switch that is off. With it on, a
-  Build's `podman build` and its disk step, the Image's `bootupctl` included, run in build VMs,
-  not on the Host; what root runs on what they hand out are parsers: skopeo and
-  containers/storage importing the image (in a network namespace of its own, from the files root
-  checked and took out of the archive), `podman image mount` and the Safeguard check, and qemu-img
-  reading the disk's header, bounded; qemu-img rewrites the disk as `agentbox-buildvm`, without
-  network. Checking the
+  are signed, with the keys that come in the base image. Checking the build VMs'
   image, root reads the header of a qcow2
   downloaded from Fedora's mirrors with `qemu-img info`, bounded, after the signature and the
   SHA-256 matched; `gpgv` parses the CHECKSUM as `agentbox-gpgv`, unprivileged.

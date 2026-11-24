@@ -111,6 +111,7 @@ export default {
       step: {
         source: 'Quelle kopieren',
         build: 'Bauen',
+        import: 'Importieren',
         check: 'Schutzmaßnahmen prüfen',
         disk: 'Platte erzeugen',
         done: 'Fertig',
@@ -196,11 +197,15 @@ export default {
       waitsForTimer: 'wartet auf Timer',
       startsOnConnection: 'startet bei Verbindung',
       waitsForTrigger: 'wartet auf Auslöser',
-      // was dem Host für seine Wartung fehlt (warnings des services-Ereignisses, nach Code)
+      // was dem Host für seine Wartung und Sicherheit fehlt (warnings des services-Ereignisses, nach Code)
       warnings: {
         maintenance_timer_missing: {
           title: 'Der Timer des Wartungsfensters fehlt',
           description: 'Einmal sudo agentbox regenerate auf dem Host ausführen: Das legt den Timer an. Bis dahin führt ein Host, der von einem früheren Release aktualisiert wurde, das Wartungsfenster mit dem Timer seiner alten Reset-Prüfung aus, zur alten Reset-Zeit.',
+        },
+        builds_on_host: {
+          title: 'Builds laufen als root auf dem Host',
+          description: 'Die Einstellung Build-VMs ist aus: Der Code jedes Builds (Pakete, Installationsskripte, Rezepte) läuft als root auf dem Host, ebenso die tägliche Zählung der Paket-Updates. Build-VMs in den Einstellungen einschalten oder auf dem Host sudo agentbox set-settings build_vm=true ausführen, damit sie in Wegwerf-Build-VMs laufen. Dieser Hinweis bleibt, bis sie an ist.',
         },
       },
     },

@@ -178,6 +178,18 @@ def locked(path):
         os.close(fd)
 
 
+@contextlib.contextmanager
+def shared(path):
+    """A shared hold of the lock of `path` for the block: any number of holders at once; held()
+    sees it. The kernel drops it with the holder, also one killed."""
+    fd = _lock_fd(path)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH)
+        yield
+    finally:
+        os.close(fd)
+
+
 def held(path):
     """Whether another agentbox call holds the lock of `path` (locked()) at this moment;
     never waits for it."""

@@ -213,6 +213,11 @@ export default {
     invalid_argument: 'agentbox refused a value.',
     sudo_failed: 'sudo refused to run agentbox for the Control Room (its sudo rule is missing or does not allow this call).',
     control_room_refused: 'Only the CLI on the Host can do this, not the Control Room.',
+    setting_cli_only: 'Only root on the Host can turn this off (sudo agentbox set-settings build_vm=false), not the Control Room: Builds would then run as root on the Host.',
+    build_vm_no_kvm: 'The Host has no KVM, so no build VM can run. The Build does not fall back to the Host.',
+    build_vm_no_image: 'There is no checked build VM image yet; the version check fetches and checks it.',
+    build_vm_memory: 'Not enough free memory for a build VM: it needs {needed_mib} MiB, the Host has {available_mib} MiB available.',
+    build_vm_memory_unknown: 'Not enough free memory for a build VM: it needs {needed_mib} MiB, and the Host\'s free memory cannot be read.',
     action_failed: 'agentbox reported an error.',
     // only in Activity: a command that was interrupted, or ended on an error of agentbox itself
     interrupted: 'Interrupted.',

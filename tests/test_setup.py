@@ -191,6 +191,11 @@ class SetupTest(RegistryTest):
         for name in SEEDS:
             shutil.copy(os.path.join(REPO, "proxy", name), self.path("usr/share/agentbox/lists"))
         os.makedirs(self.path("etc/sysconfig"))
+        # a Host for build VMs: KVM and 32 GiB of memory (BuildVmStepTest takes them away)
+        for folder in ("dev", "proc"):
+            os.makedirs(self.path(folder), exist_ok=True)
+        self.write("dev/kvm", "")
+        self.write("proc/meminfo", "MemTotal:       32768000 kB\nMemAvailable:   30000000 kB\n")
         self.password_file = os.path.join(self.dir, "password")
         with open(self.password_file, "w") as f:
             f.write(PASSWORD + "\n")
@@ -703,6 +708,71 @@ def entries(*items):
     return json.dumps({"entries": list(items)}) + "\n"
 
 
+class BuildVmStepTest(SetupTest):
+    """ADR 0025: build_vm is on by default; setup writes it off on a Host without KVM or with
+    less than 16 GiB of memory, says why, and never changes a stored value."""
+
+    def step(self, out):
+        return [s for s in json.loads(out)["steps"] if s["step"] == "Build VMs"][0]["changes"]
+
+    def stored(self):
+        try:
+            return json.loads(self.read("etc/agentbox/settings.json"))
+        except FileNotFoundError:
+            return None
+
+    def test_a_host_with_kvm_and_16_gib_keeps_the_default(self):
+        # a 16 GiB machine: MemTotal is less than 16 GiB
+        self.write("proc/meminfo", "MemTotal:       16099652 kB\nMemAvailable:   14000000 kB\n")
+        out = self.ok("--password-file", self.password_file, "--json")
+        self.assertEqual(self.step(out), [])
+        self.assertEqual(json.loads(out)["warnings"], [])
+        self.assertIsNone(self.stored())
+        code, out, err = self.run_agentbox("settings", "--json")
+        self.assertEqual(json.loads(out)["settings"]["build_vm"]["value"], True)
+        # no notice that Builds run on the Host
+        code, out, err = self.run_agentbox("status", "--json")
+        self.assertNotIn("host_warnings", json.loads(out))
+
+    def test_too_little_memory_or_no_kvm_writes_it_off_and_says_why(self):
+        for case, said in (("memory", "the Host has 11.4 GiB of memory, build VMs need a Host of 16 GiB"),
+                           ("kvm", "the Host has no KVM (/dev/kvm)"),
+                           ("unknown", "the Host's memory cannot be read (/proc/meminfo)")):
+            with self.subTest(case=case):
+                if self.stored() is not None:
+                    os.remove(self.path("etc/agentbox/settings.json"))
+                self.write("dev/kvm", "")
+                self.write("proc/meminfo", "MemTotal:       12000000 kB\n" if case == "memory"
+                           else "MemTotal:       32768000 kB\n")
+                if case == "kvm":
+                    os.remove(self.path("dev/kvm"))
+                if case == "unknown":
+                    os.remove(self.path("proc/meminfo"))
+                # the first run sets the Host up; the others bring it up to date
+                first = not os.path.exists(self.path("etc/agentbox/host.json"))
+                out = self.ok(*(["--password-file", self.password_file] if first else []), "--json")
+                self.assertEqual(self.step(out), [f"build_vm set to false: {said}; Builds run as root on the Host"])
+                self.assertEqual(self.stored(), {"build_vm": False})
+                # agentbox status and the Control Room's System page say so
+                code, out, err = self.run_agentbox("status", "--json")
+                self.assertEqual([w["code"] for w in json.loads(out)["host_warnings"]], ["builds_on_host"])
+
+    def test_a_stored_value_is_never_changed(self):
+        os.remove(self.path("dev/kvm"))         # a Host that could not run them keeps an owner's on, too
+        for stored, warned in ((True, []), (False, ["build_vm is off, as stored: Builds run as root on the Host "
+                                                    "(sudo agentbox set-settings build_vm=true runs them in build "
+                                                    "VMs)"])):
+            with self.subTest(stored=stored):
+                os.makedirs(self.path("etc/agentbox"), exist_ok=True)
+                self.write("etc/agentbox/settings.json", json.dumps({"build_vm": stored}))
+                first = not os.path.exists(self.path("etc/agentbox/host.json"))
+                out = self.ok(*(["--password-file", self.password_file] if first else []), "--json")
+                # it changes nothing, so it reports no change; a stored off warns on every run
+                self.assertEqual(self.step(out), [])
+                self.assertEqual(json.loads(out)["warnings"], warned)
+                self.assertEqual(self.stored(), {"build_vm": stored})
+
+
 class HostStepsTest(SetupTest):
     """The Host steps, done by setup on a Host fresh from the RPM (#102)."""
 
@@ -785,7 +855,8 @@ class HostStepsTest(SetupTest):
         self.assertEqual([s["step"] for s in json.loads(out)["steps"]],
                          ["Self-test of the detection", "Directories", "Groups", "Lists", "Firewall zone libvirt",
                           "Network rules of the VMs", "libvirt-guests", "Expiry of Temporary allowlist entries",
-                          "Container image cleanup", "Pause on Alerts", "migrate", "migrate-allowlist", "Certificate and password", "Firewall for the home network", "regenerate",
+                          "Container image cleanup", "Pause on Alerts", "Build VMs", "migrate", "migrate-allowlist",
+                          "Certificate and password", "Firewall for the home network", "regenerate",
                           "Proxies", "migrate-lists", "Activity journal", "Feeds", "Control Room",
                           "Firewall rules taken back"])
 

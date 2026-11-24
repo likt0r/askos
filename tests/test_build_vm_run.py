@@ -1,8 +1,9 @@
-"""The build VMs of a Build (#144, ADR 0025, agentbox/build_vm_run.py), behind the internal switch
-AGENTBOX_BUILD_VM=1: `podman build` in a throwaway VM, its image archive in an output directory
+"""The build VMs of a Build (#144, ADR 0025, agentbox/build_vm_run.py), while the Setting build_vm
+is on, its default: `podman build` in a throwaway VM, its image archive in an output directory
 and imported by the Host under the Build's name, the Safeguard check, then the disk made by
 bootc-image-builder in a second, offline VM, whose disk.qcow2 the Host checks and rewrites; their
-logs in the Build's journal.
+logs in the Build's journal. The version check's package count in a build VM of its own
+(CountTest), and no fallback to the Host when a build VM cannot run (HostTest).
 
 The real CLI runs build-run as test_images.py does, with fakes on PATH as well for what a
 build VM needs: systemd-run (virtiofsd's unit, fake_systemd_run.py), xorrisofs
@@ -65,7 +66,7 @@ class BuildVmTest(ImagesTest):
     rules loaded; the switch on."""
 
     def setUp(self):
-        self.env = {"AGENTBOX_BUILD_VM": "1", "AGENTBOX_BUILD_VM_MIN_FREE_BYTES": "0",
+        self.env = {"AGENTBOX_BUILD_VM_MIN_FREE_BYTES": "0",
                     "AGENTBOX_BUILD_VM_OUT_BYTES": str(1 << 30), "AGENTBOX_BUILD_VM_DISK_OUT_BYTES": str(2 << 30),
                     "AGENTBOX_BUILD_IMPORT_RESERVE_BYTES": "0", "AGENTBOX_BUILD_DISK_RESERVE_BYTES": "0",
                     "AGENTBOX_BUILD_VM_WATCH_SECONDS": "1", "AGENTBOX_BUILD_VM_END_SECONDS": "10",
@@ -86,6 +87,8 @@ class BuildVmTest(ImagesTest):
         self.write("dev/kvm", "")
         self.write("proc/meminfo", "MemTotal:       33554432 kB\nMemAvailable:   16777216 kB\n")
         self.write("etc/agentbox/vm-input.nft", generate.nft_rules([]))
+        # the Setting build_vm at its built-in default, on (ImagesTest stored it off)
+        os.remove(self.path("etc/agentbox/settings.json"))
 
     def scenario(self, **s):
         s.setdefault("systemctl_active", ["agentbox-vmnet.service"])
@@ -169,19 +172,30 @@ class BuildVmTest(ImagesTest):
         return self.path(f"{BUILD_VM}/out-{ident}")
 
 
-class SwitchTest(BuildVmTest):
-    def test_without_the_switch_builds_run_on_the_host(self):
-        del self.env["AGENTBOX_BUILD_VM"]
+class SettingTest(BuildVmTest):
+    def test_by_default_builds_run_in_build_vms(self):
+        new, _ = self.ok_in_vm()
+        self.assertIs(new["build_vm"], True)
+        self.assertEqual(self.podman("build"), [])
+        self.assertEqual(len(self.guest_podman(verb="build")), 1)
+        self.assertEqual(len(self.calls("create")), 2)        # the build VM, then the disk VM
+
+    def test_with_build_vm_off_builds_run_on_the_host(self):
+        self.ok("set-settings", "build_vm=false")
         self.built()
-        self.assertEqual(self.newest()["status"], "ok")
+        new = self.newest()
+        self.assertEqual((new["status"], new["build_vm"]), ("ok", False))
         self.assertEqual(len(self.podman("build")), 1)
         self.assertEqual([c for c in self.calls() if c["cmd"] in ("create", "systemd-run", "xorrisofs")], [])
         self.assertEqual([c for c in self.calls("skopeo") if c["argv"][0] == "copy"], [])
 
-    def test_the_switch_counts_only_as_1(self):
-        self.env["AGENTBOX_BUILD_VM"] = "yes"
+    def test_the_setting_is_read_at_the_start_of_each_run(self):
+        self.ok("set-settings", "build_vm=false")
         self.built()
-        self.assertEqual(self.calls("create"), [])
+        self.ok("set-settings", "build_vm=true")
+        new, _ = self.ok_in_vm()
+        self.assertIs(new["build_vm"], True)
+        self.assertEqual(len(self.podman("build")), 1)        # only the first, on the Host
 
 
 class BuildInVmTest(BuildVmTest):
@@ -611,6 +625,54 @@ class NetworkTest(BuildVmTest):
         self.in_vm()
         self.assertEqual(self.calls("net-define") + self.calls("net-start"), [])
 
+    def test_the_build_network_exists_only_while_build_vm_is_on(self):
+        self.in_vm()
+        self.forget_calls()
+        out = self.ok("set-settings", "build_vm=false")
+        self.assertIn("network agentbox-build of the build VMs removed (build_vm is off)", out)
+        self.assertEqual([(c["cmd"], c["net"]) for c in self.calls() if c["cmd"] in ("net-destroy", "net-undefine")],
+                         [("net-destroy", "agentbox-build"), ("net-undefine", "agentbox-build")])
+        # every later apply of the Settings (as regenerate) finds it gone
+        self.forget_calls()
+        self.assertNotIn("removed", self.ok("set-settings", "builds_kept=4"))
+        self.assertEqual(self.calls("net-undefine"), [])
+        # a network of that name that is not the build network stays
+        self.scenario(networks={"agentbox-build": {"active": True, "autostart": True,
+                                                   "xml": "<network><name>agentbox-build</name>"
+                                                          "<bridge name='virbr9'/></network>"}})
+        self.assertNotIn("removed", self.ok("set-settings", "builds_kept=5"))
+        self.assertEqual(self.calls("net-undefine"), [])
+
+    def test_the_build_network_stays_while_a_build_vm_may_use_it(self):
+        """Turned off while a Build or a count holds the run lock (it read build_vm on): the
+        network stays until the next apply."""
+        self.in_vm()
+        self.forget_calls()
+        import fcntl
+        lock = os.open(self.path("var/lib/agentbox/locks/build-run.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            self.assertNotIn("removed", self.ok("set-settings", "build_vm=false"))
+            self.assertEqual(self.calls("net-destroy") + self.calls("net-undefine"), [])
+        finally:
+            os.close(lock)
+        self.assertIn("network agentbox-build of the build VMs removed", self.ok("set-settings", "builds_kept=4"))
+        self.assertEqual([c["net"] for c in self.calls("net-undefine")], ["agentbox-build"])
+
+    def test_removing_the_build_network_is_best_effort(self):
+        """libvirt failing while build_vm is off fails no set-settings and no regenerate: the
+        Settings are saved, a warning says so, the next apply tries again."""
+        self.in_vm()
+        self.scenario(net_info_fails=True)
+        code, out, err = self.run_agentbox("set-settings", "build_vm=false")
+        self.assertEqual(code, 0, err)
+        self.assertIn("build_vm: true -> false", out)
+        self.assertIn("agentbox: the network agentbox-build of the build VMs was not removed: ", err)
+        self.assertIn("the next regenerate tries again", err)
+        self.assertEqual(json.loads(self.read("etc/agentbox/settings.json"))["build_vm"], False)
+        self.scenario(net_info_fails=False)
+        self.assertIn("network agentbox-build of the build VMs removed", self.ok("set-settings", "builds_kept=4"))
+
     def test_an_existing_build_network_that_is_not_running_is_started(self):
         self.scenario(networks={"agentbox-build": {"active": False, "autostart": False,
                                                    "xml": build_vm_run.network_xml()}})
@@ -712,10 +774,14 @@ class NetworkTest(BuildVmTest):
 
 class HostTest(BuildVmTest):
     def test_without_kvm_a_checked_image_or_enough_memory_no_build_vm_starts(self):
-        for missing, said in (("kvm", "the Host has no KVM (/dev/kvm): no build VM can run"),
-                              ("image", "there is no checked build VM image yet"),
-                              ("memory", "not enough free memory for a build VM: it needs 8 GiB, the Host has "
-                                         "8191 MiB available")):
+        """With build_vm on, a Build never falls back to the Host: it fails with what the Host
+        lacks, in Activity by its stable code."""
+        for missing, said, code, step in (
+                ("kvm", "the Host has no KVM (/dev/kvm): no build VM can run", "build_vm_no_kvm", "build"),
+                ("image", "there is no checked build VM image: the version check could not fetch and check one",
+                 "build_vm_no_image", "pins"),
+                ("memory", "not enough free memory for a build VM: it needs 8 GiB, the Host has 8191 MiB available",
+                 "build_vm_memory", "build")):
             with self.subTest(missing=missing):
                 if missing == "kvm":
                     os.remove(self.path("dev/kvm"))
@@ -726,10 +792,21 @@ class HostTest(BuildVmTest):
                     self.write(f"{BUILD_VM}/image.json", json.dumps({"name": IMAGE_44, "release": "44",
                                                                      "sha256": "0" * 64, "checked": 1}))
                     self.write("proc/meminfo", "MemTotal:       33554432 kB\nMemAvailable:    8387584 kB\n")
-                new, _ = self.in_vm()
+                new, out = self.in_vm()
                 self.assertTrue(new["error"].startswith(said), new["error"])
+                self.assertEqual((new["status"], new["step"]), ("failed", step))
+                entry = self.activity()[-1]
+                self.assertEqual((entry["AGENTBOX_ACTION"], entry["AGENTBOX_ERROR"]), ("build.failed", code))
                 self.assertEqual(self.calls("create") + self.calls("systemd-run") + self.calls("net-define"), [])
                 self.assertEqual(self.podman("build"), [])      # no fallback to the Host
+                if missing == "memory":
+                    self.assertEqual((entry["AGENTBOX_ERROR_PARAM_NEEDED_MIB"],
+                                      entry["AGENTBOX_ERROR_PARAM_AVAILABLE_MIB"]), ("8192", "8191"))
+                if missing == "image":
+                    # without a checked image, the run first runs the version check, as for a missing pin
+                    self.assertIn("== No checked build VM image yet: running the version check first", out)
+                    self.assertIn(["start", "agentbox-versions-fetch.service"],
+                                  [c["argv"] for c in self.calls("systemctl")])
                 time.sleep(1.1)
 
 
@@ -866,7 +943,7 @@ class InterruptionTest(BuildVmTest):
         ident = "out-x-20260101-000000-build"
         self.write(f"{BUILD_VM}/{ident}/system.qcow2", "")         # killed after its run directory went
         self.scenario(vms={f"buildvm-{ident}": {"defined": True, "state": "running"}})
-        del self.env["AGENTBOX_BUILD_VM"]
+        self.ok("set-settings", "build_vm=false")
         out = self.built()
         self.assertEqual(self.leftover(ident), [])
         self.assertEqual([c["dom"] for c in self.calls("destroy")], [f"agentbox-buildvm-{ident}"])
@@ -899,7 +976,7 @@ class InterruptionTest(BuildVmTest):
                     f"{RUN}/{ident}/log.sock", f"{BUILD_VM}/import-base-20260101-000000/oci/index.json"):
             self.write(rel, "")
         self.scenario(vms={f"buildvm-{ident}": {"defined": True, "state": "running"}})
-        del self.env["AGENTBOX_BUILD_VM"]       # whatever the next run does
+        self.ok("set-settings", "build_vm=false")       # whatever the next run does
         out = self.built()
         self.assertEqual(self.leftover(ident), [])
         self.assertIn(f"Removed what the build VM agentbox-buildvm-{ident} left", out)
@@ -1139,10 +1216,10 @@ class DiskVmTest(BuildVmTest):
 class DerivedTest(RecipeTest, BuildVmTest):
     def setUp(self):
         super().setUp()
-        del self.env["AGENTBOX_BUILD_VM"]
+        self.ok("set-settings", "build_vm=false")
         self.built()
         self.base = self.newest()["build"]
-        self.env["AGENTBOX_BUILD_VM"] = "1"
+        self.ok("set-settings", "build_vm=true")
         self.forget_calls()
 
     def test_a_recipe_goes_in_as_its_tar_unchanged_and_builds_on_the_base_build(self):
@@ -1329,6 +1406,239 @@ class RealQemuImgTest(unittest.TestCase):
         # qemu-img ignores SIGXFSZ: its write fails with EFBIG, "File too large"
         self.assertEqual(problem, f"it would be larger than {1 << 20} bytes")
         self.assertLessEqual(os.path.getsize(out) if os.path.exists(out) else 0, 1 << 20)
+
+
+class CountTest(BuildVmTest):
+    """The version check's package count in a build VM of its own while build_vm is on (ADR 0025,
+    owner decision 3), never as a container on the Host; it takes the run lock without waiting
+    and gives way to a Build."""
+    LIST = ("kernel.x86_64   6.18.1-200.fc44   updates\nbash.x86_64   5.3.1-1.fc44   updates\n"
+            "Obsoleting packages\nold.x86_64   1-1.fc44   updates\n")
+
+    def setUp(self):
+        super().setUp()
+        self.base = self.ok_in_vm()[0]["build"]      # the current Base Build keeps its container image
+        self.ok("set-settings", "auto_update=false")
+        self.count_id = f"base-{self.base}-count"
+        self.forget_calls()
+
+    def counted(self, answer):
+        self.scenario(count_vm={"podman": {"check_update": {"localhost/agentbox/base:": answer}}})
+
+    def check(self):
+        code, out, err = self.run_agentbox("check-versions")
+        self.assertEqual(code, 0, err)
+        return json.loads(self.read("var/lib/agentbox/versions.json"))["packages"]["base"], out + err
+
+    def check_in_background(self):
+        p = subprocess.Popen([AGENTBOX, "check-versions"], env=self.environment(), stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, text=True)
+        self.addCleanup(lambda: p.poll() is None and p.kill())
+        return p
+
+    def test_the_count_runs_in_a_build_vm_never_on_the_host(self):
+        self.counted({"exit": 100, "stdout": self.LIST})
+        packages, out = self.check()
+        self.assertEqual(packages, {"build": self.base, "updates": 2, "error": None})
+        self.assertEqual([c for c in self.podman("run") if "dnf" in c["argv"]], [])
+        self.assertEqual(self.creates(), [f"agentbox-buildvm-{self.count_id}"])
+        # online, on the build network, with the Base Build handed in under its own name
+        self.assertEqual(self.options(self.vm_args("count"), "--network"),
+                         ["network=agentbox-build,mac=52:54:00:77:00:02,model=virtio"])
+        self.assertEqual([c["argv"][2:4] for c in self.calls("skopeo") if c["argv"][0] == "copy"][0][0],
+                         f"containers-storage:localhost/agentbox/base:{self.base}")
+        argv = self.guest_podman(build=self.base, verb="run", step="count")[0]
+        self.assertEqual(argv[-4:], [f"localhost/agentbox/base:{self.base}", "dnf", "-q", "check-update"])
+        for flag in ("--pull=never", "--cap-drop=all", "--security-opt=no-new-privileges", "--read-only"):
+            self.assertIn(flag, argv)
+        self.assertIn(f"Package updates for base-{self.base}: 2", out)
+        self.assertEqual(self.leftover(self.count_id), [])
+
+    def test_no_updates_and_a_failing_dnf(self):
+        for answer, updates, error in (({"exit": 0}, 0, None),
+                                       ({"exit": 1, "stderr": "Error: Failed to download metadata\n"}, None,
+                                        "in the build VM: dnf check-update failed (exit 1): Error: Failed to "
+                                        "download metadata")):
+            with self.subTest(answer=answer):
+                self.counted(answer)
+                # the fake VM's own root of the count before (a real one starts from new disks)
+                shutil.rmtree(self.guest(build=self.base, step="count"), ignore_errors=True)
+                packages, _ = self.check()
+                self.assertEqual((packages["updates"], packages["error"]), (updates, error))
+                self.assertEqual(self.leftover(self.count_id), [])
+
+    def test_while_a_build_runs_the_count_is_unknown_and_never_waits(self):
+        self.counted({"exit": 100, "stdout": self.LIST})
+        lock = os.open(self.path("var/lib/agentbox/locks/build-run.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+        self.addCleanup(os.close, lock)
+        import fcntl
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        started = time.monotonic()
+        packages, _ = self.check()
+        self.assertLess(time.monotonic() - started, 30)
+        self.assertEqual(packages, {"build": self.base, "updates": None,
+                                    "error": "a Build runs: no count in a build VM until the next check"})
+        self.assertEqual(self.creates(), [])
+
+    def test_a_build_that_starts_meanwhile_ends_the_count(self):
+        """A count holds the run lock while its VM runs (one build VM at a time); a Build run that
+        finds it held makes the count give way instead of waiting up to its 15 minutes."""
+        self.counted({"exit": 100, "stdout": self.LIST, "sleep": 60})
+        check = self.check_in_background()
+        deadline = time.monotonic() + 60
+        while f"agentbox-buildvm-{self.count_id}" not in self.creates():
+            self.assertLess(time.monotonic(), deadline, "the count's build VM did not start")
+            time.sleep(0.2)
+        started = time.monotonic()
+        build = self.build_in_background()
+        out = build.communicate(timeout=120)[0]
+        self.assertEqual(build.returncode, 0, out)
+        self.assertLess(time.monotonic() - started, 50)
+        check.communicate(timeout=60)
+        packages = json.loads(self.read("var/lib/agentbox/versions.json"))["packages"]["base"]
+        self.assertEqual(packages["error"], "a Build wants to run: the count gives way to it")
+        self.assertEqual(self.leftover(self.count_id), [])
+        self.assertEqual(self.waiters(), 0)          # the Build let its claim go once it held the lock
+
+    def lock(self, name, kind):
+        """agentbox's lock `name` (state_files: var/lib/agentbox/locks/<name>.lock) taken by the
+        test as another process would: the open file, to close."""
+        import fcntl
+        os.makedirs(self.path("var/lib/agentbox/locks"), exist_ok=True)
+        fd = os.open(self.path(f"var/lib/agentbox/locks/{name}.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, kind)
+        return fd
+
+    def waiters(self):
+        """How many hold the want lock shared (/proc/locks): Build runs waiting for the run lock."""
+        try:
+            inode = os.stat(self.path("var/lib/agentbox/locks/build-wanted.lock")).st_ino
+        except FileNotFoundError:
+            return 0
+        with open("/proc/locks") as f:
+            return sum(1 for line in f if line.split()[1:4] == ["FLOCK", "ADVISORY", "READ"]
+                       and line.split()[5].rsplit(":", 1)[-1] == str(inode))
+
+    def wait_for_waiters(self, n):
+        deadline = time.monotonic() + 60
+        while self.waiters() != n:
+            self.assertLess(time.monotonic(), deadline, f"not {n} Build runs waiting for the run lock")
+            time.sleep(0.1)
+
+    def test_while_any_build_waits_no_count_starts_and_a_killed_waiter_leaves_no_claim(self):
+        """Every Build run waiting for the run lock holds the want lock shared; the kernel drops
+        it when the run ends, however it ends. While any waits, no count starts."""
+        import fcntl
+        self.counted({"exit": 100, "stdout": self.LIST})
+        run = self.lock("build-run", fcntl.LOCK_EX)          # a Build that runs long
+        try:
+            first, second = self.build_in_background(), self.build_in_background()
+            self.wait_for_waiters(2)
+            gave_way = {"build": self.base, "updates": None, "error": "a Build wants to run: the count gives way to it"}
+            self.assertEqual(self.check()[0], gave_way)
+            # stopped (systemctl stop: SIGTERM) while it waits: the other still claims the lock
+            first.send_signal(signal.SIGTERM)
+            first.wait(timeout=30)
+            self.wait_for_waiters(1)
+            self.assertEqual(self.check()[0], gave_way)
+            # killed: nothing of its claim is left, only the lock's holder keeps the count away
+            second.kill()
+            second.wait(timeout=30)
+            self.wait_for_waiters(0)
+            self.assertEqual(self.check()[0]["error"], "a Build runs: no count in a build VM until the next check")
+        finally:
+            os.close(run)
+        self.assertEqual(self.creates(), [])
+        self.assertEqual(self.check()[0]["updates"], 2)
+
+    def test_a_build_run_claims_the_lock_before_it_blocks_on_it(self):
+        """Even when the lock looks free: a count could take it between a look and the wait."""
+        import contextlib
+        from unittest import mock
+        from agentbox import paths, state_files
+        seen = []
+
+        class Blocked(Exception):
+            pass
+
+        @contextlib.contextmanager
+        def locked(path):
+            seen.append((path, state_files.held(build_vm_run.WANT)))
+            raise Blocked
+            yield
+        with mock.patch.object(paths, "STATE", self.dir), mock.patch.object(state_files, "locked", locked):
+            with self.assertRaises(Blocked):
+                images._run("base", "test", lambda line: None)
+            self.assertFalse(state_files.held(build_vm_run.WANT))     # let go when the wait ended
+        self.assertEqual(seen, [(images.RUN_LOCK, True)])
+
+    def test_a_count_gives_way_while_it_still_hands_in_the_image(self):
+        """Handing in the Base Build (skopeo) can take long: a waiting Build ends it at once."""
+        import fcntl
+        self.scenario(skopeo_copy_waits=60, count_vm={"podman": {"check_update": {
+            "localhost/agentbox/base:": {"exit": 100, "stdout": self.LIST}}}})
+        check = self.check_in_background()
+        deadline = time.monotonic() + 60
+        while not [c for c in self.calls("skopeo") if c["argv"][0] == "copy"]:
+            self.assertLess(time.monotonic(), deadline, "the count's skopeo did not start")
+            time.sleep(0.1)
+        want = self.lock("build-wanted", fcntl.LOCK_SH)      # a Build run waits
+        try:
+            started = time.monotonic()
+            check.communicate(timeout=60)
+            self.assertLess(time.monotonic() - started, 20)
+        finally:
+            os.close(want)
+        packages = json.loads(self.read("var/lib/agentbox/versions.json"))["packages"]["base"]
+        self.assertEqual(packages["error"], "a Build wants to run: the count gives way to it")
+        self.assertEqual(self.creates(), [])
+        self.assertEqual(self.leftover(self.count_id), [])
+
+    def test_a_count_holding_the_run_lock_is_no_build(self):
+        """images.building() (the Maintenance window, Recipe removal) means a Build run, not the
+        count, which holds the run lock and the lock build-count."""
+        import fcntl
+        from unittest import mock
+        from agentbox import paths
+        run = self.lock("build-run", fcntl.LOCK_EX)
+        try:
+            with mock.patch.object(paths, "STATE", self.path("var/lib/agentbox")), \
+                    mock.patch.object(paths, "BUILDS", self.path("var/lib/agentbox/builds")), \
+                    mock.patch.object(images.states, "build_running", return_value=False), \
+                    mock.patch.object(images, "available", return_value=[]), \
+                    mock.patch.object(images, "builds", return_value={}), \
+                    mock.patch.object(images, "release_defined", return_value=[]):
+                with mock.patch("agentbox.recipes.names", return_value=[]):
+                    self.assertTrue(images.building())          # a Build run holds it
+                    counting = self.lock("build-count", fcntl.LOCK_EX)
+                    try:
+                        self.assertFalse(images.building())     # the count holds it
+                    finally:
+                        os.close(counting)
+        finally:
+            os.close(run)
+
+    def test_the_check_a_build_runs_itself_keeps_the_counts_before(self):
+        """A Build run without a checked build VM image runs the version check holding the run
+        lock: it counts nothing and leaves the counts of the check before as they were."""
+        self.counted({"exit": 100, "stdout": self.LIST})
+        before, _ = self.check()
+        self.assertEqual(before["updates"], 2)
+        os.remove(self.path(f"{BUILD_VM}/image.json"))
+        self.forget_calls()
+        new, out = self.in_vm()
+        self.assertEqual((new["status"], new["step"], new["build_vm"]), ("failed", "pins", True))
+        self.assertIn("Package updates: not counted while a Build runs; the counts of the check before stay", out)
+        self.assertEqual(json.loads(self.read("var/lib/agentbox/versions.json"))["packages"]["base"], before)
+        self.assertEqual(self.creates(), [])
+
+    def test_with_build_vm_off_the_count_runs_on_the_host(self):
+        self.ok("set-settings", "build_vm=false")
+        self.scenario(check_update={"localhost/agentbox/base:": {"exit": 100, "stdout": self.LIST}})
+        packages, _ = self.check()
+        self.assertEqual(packages["updates"], 2)
+        self.assertEqual(len([c for c in self.podman("run") if "dnf" in c["argv"]]), 1)
+        self.assertEqual(self.creates(), [])
 
 
 if __name__ == "__main__":

@@ -403,6 +403,20 @@ class SnapshotTest(WatchTest):
         open(self.path("etc/systemd/system/agentbox-maintenance.timer"), "w").close()
         self.assertEqual(self.event("services", lambda d: not d["warnings"])["warnings"], [])
 
+    def test_services_say_for_as_long_as_builds_run_on_the_host(self):
+        """ADR 0025: while build_vm is off, the System page's lasting notice."""
+        self.start()
+        self.assertEqual(self.event("services")["warnings"], [])
+        with open(self.path("etc/agentbox/settings.json"), "w") as f:
+            json.dump({"build_vm": False}, f)
+        [warning] = self.event("services", lambda d: d["warnings"])["warnings"]
+        self.assertEqual(warning["code"], "builds_on_host")
+        self.assertIn("Builds run as root on the Host", warning["message"])
+        self.assertIn("sudo agentbox set-settings build_vm=true", warning["message"])
+        with open(self.path("etc/agentbox/settings.json"), "w") as f:
+            json.dump({"build_vm": True}, f)
+        self.assertEqual(self.event("services", lambda d: not d["warnings"])["warnings"], [])
+
     def test_triggers_unknown_when_systemctl_show_fails(self):
         self.scenario(vms={"priv": {"state": "shut off", "managed_save": True}}, systemctl_units=UNITS,
                       systemctl_fails=["show"])

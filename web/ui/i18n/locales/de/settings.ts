@@ -34,6 +34,7 @@ export default {
       auto_update: { label: 'Automatische Updates', help: 'An: in jedem Wartungsfenster prüft der Host, was ein neuer Build bringen würde (neuere Agenten-Werkzeuge, Orca, Fedora-Pakete), und baut jedes Image mit Update; sobald diese Builds fertig sind, setzt das Wartungsfenster untätige VMs auf den neuen Build. Auf einen Build festgelegte VMs bleiben, wie sie sind. Aus: neue Versionen kommen mit dem wöchentlichen Neubau, und VMs bekommen sie bei ihrem Reset nach Alter.' },
       rebuild_day: { label: 'Tag des Neubaus', help: 'Der Wochentag, an dem das Wartungsfenster alle Images aus dem installierten Release neu baut. Hat das Wartungsfenster an diesem Tag nicht neu gebaut (etwa weil der Host aus war), holt das nächste es einmal nach.' },
       builds_kept: { label: 'Aufbewahrte Builds', help: 'Wie viele Builds jedes Images aufbewahrt werden. Builds in Gebrauch werden nie gelöscht.' },
+      build_vm: { label: 'Build-VMs', help: 'An: Jeder Build läuft in zwei Wegwerf-VMs (das Container-Image in einer mit Internetzugang, die Platte in einer ohne Netz), ebenso die tägliche Zählung der Paket-Updates; der Host prüft, was herauskommt. Aus: Sie laufen als root auf dem Host, wo ein bösartiges Paket oder Rezept den ganzen Host erreicht. Ausschalten kann das nur root auf dem Host.', cliOnly: 'Ausschalten geht nur auf dem Host: sudo agentbox set-settings build_vm=false' },
       package_min_age_days: { label: 'Mindestalter von Paketen', help: 'Das Mindestalter von Paketversionen, die in Images installiert werden (npm, pnpm, bun, uv), und des Orca-Release, das ein Build nimmt.' },
       orca_version: { label: 'Orca-Version', help: 'Leer: jeder Build nimmt das neueste Orca-Release, das mindestens so alt ist wie das Mindestalter von Paketen. Eine Version wie 1.4.250 legt dieses Release fest, falls ein neueres Probleme macht.' },
       playwright_version: { label: 'Playwright-Version', help: 'Leer: jeder Build nimmt die neueste Version von Playwright (mit seinem Chromium und Firefox), die mindestens so alt ist wie das Mindestalter von Paketen. Eine Version wie 1.65.1 legt diese Version fest, die ebenso alt sein muss, damit sich das {\'@\'}playwright/test, das ein Projekt festlegt, mit einem Update nicht ändert.' },
@@ -54,6 +55,7 @@ export default {
     },
     later: {
       builds_kept: 'Gilt ab dem nächsten Build.',
+      build_vm: 'Gilt ab dem nächsten Build.',
       package_min_age_days: 'Gilt ab dem nächsten Build.',
       orca_version: 'Gilt ab dem nächsten Build.',
       playwright_version: 'Gilt ab dem nächsten Build.',
@@ -73,6 +75,7 @@ export default {
       young_domain_days: { 7: '7 Tage', 14: '14 Tage', 21: '21 Tage', 28: '28 Tage', 35: '35 Tage' },
       default_language: { browser: 'Sprache des Browsers', en: 'English', de: 'Deutsch' },
       auto_update: { true: 'An', false: 'Aus' },
+      build_vm: { true: 'An', false: 'Aus' },
       alert_action: { pause: 'VM pausieren', none: 'Nichts' },
       default_container_image_cleanup: { true: 'An', false: 'Aus' },
     },

@@ -124,7 +124,8 @@ def _build_view(rec):
             "step": rec.get("step"), "progress": images.progress(rec), "started": times.iso(rec.get("started")),
             "finished": times.iso(rec.get("finished")), "release": rec.get("release"),
             "commit": rec.get("commit"), "base_build": rec.get("base_build"), "error": rec.get("error"),
-            "problems": rec.get("problems") or [], "actor": rec.get("actor"), "unit": rec.get("unit")}
+            "problems": rec.get("problems") or [], "actor": rec.get("actor"), "unit": rec.get("unit"),
+            "build_vm": rec.get("build_vm")}
 
 
 class Poller:

@@ -406,6 +406,31 @@ class CheckTest(VersionsTest):
         self.assertIn(["rmi", "--force", "--ignore", f"localhost/agentbox/base:{old}"],
                       [c["argv"] for c in self.podman("rmi")])
 
+    def test_a_check_killed_during_the_count_keeps_everything_but_the_counts(self):
+        self.built()
+        self.check()
+        before = self.record()
+        counted = before["packages"]
+        self.assertEqual(counted["base"]["updates"], 0)
+        time.sleep(1.1)             # the record of this check is told by its time
+        self.forget_calls()
+        self.scenario(check_update={"localhost/agentbox/base:": {"exit": 100, "stdout": "a.x86_64 1-1 updates\n",
+                                                                 "sleep": 30}})
+        check = subprocess.Popen([AGENTBOX, "check-versions"], env=self.env(), stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: check.poll() is None and check.kill())
+        deadline = time.monotonic() + 30
+        while not any("dnf" in c["argv"] for c in self.podman("run")):
+            self.assertLess(time.monotonic(), deadline, "the count did not start")
+            time.sleep(0.05)
+        check.kill()                # the service's time ran out, or it was killed, during the count
+        check.communicate(timeout=30)
+        rec = self.record()
+        self.assertGreater(rec["checked"], before["checked"])
+        self.assertEqual(rec["npm"], before["npm"])
+        self.assertEqual(rec["digests"], before["digests"])
+        self.assertEqual(rec["packages"], counted)      # the counts of the check before stay
+
     def test_a_count_that_takes_too_long_is_ended(self):
         self.built()
         self.scenario(check_update={"localhost/agentbox/base:": {"exit": 0, "sleep": 30}})

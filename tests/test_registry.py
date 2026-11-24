@@ -712,7 +712,8 @@ class RegenerateTest(RegistryTest):
         self.forget_calls()
         result = self.json("regenerate")
         self.assertEqual(result, {"vms": {"work": [], "priv": []}, "firewall": False, "ssh_rules": 0,
-                                  "storage": False, "retention": None, "timers": False, "zone": []})
+                                  "storage": False, "retention": None, "timers": False, "build_network_removed": False,
+                                  "zone": []})
         self.assertEqual(self.snapshot(), before)
         changing = [c for c in self.calls() if c["cmd"] in ("define", "net-define", "net-autostart", "net-start")
                     or c["cmd"] == "qemu-img" and c["argv"][0] == "create"
@@ -727,8 +728,9 @@ class RegenerateTest(RegistryTest):
                                           for vm in ("work", "priv")}, "firewall": True, "ssh_rules": 3,
                                   "storage": True,
                                   "retention": 90, "timers": True,
-                                  "zone": ["port 53/udp open", "port 53/tcp open", "port 443/tcp open", "port 9100/tcp open",
-                                           "port 9101/tcp open", "service ssh removed"]})
+                                  "build_network_removed": False,
+                                  "zone": ["port 53/udp open", "port 53/tcp open", "port 443/tcp open",
+                                           "port 9100/tcp open", "port 9101/tcp open", "service ssh removed"]})
 
     def test_new_vm_keeps_the_uuid_from_its_first_definition(self):
         vm_records.write(self.root, record("lab", 3))
@@ -748,7 +750,7 @@ class RegenerateTest(RegistryTest):
         vm_records.write(self.root, record("priv", 2, memory_mib=16384))
         self.assertEqual(self.json("regenerate"), {"vms": {"work": [], "priv": ["domain"]}, "firewall": False,
                                                    "ssh_rules": 0, "storage": False, "retention": None,
-                                                   "timers": False, "zone": []})
+                                                   "timers": False, "build_network_removed": False, "zone": []})
         self.assertEqual([c["dom"] for c in self.calls("define")], ["agentbox-priv"])
         self.assertIn("16384", self.virt_install("priv"))
 

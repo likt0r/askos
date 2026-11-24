@@ -111,6 +111,7 @@ export default {
       step: {
         source: 'Copy source',
         build: 'Build',
+        import: 'Import',
         check: 'Check safeguards',
         disk: 'Make disk',
         done: 'Done',
@@ -196,11 +197,15 @@ export default {
       waitsForTimer: 'waits for its timer',
       startsOnConnection: 'starts on connection',
       waitsForTrigger: 'waits for its trigger',
-      // what the Host lacks for its maintenance (warnings of the services event, by code)
+      // what the Host lacks for its maintenance and safety (warnings of the services event, by code)
       warnings: {
         maintenance_timer_missing: {
           title: 'The timer of the Maintenance window is missing',
           description: 'Run sudo agentbox regenerate on the Host once: it creates the timer. Until then, a Host updated from an earlier Release runs the Maintenance window with the timer of its old Reset check, at the old Reset time.',
+        },
+        builds_on_host: {
+          title: 'Builds run as root on the Host',
+          description: 'The setting Build VMs is off: the code of every Build (packages, install scripts, Recipes) runs as root on the Host, and the daily package count does too. Turn Build VMs on in the Settings, or run sudo agentbox set-settings build_vm=true on the Host, to run them in throwaway build VMs. This notice stays until it is on.',
         },
       },
     },

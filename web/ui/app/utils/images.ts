@@ -69,6 +69,8 @@ export interface Build {
   base_build: string | null
   /** the SHA-256 of the Recipe tar the Build came from; null for an Image of the Release */
   recipe_sha256?: string | null
+  /** whether it ran in build VMs (the Setting build_vm, ADR 0025); null: a run that failed at `source` because it could not read the Settings */
+  build_vm?: boolean | null
   package_min_age_days?: number | null
   /** the Orca version pinned when the Build was made; null: the newest old enough */
   orca_version?: string | null
@@ -104,7 +106,7 @@ export interface Image {
   recipe?: boolean
   current: string | null
   vms: string[]
-  running: { build: string, step: string | null, progress?: BuildProgress | null, started: string | null } | null
+  running: { build: string, step: string | null, progress?: BuildProgress | null, build_vm?: boolean | null, started: string | null } | null
   builds: Build[]
   /** Fedora package updates available for the current Build; null: not counted */
   package_updates?: number | null
@@ -227,8 +229,15 @@ export interface BuildLog {
   problems?: string[]
 }
 
-/** The steps of a Build in order (the `step` field of a running Build). */
-export const BUILD_STEPS = ['source', 'build', 'check', 'disk', 'done'] as const
+/** The steps of a Build in order (the `step` field of a running Build); `import` (the Host takes
+ * the first build VM's image archive) only in build VMs (ADR 0025). */
+export const BUILD_STEPS = ['source', 'build', 'import', 'check', 'disk', 'done'] as const
+
+/** The steps a Build goes through: without `import` when it runs on the Host (build_vm false);
+ * with it when it runs in build VMs or that is not known. */
+export function buildSteps(buildVm?: boolean | null): readonly string[] {
+  return buildVm === false ? BUILD_STEPS.filter(s => s !== 'import') : BUILD_STEPS
+}
 
 /** lines of a Build log kept in the page (the Log tab's journal limit is vmRules' MAX_LOG_LINES) */
 export const MAX_BUILD_LOG_LINES = 2000
@@ -236,8 +245,8 @@ export const MAX_BUILD_LOG_LINES = 2000
 export const buildRunning = (b: { status: BuildStatus }) => b.status === 'running'
 export const buildBad = (b: { status: BuildStatus }) => b.status === 'failed' || b.status === 'rejected'
 
-export function stepIndex(step: string | null | undefined): number {
-  return step ? (BUILD_STEPS as readonly string[]).indexOf(step) : -1
+export function stepIndex(step: string | null | undefined, buildVm?: boolean | null): number {
+  return step ? buildSteps(buildVm).indexOf(step) : -1
 }
 
 /** The bar of a running Build in its step `build` (#183): podman's step n of m, as a percentage
@@ -275,12 +284,13 @@ export function applyBuild(overview: ImagesOverview, event: BuildEvent): ImagesO
     problems: event.problems ?? [],
     actor: event.actor ?? null,
     unit: event.unit ?? null,
+    build_vm: event.build_vm ?? old?.build_vm ?? null,
   }
   const builds = old
     ? image.builds.map(b => (b.build === event.build ? merged : b))
     : [merged, ...image.builds].sort((a, b) => b.build.localeCompare(a.build))
   const running = event.status === 'running'
-    ? { build: event.build, step: event.step ?? null, progress: event.progress ?? null, started: event.started ?? null }
+    ? { build: event.build, step: event.step ?? null, progress: event.progress ?? null, build_vm: merged.build_vm, started: event.started ?? null }
     : image.running?.build === event.build ? null : image.running
   const next = { ...image, builds, running }
   return { ...overview, images: overview.images.map((i, n) => (n === at ? next : i)) }

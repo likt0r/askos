@@ -18,6 +18,8 @@ _Amended by [ADR 0018](0018-recipes-define-images-on-the-host.md) (2026-11-16):_
 
 _Amended by [ADR 0019](0019-the-host-and-what-its-owner-writes-are-trusted.md) (2026-11-18):_ what the owner writes into an Image is trusted; the code a Build runs is not. The check is written against mistakes and convenient edits that weaken a Safeguard, and against what code in a VM can change at runtime; an Image its author made to get past it is outside the threat model. Reading the Image stays safe against any Image, since code in a Build can craft any file: links only inside it, regular files only, a bounded size of each file parsed.
 
+_Amended by [ADR 0025](0025-builds-run-in-a-throwaway-build-vm.md) (#144, 2026-11-24):_ with the Setting `build_vm` on, its default, the Build runs in a throwaway build VM and the check reads the image the Host imported from it (`podman image mount`, as before), before the disk is made in a second, offline build VM from exactly that image. The check is unchanged, the comparison of a derived Image with the Base Build in the Host's storage included; it still runs nothing from the Image.
+
 ## Considered Options
 
 - Running a check script inside the built Image: rejected, the Image decides what that script, its interpreter and its tools do.

@@ -16,6 +16,9 @@ const spec = computed(() => SETTING_SPECS[props.name])
 const id = computed(() => `setting-${props.name}`)
 const changed = computed(() => settingChanged(props.name, props.modelValue, props.info))
 const atDefault = computed(() => props.modelValue.trim() === String(props.info.default))
+// a Setting the Control Room turns on but never off (build_vm), while it is on: how to turn it off
+const onOnly = computed(() => ON_ONLY.includes(props.name) && props.info.value !== false
+  && te(`settings.fields.${props.name}.cliOnly`))
 const label = computed(() => te(`settings.fields.${props.name}.label`) ? t(`settings.fields.${props.name}.label`) : props.name)
 const help = computed(() => te(`settings.fields.${props.name}.help`) ? t(`settings.fields.${props.name}.help`) : '')
 // the API's own text (English) only for a key this UI does not know
@@ -73,21 +76,25 @@ const hint = computed(() => {
       </p>
     </div>
     <div class="flex min-w-0 flex-col gap-1">
-      <select
-        v-if="spec?.type === 'choice'"
-        :id="id"
-        :value="modelValue"
-        class="w-full rounded-md border bg-default px-2.5 py-1.5 text-sm text-highlighted focus-visible:outline-2 focus-visible:outline-primary"
-        :class="error ? 'border-error' : 'border-default'"
-        :aria-invalid="!!error"
-        :aria-describedby="`${id}-note`"
-        data-testid="setting-input"
-        @change="emit('update:modelValue', ($event.target as HTMLSelectElement).value)"
-      >
-        <option v-for="o in spec.options" :key="o" :value="o">
-          {{ optionLabel(o) }}
-        </option>
-      </select>
+      <template v-if="spec?.type === 'choice'">
+        <select
+          :id="id"
+          :value="modelValue"
+          class="w-full rounded-md border bg-default px-2.5 py-1.5 text-sm text-highlighted focus-visible:outline-2 focus-visible:outline-primary"
+          :class="error ? 'border-error' : 'border-default'"
+          :aria-invalid="!!error"
+          :aria-describedby="`${id}-note`"
+          data-testid="setting-input"
+          @change="emit('update:modelValue', ($event.target as HTMLSelectElement).value)"
+        >
+          <option v-for="o in spec.options" :key="o" :value="o" :disabled="optionRefused(name, o, info)">
+            {{ optionLabel(o) }}
+          </option>
+        </select>
+        <p v-if="onOnly" class="text-xs text-muted" data-testid="setting-cli-only">
+          {{ t(`settings.fields.${name}.cliOnly`) }}
+        </p>
+      </template>
       <UInput
         v-else
         :id="id"

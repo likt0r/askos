@@ -60,6 +60,7 @@ scenario.json:
   missing_wrappers  paths guest-exec cannot run: the guest agent fails as qemu-ga does
               for a program the Image lacks
   attach_fails, detach_fails  attach-disk or detach-disk fails with libvirt's error
+  net_info_fails  net-info fails as when libvirt cannot be reached
   attach_signals_parent  a successful attach-disk sends SIGTERM to the program that called virsh
 
 `attach-disk <domain> <file> <target> ... --serial S` and `detach-disk <domain> <target>`
@@ -262,6 +263,9 @@ def net_uuid(net, name):
 def network(scenario, cmd, arg):
     """net-info, net-dumpxml, net-define, net-autostart, net-start."""
     nets = networks(scenario)
+    if cmd == "net-info" and scenario.get("net_info_fails"):
+        print("error: failed to connect to the hypervisor", file=sys.stderr)
+        return 1
     if cmd == "net-define":
         with open(arg) as f:
             xml = f.read()
