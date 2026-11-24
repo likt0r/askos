@@ -67,10 +67,11 @@ A build VM, named DOMAIN_PREFIX + its id (<image>-<build>-<pass>, the pass "buil
 An interruption (the run's SIGTERM handler, Ctrl+C) runs the same teardown; after a crash of
 the run, the next run removes whatever a build VM left (leftovers()).
 
-The count holds the Build run lock (images.RUN_LOCK), taken without waiting, so only one build
-VM runs at a time; and it gives way to a Build: a Build run that finds the lock held writes
-WANTED before it waits for it, and a count that sees WANTED (before its VM starts, and every
-WATCH_SECONDS while it runs) ends its VM, which releases the lock after the teardown.
+The count holds the Build run lock (RUN_LOCK), taken without waiting, so only one build VM runs
+at a time; and it gives way to a Build: every Build run writes WANTED before it blocks on the
+lock and removes it once it holds it; the version check counts nothing more once WANTED is
+there, and a count that sees it (before its VM starts, and every WATCH_SECONDS while it runs)
+ends its VM, which releases the lock after the teardown. Only a Build run removes WANTED.
 """
 import ipaddress
 import json
@@ -119,7 +120,9 @@ RUN = paths.host("/run/agentbox/build-vm")
 SOURCE = os.path.join("vm", "build-vm")   # the seed's files in the Release
 FEDORA_BOOTC = "localhost/agentbox-input/fedora-bootc:{}"   # its name in a build VM, by Build
 BUILDER = "localhost/agentbox-input/bootc-image-builder:{}"
-# a Build run that waits for the run lock while it is held says so here; a count gives way to it
+# held for a whole Build run (images.py), and by the count while its build VM runs
+RUN_LOCK = os.path.join(paths.STATE, "build-run")
+# a Build run about to wait for the run lock says so here; a count gives way to it
 WANTED = os.path.join(paths.STATE, "build-wanted")
 BOOT_SECONDS = paths.tunable("AGENTBOX_BUILD_VM_BOOT_SECONDS", 600)
 BUILD_SECONDS = paths.tunable("AGENTBOX_BUILD_VM_SECONDS", 4 * 3600)
@@ -351,8 +354,9 @@ def _network():
 def remove_network():
     """With build_vm off (generate.apply): NETWORK stopped and undefined when libvirt has it;
     whether it had. A network of that name with another bridge is not the build network and
-    stays."""
-    if states.network(NETWORK_NAME) is None:
+    stays. Not while the run lock is held: a Build or a count read build_vm on and its build VM
+    may be on the network; the next apply removes it."""
+    if state_files.held(RUN_LOCK) or states.network(NETWORK_NAME) is None:
         return False
     xml = virsh.run("net-dumpxml", NETWORK).stdout
     if not re.search(rf"<bridge\b[^>]*\bname=['\"]{BRIDGE}['\"]", xml):
@@ -974,11 +978,9 @@ def count(image, build, tag, say):
     `dnf -q check-update` in a container from the container image `tag` (the Image's current
     Build, handed in from the Host's storage under the same name), with the seed of the
     installed Release. What dnf wrote to its output, as text (at most MAX_COUNT bytes, the
-    driver ends with a failure for more). The caller holds the run lock; a stale WANTED goes
-    first. Failed when the build VM cannot run, dnf failed in it, it gave way to a Build or it
-    ended without the list."""
-    state_files.remove(WANTED, fail=False)
-
+    driver ends with a failure for more). The caller holds the run lock and has seen no WANTED;
+    a count never removes WANTED (the Build run that wrote it does). Failed when the build VM
+    cannot run, dnf failed in it, it gave way to a Build or it ended without the list."""
     def take(path):
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
         with os.fdopen(fd, "rb") as f:
@@ -988,13 +990,21 @@ def count(image, build, tag, say):
 
 
 def want_lock():
-    """A Build run is about to wait for the run lock another holds: a count gives way."""
+    """A Build run is about to wait for the run lock, written before it blocks on it, whoever
+    holds it, so no count can take the lock in between unseen: a count gives way (_give_way),
+    and none starts (gives_way)."""
     state_files.write_atomic(WANTED, b"", 0o600)
 
 
 def lock_taken():
-    """The Build run holds the run lock now."""
+    """The Build run holds the run lock now; WANTED goes (also one a run killed while it waited
+    left)."""
     state_files.remove(WANTED, fail=False)
+
+
+def gives_way():
+    """Whether a Build run waits for the run lock (WANTED): the version check counts no more."""
+    return os.path.exists(WANTED)
 
 
 def leftovers(say):

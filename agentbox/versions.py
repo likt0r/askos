@@ -46,11 +46,17 @@ two parts, so that nothing from the internet is parsed as root:
              are to boot, signed by Fedora (build_vm.py); renewed when that release changes.
   packages  per Image whose current Build's container image is kept (the Base image),
              how many Fedora package updates are available for that Build: `dnf
-             check-update` in a container from it (podman as root, like the Build), named
-             agentbox-check-<image>, without capabilities and with a read-only root, for
-             at most CHECK_UPDATE_SECONDS. It never waits for a Build, and a Build never
-             waits for it: a Build that removes the container image meanwhile (podman rmi
-             --force, images._rmi) ends the count, which is then unknown.
+             check-update` in a container from it. With the Setting build_vm on in a build VM
+             (count_in_build_vm, build_vm_run.count), which takes the Build run lock without
+             waiting: while a Build runs the count is unknown, and once a Build run waits for
+             the lock (build_vm_run.WANTED) no count starts and a running one gives way. Off
+             on the Host (podman as root, like the Build), named agentbox-check-<image>,
+             without capabilities and with a read-only root, for at most
+             CHECK_UPDATE_SECONDS; it never waits for a Build, and a Build never waits for it:
+             a Build that removes the container image meanwhile (podman rmi --force,
+             images._rmi) ends the count, which is then unknown. The check a Build run starts
+             itself (a missing pin or build VM image, check(count=False)) counts nothing and
+             keeps the counts of the check before.
 
 With auto_update on (#114), `agentbox check-versions` then starts an update of every Image
 a new Build would update (images.start_automatic: agentbox-build@update, never while a Build
@@ -393,6 +399,8 @@ def count_in_build_vm(image, build, tag, say):
     with state_files.locked_unless_held(images.RUN_LOCK) as mine:
         if not mine:
             return None, "a Build runs: no count in a build VM until the next check"
+        if build_vm_run.gives_way():
+            return None, "a Build wants to run: the count gives way to it"
         build_vm_run.leftovers(say)
         try:
             text = build_vm_run.count(image, build, tag, say)
@@ -653,14 +661,16 @@ def fetched(now):
     return out
 
 
-def check(say):
+def check(say, count=True):
     """Determine what is available and save it (versions.json); returns the record. One
-    check at a time (the record's lock, which no Build takes)."""
+    check at a time (the record's lock, which no Build takes). Without `count` (the check a
+    Build run starts for a missing pin or build VM image, holding the run lock) no package
+    update is counted: the counts of the check before stay as they were."""
     with state_files.locked(RECORD):
-        return _check(say)
+        return _check(say, count)
 
 
-def _check(say):
+def _check(say, count=True):
     from . import images            # images records the versions of a Build with this module
     now = time.time()
     found = fetched(now)
@@ -675,14 +685,22 @@ def _check(say):
     digests.take(rec["digests"], say)
     images.remove_retired(say)          # the digests it retired, each fedora-bootc 1-2 GB
     rec["build_vm_image"] = build_vm.check(found["build_vm_image"], say)
+    if not count:
+        rec["packages"] = (load() or {}).get("packages") or {}
+        say("Package updates: not counted while a Build runs; the counts of the check before stay")
     in_vm = settings.load()["build_vm"]
-    for image in images.available():
+    from . import build_vm_run
+    for image in images.available() if count else ():
         build = images.current(image)
         tag = images.CONTAINER.format(image, build)
         # only the Base image keeps the container image of its current Build
         if not build or not images.image_exists(tag):
             continue
-        n, error = count_in_build_vm(image, build, tag, say) if in_vm else count_updates(image, tag)
+        if in_vm and build_vm_run.gives_way():
+            # a Build waits for the run lock: no count (in a build VM) starts any more
+            n, error = None, "a Build wants to run: the count gives way to it"
+        else:
+            n, error = count_in_build_vm(image, build, tag, say) if in_vm else count_updates(image, tag)
         rec["packages"][image] = {"build": build, "updates": n, "error": error}
         say(f"Package updates for {image}-{build}: " + (str(n) if n is not None else "unknown")
             + (f" ({error})" if error else ""))

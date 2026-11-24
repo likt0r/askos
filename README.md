@@ -870,7 +870,8 @@ bring: for the npm tools the version the Build would pick now, from the npm regi
 Playwright the pinned one, if set); for Orca the release the Build would take now, from GitHub
 (by the same rule, or the pinned one); for the Base image the number of Fedora package updates for its
 current Build, counted with `dnf check-update` in a container from it (in a build VM while
-`build_vm` is on; while a Build runs the count waits for the next day). It also pins the
+`build_vm` is on; while a Build runs or waits to run, the count is unknown until the next
+check, and a check a Build starts itself keeps the counts before). It also pins the
 digests of the two images a Build takes from quay.io, `quay.io/fedora/fedora-bootc:44` and
 `quay.io/centos-bootc/bootc-image-builder:latest`: a Build never pulls them by their tags.
 bootc-image-builder's is the digest its tag pointed to `package_min_age_days` ago;

@@ -643,6 +643,22 @@ class NetworkTest(BuildVmTest):
         self.assertNotIn("removed", self.ok("set-settings", "builds_kept=5"))
         self.assertEqual(self.calls("net-undefine"), [])
 
+    def test_the_build_network_stays_while_a_build_vm_may_use_it(self):
+        """Turned off while a Build or a count holds the run lock (it read build_vm on): the
+        network stays until the next apply."""
+        self.in_vm()
+        self.forget_calls()
+        import fcntl
+        lock = os.open(self.path("var/lib/agentbox/locks/build-run.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            self.assertNotIn("removed", self.ok("set-settings", "build_vm=false"))
+            self.assertEqual(self.calls("net-destroy") + self.calls("net-undefine"), [])
+        finally:
+            os.close(lock)
+        self.assertIn("network agentbox-build of the build VMs removed", self.ok("set-settings", "builds_kept=4"))
+        self.assertEqual([c["net"] for c in self.calls("net-undefine")], ["agentbox-build"])
+
     def test_an_existing_build_network_that_is_not_running_is_started(self):
         self.scenario(networks={"agentbox-build": {"active": False, "autostart": False,
                                                    "xml": build_vm_run.network_xml()}})
@@ -1469,6 +1485,57 @@ class CountTest(BuildVmTest):
         self.assertEqual(packages["error"], "a Build wants to run: the count gives way to it")
         self.assertEqual(self.leftover(self.count_id), [])
         self.assertFalse(os.path.exists(self.path("var/lib/agentbox/build-wanted")))
+
+    def test_while_a_build_waits_for_the_lock_no_count_starts_and_its_request_stays(self):
+        """The moment after a count gave way: the waiting Build run has not taken the free lock
+        yet. A second check must start no count, and must not remove the Build's build-wanted."""
+        self.counted({"exit": 100, "stdout": self.LIST})
+        self.write("var/lib/agentbox/build-wanted", "")
+        packages, out = self.check()
+        self.assertEqual(packages, {"build": self.base, "updates": None,
+                                    "error": "a Build wants to run: the count gives way to it"})
+        self.assertEqual(self.creates(), [])
+        self.assertTrue(os.path.exists(self.path("var/lib/agentbox/build-wanted")))
+        # the Build run that takes the lock removes it, and the next check counts again
+        self.ok_in_vm()
+        self.assertFalse(os.path.exists(self.path("var/lib/agentbox/build-wanted")))
+        self.assertEqual(self.check()[0]["updates"], 2)
+
+    def test_a_build_run_says_it_wants_the_lock_before_it_blocks_on_it(self):
+        """Even when the lock looks free: a count could take it between a look and the wait."""
+        import contextlib
+        from unittest import mock
+        wanted = os.path.join(self.dir, "build-wanted")
+        seen = []
+
+        class Blocked(Exception):
+            pass
+
+        @contextlib.contextmanager
+        def locked(path):
+            seen.append((path, os.path.exists(wanted)))
+            raise Blocked
+            yield
+        with mock.patch.object(build_vm_run, "WANTED", wanted), \
+                mock.patch.object(images.state_files, "held", return_value=False), \
+                mock.patch.object(images.state_files, "locked", locked):
+            with self.assertRaises(Blocked):
+                images._run("base", "test", lambda line: None)
+        self.assertEqual(seen, [(images.RUN_LOCK, True)])
+
+    def test_the_check_a_build_runs_itself_keeps_the_counts_before(self):
+        """A Build run without a checked build VM image runs the version check holding the run
+        lock: it counts nothing and leaves the counts of the check before as they were."""
+        self.counted({"exit": 100, "stdout": self.LIST})
+        before, _ = self.check()
+        self.assertEqual(before["updates"], 2)
+        os.remove(self.path(f"{BUILD_VM}/image.json"))
+        self.forget_calls()
+        new, out = self.in_vm()
+        self.assertEqual((new["status"], new["step"], new["build_vm"]), ("failed", "pins", True))
+        self.assertIn("Package updates: not counted while a Build runs; the counts of the check before stay", out)
+        self.assertEqual(json.loads(self.read("var/lib/agentbox/versions.json"))["packages"]["base"], before)
+        self.assertEqual(self.creates(), [])
 
     def test_with_build_vm_off_the_count_runs_on_the_host(self):
         self.ok("set-settings", "build_vm=false")

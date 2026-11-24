@@ -588,7 +588,7 @@ flowchart LR
   defines and starts the network when it is not there and refuses one of that name that is not
   it (another bridge, more than its one IPv4 address `10.77.0.1/24`, no NAT); no VM can be named
   `build`. It exists only while the Setting `build_vm` is on: `regenerate` (also after
-  `set-settings`) removes it while it is off.
+  `set-settings`) removes it while it is off, once no Build or count holds the run lock.
 - Containers in a VM are behind the same limits. They run on rootless Podman: `docker` is
   Podman under that name, and `podman compose` and `docker compose` run Docker Compose, which
   builds and starts containers through the agent's Podman socket. `guest-setup` writes the
@@ -1315,14 +1315,17 @@ Host after every Build
     a read-only root) and hands out what dnf wrote, `check-update.txt` (at most 1 MiB, in an
     output filesystem of 256 MiB), which the Host counts as it counts dnf's output on the Host;
     the VM's limit is 15 minutes. The count takes the Build run lock without waiting, so only
-    one build VM runs at a time: while a Build runs, the count is unknown for that check. A
-    Build run that finds the lock held writes `/var/lib/agentbox/build-wanted` before it waits,
-    and a count that sees it (before its VM starts and every 2 seconds while it runs) ends its VM
-    and leaves the count unknown, so a count never holds up a Build for longer than its
-    teardown.
+    one build VM runs at a time: while a Build runs, the count is unknown for that check. Every
+    Build run writes `/var/lib/agentbox/build-wanted` before it blocks on the lock and removes
+    it once it holds it; while it is there the check starts no count (the rest are unknown for
+    that check), and a count that sees it (before its VM starts and every 2 seconds while it
+    runs) ends its VM and leaves the count unknown, so a count never holds up a Build for longer
+    than its teardown. The version check a Build run starts itself, holding the lock (a missing
+    pin or build VM image), counts nothing and keeps the counts of the check before.
   - **The network** `agentbox-build` exists only while `build_vm` is on: a build VM's start
     defines and starts it when it is not there, and `regenerate` (also after `set-settings`)
-    removes it while `build_vm` is off.
+    removes it while `build_vm` is off, but not while the run lock is held (a Build or a count may
+    still use it; the next `regenerate` removes it).
 - What the Base image downloads, it downloads inside the Build container, where Fedora's
   packages, the npm tools and Orca are chosen, fetched and checked; no root process on the
   Host parses what the internet answers (#113). Orca comes from its GitHub release
@@ -2083,7 +2086,7 @@ need not be there or belong to another Release.
 The Host's records and state stay where they are: `/etc/agentbox` (`CONF`) and
 `/var/lib/agentbox` (`STATE`); the build VMs' image, their disks and output directories lie in
 `/var/lib/agentbox/build-vm` (`BUILD_VM`, root's, `0711` so that QEMU reaches a build VM's disks,
-nothing listable), their sockets in `/run/agentbox/build-vm`, a Build run waiting for the run
+nothing listable), their sockets in `/run/agentbox/build-vm`, a Build run about to wait for the run
 lock says so in `/var/lib/agentbox/build-wanted` (the package count gives way), and the version check reads the
 Host's Fedora keys from
 `/etc/pki/rpm-gpg` (`RPM_GPG`); `agentbox import` keeps its tar file in

@@ -106,7 +106,7 @@ STEPS = ("pins", "source", "build", "import", "check", "disk", "done")    # impo
 TEMPLATE = "agentbox-build@.service"
 CONTAINER = "localhost/agentbox/{}:{}"
 STORAGE = "/var/lib/containers/storage"
-RUN_LOCK = os.path.join(paths.STATE, "build-run")       # held for a whole Build: one at a time
+RUN_LOCK = build_vm_run.RUN_LOCK                       # held for a whole Build: one at a time
 REQUEST_LOCK = os.path.join(paths.STATE, "build-request")  # held while a request file is written
 UPDATE = "update"           # the target of an update of everything: build-run update (#114)
 TARGETS = ("all", UPDATE)   # targets of agentbox-build@ that are no Image
@@ -1438,10 +1438,12 @@ def build_run(args):
         _reset_after(picks, dict(results), actor, say)
 
 
-def _check_versions(say):
+def _check_versions(say, count=True):
     """The version check of Update now, as the Maintenance window runs it: the fetch as
     agentbox-feeds through its unit (systemctl start waits for it), then the root part
-    (versions.check). What fails stays unknown and never stops the update."""
+    (versions.check). What fails stays unknown and never stops the update. Without `count`
+    (a run that holds the run lock, _pins) it counts no package updates and keeps the counts of
+    the check before."""
     say(f"== Checking versions: asking npm, GitHub, quay.io and fedoraproject.org ({versions.FETCH_UNIT}, "
         "as agentbox-feeds)")
     try:
@@ -1453,7 +1455,7 @@ def _check_versions(say):
         say(f"Fetch failed: {f.message}")
     say("== Checking versions: package updates and what a new Build would bring")
     try:
-        versions.check(say)
+        versions.check(say, count=count)
     except Fail as f:
         say(f"Check failed: {f.message}")
 
@@ -1538,7 +1540,7 @@ def _pins(base, in_vm, say):
     if no_image:
         say("== No checked build VM image yet: running the version check first")
     if unpinned or gone or no_image:
-        _check_versions(say)
+        _check_versions(say, count=False)        # it holds the run lock
         pins = digests.pinned()
     if in_vm and not build_vm.current():
         die("there is no checked build VM image: the version check could not fetch and check one "
@@ -1569,11 +1571,10 @@ def _run(target, actor, say):
     """The Builds of build-run, one at a time (the run lock): [(Image, Build id or False)]. An
     update decides under the lock which Images it builds (update_images), so a Build that
     ended while it waited for the lock counts; when none needs one, it builds nothing. The
-    version check's count in a build VM, which holds the lock too, gives way to it
-    (build_vm_run.want_lock)."""
+    version check's count in a build VM, which holds the lock too, gives way to it: the run
+    says it wants the lock before it blocks on it, whoever holds it (build_vm_run.want_lock)."""
     reason = "update" if target == UPDATE else None
-    if state_files.held(RUN_LOCK):
-        build_vm_run.want_lock()
+    build_vm_run.want_lock()
     with state_files.locked(RUN_LOCK):
         build_vm_run.lock_taken()
         started = int(time.time())
@@ -1590,7 +1591,7 @@ def _run(target, actor, say):
         work = os.path.join(paths.IMAGES, f".build-source-{_stamp()}")
         os.makedirs(work)
         try:
-            step = "source"
+            step, in_vm = "source", None       # None: the Settings could not be read
             try:
                 values = settings.load()
                 in_vm = values["build_vm"]
@@ -1609,7 +1610,8 @@ def _run(target, actor, say):
                        "package_min_age_days": None, "orca_version": None, "playwright_version": None,
                        "fedora_bootc_digest": None, "builder_digest": None, "unit": unit(target), "actor": actor,
                        "agents": None,
-                       "tools": None, "problems": [], "error": f.message, "safeguards": None, "container": False})
+                       "tools": None, "problems": [], "error": f.message, "safeguards": None, "container": False,
+                       "build_vm": in_vm})
                 head = "No checked build VM image" if f.error == "build_vm_no_image" else \
                     "Pinned images missing" if step == "pins" else "No sources"
                 say(f"== {head}: {f.message}")
