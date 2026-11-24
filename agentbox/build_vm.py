@@ -14,13 +14,16 @@ The version check (versions.py) finds and checks it, in its two parts:
   image and the directory's CHECKSUM into DOWNLOADS (its StateDirectory), over HTTPS only, at
   most MAX_IMAGE bytes, with time limits, and checks the download against the SHA-256
   releases.json lists (a broken download, not a check: releases.json is not signed). Once the
-  image is in use, the next fetch deletes its download.
+  image is in use, the next fetch deletes its download. Whatever goes wrong here is this
+  entry's error only (the fetch writes the other answers before it, versions.fetch).
 
-  check-versions (root) reads the fetch's files as untrusted input: through a directory opened
-  without following a link, regular files only, bounded sizes, the name of the release's image
-  and nothing else, the CHECKSUM's name built from it. gpgv runs as agentbox-feeds (setpriv),
-  not root, with a keyring root makes from the Host's own RPM-GPG-KEY-fedora-<N>-primary
-  (fedora-gpg-keys, updated with the Host); only its exit 0 with a VALIDSIG and none of
+  check-versions (root) reads the fetch's files as untrusted input: through directories opened
+  one by one from root's own STATE without following a link, regular files only, bounded
+  sizes, the name of the release's image and nothing else, the CHECKSUM's name built from it.
+  gpgv runs as GPGV_USER (setpriv), a user of the package's that nothing else runs as, so no
+  other process can trace it, not as root, with a keyring root makes from the Host's own
+  RPM-GPG-KEY-fedora-<N>-primary (fedora-gpg-keys, updated with the Host), on copies root wrote
+  into a directory of its own; only its exit 0 with one signature, a VALIDSIG and none of
   REFUSED_STATUS counts, since gpgv writes the text of a bad signature too and exits 0 for one
   by an expired or revoked key, and --output - gives only the signed text. Root reads
   that text (at most MAX_TEXT), takes the one SHA-256 line of exactly the image's name, and
@@ -53,9 +56,10 @@ RELEASES = "https://fedoraproject.org/releases.json"
 MIRROR = "https://download.fedoraproject.org/pub/fedora/linux/releases/"
 IMAGES = os.path.join(paths.BUILD_VM, "images")             # root's checked image
 RECORD = os.path.join(paths.BUILD_VM, "image.json")         # the image in use
-# the fetch's download, in its StateDirectory (versions.AVAILABLE_DIR)
-DOWNLOADS = os.path.join(paths.STATE, "available", "build-vm")
-FEEDS_USER = "agentbox-feeds"
+# the fetch's download, in its StateDirectory (versions.AVAILABLE_DIR), below root's STATE
+DOWNLOADS_PATH = ("available", "build-vm")
+DOWNLOADS = os.path.join(paths.STATE, *DOWNLOADS_PATH)
+GPGV_USER = "agentbox-gpgv"         # rpm/agentbox.sysusers: runs nothing but this gpgv
 MAX_IMAGE = paths.tunable("AGENTBOX_BUILD_VM_IMAGE_BYTES", 2 << 30)    # Fedora 44's: 557 MiB
 MAX_TEXT = 64 << 10             # the CHECKSUM and its signed text: a few hundred bytes
 MAX_VIRTUAL = 20 << 30          # Fedora 44's image: 5 GiB; the system disk on it is 20 GiB
@@ -69,10 +73,13 @@ CHUNK = 1 << 20
 ERRORS = (r"fedoraproject\.org not reachable|fedoraproject\.org answered [1-5][0-9][0-9]|"
           r"no Cloud Base Generic qcow2 of the release in releases\.json|"
           r"more than one Cloud Base Generic qcow2 of the release in releases\.json|"
-          r"download of the (image|CHECKSUM) failed|the download does not match releases\.json")
+          r"download of the (image|CHECKSUM) failed|the download does not match releases\.json|"
+          r"the image's download did not finish")
+# what the fetch's file says until the image step ended (versions.fetch writes it before)
+UNFINISHED = "the image's download did not finish"
 NOT_FETCHED = "not fetched yet; the next fetch asks fedoraproject.org"
 # gpgv's status lines that refuse a signature even when it exits 0 with VALIDSIG
-REFUSED_STATUS = ("BADSIG", "ERRSIG", "EXPSIG", "EXPKEYSIG", "REVKEYSIG")
+REFUSED_STATUS = ("BADSIG", "ERRSIG", "EXPSIG", "EXPKEYSIG", "REVKEYSIG", "ERROR")
 SIGNED_LINE = re.compile(r"SHA256 \(([^()\s]{1,255})\) = ([0-9a-f]{64})")
 
 
@@ -234,25 +241,35 @@ def fetch(get, say):
         return got
     name, sha, size = found[0]
     got["image"] = name
-    if name == _in_use_name():
-        _clear()
-        say(line({**got, "state": "in use"}))
-        return got
-    checksum = checksum_name(name)
+    try:
+        if name == _in_use_name():
+            _clear()
+            say(line({**got, "state": "in use"}))
+            return got
+        got["error"] = _download(name, sha, size)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        got["error"] = "download of the image failed"
+    say(line({**got, "state": "downloaded, for check-versions to check"}))
+    return got
+
+
+def _download(name, sha, size):
+    """The image `name` (of releases.json's SHA-256 and size) and its CHECKSUM into DOWNLOADS:
+    None, or the error. An image downloaded before (that check-versions refused, or whose
+    CHECKSUM failed) is kept."""
     os.makedirs(DOWNLOADS, exist_ok=True)
     _clear(keep=(name,))
     path = os.path.join(DOWNLOADS, name)
-    # an image downloaded before (that check-versions refused, or whose CHECKSUM failed) is kept
     if _hash(path) != (sha, size):
         if not download(directory() + name, path, MAX_IMAGE, DOWNLOAD_SECONDS):
-            got["error"] = "download of the image failed"
-        elif _hash(path) != (sha, size):
-            got["error"] = "the download does not match releases.json"
+            return "download of the image failed"
+        if _hash(path) != (sha, size):
             state_files.remove(path, fail=False)
-    if not got["error"] and not download(directory() + checksum, os.path.join(DOWNLOADS, checksum), MAX_TEXT, 120):
-        got["error"] = "download of the CHECKSUM failed"
-    say(line({**got, "state": "downloaded, for check-versions to check"}))
-    return got
+            return "the download does not match releases.json"
+    checksum = checksum_name(name)
+    if not download(directory() + checksum, os.path.join(DOWNLOADS, checksum), MAX_TEXT, 120):
+        return "download of the CHECKSUM failed"
+    return None
 
 
 # --- check-versions (root) --------------------------------------------------------------------
@@ -323,8 +340,10 @@ def _read_at(dir_fd, name, cap):
 
 
 def signed_text(checksum):
-    """(the signed text of the clearsigned CHECKSUM, None) by gpgv as agentbox-feeds with the
-    Host's key of RELEASE as the only key, or (None, why)."""
+    """(the signed text of the clearsigned CHECKSUM, None) by gpgv as GPGV_USER with the Host's
+    key of RELEASE as the only key, or (None, why). One signature only: gpgv itself fails a file
+    of two clearsigned blocks ("multiple plaintexts seen", exit 2), and so does this when gpgv
+    reports more than one."""
     try:
         with open(key_file(), "rb") as f:
             key = dearmor(f.read(MAX_TEXT))
@@ -334,16 +353,17 @@ def signed_text(checksum):
         return None, f"the Host has no key of Fedora {RELEASE} ({key_file()}, package fedora-gpg-keys)"
     work = tempfile.mkdtemp(prefix="agentbox-gpgv-")
     try:
-        os.chmod(work, 0o755)            # agentbox-feeds reads, nobody but root writes
+        os.chmod(work, 0o755)            # GPGV_USER reads, nobody but root writes
         for name, data in (("fedora.gpg", key), ("CHECKSUM", checksum)):
             with open(os.open(os.path.join(work, name), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644), "wb") as f:
                 f.write(data)
-        argv = ["setpriv", f"--reuid={FEEDS_USER}", f"--regid={FEEDS_USER}", "--clear-groups", "--no-new-privs",
+        argv = ["setpriv", f"--reuid={GPGV_USER}", f"--regid={GPGV_USER}", "--clear-groups", "--no-new-privs",
                 "--", "gpgv", "--homedir", work, "--status-fd", "2", "--keyring", os.path.join(work, "fedora.gpg"),
                 "--output", "-", os.path.join(work, "CHECKSUM")]
         env = dict(os.environ, LC_ALL="C", HOME=work)        # --homedir: no GNUPGHOME of root's
         try:
-            r = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, env=env, timeout=GPGV_SECONDS)
+            r = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, env=env, cwd=work,
+                               timeout=GPGV_SECONDS)
         except FileNotFoundError:
             return None, "setpriv is missing"
         except (OSError, subprocess.TimeoutExpired):
@@ -352,8 +372,10 @@ def signed_text(checksum):
         shutil.rmtree(work, ignore_errors=True)
     status = r.stderr.decode("utf-8", "replace")
     # gpgv exits 0 with VALIDSIG also for a signature by an expired or revoked key
-    refused = re.findall(rf"(?m)^\[GNUPG:\] ({'|'.join(REFUSED_STATUS)}) ", status)
-    if r.returncode != 0 or refused or not re.search(r"(?m)^\[GNUPG:\] VALIDSIG ", status):
+    refused = [m.group(1) for m in re.finditer(rf"(?m)^\[GNUPG:\] ({'|'.join(REFUSED_STATUS)})( |$)", status)]
+    one = len(re.findall(r"(?m)^\[GNUPG:\] NEWSIG\b", status)) == 1 \
+        and len(re.findall(r"(?m)^\[GNUPG:\] VALIDSIG ", status)) == 1
+    if r.returncode != 0 or refused or not one:
         said = [l for l in status.splitlines() if l.strip() and not l.startswith("[GNUPG:]")]
         return None, (f"the CHECKSUM's signature is not good (gpgv exit {r.returncode}"
                       + (f", {refused[0]}" if refused else "")
@@ -405,7 +427,7 @@ def qcow2_problem(path, max_virtual):
         return "the qcow2 names an external data file"
     if info.get("encrypted") or "encrypt" in data:
         return "the qcow2 is encrypted"
-    if data.get("corrupt") is not False:
+    if data.get("corrupt"):             # a qcow2 v2 (compat 0.10) has no such flag
         return "the qcow2 is marked corrupt"
     size = info.get("virtual-size")
     if not isinstance(size, int) or isinstance(size, bool) or not 0 < size <= max_virtual:
@@ -441,11 +463,31 @@ def _copy(dir_fd, name, part):
     return h.hexdigest()
 
 
+def _open_downloads():
+    """DOWNLOADS as an open directory, reached from root's own STATE one directory at a time, none
+    of them through a link (each below `available` is agentbox-feeds' to replace); None when it
+    cannot be opened so."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        fd = os.open(paths.STATE, flags)
+    except OSError:
+        return None
+    for name in DOWNLOADS_PATH:
+        try:
+            child = os.open(name, flags, dir_fd=fd)
+        except OSError:
+            child = None
+        os.close(fd)
+        if child is None:
+            return None
+        fd = child
+    return fd
+
+
 def _take(name, say):
     """Check the fetch's download of the image `name` and keep it: None, or why it was refused."""
-    try:
-        dir_fd = os.open(DOWNLOADS, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    except OSError:
+    dir_fd = _open_downloads()
+    if dir_fd is None:
         return "the fetch's download is missing"
     try:
         checksum = _read_at(dir_fd, checksum_name(name), MAX_TEXT)

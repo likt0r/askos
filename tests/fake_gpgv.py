@@ -7,7 +7,9 @@ the real gpgv it writes the signed text to --output whatever the signature, take
 keyring ("invalid packet", exit 2) and says VALIDSIG on --status-fd only for a good one.
 A key whose bytes end in one of EXPIRED (":expired-key", ":revoked-key", ":expired-sig") makes
 a good signature come with EXPKEYSIG, REVKEYSIG or EXPSIG, and still VALIDSIG and exit 0, as
-gpgv 2.4.9 answers for a signature by an expired or revoked key or one that expired.
+gpgv 2.4.9 answers for a signature by an expired or revoked key or one that expired; one ending
+in TWICE reports the good signature twice, with exit 0 (real gpgv fails two clearsigned blocks
+itself, test_build_vm.RealGpgvTest).
 
 Environment:
   FAKE_DIR   calls are recorded in calls.jsonl as {"cmd": "gpgv", "argv": [...], "user": the
@@ -25,6 +27,7 @@ HEAD = "-----BEGIN PGP SIGNED MESSAGE-----\n"
 SIGNATURE = "-----BEGIN PGP SIGNATURE-----\n"
 END = "-----END PGP SIGNATURE-----\n"
 EXPIRED = {b":expired-key": "EXPKEYSIG", b":revoked-key": "REVKEYSIG", b":expired-sig": "EXPSIG"}
+TWICE = b":two-signatures"
 
 
 def signature(key, text):
@@ -78,8 +81,11 @@ def main(argv):
         print("[GNUPG:] BADSIG 0123456789ABCDEF Fedora\ngpgv: BAD signature from \"Fedora\"", file=sys.stderr)
         return 1
     status = next((s for marker, s in EXPIRED.items() if key.endswith(marker)), "GOODSIG")
-    print(f"[GNUPG:] {status} 0123456789ABCDEF Fedora\ngpgv: Good signature from \"Fedora\"\n"
-          "[GNUPG:] VALIDSIG 36F612DC0123456789ABCDEF0123456789ABCDEF 2026-04-24", file=sys.stderr)
+    good = (f"[GNUPG:] NEWSIG\n[GNUPG:] {status} 0123456789ABCDEF Fedora\ngpgv: Good signature from \"Fedora\"\n"
+            "[GNUPG:] VALIDSIG 36F612DC0123456789ABCDEF0123456789ABCDEF 2026-04-24")
+    print(good, file=sys.stderr)
+    if key.endswith(TWICE):
+        print(good, file=sys.stderr)
     return 0
 
 

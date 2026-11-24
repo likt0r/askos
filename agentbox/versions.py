@@ -535,6 +535,10 @@ def fetch(say):
         rec["digests"][name] = {"digest": digest, "since": since, "error": error}
         say(digests.line(name, rec["digests"][name], days))
     os.makedirs(AVAILABLE_DIR, exist_ok=True)
+    # first without the image, whose download may take long, fail or be killed: the answers
+    # above stand whatever happens to it
+    rec["build_vm_image"] = {"release": build_vm.RELEASE, "image": None, "error": build_vm.UNFINISHED}
+    state_files.write_json(AVAILABLE, rec)
     rec["build_vm_image"] = build_vm.fetch(_get, say)
     state_files.write_json(AVAILABLE, rec)
     return rec

@@ -28,7 +28,7 @@ LISTS = ((list_records.WATCHLIST, list_records.LEGACY_WATCHLIST),
 ALLOWLIST = (list_records.ALLOWLIST, list_records.LEGACY_ALLOWLIST[0])
 LIBVIRT_GROUP = "libvirt"
 # the package's service users (rpm/agentbox.sysusers): never the owner, never who runs setup
-SERVICE_USERS = ("agentbox-web", "agentbox-proxy", "agentbox-feeds", "agentbox-gh", "agentbox-claude")
+SERVICE_USERS = ("agentbox-web", "agentbox-proxy", "agentbox-feeds", "agentbox-gh", "agentbox-claude", "agentbox-gpgv")
 NO_LOGIN = ("nologin", "false")
 # the running sockets of the Activity journal (ADR 0007)
 JOURNAL_SOCKETS = ("stdout", "socket", "dev-log")

@@ -1,13 +1,14 @@
 """The build VMs' image (ADR 0025, #144, agentbox/build_vm.py): the signed Fedora Cloud Base
 Generic qcow2 of the release fedora-bootc's tag names, found and downloaded by the version
-check's fetch as agentbox-feeds, checked by root (gpgv as agentbox-feeds against the Host's own
+check's fetch as agentbox-feeds, checked by root (gpgv as agentbox-gpgv against the Host's own
 Fedora key, the SHA-256 of the signed CHECKSUM, the qcow2 header) and kept under
 /var/lib/agentbox/build-vm; renewed only when the release changes.
 
 The harness of test_versions.py (the real CLI under AGENTBOX_ROOT, fake curl playing
 fedoraproject.org), plus fake setpriv, gpgv (fake_gpgv.py: a signature is good when it names the
 keyring's bytes and the text) and qemu-img (a fake disk is JSON naming its header fields).
-Nothing reaches the network, nothing runs as another user.
+Nothing reaches the network, nothing runs as another user. RealGpgvTest runs the Host's own gpg
+and gpgv, when there are, on a throwaway key.
 
 Run from the repo root: python3 -m unittest discover -s tests
 """
@@ -15,11 +16,14 @@ import base64
 import hashlib
 import json
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from fake_gpgv import EXPIRED, sign  # noqa: E402
+from fake_gpgv import EXPIRED, TWICE, sign  # noqa: E402
 from test_registry import fake  # noqa: E402
 from test_versions import AGENTBOX, NOTHING_NEW, REGISTRY, REPO, VERSIONS, VersionsTest  # noqa: E402
 
@@ -166,15 +170,24 @@ class TakeTest(BuildVmImageTest):
         # nothing of it left in the download or as a partial copy
         self.assertFalse([n for n in self.kept() if n.endswith(".part")])
 
-    def test_gpgv_runs_as_agentbox_feeds_with_the_hosts_key_only(self):
+    def test_a_version_2_qcow2_is_kept(self):
+        """compat 0.10 has no corrupt flag at all; only a corrupt flag that is set refuses."""
+        self.publish(IMAGE_44, content=self.disk(compat="0.10"))
+        self.check()
+        self.assertEqual(self.kept(), [IMAGE_44])
+        self.assertEqual(self.record()["build_vm_image"]["error"], None)
+
+    def test_gpgv_runs_as_a_user_of_its_own_with_the_hosts_key_only(self):
+        """agentbox-gpgv, which nothing else runs as: not agentbox-feeds, whose fetch downloaded
+        what gpgv checks and whose processes could trace a gpgv of the same uid."""
         self.check()
         setpriv = self.calls("setpriv")
         self.assertEqual(len(setpriv), 1)
         options = setpriv[0]["argv"][:setpriv[0]["argv"].index("--")]
-        self.assertEqual(options, ["--reuid=agentbox-feeds", "--regid=agentbox-feeds", "--clear-groups",
+        self.assertEqual(options, ["--reuid=agentbox-gpgv", "--regid=agentbox-gpgv", "--clear-groups",
                                    "--no-new-privs"])
         gpgv = self.calls("gpgv")
-        self.assertEqual([c["user"] for c in gpgv], ["agentbox-feeds"])
+        self.assertEqual([c["user"] for c in gpgv], ["agentbox-gpgv"])
         # the keyring is the Host's key of release 44, dearmored, and nothing else
         argv = gpgv[0]["argv"]
         self.assertEqual(argv[argv.index("--output") + 1], "-")
@@ -278,6 +291,13 @@ class RefuseTest(BuildVmImageTest):
                 self.fetch_only()
                 self.refused(f"the CHECKSUM's signature is not good (gpgv exit 0, {status}: "
                              f"gpgv: Good signature from \"Fedora\")")
+
+    def test_more_than_one_signature_is_refused(self):
+        key = KEY["44"] + TWICE
+        self.write("etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-44-primary", armored(key))
+        self.publish(IMAGE_44, key=key)
+        self.fetch_only()
+        self.refused("the CHECKSUM's signature is not good (gpgv exit 0: gpgv: Good signature from \"Fedora\")")
 
     def test_a_key_with_a_broken_checksum_line_is_no_key(self):
         key = self.path("etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-44-primary")
@@ -449,8 +469,37 @@ class FetchTest(BuildVmImageTest):
                 self.assertEqual((got["image"], got["error"]), (IMAGE_44, why))
                 self.assertEqual(self.kept(), [IMAGE_44])
 
+    def test_a_failed_image_step_keeps_the_other_answers(self):
+        """The image's error is its own: a download directory it cannot make (here a file in its
+        place) fails only the image."""
+        self.write(DOWNLOADS, "not a directory")
+        r = self.fetch_with()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        found = self.fetched()
+        self.assertEqual(found["build_vm_image"], {"release": "44", "image": IMAGE_44,
+                                                   "error": "download of the image failed"})
+        self.assertEqual(found["npm"]["claude-code"], {"version": "2.1.7", "error": None})
+        self.assertEqual(found["orca"]["version"], "1.4.251")
+
+    def test_a_fetch_killed_during_the_image_download_keeps_the_other_answers(self):
+        """As systemd ends the unit at its time limit: what was fetched before the image stands,
+        and the image is what did not finish."""
+        known = self.known()
+        known["downloads"][DIRECTORY.format("44") + IMAGE_44] = {"kill_parent": True}
+        self.registry(known)
+        r = self.fetch_with()
+        self.assertEqual(r.returncode, -9, r.stderr)
+        found = self.fetched()
+        self.assertEqual(found["build_vm_image"], {"release": "44", "image": None,
+                                                   "error": "the image's download did not finish"})
+        self.assertEqual(found["npm"]["claude-code"], {"version": "2.1.7", "error": None})
+        self.assertIsNotNone(found["digests"]["fedora-bootc"]["digest"])
+        self.ok("check-versions")
+        rec = self.record()
+        self.assertEqual(rec["build_vm_image"]["error"], "the image's download did not finish")
+        self.assertEqual(rec["npm"]["claude-code"]["version"], "2.1.7")
+
     def fetch_with(self, **extra):
-        import subprocess
         return subprocess.run([AGENTBOX, "fetch-versions"], env=self.env(**extra), capture_output=True, text=True,
                               timeout=60)
 
@@ -503,6 +552,81 @@ class VersionsRecordTest(BuildVmImageTest):
                          {"release": "44", "image": IMAGE_44, "offered": IMAGE_44, "state": "checked", "error": None})
         with open(self.path(VERSIONS)) as f:
             self.assertEqual(json.load(f)["build_vm_image"], got)
+
+
+@unittest.skipUnless(shutil.which("gpg") and shutil.which("gpgv"), "needs gpg and gpgv")
+class RealGpgvTest(unittest.TestCase):
+    """The Host's own gpg and gpgv on a throwaway key: build_vm's reading of an armored key as gpg
+    exports it, and of what gpgv answers (its status lines), which the fake only imitates.
+    gpgv runs through fake_setpriv.py, as the test's own user."""
+
+    def setUp(self):
+        sys.path.insert(0, REPO)
+        from agentbox import build_vm
+        self.build_vm = build_vm
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = tmp.name
+        self.bin = os.path.join(self.dir, "bin")
+        fake(os.path.join(self.bin, "setpriv"), "fake_setpriv.py")
+        self.keys = {name: self.new_key(name) for name in ("fedora", "other")}
+
+    def gpg(self, home, *args, data=None):
+        r = subprocess.run(["gpg", "--homedir", home, "--batch", "--quiet", "--pinentry-mode", "loopback",
+                            "--passphrase", "", *args], input=data, capture_output=True, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout
+
+    def new_key(self, name):
+        home = os.path.join(self.dir, name)
+        os.mkdir(home, 0o700)
+        self.addCleanup(subprocess.run, ["gpgconf", "--homedir", home, "--kill", "all"], capture_output=True)
+        self.gpg(home, "--quick-gen-key", f"{name} <{name}@example.org>", "ed25519", "sign", "never")
+        return home
+
+    def clearsign(self, name, text):
+        return self.gpg(self.keys[name], "--clearsign", data=text.encode())
+
+    def signed(self, checksum, armored_key):
+        """build_vm.signed_text of `checksum` with `armored_key` as the Host's key."""
+        from unittest import mock
+        path = os.path.join(self.dir, "RPM-GPG-KEY-fedora-44-primary")
+        with open(path, "wb") as f:
+            f.write(armored_key)
+        env = {"PATH": self.bin + ":" + os.environ["PATH"], "FAKE_DIR": self.dir}
+        with mock.patch.object(self.build_vm, "key_file", return_value=path), mock.patch.dict(os.environ, env):
+            return self.build_vm.signed_text(checksum)
+
+    def test_an_armored_key_reads_as_gpg_exports_it(self):
+        binary = self.gpg(self.keys["fedora"], "--export")
+        armored = self.gpg(self.keys["fedora"], "--armor", "--export")
+        self.assertEqual(self.build_vm.dearmor(armored), binary)
+        self.assertEqual(self.build_vm.dearmor(armored.replace(b"\n", b"\r\n")), binary)
+        with_headers = armored.replace(b"-----\n\n", b"-----\nVersion: GnuPG v2\nComment: Fedora 44\n\n", 1)
+        self.assertNotEqual(with_headers, armored)
+        self.assertEqual(self.build_vm.dearmor(with_headers), binary)
+
+    def test_gpgv_answers_are_read_as_build_vm_expects(self):
+        key = self.gpg(self.keys["fedora"], "--armor", "--export")
+        text = f"# {IMAGE_44}: 5 bytes\nSHA256 ({IMAGE_44}) = {'a' * 64}\n"
+        good = self.clearsign("fedora", text)
+        self.assertEqual(self.signed(good, key), (text, None))
+        # a changed text
+        signed, why = self.signed(good.replace(b"= aaaa", b"= baaa"), key)
+        self.assertEqual(signed, None)
+        self.assertIn("gpgv exit 1, BADSIG", why)
+        # another key's signature: the Host's key is the only one
+        signed, why = self.signed(self.clearsign("other", text), key)
+        self.assertEqual(signed, None)
+        self.assertIn("ERRSIG", why)
+        # two clearsigned blocks, both good: gpgv fails them, and so does build_vm
+        two = good + self.clearsign("fedora", f"SHA256 ({IMAGE_44}) = {'b' * 64}\n")
+        signed, why = self.signed(two, key)
+        self.assertEqual(signed, None)
+        self.assertIn("ERROR", why)
+        # what goes before the block is not signed and not given back
+        self.assertEqual(self.signed(b"SHA256 (" + IMAGE_44.encode() + b") = " + b"c" * 64 + b"\n" + good, key),
+                         (text, None))
 
 
 if __name__ == "__main__":

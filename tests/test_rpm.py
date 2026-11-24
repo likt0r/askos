@@ -34,7 +34,7 @@ import unittest
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
-from agentbox import activity, generate, hoststeps, paths  # noqa: E402
+from agentbox import activity, build_vm, generate, hoststeps, paths  # noqa: E402
 
 RPM = os.path.join(REPO, "rpm")
 UNITS = os.path.join(RPM, "units")
@@ -142,11 +142,25 @@ class PackageTest(unittest.TestCase):
             self.assertNotIn("/usr/local", text)
 
     def test_the_service_users_are_those_agentbox_names(self):
-        """The users of the Control Room, the proxies, the Feeds and the token service, and the
-        group that may write into the Activity journal."""
+        """The users of the Control Room, the proxies, the Feeds and the token service, the one
+        gpgv runs as for the build VMs' image, and the group that may write into the Activity
+        journal."""
         users, groups = sysusers()
-        self.assertEqual(users, {"agentbox-web", "agentbox-proxy", "agentbox-feeds", "agentbox-gh", "agentbox-claude"})
-        self.assertLessEqual({activity.CONTROL_ROOM[0], activity.PROXY_USER, activity.TOKEN_USER}, users)
+        self.assertEqual(users, {"agentbox-web", "agentbox-proxy", "agentbox-feeds", "agentbox-gh", "agentbox-claude",
+                                 "agentbox-gpgv"})
+        self.assertLessEqual({activity.CONTROL_ROOM[0], activity.PROXY_USER, activity.TOKEN_USER,
+                              build_vm.GPGV_USER}, users)
+        # never taken for the owner
+        self.assertEqual(set(hoststeps.SERVICE_USERS), users)
+        # gpgv's user runs nothing else: no unit, no other module of the package names it
+        package = os.path.join(REPO, "agentbox")
+        naming = set()
+        for name in os.listdir(package):
+            if name.endswith(".py"):
+                with open(os.path.join(package, name)) as f:
+                    if build_vm.GPGV_USER in f.read():
+                        naming.add(name)
+        self.assertEqual(naming, {"build_vm.py", "hoststeps.py"})
         self.assertEqual(groups, {activity.JOURNAL_GROUP})
         self.assertIn("install -D -m 0644 rpm/agentbox.sysusers %{buildroot}%{_sysusersdir}/agentbox.conf", self.spec)
 

@@ -26,6 +26,8 @@ registry.json:
               writes for that URL (-f: an error status fails with exit 22)
              {"flood": true} instead: a body without length that never ends, whatever
              --max-filesize says; -o - writes to stdout (a pipe) instead of a file
+             {"kill_parent": true} instead: kills the program that runs curl (SIGKILL), as
+             systemd ends a unit at its time limit
   exit       end with this exit code and no answer (no connection)
 Packages, repositories and URLs not named there get 404. Understands what agentbox passes:
 -s, -S, -f, -L, -m, --connect-timeout, --max-redirs, --proto and --proto-redir (which must
@@ -36,6 +38,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import sys
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -113,6 +116,9 @@ def download(url, dest, opts, known):
     found = known.get("downloads", {}).get(url)
     if found is None:
         found = {"status": 404}
+    if isinstance(found, dict) and found.get("kill_parent"):
+        os.kill(os.getppid(), signal.SIGKILL)
+        return 1
     if isinstance(found, dict) and found.get("flood"):
         try:
             with (sys.stdout.buffer if dest == "-" else open(dest, "wb")) as out:

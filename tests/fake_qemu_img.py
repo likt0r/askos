@@ -13,7 +13,8 @@ Environment:
   qemu-img info -f qcow2 --output=json <disk>   with the format named, as qemu-img 10 answers
              it; the fake disk may hold "backing-filename", "data-file", "encrypted": true,
              "corrupt": true, "format" (another than qcow2 fails) and "virtual-size". The call
-             records the limits it ran under: "limits": {"as": bytes, "cpu": seconds}
+             records the limits it ran under: "limits": {"as": bytes, "cpu": seconds};
+             "compat": "0.10" makes it a version 2 qcow2, which has no "corrupt" flag
   qemu-img create -q -f qcow2 -F qcow2 -b <base> <disk>   writes the fake disk
   qemu-img create -q -f qcow2 <disk> <size>                a fake disk without backing file
 """
@@ -41,6 +42,8 @@ def info_qcow2(disk):
         return 1
     data = {"compat": "1.1", "compression-type": "zlib", "lazy-refcounts": False, "refcount-bits": 16,
             "corrupt": bool(meta.get("corrupt")), "extended-l2": False}
+    if meta.get("compat") == "0.10":        # a version 2 header has none of the version 3 fields
+        data = {"compat": "0.10", "compression-type": "zlib", "refcount-bits": 16}
     info = {"children": [{"name": "file", "info": {"filename": disk, "format": "file"}}],
             "virtual-size": meta.get("virtual-size", 5368709120), "filename": disk, "cluster-size": 65536,
             "format": "qcow2", "actual-size": os.path.getsize(disk),
