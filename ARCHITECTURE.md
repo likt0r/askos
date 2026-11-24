@@ -1316,16 +1316,22 @@ Host after every Build
     output filesystem of 256 MiB), which the Host counts as it counts dnf's output on the Host;
     the VM's limit is 15 minutes. The count takes the Build run lock without waiting, so only
     one build VM runs at a time: while a Build runs, the count is unknown for that check. Every
-    Build run writes `/var/lib/agentbox/build-wanted` before it blocks on the lock and removes
-    it once it holds it; while it is there the check starts no count (the rest are unknown for
-    that check), and a count that sees it (before its VM starts and every 2 seconds while it
-    runs) ends its VM and leaves the count unknown, so a count never holds up a Build for longer
-    than its teardown. The version check a Build run starts itself, holding the lock (a missing
-    pin or build VM image), counts nothing and keeps the counts of the check before.
+    Build run holds the lock `build-wanted` shared while it waits for the run lock, taken before
+    it blocks, and lets it go once it holds the run lock; the kernel drops it with a run stopped
+    or killed while it waits, so no claim outlives its Build. While any Build run waits, the check
+    starts no count (the rest are unknown for that check), and a count that sees one (between the
+    steps of its preparation, every 2 seconds while skopeo hands in the image or the input disk
+    is written, and while its VM runs) stops, ends its VM and leaves the count unknown, so a
+    count holds up a Build for no longer than a step of seconds (copying the 0.6 GB image, a
+    qemu-img, mkfs.ext4 or the seed) and its teardown. While the count holds the run lock it
+    holds the lock `build-count` too, so the Maintenance window and the removal of a Recipe do
+    not take it for a Build. The version check a Build run starts itself, holding the lock (a
+    missing pin or build VM image), counts nothing and keeps the counts of the check before.
   - **The network** `agentbox-build` exists only while `build_vm` is on: a build VM's start
     defines and starts it when it is not there, and `regenerate` (also after `set-settings`)
     removes it while `build_vm` is off, but not while the run lock is held (a Build or a count may
-    still use it; the next `regenerate` removes it).
+    still use it; the next `regenerate` removes it). It is best effort: when libvirt fails there,
+    `set-settings` and `regenerate` say so and fail nothing, and the next one tries again.
 - What the Base image downloads, it downloads inside the Build container, where Fedora's
   packages, the npm tools and Orca are chosen, fetched and checked; no root process on the
   Host parses what the internet answers (#113). Orca comes from its GitHub release
@@ -2086,8 +2092,9 @@ need not be there or belong to another Release.
 The Host's records and state stay where they are: `/etc/agentbox` (`CONF`) and
 `/var/lib/agentbox` (`STATE`); the build VMs' image, their disks and output directories lie in
 `/var/lib/agentbox/build-vm` (`BUILD_VM`, root's, `0711` so that QEMU reaches a build VM's disks,
-nothing listable), their sockets in `/run/agentbox/build-vm`, a Build run about to wait for the run
-lock says so in `/var/lib/agentbox/build-wanted` (the package count gives way), and the version check reads the
+nothing listable), their sockets in `/run/agentbox/build-vm`, the locks of
+agentbox calls in `/var/lib/agentbox/locks` (among them `build-run`, `build-wanted` and
+`build-count`, see Images and Builds), and the version check reads the
 Host's Fedora keys from
 `/etc/pki/rpm-gpg` (`RPM_GPG`); `agentbox import` keeps its tar file in
 `/var/lib/agentbox/transfers` (`TRANSFERS`) while it is attached to the VM; the Control Room's

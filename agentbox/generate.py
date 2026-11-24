@@ -24,6 +24,7 @@ import json
 import os
 import re
 import stat
+import sys
 import tempfile
 import time
 
@@ -1184,7 +1185,13 @@ def apply():
             done.append(defined)
         changes[rec["name"]] = done
     # the build VMs' network exists only while build_vm is on; a build VM's start makes it
-    build_network = False if values["build_vm"] else build_vm_run.remove_network()
+    # (best effort: libvirt failing here says so and fails nothing; the next apply tries again)
+    try:
+        build_network = False if values["build_vm"] else build_vm_run.remove_network()
+    except Fail as f:
+        build_network = False
+        print(f"agentbox: the network {build_vm_run.NETWORK} of the build VMs was not removed: {f.message}; "
+              "the next regenerate tries again", file=sys.stderr)
     timers = _feeds(values)
     timers = _builds() or timers
     timers = _versions(values) or timers

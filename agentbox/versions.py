@@ -79,7 +79,7 @@ import subprocess
 import sys
 import time
 
-from . import build_vm, digests, paths, programs, safeguards, scripts, settings, state_files, times
+from . import build_vm, build_vm_run, digests, paths, programs, safeguards, scripts, settings, state_files, times
 from .commands import declare
 from .errors import Fail, die
 from .sanitize import clean
@@ -395,8 +395,7 @@ def count_in_build_vm(image, build, tag, say):
     Build `build`, with build_vm on: `dnf check-update` in a build VM (build_vm_run.count), never
     on the Host. It takes the Build run lock without waiting: while a Build runs, the count is
     unknown, and a Build that starts meanwhile makes it give way."""
-    from . import build_vm_run, images      # images records the versions of a Build with this module
-    with state_files.locked_unless_held(images.RUN_LOCK) as mine:
+    with build_vm_run.count_lock() as mine:
         if not mine:
             return None, "a Build runs: no count in a build VM until the next check"
         if build_vm_run.gives_way():
@@ -689,7 +688,6 @@ def _check(say, count=True):
         rec["packages"] = (load() or {}).get("packages") or {}
         say("Package updates: not counted while a Build runs; the counts of the check before stay")
     in_vm = settings.load()["build_vm"]
-    from . import build_vm_run
     for image in images.available() if count else ():
         build = images.current(image)
         tag = images.CONTAINER.format(image, build)

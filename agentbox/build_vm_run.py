@@ -67,12 +67,15 @@ A build VM, named DOMAIN_PREFIX + its id (<image>-<build>-<pass>, the pass "buil
 An interruption (the run's SIGTERM handler, Ctrl+C) runs the same teardown; after a crash of
 the run, the next run removes whatever a build VM left (leftovers()).
 
-The count holds the Build run lock (RUN_LOCK), taken without waiting, so only one build VM runs
-at a time; and it gives way to a Build: every Build run writes WANTED before it blocks on the
-lock and removes it once it holds it; the version check counts nothing more once WANTED is
-there, and a count that sees it (before its VM starts, and every WATCH_SECONDS while it runs)
-ends its VM, which releases the lock after the teardown. Only a Build run removes WANTED.
+The count holds the Build run lock (RUN_LOCK, count_lock()), taken without waiting, so only one
+build VM runs at a time; and it gives way to a Build: every Build run holds the lock WANT shared
+while it waits for RUN_LOCK (run_lock()); while any does, the version check starts no count, and
+a count that sees it (between the steps of its preparation, while skopeo hands in the image or
+the input disk is written, and every WATCH_SECONDS while its VM runs) stops and ends its VM, which
+releases the lock after the teardown. The kernel drops a waiter's hold when it ends, so a stopped
+or killed Build leaves no claim.
 """
+import contextlib
 import ipaddress
 import json
 import os
@@ -82,7 +85,9 @@ import select
 import shutil
 import socket
 import stat
+import subprocess
 import tarfile
+import tempfile
 import time
 
 from . import build_vm, paths, programs, settings, state_files, states, virsh
@@ -120,10 +125,12 @@ RUN = paths.host("/run/agentbox/build-vm")
 SOURCE = os.path.join("vm", "build-vm")   # the seed's files in the Release
 FEDORA_BOOTC = "localhost/agentbox-input/fedora-bootc:{}"   # its name in a build VM, by Build
 BUILDER = "localhost/agentbox-input/bootc-image-builder:{}"
-# held for a whole Build run (images.py), and by the count while its build VM runs
+# held for a whole Build run (images.py, run_lock()), and by the count while its build VM runs
 RUN_LOCK = os.path.join(paths.STATE, "build-run")
-# a Build run about to wait for the run lock says so here; a count gives way to it
-WANTED = os.path.join(paths.STATE, "build-wanted")
+# held shared by every Build run while it waits for RUN_LOCK (run_lock()): a count gives way
+WANT = os.path.join(paths.STATE, "build-wanted")
+# held by the count while it holds RUN_LOCK (count_lock()), so the lock tells a count from a Build
+COUNTING = os.path.join(paths.STATE, "build-count")
 BOOT_SECONDS = paths.tunable("AGENTBOX_BUILD_VM_BOOT_SECONDS", 600)
 BUILD_SECONDS = paths.tunable("AGENTBOX_BUILD_VM_SECONDS", 4 * 3600)
 DISK_SECONDS = paths.tunable("AGENTBOX_BUILD_VM_DISK_SECONDS", 2 * 3600)
@@ -370,7 +377,6 @@ def remove_network():
 
 def _virsh_file(cmd, xml, what):
     """virsh <cmd> <file> with xml in a temporary file."""
-    import tempfile
     with tempfile.NamedTemporaryFile("w", suffix=".xml") as f:
         f.write(xml)
         f.flush()
@@ -471,13 +477,11 @@ def _input_disk(vm, job, context, hand_in, say):
     for n, (ref, name) in enumerate(hand_in):
         archive = os.path.join(vm["work"], f"image-{n}.oci.tar")
         say(f"Handing in {ref} as {name}")
-        try:
-            programs.run(["skopeo", "copy", "--quiet", f"containers-storage:{ref}", f"oci-archive:{archive}:{name}"],
-                         SKOPEO_SECONDS, what=f"skopeo copy of {ref}")
-        except Fail as f:
-            raise Failed(f.message)
+        _skopeo(vm, ["skopeo", "copy", "--quiet", f"containers-storage:{ref}", f"oci-archive:{archive}:{name}"],
+                f"skopeo copy of {ref}")
         images.append((archive, {"archive": f"images/{n}.oci.tar", "name": name}))
         _room(vm)
+        _give_way(vm)
     job = {**job, "images": [entry for _, entry in images]}
     with tarfile.open(vm["input"], "x", format=tarfile.PAX_FORMAT) as tar:
         _add_bytes(tar, "job.json", json.dumps(job, indent=2).encode())
@@ -489,8 +493,58 @@ def _input_disk(vm, job, context, hand_in, say):
             tar.add(nested, arcname="context.tar", filter=_owned)
             os.remove(nested)
         for archive, entry in images:
-            tar.add(archive, arcname=entry["archive"], filter=_owned)
+            # an image archive is gigabytes: the count looks for a waiting Build while it copies
+            info = _owned(tar.gettarinfo(archive, arcname=entry["archive"]))
+            with open(archive, "rb") as f:
+                tar.addfile(info, _Watched(f, lambda: _give_way(vm)))
             os.remove(archive)
+
+
+class _Watched:
+    """A file read for the input disk that calls check() every WATCH_SECONDS while it is read."""
+
+    def __init__(self, f, check):
+        self.f, self.check, self.at = f, check, time.monotonic()
+
+    def read(self, size=-1):
+        if time.monotonic() - self.at >= WATCH_SECONDS:
+            self.at = time.monotonic()
+            self.check()
+        return self.f.read(size)
+
+
+def _skopeo(vm, argv, what):
+    """skopeo copy of an image handed in, within SKOPEO_SECONDS; for the count (vm["yields"]) also
+    ended at once when a Build run waits for the run lock (_give_way, every WATCH_SECONDS)."""
+    if not vm["yields"]:
+        try:
+            programs.run(argv, SKOPEO_SECONDS, what=what)
+        except Fail as f:
+            raise Failed(f.message)
+        return
+    with tempfile.TemporaryFile() as err:
+        try:
+            p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err)
+        except OSError as e:
+            raise Failed(f"{what} cannot be started: {e.strerror or e}")
+        deadline = time.monotonic() + SKOPEO_SECONDS
+        try:
+            while True:
+                try:
+                    code = p.wait(timeout=WATCH_SECONDS)
+                    break
+                except subprocess.TimeoutExpired:
+                    if time.monotonic() > deadline:
+                        raise Failed(f"{what}: time limit exceeded")
+                    _give_way(vm)
+        finally:
+            if p.poll() is None:
+                p.kill()
+                p.wait()
+        if code != 0:
+            err.seek(0)
+            tail = clean(" ".join(err.read()[-2000:].decode("utf-8", "replace").split()), False)[-300:]
+            raise Failed(f"{what} failed (exit {code})" + (f": {tail}" if tail else ""))
 
 
 def _seed(vm, src):
@@ -518,10 +572,14 @@ def _run(argv, timeout, what):
 
 def _prepare(vm, image, job, context, hand_in, src, ids, say):
     """The VM's disks, its output directory and its run directory, all new. The disks are root's
-    alone (0600, libvirt hands them to QEMU while the VM runs): the input disk holds a Recipe."""
+    alone (0600, libvirt hands them to QEMU while the VM runs): the input disk holds a Recipe.
+    The count's VM gives way to a Build between these steps and within the long ones
+    (_give_way): what remains between two looks is a copy of the 0.6 GB image, a qemu-img or
+    mkfs.ext4 of an empty file, the seed, each seconds."""
     state_files.directory(paths.BUILD_VM, 0o711)
     _drop_out(vm, say)
     _room(vm)
+    _give_way(vm)
     for path in (vm["work"], vm["run"]):
         shutil.rmtree(path, ignore_errors=True)
     state_files.directory(vm["work"], 0o711)
@@ -530,6 +588,7 @@ def _prepare(vm, image, job, context, hand_in, src, ids, say):
         _disks(vm, image, job, context, hand_in, src, say)
     finally:
         os.umask(umask)
+    _give_way(vm)
     _out_fs(vm, ids, say)
     qemu_gid = state_files.group_id("qemu", "is libvirt installed?")
     state_files.directory(os.path.dirname(RUN), 0o755)
@@ -594,12 +653,15 @@ def _disks(vm, image, job, context, hand_in, src, say):
     # a copy of its own, not an overlay: libvirt hands every file of a disk's chain to QEMU's
     # user and leaves a backing file so, which would be the checked image every build VM boots
     shutil.copyfile(image, vm["system"])
+    _give_way(vm)
     _run(["qemu-img", "resize", "-q", "-f", "qcow2", vm["system"], f"{SYSTEM_GIB}G"], 120,
          "qemu-img resize of the system disk")
     _run(["qemu-img", "create", "-q", "-f", "qcow2", vm["scratch"], f"{SCRATCH_GIB}G"], 120,
          "qemu-img create of the scratch disk")
+    _give_way(vm)
     _input_disk(vm, job, context, hand_in, say)
     _room(vm)
+    _give_way(vm)
     _seed(vm, src)
 
 
@@ -721,8 +783,8 @@ def _size(n):
 
 
 def _give_way(vm):
-    """A count ends when a Build run waits for the run lock (WANTED)."""
-    if vm["yields"] and os.path.exists(WANTED):
+    """A count ends when a Build run waits for the run lock (gives_way)."""
+    if vm["yields"] and gives_way():
         raise Failed("a Build wants to run: the count gives way to it")
 
 
@@ -978,9 +1040,9 @@ def count(image, build, tag, say):
     `dnf -q check-update` in a container from the container image `tag` (the Image's current
     Build, handed in from the Host's storage under the same name), with the seed of the
     installed Release. What dnf wrote to its output, as text (at most MAX_COUNT bytes, the
-    driver ends with a failure for more). The caller holds the run lock and has seen no WANTED;
-    a count never removes WANTED (the Build run that wrote it does). Failed when the build VM
-    cannot run, dnf failed in it, it gave way to a Build or it ended without the list."""
+    driver ends with a failure for more). The caller holds the run lock (count_lock()). Failed
+    when the build VM cannot run, dnf failed in it, it gave way to a Build or it ended without
+    the list."""
     def take(path):
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
         with os.fdopen(fd, "rb") as f:
@@ -989,22 +1051,40 @@ def count(image, build, tag, say):
                  lambda line: None, take)
 
 
-def want_lock():
-    """A Build run is about to wait for the run lock, written before it blocks on it, whoever
-    holds it, so no count can take the lock in between unseen: a count gives way (_give_way),
-    and none starts (gives_way)."""
-    state_files.write_atomic(WANTED, b"", 0o600)
-
-
-def lock_taken():
-    """The Build run holds the run lock now; WANTED goes (also one a run killed while it waited
-    left)."""
-    state_files.remove(WANTED, fail=False)
+@contextlib.contextmanager
+def run_lock():
+    """RUN_LOCK for a Build run, for the block. While the run waits for it, it holds WANT shared,
+    taken before it blocks whoever holds RUN_LOCK, so no count can take that lock in between
+    unseen; it lets WANT go once it holds RUN_LOCK. Any number of runs can wait at once, and the
+    kernel drops a waiter's hold when the waiter ends however it ends (stopped, killed, a
+    reboot), so no claim outlives it."""
+    with contextlib.ExitStack() as held:
+        with state_files.shared(WANT):
+            held.enter_context(state_files.locked(RUN_LOCK))
+        yield
 
 
 def gives_way():
-    """Whether a Build run waits for the run lock (WANTED): the version check counts no more."""
-    return os.path.exists(WANTED)
+    """Whether a Build run waits for the run lock (WANT held by one): no count starts, and a
+    running one ends (_give_way)."""
+    return state_files.held(WANT)
+
+
+@contextlib.contextmanager
+def count_lock():
+    """RUN_LOCK for the count, taken without waiting: yields whether it got it. While it holds it,
+    it holds COUNTING too, so that a count is not taken for a Build (counting())."""
+    with state_files.locked_unless_held(RUN_LOCK) as mine:
+        if not mine:
+            yield False
+            return
+        with state_files.locked(COUNTING):
+            yield True
+
+
+def counting():
+    """Whether the count holds the run lock (COUNTING): the lock is then held by no Build."""
+    return state_files.held(COUNTING)
 
 
 def leftovers(say):

@@ -659,6 +659,20 @@ class NetworkTest(BuildVmTest):
         self.assertIn("network agentbox-build of the build VMs removed", self.ok("set-settings", "builds_kept=4"))
         self.assertEqual([c["net"] for c in self.calls("net-undefine")], ["agentbox-build"])
 
+    def test_removing_the_build_network_is_best_effort(self):
+        """libvirt failing while build_vm is off fails no set-settings and no regenerate: the
+        Settings are saved, a warning says so, the next apply tries again."""
+        self.in_vm()
+        self.scenario(net_info_fails=True)
+        code, out, err = self.run_agentbox("set-settings", "build_vm=false")
+        self.assertEqual(code, 0, err)
+        self.assertIn("build_vm: true -> false", out)
+        self.assertIn("agentbox: the network agentbox-build of the build VMs was not removed: ", err)
+        self.assertIn("the next regenerate tries again", err)
+        self.assertEqual(json.loads(self.read("etc/agentbox/settings.json"))["build_vm"], False)
+        self.scenario(net_info_fails=False)
+        self.assertIn("network agentbox-build of the build VMs removed", self.ok("set-settings", "builds_kept=4"))
+
     def test_an_existing_build_network_that_is_not_running_is_started(self):
         self.scenario(networks={"agentbox-build": {"active": False, "autostart": False,
                                                    "xml": build_vm_run.network_xml()}})
@@ -1484,28 +1498,64 @@ class CountTest(BuildVmTest):
         packages = json.loads(self.read("var/lib/agentbox/versions.json"))["packages"]["base"]
         self.assertEqual(packages["error"], "a Build wants to run: the count gives way to it")
         self.assertEqual(self.leftover(self.count_id), [])
-        self.assertFalse(os.path.exists(self.path("var/lib/agentbox/build-wanted")))
+        self.assertEqual(self.waiters(), 0)          # the Build let its claim go once it held the lock
 
-    def test_while_a_build_waits_for_the_lock_no_count_starts_and_its_request_stays(self):
-        """The moment after a count gave way: the waiting Build run has not taken the free lock
-        yet. A second check must start no count, and must not remove the Build's build-wanted."""
+    def lock(self, name, kind):
+        """agentbox's lock `name` (state_files: var/lib/agentbox/locks/<name>.lock) taken by the
+        test as another process would: the open file, to close."""
+        import fcntl
+        os.makedirs(self.path("var/lib/agentbox/locks"), exist_ok=True)
+        fd = os.open(self.path(f"var/lib/agentbox/locks/{name}.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, kind)
+        return fd
+
+    def waiters(self):
+        """How many hold the want lock shared (/proc/locks): Build runs waiting for the run lock."""
+        try:
+            inode = os.stat(self.path("var/lib/agentbox/locks/build-wanted.lock")).st_ino
+        except FileNotFoundError:
+            return 0
+        with open("/proc/locks") as f:
+            return sum(1 for line in f if line.split()[1:4] == ["FLOCK", "ADVISORY", "READ"]
+                       and line.split()[5].rsplit(":", 1)[-1] == str(inode))
+
+    def wait_for_waiters(self, n):
+        deadline = time.monotonic() + 60
+        while self.waiters() != n:
+            self.assertLess(time.monotonic(), deadline, f"not {n} Build runs waiting for the run lock")
+            time.sleep(0.1)
+
+    def test_while_any_build_waits_no_count_starts_and_a_killed_waiter_leaves_no_claim(self):
+        """Every Build run waiting for the run lock holds the want lock shared; the kernel drops
+        it when the run ends, however it ends. While any waits, no count starts."""
+        import fcntl
         self.counted({"exit": 100, "stdout": self.LIST})
-        self.write("var/lib/agentbox/build-wanted", "")
-        packages, out = self.check()
-        self.assertEqual(packages, {"build": self.base, "updates": None,
-                                    "error": "a Build wants to run: the count gives way to it"})
+        run = self.lock("build-run", fcntl.LOCK_EX)          # a Build that runs long
+        try:
+            first, second = self.build_in_background(), self.build_in_background()
+            self.wait_for_waiters(2)
+            gave_way = {"build": self.base, "updates": None, "error": "a Build wants to run: the count gives way to it"}
+            self.assertEqual(self.check()[0], gave_way)
+            # stopped (systemctl stop: SIGTERM) while it waits: the other still claims the lock
+            first.send_signal(signal.SIGTERM)
+            first.wait(timeout=30)
+            self.wait_for_waiters(1)
+            self.assertEqual(self.check()[0], gave_way)
+            # killed: nothing of its claim is left, only the lock's holder keeps the count away
+            second.kill()
+            second.wait(timeout=30)
+            self.wait_for_waiters(0)
+            self.assertEqual(self.check()[0]["error"], "a Build runs: no count in a build VM until the next check")
+        finally:
+            os.close(run)
         self.assertEqual(self.creates(), [])
-        self.assertTrue(os.path.exists(self.path("var/lib/agentbox/build-wanted")))
-        # the Build run that takes the lock removes it, and the next check counts again
-        self.ok_in_vm()
-        self.assertFalse(os.path.exists(self.path("var/lib/agentbox/build-wanted")))
         self.assertEqual(self.check()[0]["updates"], 2)
 
-    def test_a_build_run_says_it_wants_the_lock_before_it_blocks_on_it(self):
+    def test_a_build_run_claims_the_lock_before_it_blocks_on_it(self):
         """Even when the lock looks free: a count could take it between a look and the wait."""
         import contextlib
         from unittest import mock
-        wanted = os.path.join(self.dir, "build-wanted")
+        from agentbox import paths, state_files
         seen = []
 
         class Blocked(Exception):
@@ -1513,15 +1563,60 @@ class CountTest(BuildVmTest):
 
         @contextlib.contextmanager
         def locked(path):
-            seen.append((path, os.path.exists(wanted)))
+            seen.append((path, state_files.held(build_vm_run.WANT)))
             raise Blocked
             yield
-        with mock.patch.object(build_vm_run, "WANTED", wanted), \
-                mock.patch.object(images.state_files, "held", return_value=False), \
-                mock.patch.object(images.state_files, "locked", locked):
+        with mock.patch.object(paths, "STATE", self.dir), mock.patch.object(state_files, "locked", locked):
             with self.assertRaises(Blocked):
                 images._run("base", "test", lambda line: None)
+            self.assertFalse(state_files.held(build_vm_run.WANT))     # let go when the wait ended
         self.assertEqual(seen, [(images.RUN_LOCK, True)])
+
+    def test_a_count_gives_way_while_it_still_hands_in_the_image(self):
+        """Handing in the Base Build (skopeo) can take long: a waiting Build ends it at once."""
+        import fcntl
+        self.scenario(skopeo_copy_waits=60, count_vm={"podman": {"check_update": {
+            "localhost/agentbox/base:": {"exit": 100, "stdout": self.LIST}}}})
+        check = self.check_in_background()
+        deadline = time.monotonic() + 60
+        while not [c for c in self.calls("skopeo") if c["argv"][0] == "copy"]:
+            self.assertLess(time.monotonic(), deadline, "the count's skopeo did not start")
+            time.sleep(0.1)
+        want = self.lock("build-wanted", fcntl.LOCK_SH)      # a Build run waits
+        try:
+            started = time.monotonic()
+            check.communicate(timeout=60)
+            self.assertLess(time.monotonic() - started, 20)
+        finally:
+            os.close(want)
+        packages = json.loads(self.read("var/lib/agentbox/versions.json"))["packages"]["base"]
+        self.assertEqual(packages["error"], "a Build wants to run: the count gives way to it")
+        self.assertEqual(self.creates(), [])
+        self.assertEqual(self.leftover(self.count_id), [])
+
+    def test_a_count_holding_the_run_lock_is_no_build(self):
+        """images.building() (the Maintenance window, Recipe removal) means a Build run, not the
+        count, which holds the run lock and the lock build-count."""
+        import fcntl
+        from unittest import mock
+        from agentbox import paths
+        run = self.lock("build-run", fcntl.LOCK_EX)
+        try:
+            with mock.patch.object(paths, "STATE", self.path("var/lib/agentbox")), \
+                    mock.patch.object(paths, "BUILDS", self.path("var/lib/agentbox/builds")), \
+                    mock.patch.object(images.states, "build_running", return_value=False), \
+                    mock.patch.object(images, "available", return_value=[]), \
+                    mock.patch.object(images, "builds", return_value={}), \
+                    mock.patch.object(images, "release_defined", return_value=[]):
+                with mock.patch("agentbox.recipes.names", return_value=[]):
+                    self.assertTrue(images.building())          # a Build run holds it
+                    counting = self.lock("build-count", fcntl.LOCK_EX)
+                    try:
+                        self.assertFalse(images.building())     # the count holds it
+                    finally:
+                        os.close(counting)
+        finally:
+            os.close(run)
 
     def test_the_check_a_build_runs_itself_keeps_the_counts_before(self):
         """A Build run without a checked build VM image runs the version check holding the run

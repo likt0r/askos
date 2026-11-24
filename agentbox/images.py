@@ -1572,11 +1572,9 @@ def _run(target, actor, say):
     update decides under the lock which Images it builds (update_images), so a Build that
     ended while it waited for the lock counts; when none needs one, it builds nothing. The
     version check's count in a build VM, which holds the lock too, gives way to it: the run
-    says it wants the lock before it blocks on it, whoever holds it (build_vm_run.want_lock)."""
+    holds a shared want lock while it waits for the run lock (build_vm_run.run_lock)."""
     reason = "update" if target == UPDATE else None
-    build_vm_run.want_lock()
-    with state_files.locked(RUN_LOCK):
-        build_vm_run.lock_taken()
+    with build_vm_run.run_lock():
         started = int(time.time())
         _cleanup(say)
         wanted = None
@@ -1687,10 +1685,11 @@ def start_automatic(say):
 
 def building():
     """Whether a Build runs or is about to (the Maintenance window waits for it, maintenance.py):
-    the run lock is held, a unit of a Build is active (update, all, or an Image the Host or the
+    the run lock is held by a Build run (not by the version check's count in a build VM,
+    build_vm_run.counting), a unit of a Build is active (update, all, or an Image the Host or the
     installed Release knows), or a request file younger than a minute waits for the unit that
     takes it at its start (start() wrote it, then started the unit without waiting)."""
-    if state_files.held(RUN_LOCK):
+    if state_files.held(RUN_LOCK) and not build_vm_run.counting():
         return True
     from . import recipes
     names = dict.fromkeys([*available(), *builds(), *(release_defined() or []), *recipes.names()])
