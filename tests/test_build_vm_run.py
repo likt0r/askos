@@ -1188,6 +1188,82 @@ class DerivedTest(RecipeTest, BuildVmTest):
         self.assertEqual(self.current("tools"), f"tools-{new['build']}.qcow2")
 
 
+PARENT = """import os, sys, time
+sys.path.insert(0, sys.argv[1])
+from agentbox import images
+
+
+def work(pidfile):
+    with open(pidfile + ".part", "w") as f:
+        f.write(str(os.getpid()))
+    os.rename(pidfile + ".part", pidfile)
+    time.sleep(60)
+
+
+images._in_child(work, sys.argv[2])
+"""
+
+
+class ArchiveChildTest(unittest.TestCase):
+    """The child that reads and copies a build VM's archive (images._in_child, as root, up to
+    30 minutes of CPU) never outlives the Build run that forked it."""
+
+    def setUp(self):
+        import tempfile
+        self.dir = tempfile.mkdtemp(prefix="archive-child-")
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        self.script = os.path.join(self.dir, "parent.py")
+        with open(self.script, "w") as f:
+            f.write(PARENT)
+
+    def child_of(self, how):
+        """The pid of the child, once its parent ended `how`; the child is waited for."""
+        pidfile = os.path.join(self.dir, f"child-{how}")
+        parent = subprocess.Popen([sys.executable, "-I", self.script, REPO, pidfile],
+                                  env={"PATH": os.environ["PATH"], "AGENTBOX_ROOT": self.dir, "LANG": "C.UTF-8"},
+                                  stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: parent.poll() is None and parent.kill())
+        deadline = time.monotonic() + 30
+        while not os.path.exists(pidfile):
+            self.assertLess(time.monotonic(), deadline, "the child did not start")
+            time.sleep(0.05)
+        with open(pidfile) as f:
+            child = int(f.read())
+        self.addCleanup(self.kill, child)
+        parent.send_signal(how)
+        parent.wait(timeout=30)
+        return child
+
+    def kill(self, pid):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    def gone(self, pid):
+        """Whether pid ended (no such process, or a zombie its new parent has yet to reap)."""
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                return f.read().rsplit(")", 1)[1].split()[0] in ("Z", "X")
+        except FileNotFoundError:
+            return True
+
+    def test_a_killed_run_takes_the_child_with_it(self):
+        """SIGKILL of the run: nothing of the run runs, the kernel ends the child
+        (PR_SET_PDEATHSIG)."""
+        child = self.child_of(signal.SIGKILL)
+        deadline = time.monotonic() + 10
+        while not self.gone(child):
+            self.assertLess(time.monotonic(), deadline, "the child outlived its killed parent")
+            time.sleep(0.05)
+
+    def test_an_interrupted_run_kills_the_child_before_it_goes_on(self):
+        """SIGINT (the run's SIGTERM handler raises the same way): the run kills and reaps the
+        child before it goes on to its teardown."""
+        child = self.child_of(signal.SIGINT)
+        self.assertTrue(self.gone(child))
+
+
 @unittest.skipUnless(shutil.which("qemu-img"), "qemu-img is not installed")
 class RealQemuImgTest(unittest.TestCase):
     """The disk's check and rewrite (images._take_disk) with the Host's own qemu-img, on qcow2

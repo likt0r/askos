@@ -804,12 +804,16 @@ def _watched(argv, places):
 def _in_child(fn, *args):
     """fn(*args) in a child process under ARCHIVE_LIMITS: its answer (JSON), which a _Failed
     there turns into {"failed": its message}; {"refused": ...} when the child dies or answers
-    nothing (Python's tarfile holds a member's extended header in memory, whatever its size)."""
+    nothing (Python's tarfile holds a member's extended header in memory, whatever its size).
+    The child never outlives the run: the kernel kills it when the run ends (_die_with), and
+    the run kills it when it is interrupted while it waits."""
     sys.stdout.flush()
     sys.stderr.flush()
+    parent = os.getpid()
     r, w = os.pipe()
     pid = os.fork()
     if pid == 0:                         # the child: its answer as JSON on the pipe, then gone
+        _die_with(parent)
         try:
             os.close(r)
             build_vm.lower(ARCHIVE_LIMITS)
@@ -823,14 +827,41 @@ def _in_child(fn, *args):
         finally:
             os._exit(0)
     os.close(w)
-    with os.fdopen(r, "rb") as f:
-        data = f.read(1 << 12)
-    os.waitpid(pid, 0)
+    answered = False
+    try:
+        with os.fdopen(r, "rb") as f:
+            data = f.read(1 << 12)
+        answered = True
+    finally:
+        if not answered:                 # interrupted (the run's SIGTERM handler): no child copies on
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        os.waitpid(pid, 0)
     try:
         answer = json.loads(data)
     except ValueError:                   # no answer: the child was ended (its CPU time, say)
         answer = {"refused": "it cannot be read within its limits"}
     return answer if answer is None or isinstance(answer, dict) else {"refused": "it cannot be read"}
+
+
+PR_SET_PDEATHSIG = 1                 # prctl(2), linux/prctl.h
+
+
+def _die_with(parent):
+    """In a child just forked: SIGKILL from the kernel when the process that forked it ends
+    (prctl PR_SET_PDEATHSIG), so a run killed mid-import leaves no root process copying an
+    archive; gone at once when that process ended before this was set, or when it cannot be
+    set."""
+    import ctypes
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        failed = libc.prctl(PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0) != 0
+    except (OSError, AttributeError):
+        failed = True
+    if failed or os.getppid() != parent:
+        os._exit(1)
 
 
 def _unpack(path, layout, storage):
