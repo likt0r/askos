@@ -1199,21 +1199,27 @@ Host after every Build
   - **The import**: root imports the archive with `skopeo copy oci-archive:<archive>
     containers-storage:localhost/agentbox/<image>:<build>`, under the name the Host chose for the
     Build, never one the archive names: `podman load` takes the name from the archive, so a
-    crafted archive could retag the current Base Build, the pinned fedora-bootc or any other
-    image in the Host's storage. The reference names no image in the archive, so skopeo takes its
-    only image and refuses an archive with more.
-    skopeo unpacks the archive into a directory of its own under `/var/lib/agentbox/build-vm`
-    (`--tmpdir`, not `/var/tmp`), root's, deleted after the import and by the next run if a run
-    is killed. The import starts only with room for the archive's size there, three times it in
-    the Host's container storage and 10 GiB besides on each, else the Build fails at `import`.
-    The factor is a check, not a bound: a layer that unpacks to more fills the storage as an
-    image pulled from quay.io could.
-    skopeo and containers/storage parse the archive
-    as root and check every blob against the manifest's digest, as for every pull; nothing from
-    the image runs. The archive and its output filesystem are deleted right after. The Safeguard
-    check, the tool versions and a derived Image's comparison with the Base Build then run on the
-    imported image as they run on the Host's own Builds; a rejected Build ends there, before any
-    disk step.
+    crafted archive could retag the current Base Build, the pinned fedora-bootc or any other image
+    in the Host's storage. Before skopeo gets the archive, root reads its `index.json` and
+    manifest in a child process (1 GiB of address space, 5 minutes of CPU) and refuses an archive
+    that is not one OCI image: more than one image, a blob the archive does not hold, a descriptor
+    that names URLs (skopeo would fetch that layer from there, from the Host), a media type that
+    is not an OCI manifest's, config's or layer's, more than 128 layers, more than 10,000 entries
+    or an entry that is no regular file or directory. skopeo then runs in a network namespace of
+    its own (`unshare --net`), so nothing an archive names makes root on the Host send a request
+    anywhere. skopeo unpacks the archive into a directory of its own under
+    `/var/lib/agentbox/build-vm` (`--tmpdir`, not `/var/tmp`), root's, deleted after the import
+    and by the next run if a run is killed. The import starts only with room for the archive's
+    size there, three times it in the Host's container storage and 10 GiB besides on each; while
+    it runs, root reads the free space of both every 2 seconds and kills skopeo when either falls
+    below 10 GiB (a layer that unpacks to far more than its size), and the Build fails at
+    `import`. What the killed skopeo left of the image goes with the failed Build, and
+    containers/storage deletes a layer left incomplete when it next opens the store. skopeo and
+    containers/storage parse the archive as root and check every blob against the manifest's
+    digest, as for every pull; nothing from the image runs. The archive and its output filesystem
+    are deleted right after. The Safeguard check, the tool versions and a derived Image's
+    comparison with the Base Build then run on the imported image as they run on the Host's own
+    Builds; a rejected Build ends there, before any disk step.
   - **What runs in the second**: it has no network device at all (`--network none`), and the
     build network is neither checked nor started for it. The image the Host checked (from the
     Host's storage, not the first build VM's archive), bootc-image-builder and the fedora-bootc
@@ -1225,20 +1231,22 @@ Host after every Build
     directory, within 2 hours. The Image's own `bootupctl` runs there, as root in a VM that can
     send nothing anywhere.
   - **The disk**: root reads the header of the `disk.qcow2` it handed out with `qemu-img info -f
-    qcow2` (the format named, never guessed; 1 GiB of address space and 30 s of CPU) and refuses
-    a qcow2 that names a backing file or an external data file, one that is encrypted, marked
-    corrupt or larger than 160 GiB.
-    The rewrite starts only with room under `/var/lib/agentbox/images` for as much as the VM's
-    file and 10 GiB besides; `qemu-img convert` runs with at most 4 GiB of address space and may
+    qcow2` (the format named, never guessed; 1 GiB of address space and 30 s of CPU) and refuses a
+    qcow2 that names a backing file or an external data file, one that is encrypted, marked
+    corrupt or larger than 160 GiB. The rewrite starts only with room under
+    `/var/lib/agentbox/images` for as much as the VM's file and 10 GiB besides. `qemu-img convert
+    -f qcow2 -O qcow2` then writes a new qcow2 from it, opened through a `json:` filename with
+    `"backing": null`. It parses what a VM wrote, so it runs as `agentbox-buildvm`, not root
+    (`setpriv`), without network (`unshare --net`), with at most 4 GiB of address space, and may
     write a file no larger than the disk's virtual size and 1 GiB of metadata, nor than the room
-    there less 10 GiB.
-    Then `qemu-img convert -f qcow2 -O qcow2` writes a new qcow2
-    from it, opened through a `json:` filename with `"backing": null`, which moves to
-    `images/<image>-<build>.qcow2` in one rename: the Build's disk is a file the Host's qemu-img
-    wrote, with no backing file and no data file, holding the guest's blocks and no header field
-    a VM chose. `"backing": null` keeps a backing file from being opened, but qemu-img still
-    opens a data file the header names; the check refuses one, and nothing changes the read-only
-    output in between. The disk and its output filesystem are deleted after it.
+    there less 10 GiB; root opens both files and hands them over as file descriptors, so that user
+    needs no access to the directories they lie in. Root reads the new file's header as it read
+    the VM's, and only then it moves to `images/<image>-<build>.qcow2` in one rename: the Build's
+    disk is a file qemu-img wrote, with no backing file and no data file, holding the guest's
+    blocks and no header field a VM chose. `"backing": null` keeps a backing file from being
+    opened, but qemu-img still opens a data file the header names; the check refuses one, and
+    nothing changes the read-only output in between. The disk and its output filesystem are
+    deleted after it.
   - **The VM**: a transient domain (`virsh create`, never defined) from virt-install's
     `--print-xml`, destroyed on power-off, reboot and crash, with 8 GiB of memory, as many vCPUs
     as the Host has but at most 8, no balloon, no graphics, no console and no guest agent
@@ -2364,8 +2372,10 @@ laptops.
   and a Build's two build VMs are in place, behind an internal switch that is off. With it on, a
   Build's `podman build` and its disk step, the Image's `bootupctl` included, run in build VMs,
   not on the Host; what root runs on what they hand out are parsers: skopeo and
-  containers/storage importing the image archive, `podman image mount` and the Safeguard check,
-  and qemu-img reading the disk's header, bounded, and rewriting it. Checking the
+  containers/storage importing the image archive (in a network namespace of its own, after root
+  read its index and manifest), `podman image mount` and the Safeguard check, and qemu-img
+  reading the disk's header, bounded; qemu-img rewrites the disk as `agentbox-buildvm`, without
+  network. Checking the
   image, root reads the header of a qcow2
   downloaded from Fedora's mirrors with `qemu-img info`, bounded, after the signature and the
   SHA-256 matched; `gpgv` parses the CHECKSUM as `agentbox-gpgv`, unprivileged.
@@ -2391,10 +2401,12 @@ laptops.
   that the Fedora Cloud image runs `build-vm-run` from its seed with podman, btrfs and virtiofs,
   that bootc-image-builder makes a disk in the offline build VM from the images handed in under
   local names (loop devices in the guest, `--build-container` by a local name, nothing pulled),
-  that skopeo imports an archive under the name given and refuses one with two images, and that
-  the build network's rules hold in the kernel; that `qemu-img convert` with `"backing": null`
-  writes a disk without the backing file was tried by hand with qemu-img 10.2.2, not in a test;
-  fakes play `systemd-run`, `xorrisofs`, `skopeo`, `qemu-img`, `virsh create` and the VM, which
+  that skopeo imports an archive under the name given and without network, that the archive
+  `podman save` writes passes root's check of its index and manifest (OCI media types, every
+  blob in it), that qemu-img as `agentbox-buildvm` reads and writes the files root hands it as
+  `/dev/fd/N`, and that the build network's rules hold in the kernel; the check and rewrite of a
+  disk with a backing file or a data file run with the Host's own qemu-img where there is one
+  (as the test's own user, `unshare` and `setpriv` played by fakes); fakes play `systemd-run`, `xorrisofs`, `skopeo`, `qemu-img`, `virsh create` and the VM, which
   runs the real driver against a fake podman),
   shuts down or reboots a Host with `libvirt-guests`, or lets the proxy
   resolve a real name (the proxy's tests give it the addresses a name resolves to, and allowed

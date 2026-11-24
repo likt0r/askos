@@ -113,10 +113,22 @@ STEP_LINE = re.compile(r"(?:\[(\d{1,4})/(\d{1,4})\] )?STEP (\d{1,4})/(\d{1,4}): 
 COMMAND_MAX = 200                 # characters of a step's command a running Build carries
 CONTAINERFILE_MAX = 64 * 1024     # bytes of a Containerfile `agentbox containerfile` shows at most
 IMPORT_SECONDS = 3600            # skopeo copy of a build VM's image archive into the Host's storage
-# the most the layers of an image archive take in the Host's storage, per byte of archive, once
-# unpacked (a filesystem compresses to about a third); checked before an import, not enforced
+# the room an import must find before it starts: in the Host's storage IMPORT_FACTOR times the
+# archive's size (a filesystem compresses to about a third), and IMPORT_RESERVE on each
+# filesystem it writes to, below which the import is stopped while it runs
 IMPORT_FACTOR = 3
-IMPORT_RESERVE = paths.tunable("AGENTBOX_BUILD_IMPORT_RESERVE_BYTES", 10 << 30)   # left free by an import
+IMPORT_RESERVE = paths.tunable("AGENTBOX_BUILD_IMPORT_RESERVE_BYTES", 10 << 30)
+# a build VM's image archive, read before skopeo gets it (archive_problem): its tar's entries,
+# the size of index.json and of its manifest, its layers; in a child process under these limits
+ARCHIVE_ENTRIES = 10000
+ARCHIVE_JSON = 4 << 20
+ARCHIVE_LAYERS = 128
+ARCHIVE_LIMITS = {resource.RLIMIT_AS: 1 << 30, resource.RLIMIT_CPU: 300}
+OCI_MANIFEST = "application/vnd.oci.image.manifest.v1+json"
+OCI_CONFIG = "application/vnd.oci.image.config.v1+json"
+OCI_LAYERS = ("application/vnd.oci.image.layer.v1.tar", "application/vnd.oci.image.layer.v1.tar+gzip",
+              "application/vnd.oci.image.layer.v1.tar+zstd")
+SHA256 = re.compile(r"sha256:([0-9a-f]{64})")
 CONVERT_SECONDS = 3600           # qemu-img convert of a build VM's disk
 DISK_RESERVE = paths.tunable("AGENTBOX_BUILD_DISK_RESERVE_BYTES", 10 << 30)       # left free by the rewrite
 # qemu-img convert as root on a disk a VM wrote: at most 4 GiB of address space (it aborts below
@@ -718,25 +730,187 @@ def _import(image, build, archive, tag, say):
     its only one and refuses an archive with more. skopeo and containers/storage check every
     blob against the manifest's digest; nothing from the image runs.
 
+    Before skopeo gets it, archive_problem reads its index and manifest: one image, every blob
+    in the archive, no URL to fetch one from, OCI media types only, at most ARCHIVE_LAYERS
+    layers. skopeo then runs in a network namespace of its own (unshare --net), so nothing an
+    archive names makes root on the Host send a request anywhere.
+
     skopeo unpacks the archive into a directory of its own on the filesystem of the build VMs
     (--tmpdir, build_vm_run.import_dir, not /var/tmp), deleted afterwards; its layers then go
-    into the Host's storage. Only with room for both: the archive's size there, IMPORT_FACTOR
-    times it in the storage, and IMPORT_RESERVE left on each filesystem."""
+    into the Host's storage. It starts only with room for both: the archive's size there,
+    IMPORT_FACTOR times it in the storage, and IMPORT_RESERVE left on each filesystem; while it
+    runs, the free space of both is read every build_vm_run.WATCH_SECONDS, and skopeo is killed
+    and the import fails when either falls below IMPORT_RESERVE (a layer that unpacks to far
+    more than its size). What a killed skopeo left of the image goes with the failed Build
+    (podman rmi of tag); containers/storage deletes a layer it left incomplete when it next
+    opens the store."""
+    problem = archive_problem(archive)
+    if problem:
+        raise _Failed(f"the build VM's image archive is refused: {problem}")
     size = os.stat(archive).st_size
     tmp = build_vm_run.import_dir(image, build)
+    storage = paths.host(STORAGE)
     _room_for(f"to import the build VM's image archive ({size} bytes)",
-              [(paths.BUILD_VM, size), (paths.host(STORAGE), IMPORT_FACTOR * size)], IMPORT_RESERVE)
+              [(paths.BUILD_VM, size), (storage, IMPORT_FACTOR * size)], IMPORT_RESERVE)
     say(f"== {image}: importing the build VM's image archive as {tag}")
     shutil.rmtree(tmp, ignore_errors=True)
     os.mkdir(tmp, 0o700)
     try:
-        programs.run(["skopeo", "--tmpdir", tmp, "copy", "--quiet", f"oci-archive:{archive}",
-                      f"containers-storage:{tag}"], IMPORT_SECONDS, what="skopeo copy of the build VM's image archive",
-                     c_locale=True)
-    except Fail as f:
-        raise _Failed(f"the build VM's image archive cannot be imported: {f.message}")
+        _watched(["unshare", "--net", "--", "skopeo", "--tmpdir", tmp, "copy", "--quiet", f"oci-archive:{archive}",
+                  f"containers-storage:{tag}"], (storage, paths.BUILD_VM))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _watched(argv, places):
+    """The import's skopeo to its end, within IMPORT_SECONDS and while every filesystem of
+    `places` keeps IMPORT_RESERVE free; _Failed otherwise, skopeo killed."""
+    import tempfile
+    with tempfile.TemporaryFile() as err:
+        try:
+            p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err,
+                                 env=dict(os.environ, LC_ALL="C"))
+        except OSError as e:
+            raise _Failed(f"the build VM's image archive cannot be imported: {argv[0]}: {e.strerror or e}")
+        deadline = time.monotonic() + IMPORT_SECONDS
+        try:
+            while True:
+                try:
+                    code = p.wait(timeout=build_vm_run.WATCH_SECONDS)
+                    break
+                except subprocess.TimeoutExpired:
+                    pass
+                short = [path for path in places if _free_at(path)[1] < IMPORT_RESERVE]
+                if short:
+                    raise _Failed(f"the import of the build VM's image archive was stopped: less than "
+                                  f"{IMPORT_RESERVE} bytes free under {short[0]}")
+                if time.monotonic() > deadline:
+                    raise _Failed(f"the import of the build VM's image archive does not end within {IMPORT_SECONDS} s")
+        finally:
+            if p.poll() is None:
+                p.kill()
+                p.wait()
+        if code != 0:
+            err.seek(0)
+            said = clean(" ".join(err.read(1 << 16).decode("utf-8", "replace").split())[-200:], False)
+            raise _Failed(f"the build VM's image archive cannot be imported: skopeo copy failed (exit {code})"
+                          + (f": {said}" if said else ""))
+
+
+def archive_problem(path):
+    """What makes the OCI archive at `path` (a build VM's image.oci.tar) one the Host does not
+    hand skopeo, or None. Read in a child process under ARCHIVE_LIMITS, as Python's tarfile
+    holds a member's extended header in memory, whatever its size."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    r, w = os.pipe()
+    pid = os.fork()
+    if pid == 0:                         # the child: its answer as JSON on the pipe, then gone
+        try:
+            os.close(r)
+            build_vm.lower(ARCHIVE_LIMITS)
+            answer = _archive_problem(path)
+        except BaseException as e:       # MemoryError among them: whatever it is, the archive is refused
+            answer = f"it cannot be read within its limits ({type(e).__name__})"
+        try:
+            os.write(w, json.dumps(answer).encode()[:1 << 12])
+        finally:
+            os._exit(0)
+    os.close(w)
+    with os.fdopen(r, "rb") as f:
+        data = f.read(1 << 12)
+    os.waitpid(pid, 0)
+    try:
+        answer = json.loads(data)
+    except ValueError:                   # no answer: the child was ended (its CPU time, say)
+        return "it cannot be read within its limits"
+    return answer if answer is None or isinstance(answer, str) else "it cannot be read within its limits"
+
+
+def _archive_problem(path):
+    import hashlib
+    import tarfile
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as e:
+        return f"it cannot be opened: {e.strerror or e}"
+    with os.fdopen(fd, "rb") as raw:
+        try:
+            tar = tarfile.open(fileobj=raw, mode="r:")
+            files = {}
+            for count, m in enumerate(iter(tar.next, None), 1):
+                if count > ARCHIVE_ENTRIES:
+                    return f"it holds more than {ARCHIVE_ENTRIES} entries"
+                name = m.name[2:] if m.name.startswith("./") else m.name
+                name = name.rstrip("/") if m.isdir() else name
+                if name.startswith("/") or any(p in ("", ".", "..") for p in name.split("/")):
+                    return f"it holds an entry named {clean(name[:100], False)!r}"
+                if m.isdir():
+                    continue
+                if not m.isreg():
+                    return f"it holds {clean(name[:100], False)!r}, which is no regular file or directory"
+                if name in files:
+                    return f"it holds {clean(name[:100], False)!r} twice"
+                files[name] = m
+        except tarfile.TarError:
+            return "it is no tar"
+
+        def read(name):
+            m = files.get(name)
+            return tar.extractfile(m).read(ARCHIVE_JSON + 1) if m is not None and m.size <= ARCHIVE_JSON else None
+
+        def blob(d, types, what):
+            """(the blob's name in the archive, None) of the descriptor d, or (None, what is wrong)."""
+            if not isinstance(d, dict):
+                return None, f"its {what} is no descriptor"
+            if "urls" in d:
+                return None, f"its {what} names URLs to fetch it from"
+            if d.get("mediaType") not in types:
+                return None, f"its {what} has the media type {clean(str(d.get('mediaType'))[:100], False)!r}"
+            m = SHA256.fullmatch(d["digest"]) if isinstance(d.get("digest"), str) else None
+            size = d.get("size")
+            if not m or not isinstance(size, int) or isinstance(size, bool):
+                return None, f"its {what} names no sha256 digest and size"
+            name = f"blobs/sha256/{m.group(1)}"
+            if name not in files or files[name].size != size:
+                return None, f"its {what} is not in the archive"
+            return name, None
+
+        def parsed(data):
+            try:
+                found = json.loads(data.decode("utf-8")) if data is not None else None
+            except (ValueError, RecursionError):
+                found = None
+            return found if isinstance(found, dict) else None
+
+        index = parsed(read("index.json"))
+        if index is None:
+            return f"its index.json is missing, larger than {ARCHIVE_JSON} bytes or no JSON object"
+        manifests = index.get("manifests")
+        if not isinstance(manifests, list) or len(manifests) != 1:
+            return f"it holds {len(manifests) if isinstance(manifests, list) else 'no list of'} images, not one"
+        name, why = blob(manifests[0], (OCI_MANIFEST,), "image's manifest")
+        if why:
+            return why
+        data = read(name)
+        if data is None or "sha256:" + hashlib.sha256(data).hexdigest() != manifests[0]["digest"]:
+            return f"its manifest does not match its digest, or is larger than {ARCHIVE_JSON} bytes"
+        manifest = parsed(data)
+        if manifest is None or manifest.get("schemaVersion") != 2 or manifest.get("mediaType") not in (None, OCI_MANIFEST):
+            return "its manifest is no OCI image manifest"
+        _, why = blob(manifest.get("config"), (OCI_CONFIG,), "config")
+        if why:
+            return why
+        layers = manifest.get("layers")
+        if not isinstance(layers, list) or not layers:
+            return "its manifest names no layers"
+        if len(layers) > ARCHIVE_LAYERS:
+            return f"it has {len(layers)} layers, more than {ARCHIVE_LAYERS}"
+        for n, layer in enumerate(layers):
+            _, why = blob(layer, OCI_LAYERS, f"layer {n + 1}")
+            if why:
+                return why
+    return None
 
 
 def _free_at(path):
@@ -827,32 +1001,65 @@ def _take_disk(image, build, disk, out, say):
     problem = rewrite(disk, part, min(virtual + CONVERT_MARGIN, _free_at(paths.IMAGES)[1] - DISK_RESERVE))
     if problem:
         raise _Failed(f"the build VM's disk cannot be rewritten: {problem}")
+    # what an unprivileged qemu-img wrote is checked as the VM's disk was before it becomes the Build's
+    problem = build_vm.qcow2_problem(part, build_vm_run.MAX_DISK)
+    if problem:
+        raise _Failed(f"the rewritten disk is refused: {problem}")
+    if os.geteuid() == 0:
+        os.chown(part, 0, 0)
     os.chmod(part, 0o644)
     os.replace(part, build_file(image, build))
 
 
 def rewrite(disk, part, max_size):
-    """qemu-img convert of the qcow2 `disk` into a new qcow2 `part`, as root with at most
-    CONVERT_AS of address space and files of at most max_size bytes: None, or what went wrong.
-    The json: filename opens it with "backing": null, so no backing file is opened even if one
-    were named (an external data file it would still open: the caller's check refuses one, and
-    nothing changes the read-only output in between); the new file has neither, and holds the
-    guest's blocks and no header field the VM chose."""
-    source = "json:" + json.dumps({"driver": "qcow2", "file": {"driver": "file", "filename": disk}, "backing": None})
+    """qemu-img convert of the qcow2 `disk` into a new qcow2 `part`: None, or what went wrong.
 
-    def limits():
-        build_vm.lower({resource.RLIMIT_AS: CONVERT_AS, resource.RLIMIT_FSIZE: max(0, max_size)})
+    qemu-img parses bytes a VM chose, so it runs as build_vm_run.USER (setpriv), in a network
+    namespace of its own (root's unshare --net before that), with at most CONVERT_AS of address
+    space and files of at most max_size bytes. Root opens both files and hands them over as
+    file descriptors (/dev/fd/N): the VM's disk read-only, never through a link, and `part`,
+    which root makes (0600) and gives USER; USER needs no access to the directories they lie
+    in. The json: filename opens the disk with "backing": null, so no backing file is opened
+    even if one were named (an external data file it would still open: the caller's check
+    refuses one, and nothing changes the read-only output in between); the new file has
+    neither, and holds the guest's blocks and no header field the VM chose."""
+    uid, gid = build_vm_run.ids()
     try:
-        r = subprocess.run(["qemu-img", "convert", "-q", "-f", "qcow2", "-O", "qcow2", source, part],
-                           stdin=subprocess.DEVNULL, capture_output=True, text=True, errors="replace",
-                           timeout=CONVERT_SECONDS, preexec_fn=limits, env=dict(os.environ, LC_ALL="C"))
-    except FileNotFoundError:
-        return "qemu-img is missing"
-    except subprocess.TimeoutExpired:
-        return f"qemu-img convert does not end within {CONVERT_SECONDS} s"
-    except (OSError, subprocess.SubprocessError) as e:
-        return f"qemu-img convert cannot be started: {e}"
-    if r.returncode == -signal.SIGXFSZ:
+        src = os.open(disk, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as e:
+        return f"{disk} cannot be opened: {e.strerror or e}"
+    try:
+        dst = os.open(part, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except OSError as e:
+        os.close(src)
+        return f"{part} cannot be made: {e.strerror or e}"
+    try:
+        if os.geteuid() == 0:
+            os.fchown(dst, uid, gid)
+        source = "json:" + json.dumps({"driver": "qcow2", "file": {"driver": "file", "filename": f"/dev/fd/{src}"},
+                                       "backing": None})
+        argv = ["unshare", "--net", "--", "setpriv", f"--reuid={build_vm_run.USER}", f"--regid={build_vm_run.USER}",
+                "--clear-groups", "--no-new-privs", "--", "qemu-img", "convert", "-q", "-f", "qcow2", "-O", "qcow2",
+                source, f"/dev/fd/{dst}"]
+
+        def limits():
+            build_vm.lower({resource.RLIMIT_AS: CONVERT_AS, resource.RLIMIT_FSIZE: max(0, max_size)})
+        try:
+            r = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, errors="replace",
+                               timeout=CONVERT_SECONDS, preexec_fn=limits, pass_fds=(src, dst), cwd="/",
+                               env=dict(os.environ, LC_ALL="C"))
+        except FileNotFoundError:
+            return "unshare is missing"
+        except subprocess.TimeoutExpired:
+            return f"qemu-img convert does not end within {CONVERT_SECONDS} s"
+        except (OSError, subprocess.SubprocessError) as e:
+            return f"qemu-img convert cannot be started: {e}"
+        written = os.fstat(dst).st_size
+    finally:
+        os.close(src)
+        os.close(dst)
+    # at its file size limit qemu-img's write fails with EFBIG ("File too large"): it ignores SIGXFSZ
+    if r.returncode != 0 and ("File too large" in r.stderr or written >= max_size):
         return f"it would be larger than {max_size} bytes"
     if r.returncode != 0:
         return f"qemu-img convert failed (exit {r.returncode}): " + clean(" ".join(r.stderr.split())[-200:], False)

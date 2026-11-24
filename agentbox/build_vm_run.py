@@ -385,7 +385,7 @@ def vcpus():
     return max(1, min(os.cpu_count() or 1, MAX_VCPUS))
 
 
-def _ids():
+def ids():
     """(uid, gid) of USER; without root (tests) the caller's own, the only ones it can give."""
     if os.geteuid() != 0:
         return os.getuid(), os.getgid()
@@ -863,13 +863,13 @@ def _pass(image, build, step, job, context, hand_in, src, say, seen, take):
     take's answer. The output filesystem is unmounted and deleted afterwards, whatever happened."""
     vm = names(image, build, step)
     image_file = _host_ready(vm["online"])
-    ids = _ids()
+    uids = ids()
     say(f"== {image}: {vm['doing']} {vm['domain']} (image {os.path.basename(image_file)})")
     try:
         try:
             _prepare(vm, image_file, {"job": step, "image": image, "build": build, **job}, context, hand_in,
-                     src, ids, say)
-            _start(vm, ids, say)
+                     src, uids, say)
+            _start(vm, uids, say)
             _relay(vm, say, seen)
         except OSError as e:
             raise Failed(f"build VM: {e.strerror or e}" + (f" ({e.filename})" if e.filename else ""))
@@ -883,7 +883,7 @@ def _pass(image, build, step, job, context, hand_in, src, say, seen, take):
         # nothing changes what it handed out from here on
         _run(["mount", "-o", "remount,ro,nosuid,nodev,noexec", vm["out"]], 60,
              "read-only mount of the output filesystem")
-        path = _outcome(vm, ids[0])
+        path = _outcome(vm, uids[0])
         say(f"== {image}: the build VM handed out its {vm['what']} ({path})")
         return take(path)
     finally:

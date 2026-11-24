@@ -45,9 +45,11 @@ Environment:
                                (podman rmi --force ends the containers of an image)
   podman rm --force --ignore N exit 0
   podman save --format oci-archive -o FILE TAG
-                               writes FILE: a tar of TAG's directory (image/) and its name (name)
-  podman load -i FILE          the image of such a tar (or one fake_skopeo.py wrote) under its name;
-                               prints "Loaded image: <name>"
+                               writes FILE: an OCI archive (write_archive): oci-layout, index.json
+                               naming TAG (org.opencontainers.image.ref.name), its manifest, a
+                               config and one layer, a tar of TAG's directory
+  podman load -i FILE          the image of such an archive (or one fake_skopeo.py wrote) under the
+                               name its index gives it; prints "Loaded image: <name>"
   podman tag SRC DST           DST becomes a copy of SRC
 
 run.json (optional): {"<text in a RUN line>": {"<path in the image>": "<content>" or
@@ -347,32 +349,95 @@ def builder(argv):
     return 0
 
 
+MANIFEST = "application/vnd.oci.image.manifest.v1+json"
+CONFIG = "application/vnd.oci.image.config.v1+json"
+LAYER = "application/vnd.oci.image.layer.v1.tar"
+REF_NAME = "org.opencontainers.image.ref.name"
+
+
+def digest_of(data):
+    return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def descriptor(media_type, data):
+    return {"mediaType": media_type, "digest": digest_of(data), "size": len(data)}
+
+
 def write_archive(tag, path, source=None):
-    """An image archive of the fakes: the directory of the image `source` (default: tag) and the
-    name `tag`, as a tar."""
-    with tarfile.open(path, "w") as tar:
-        data = tag.encode()
-        info = tarfile.TarInfo("name")
-        info.size = len(data)
-        tar.addfile(info, io.BytesIO(data))
+    """An OCI archive of the fakes: index.json naming `tag`, a manifest, a config and one layer,
+    a tar of the directory of the image `source` (default: tag) as "image"."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
         tar.add(image_dir(source or tag), arcname="image")
+    layer = buf.getvalue()
+    config = json.dumps({"architecture": "amd64", "os": "linux",
+                         "rootfs": {"type": "layers", "diff_ids": [digest_of(layer)]}}).encode()
+    manifest = json.dumps({"schemaVersion": 2, "mediaType": MANIFEST, "config": descriptor(CONFIG, config),
+                           "layers": [descriptor(LAYER, layer)]}).encode()
+    index = {"schemaVersion": 2, "manifests": [{**descriptor(MANIFEST, manifest), "annotations": {REF_NAME: tag}}]}
+    write_oci(path, index, {digest_of(b): b for b in (manifest, config, layer)})
 
 
-def images_in(tar):
-    """The images an archive of the fakes holds: its top-level directories image*."""
-    return sorted({m.name.split("/", 1)[0] for m in tar.getmembers() if m.name.split("/", 1)[0].startswith("image")})
+def write_oci(path, index, blobs, extra=()):
+    """An OCI archive of index (a dict) and blobs ({digest: bytes}); extra: TarInfo members
+    added at the end, as a tampering VM might."""
+    def add(tar, name, data):
+        info = tarfile.TarInfo(name)
+        info.size, info.mode = len(data), 0o644
+        tar.addfile(info, io.BytesIO(data))
+    with tarfile.open(path, "w") as tar:
+        add(tar, "oci-layout", b'{"imageLayoutVersion": "1.0.0"}')
+        add(tar, "index.json", json.dumps(index).encode())
+        for digest, data in blobs.items():
+            add(tar, "blobs/sha256/" + digest.split(":", 1)[1], data)
+        for info in extra:
+            tar.addfile(info)
+
+
+def read_oci(path):
+    """(index, {digest: bytes}) of an OCI archive of the fakes."""
+    with tarfile.open(path) as tar:
+        index = json.loads(tar.extractfile("index.json").read())
+        blobs = {"sha256:" + m.name.rsplit("/", 1)[1]: tar.extractfile(m).read() for m in tar.getmembers()
+                 if m.isfile() and m.name.startswith("blobs/sha256/")}
+    return index, blobs
+
+
+def edit_archive(path, index=None, manifest=None, drop_layers=False, extra=()):
+    """An OCI archive of the fakes changed as a tampering VM would: index(index) and
+    manifest(manifest) change them in place; drop_layers removes the layer blobs; extra adds
+    members. The index names the changed manifest by its new digest."""
+    idx, blobs = read_oci(path)
+    entry = idx["manifests"][0]
+    man = json.loads(blobs.pop(entry["digest"]))
+    if drop_layers:
+        for layer in man["layers"]:
+            blobs.pop(layer["digest"], None)
+    if manifest:
+        manifest(man)
+    data = json.dumps(man).encode()
+    blobs[digest_of(data)] = data
+    for e in idx["manifests"]:
+        if e["digest"] == entry["digest"]:
+            e.update(digest=digest_of(data), size=len(data))
+    if index:
+        index(idx)
+    write_oci(path, idx, blobs, extra)
 
 
 def load(path, name=None):
-    """The image of an archive of the fakes into the store, under `name` or else the one it
-    names: that name."""
-    with tarfile.open(path) as tar:
-        name = name or tar.extractfile("name").read().decode()
-        with tempfile.TemporaryDirectory(dir=DIR) as tmp:
-            tar.extractall(tmp, filter="tar")
-            shutil.rmtree(image_dir(name), ignore_errors=True)
-            os.makedirs(STORE, exist_ok=True)
-            shutil.move(os.path.join(tmp, "image"), image_dir(name))
+    """The image of an OCI archive of the fakes into the store, under `name` or else the one
+    its index names: that name. Its first manifest's first layer is the image's directory."""
+    index, blobs = read_oci(path)
+    entry = index["manifests"][0]
+    name = name or entry["annotations"][REF_NAME]
+    manifest = json.loads(blobs[entry["digest"]])
+    layer = blobs[manifest["layers"][0]["digest"]]
+    with tarfile.open(fileobj=io.BytesIO(layer)) as tar, tempfile.TemporaryDirectory(dir=DIR) as tmp:
+        tar.extractall(tmp, filter="tar")
+        shutil.rmtree(image_dir(name), ignore_errors=True)
+        os.makedirs(STORE, exist_ok=True)
+        shutil.move(os.path.join(tmp, "image"), image_dir(name))
     return name
 
 

@@ -22,7 +22,11 @@ Environment:
   qemu-img convert -q -f qcow2 -O qcow2 <source> <disk>    a new fake disk of the source's
              metadata: no data file, no encryption, and no backing file when the source is a
              json: filename that says "backing": null (else qemu-img follows it, and so does
-             the fake: the backing file stays); "converted-from" names the source file
+             the fake: the backing file stays); "converted-from" names the source file (a
+             /dev/fd/N resolved to the file it is). It also records {"cmd": "qemu-img-convert",
+             "user", "unshare", "source", "target"}: what fake_setpriv.py and fake_unshare.py said
+             and both files resolved; scenario.json "convert_adds": these keys added to the new
+             disk, as a qemu-img taken over by the disk could
 """
 import json
 import os
@@ -122,6 +126,10 @@ def main(args):
         if source.startswith("json:"):
             options = json.loads(source[len("json:"):])
             source = options["file"]["filename"]
+        with open(os.path.join(DIR, "calls.jsonl"), "a") as f:
+            f.write(json.dumps({"cmd": "qemu-img-convert", "user": os.environ.get("FAKE_SETPRIV_USER"),
+                                "unshare": os.environ.get("FAKE_UNSHARE"), "source": os.path.realpath(source),
+                                "target": os.path.realpath(args[7])}) + "\n")
         try:
             with open(source) as f:
                 meta = json.load(f)
@@ -131,8 +139,13 @@ def main(args):
         meta = {k: v for k, v in meta.items() if k not in ("data-file", "encrypted", "compat")}
         if "backing" in options and options["backing"] is None:
             meta.pop("backing-filename", None)
+        try:
+            with open(os.path.join(DIR, "scenario.json")) as f:
+                meta.update(json.load(f).get("convert_adds") or {})
+        except FileNotFoundError:
+            pass
         with open(args[7], "w") as f:
-            json.dump({**meta, "converted-from": source}, f)
+            json.dump({**meta, "converted-from": os.path.realpath(source)}, f)
         return 0
     print("qemu-img (fake): unexpected arguments", file=sys.stderr)
     return 1

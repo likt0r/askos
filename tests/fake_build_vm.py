@@ -34,13 +34,15 @@ scenario.json "build_vm" (the first build VM of a Build, <image>-<build>-build) 
   stays       true: the domain does not end when the driver ends (as if QEMU hung)
   podman      the scenario of the VM's podman (fake_podman.py), e.g. build_waits, podman_fails
   tamper      after the driver: "symlink" puts a link to a Host file in place of the file it
-              hands out (image.oci.tar, disk.qcow2), "hardlink" adds a second link to it,
-              "second_image" adds a second image to image.oci.tar
+              hands out (image.oci.tar, disk.qcow2), "hardlink" adds a second link to it; of
+              image.oci.tar (fake_podman.edit_archive): "second_image" names a second image in its
+              index, "layer_urls" drops its layer and names a URL to fetch it from instead,
+              "many_layers" gives it 129 layers, "media_type" a layer type that is no OCI layer's,
+              "link_member" adds a symbolic link to it
   names       after the driver: image.oci.tar names this image instead of the one podman saved
   disk_meta   after the driver: these keys of a fake disk (fake_qemu_img.py) added to disk.qcow2,
               e.g. {"backing-filename": "/etc/shadow"}
 """
-import io
 import json
 import os
 import select
@@ -52,6 +54,8 @@ import tarfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+os.environ.setdefault("FAKE_DIR", os.environ["FAKE_VIRSH_DIR"])
+import fake_podman  # noqa: E402
 import fake_virsh  # noqa: E402
 
 DIR = os.environ["FAKE_VIRSH_DIR"]
@@ -143,18 +147,6 @@ def prepare(root, args, conf):
     return out
 
 
-def rewrite(archive, name):
-    """The archive of the fakes naming another image."""
-    with tarfile.open(archive) as tar:
-        members = [(m, tar.extractfile(m).read() if m.isfile() else None) for m in tar.getmembers()]
-    with tarfile.open(archive, "w") as tar:
-        for m, data in members:
-            if m.name == "name":
-                data = name.encode()
-                m.size = len(data)
-            tar.addfile(m, io.BytesIO(data) if data is not None else None)
-
-
 def forward(port, conn, driver):
     """The FIFO into the log channel until the driver has ended and said all."""
     while True:
@@ -207,10 +199,22 @@ def main(domain, fd, xml_file):
     elif conf.get("tamper") == "hardlink":
         os.link(handed, os.path.join(out, "second-link"))
     elif conf.get("tamper") == "second_image":
-        with tarfile.open(handed, "a") as tar:
-            tar.add(os.path.join(root, "seed"), arcname="image2")
+        fake_podman.edit_archive(handed, index=lambda i: i["manifests"].append(dict(i["manifests"][0])))
+    elif conf.get("tamper") == "layer_urls":
+        fake_podman.edit_archive(handed, drop_layers=True,
+                                 manifest=lambda m: m["layers"][0].update(urls=["http://127.0.0.1:18765/layer"]))
+    elif conf.get("tamper") == "many_layers":
+        fake_podman.edit_archive(handed, manifest=lambda m: m.update(layers=m["layers"] * 129))
+    elif conf.get("tamper") == "media_type":
+        fake_podman.edit_archive(handed, manifest=lambda m: m["layers"][0].update(
+            mediaType="application/vnd.oci.image.layer.nondistributable.v1.tar+gzip"))
+    elif conf.get("tamper") == "link_member":
+        link = tarfile.TarInfo("blobs/sha256/passwd")
+        link.type, link.linkname = tarfile.SYMTYPE, "/etc/passwd"
+        fake_podman.edit_archive(handed, extra=[link])
     if conf.get("names"):
-        rewrite(handed, conf["names"])
+        fake_podman.edit_archive(handed, index=lambda i: i["manifests"][0]["annotations"].update(
+            {fake_podman.REF_NAME: conf["names"]}))
     if conf.get("disk_meta"):
         with open(handed) as f:
             meta = json.load(f)

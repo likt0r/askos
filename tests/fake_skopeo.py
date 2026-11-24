@@ -12,10 +12,14 @@
       "skopeo_copy_fails"
 
   skopeo copy --quiet oci-archive:PATH containers-storage:REF
-      the image of the archive PATH into the fake container storage as REF, whatever name the
-      archive gives it; as skopeo with no image named in the oci-archive reference, it refuses
-      an archive with more than one image (more than one image* directory), and fails when the
-      scenario says "skopeo_import_fails"
+      the image of the OCI archive PATH (fake_podman.write_archive) into the fake container
+      storage as REF, whatever name the archive gives it; as skopeo with no image named in the
+      oci-archive reference, it refuses an archive with more than one image. As skopeo 1.22
+      does, it fetches a layer the archive does not hold from the URLs its descriptor names: the
+      call records "fetched" (and FAKE_UNSHARE says whether it had a network). It fails when the
+      scenario says "skopeo_import_fails"; with "import_fills": n it first allocates n bytes in
+      REF's directory of the store, then waits up to 60 s, as a layer that unpacks to much more
+      than its size (to be stopped by the Host)
 
   skopeo --tmpdir DIR ...   the global option: the call also records "tmpdir": {"exists": bool,
       "mode": its permissions}, and the fake unpacks an imported archive there, as skopeo does
@@ -31,7 +35,7 @@ import fake_podman  # noqa: E402
 
 
 def main(argv):
-    call = {"cmd": "skopeo", "argv": argv}
+    call = {"cmd": "skopeo", "argv": argv, "net": os.environ.get("FAKE_UNSHARE") != "net"}
     tmpdir = None
     if argv[:1] == ["--tmpdir"]:
         tmpdir, argv = argv[1], argv[2:]
@@ -57,13 +61,28 @@ def main(argv):
             print("FATA[0000] writing blob: storing blob to file: digest mismatch", file=sys.stderr)
             return 1
         import tarfile
-        with tarfile.open(path) as tar:
-            if tmpdir:
+        if tmpdir:
+            with tarfile.open(path) as tar:
                 tar.extractall(os.path.join(tmpdir, "oci"), filter="tar")
-            if len(fake_podman.images_in(tar)) != 1:
-                print(f"FATA[0000] initializing source oci-archive:{path}: loading index: more than one image "
-                      "in oci, choose an image", file=sys.stderr)
-                return 1
+        index, blobs = fake_podman.read_oci(path)
+        if len(index["manifests"]) != 1:
+            print(f"FATA[0000] initializing source oci-archive:{path}: loading index: more than one image "
+                  "in oci, choose an image", file=sys.stderr)
+            return 1
+        manifest = json.loads(blobs[index["manifests"][0]["digest"]])
+        fetched = [u for layer in manifest["layers"] if layer["digest"] not in blobs for u in layer.get("urls", [])]
+        if fetched:
+            with open(os.path.join(fake_podman.DIR, "calls.jsonl"), "a") as f:
+                f.write(json.dumps({"cmd": "skopeo-fetch", "urls": fetched, "net": call["net"]}) + "\n")
+            return 0
+        fills = fake_podman.scenario().get("import_fills")
+        if fills:
+            os.makedirs(fake_podman.image_dir(ref), exist_ok=True)
+            fd = os.open(os.path.join(fake_podman.image_dir(ref), "fill"), os.O_WRONLY | os.O_CREAT, 0o644)
+            os.posix_fallocate(fd, 0, fills)
+            os.close(fd)
+            import time
+            time.sleep(60)
         fake_podman.load(path, ref)
         return 0
     if argv[:2] != ["inspect", "--raw"] or len(argv) != 3 or not argv[2].startswith("containers-storage:"):
