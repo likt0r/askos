@@ -18,22 +18,17 @@ import time
 from . import activity, footprint, guest, hostfacts, images, paths, programs, registry, responding, settings, ssh_access
 from . import state_files, states, virsh
 from .commands import declare
-from .registry import check, dom
+from .registry import check
 from .errors import Fail, die
 
 ORCA_TIMEOUT = 20
 
 
-def _exit_with(r):
-    """End the command like `set -e` ended the Bash version: the failed program's
-    own error message on stderr, then its exit code."""
-    raise Fail(r.stderr or "", r.returncode or 1, error="action_failed", raw=True)
-
-
-def must(*args):
-    r = virsh.run(*args)
+def exit_on_failure(r):
+    """When the program failed, end the command like `set -e` ended the Bash version: the
+    failed program's own error message on stderr, then its exit code."""
     if r.returncode != 0:
-        _exit_with(r)
+        raise Fail(r.stderr or "", r.returncode or 1, error="action_failed", raw=True)
 
 
 def reporter(as_json):
@@ -180,7 +175,7 @@ def wake(ctx):
             resumed = states.has_pause(ctx)
             ssh_access.before_start(ctx)  # never with a file that holds a removed SSH key
             responding.clear(ctx)         # the failed wakes of its last start are over
-            must("start", dom(ctx))
+            exit_on_failure(virsh.start(ctx))
             if not resumed:               # it started anew with the file written from the record
                 ssh_access.drop_pending(ctx)
     start = responding.start(ctx)         # the start of the VM this wake waits for
@@ -248,7 +243,7 @@ def pause(ctx, say):
     with state_files.vm_lock(ctx):
         if not states.running(ctx):
             return
-        must("managedsave", dom(ctx))
+        exit_on_failure(virsh.pause(ctx))
         responding.clear(ctx)
     say(f"{ctx} paused")
 
@@ -257,15 +252,15 @@ def stop(ctx):
     """Discard a Pause, shut the VM down and force it off if it is still running
     after the time limit; once it is off, its failed wakes are over. The caller holds
     the VM's lifecycle lock."""
-    virsh.run("managedsave-remove", dom(ctx))
+    virsh.drop_pause(ctx)
     if states.running(ctx):
-        must("shutdown", dom(ctx))
+        exit_on_failure(virsh.shutdown(ctx))
         for _ in range(paths.tunable("AGENTBOX_SHUTDOWN_SECONDS", 60)):
             if not states.running(ctx):
                 break
             time.sleep(1)
         if states.running(ctx):
-            must("destroy", dom(ctx))
+            exit_on_failure(virsh.force_off(ctx))
     responding.clear(ctx)
 
 
@@ -278,7 +273,7 @@ def _check_chain(ctx, base):
     running = virsh.running_system_backing(ctx)
     if running is None or os.path.basename(running) == os.path.basename(base):
         return
-    virsh.run("destroy", dom(ctx))
+    virsh.force_off(ctx)
     die(f"{ctx}: the VM ran on another Build ({os.path.basename(running)}) than its System disk "
         f"({os.path.basename(base)}) and was forced off; agentbox reset {ctx} again", error="build_mismatch", vm=ctx)
 
@@ -304,7 +299,7 @@ def reset_as_found(ctx, say):
         except (Fail, KeyboardInterrupt) as e:
             safe = "disk" not in progress or (isinstance(e, KeyboardInterrupt) and "fresh" in progress)
             if ran and safe and not states.running(ctx) and _may_start(ctx) \
-                    and virsh.run("start", dom(ctx)).returncode == 0:
+                    and virsh.start(ctx).returncode == 0:
                 ssh_access.drop_pending(ctx)
                 say(f"{ctx} started again" + ("" if "fresh" in progress else " (System disk unchanged)"))
             raise
@@ -355,7 +350,7 @@ def _reset(ctx, start, say, progress=None):
         except Fail as f:
             die(f"{ctx}: fresh System disk, but {f.message.removeprefix(f'{ctx}: ')}", error="reset_start_failed",
                 vm=ctx)
-        r = virsh.run("start", dom(ctx))
+        r = virsh.start(ctx)
         if r.returncode == 0:
             ssh_access.drop_pending(ctx)         # it started anew with the file written from the record
             say(f"{ctx} started")
@@ -430,7 +425,7 @@ def start_cmd(args):
             resumed = states.has_pause(ctx)
             ssh_access.before_start(ctx)
             responding.clear(ctx)
-            must("start", dom(ctx))
+            exit_on_failure(virsh.start(ctx))
             if not resumed:
                 ssh_access.drop_pending(ctx)
         try:
@@ -483,7 +478,7 @@ def restart_cmd(args):
     with state_files.vm_lock(ctx):
         stop(ctx)
         ssh_access.before_start(ctx)
-        must("start", dom(ctx))
+        exit_on_failure(virsh.start(ctx))
         ssh_access.drop_pending(ctx)
     say, lines = reporter("--json" in flags)
     say(f"{ctx} restarted")
@@ -643,8 +638,7 @@ def observe(args):
     code = guest.find_code(ctx)
     r = orca_cli(ctx, "environment", "add", "--name", ctx, "--pairing-code", code,
                  stdout=subprocess.DEVNULL, stderr=None)
-    if r.returncode != 0:
-        _exit_with(r)
+    exit_on_failure(r)
     found = agent_states(ctx)
     line = f"{ctx}: the Host observes Orca in the VM. Agents: {agents_text(found)}"
     if "--json" in flags:

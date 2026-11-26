@@ -161,8 +161,56 @@ def network_info(name):
     return info.get("Active") == "yes", info.get("Autostart") == "yes"
 
 
-# --- actions -----------------------------------------------------------------------------------
+# --- actions: what Agent Box does to a VM ------------------------------------------------------
+# An action gives virsh's answer (returncode, stderr) and the caller decides what a failure means.
+
+def start(name):
+    """Start the VM; one with a Pause resumes from it."""
+    return run("start", dom(name))
 
 
-def start(ctx):
-    return run("start", dom(ctx)).returncode == 0
+def shutdown(name):
+    """Ask the VM's system to shut down."""
+    return run("shutdown", dom(name))
+
+
+def force_off(name):
+    """Stop the VM at once, as pulling its plug would."""
+    return run("destroy", dom(name))
+
+
+def pause(name):
+    """Pause the VM: its memory goes to a managed save and it stops."""
+    return run("managedsave", dom(name))
+
+
+def drop_pause(name):
+    """Discard the VM's Pause (its managed save), so its next start is a cold one."""
+    return run("managedsave-remove", dom(name))
+
+
+def attach_readonly_disk(name, path, device, serial):
+    """Attach the raw file at path to the running VM as a read-only virtio disk with this
+    target device and serial number."""
+    return run("attach-disk", dom(name), path, device, "--live", "--mode", "readonly", "--targetbus", "virtio",
+               "--driver", "qemu", "--subdriver", "raw", "--serial", serial)
+
+
+def detach_disk(name, device):
+    """Detach the disk with this target device from the running VM."""
+    return run("detach-disk", dom(name), device, "--live")
+
+
+def disk_devices(name):
+    """The target devices of the VM's disks (e.g. "vda"); empty when virsh has no answer."""
+    r = run("domblklist", dom(name))
+    if r.returncode != 0:
+        return []
+    return [line.split()[0] for line in r.stdout.splitlines() if line.split()]
+
+
+def agent_command(name, command, carries_data, seconds, timeout=None):
+    """The VM's guest agent runs this command (its JSON text) and has `seconds` for it; one that
+    carries data for the VM reaches virsh on its standard input (run_unseen), never as an argument."""
+    return (run_unseen if carries_data else run)("qemu-agent-command", dom(name), command,
+                                                  "--timeout", str(seconds), timeout=timeout)

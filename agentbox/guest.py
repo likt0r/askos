@@ -17,7 +17,7 @@ import time
 
 from . import options, paths, state_files, states, times, virsh
 from .commands import declare
-from .registry import check, dom
+from .registry import check
 from .errors import Fail, die
 from .sanitize import clean, entry, pairing_codes
 
@@ -50,12 +50,11 @@ def to_vm_time(v):
 
 
 def _command(ctx, cmd, seconds=10, timeout=None):
-    """virsh qemu-agent-command with this command for the guest agent. One that carries data for
-    the VM (guest-exec's input-data) reaches virsh on its standard input, never as an argument
-    (virsh.run_unseen): what a wrapper reads on its standard input can be a secret."""
+    """This command for the guest agent. One that carries data for the VM (guest-exec's
+    input-data) never reaches virsh as an argument (virsh.agent_command): what a wrapper reads on
+    its standard input can be a secret."""
     carries = "input-data" in (cmd.get("arguments") or {})
-    return (virsh.run_unseen if carries else virsh.run)("qemu-agent-command", dom(ctx), json.dumps(cmd),
-                                                         "--timeout", str(seconds), timeout=timeout)
+    return virsh.agent_command(ctx, json.dumps(cmd), carries, seconds, timeout=timeout)
 
 
 def agent(ctx, cmd):
@@ -269,7 +268,7 @@ def find_code(ctx, exclude=()):
             resumed = states.has_pause(ctx)
             ssh_access.before_start(ctx)     # never with a file that holds a removed SSH key
             responding.clear(ctx)        # the failed wakes of its last start are over
-            if virsh.start(ctx) and not resumed:
+            if virsh.start(ctx).returncode == 0 and not resumed:
                 ssh_access.drop_pending(ctx)     # it started anew with the file written from the record
             budget += 120                # boot, guest agent and Orca need time
     deadline = time.time() + budget
