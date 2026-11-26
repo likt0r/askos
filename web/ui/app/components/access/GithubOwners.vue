@@ -7,14 +7,13 @@ import type { Vm } from '~/utils/live'
 const props = defineProps<{ vm: Vm }>()
 const { t } = useI18n()
 const live = useLive()
-const errorText = useErrorText()
 const toast = useToast()
 
 const editing = ref(false)
 const draft = ref<string[]>([])
 const input = ref('')
-const busy = ref(false)
-const error = ref<unknown>(null)
+const set = useChange('setOwners', { form: true })
+const busy = set.busy
 const missing = ref<Set<string> | null>(null)
 
 const owners = computed(() => props.vm.github_owners ?? [])
@@ -34,7 +33,7 @@ onMounted(async () => {
 function edit() {
   draft.value = [...owners.value]
   input.value = ''
-  error.value = null
+  set.reset()
   editing.value = true
 }
 
@@ -48,20 +47,10 @@ function addTyped() {
 async function save() {
   addTyped()
   if (!draft.value.length) return
-  busy.value = true
-  error.value = null
-  try {
-    await api(`/vms/${props.vm.name}/github-owners`, { method: 'PUT', body: { owners: draft.value } })
-    toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t('access.owners.saved', { vm: props.vm.name }) })
-    editing.value = false
-    void live.refetchVms()
-  }
-  catch (e) {
-    error.value = e
-  }
-  finally {
-    busy.value = false
-  }
+  if (!(await set.run({ vm: props.vm.name, owners: draft.value })).ok) return
+  toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t('access.owners.saved', { vm: props.vm.name }) })
+  editing.value = false
+  void live.refetchVms()
 }
 </script>
 
@@ -130,7 +119,7 @@ async function save() {
       <p v-if="!draft.length" class="text-sm text-warning">
         {{ t('errors.github_owner_required') }}
       </p>
-      <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(error)" role="alert" />
+      <ChangeFailure :error="set.shown.value" />
       <div class="flex flex-wrap justify-end gap-2">
         <UButton color="neutral" variant="outline" :label="t('access.common.cancel')" :disabled="busy" @click="editing = false" />
         <UButton icon="i-lucide-save" :label="t('access.common.save')" :loading="busy" :disabled="(!draft.length && !input.trim()) || !inputValid || (!changed && !input.trim())" data-testid="owners-save" @click="save" />

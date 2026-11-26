@@ -320,7 +320,7 @@ describe('Settings page', () => {
   describe('saving', () => {
     it('sends PATCH /settings with X-Agentbox: 1 and only the changed keys, numbers as numbers', async () => {
       let stored = settingsBody()
-      const { wrapper, api } = await openPage('/settings', {
+      const { wrapper, api, es } = await openPage('/settings', {
         'GET /settings': () => ok(stored),
         'PATCH /settings': () => {
           stored = settingsBody({ reset_age_days: 14, rebuild_day: 'fri', default_image: 'work' })
@@ -341,8 +341,11 @@ describe('Settings page', () => {
       expect(sent[0]!.headers['x-agentbox']).toBe('1')
       expect(sent[0]!.body).toEqual({ reset_age_days: 14, rebuild_day: 'fri', default_image: 'work' })
 
-      // the form reloaded and shows what is stored now
-      expect(reads(api.calls)).toBe(loaded + 1)
+      // the form reads what is stored now on the save's own Activity entry, not by itself
+      expect(reads(api.calls)).toBe(loaded)
+      es.emit('activity', { time: 't', vm: null, actor: 'owner', kind: 'settings', action: 'set-settings', code: 'set-settings', outcome: 'ok', description: '' })
+      await vi.waitFor(() => expect(reads(api.calls)).toBe(loaded + 1), { timeout: 3000 })
+      await flushPromises()
       expect((input(wrapper, 'reset_age_days').element as HTMLInputElement).value).toBe('14')
       expect((input(wrapper, 'rebuild_day').element as HTMLSelectElement).value).toBe('fri')
       expect(save(wrapper).exists()).toBe(false)
@@ -582,6 +585,36 @@ describe('Settings page', () => {
       expect((input(wrapper, 'reset_age_days').element as HTMLInputElement).value).toBe('9')
     })
 
+    it('its own save\'s entry coming before the answer reads again, and says nothing of elsewhere', async () => {
+      let release!: () => void
+      let current = settingsBody()
+      const { wrapper, api, es } = await openPage('/settings', {
+        'GET /settings': () => ok(current),
+        'PATCH /settings': () => new Promise(resolve => { release = () => resolve(ok(changedBody)) }),
+      })
+      await type(wrapper, 'reset_age_days', '9')
+      await save(wrapper).trigger('click')
+      await flushPromises()
+      current = settingsBody({ reset_age_days: 9 })
+      es.emit('activity', entry)
+      await new Promise(r => setTimeout(r, 500))
+      expect(reads(api.calls)).toBe(1)
+      release()
+      await wait(() => expect(reads(api.calls)).toBe(2))
+      await flushPromises()
+      expect(wrapper.find('[data-testid="settings-changed-elsewhere"]').exists()).toBe(false)
+      expect((input(wrapper, 'reset_age_days').element as HTMLInputElement).value).toBe('9')
+    })
+
+    it('a failed change of the Settings changed nothing: no read, nothing said', async () => {
+      const { wrapper, api, es } = await open()
+      await type(wrapper, 'reset_age_days', '9')
+      es.emit('activity', { ...entry, outcome: 'failed' })
+      await new Promise(r => setTimeout(r, 500))
+      expect(reads(api.calls)).toBe(1)
+      expect(wrapper.find('[data-testid="settings-changed-elsewhere"]').exists()).toBe(false)
+    })
+
     it('loads after a reconnect without resume, not after one that resumed', async () => {
       const { api, es } = await open()
       es.emit('hello', { stream: 'x', resumed: true })
@@ -628,6 +661,20 @@ describe('Settings page', () => {
       expect(wrapper.find('[data-testid="settings-save-error"]').text()).toContain('A setting has a value that is not allowed.')
       expect(wrapper.findAll('[data-testid="setting-error"]')).toHaveLength(0)
       expect(wrapper.find('[data-testid="settings-saved"]').exists()).toBe(false)
+    })
+
+    it('shows a general failure with Details of its code and message, never as a toast', async () => {
+      useState('toasts').value = []
+      const { wrapper } = await openPage('/settings', {
+        'GET /settings': ok(settingsBody()),
+        'PATCH /settings': { status: 502, body: { error: { code: 'action_failed', message: 'agentbox failed', detail: 'secret detail' } } },
+      })
+      await type(wrapper, 'reset_age_days', '9')
+      await save(wrapper).trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-testid="settings-save-error"] [data-testid="fault-message"]').text()).toBe('action_failed: agentbox failed')
+      expect(wrapper.text()).not.toContain('secret detail')
+      expect(useState<unknown[]>('toasts').value).toEqual([])
     })
 
     it.each([

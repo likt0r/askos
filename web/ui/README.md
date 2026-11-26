@@ -172,7 +172,8 @@ section describes, until it moves into the module (#212).
   in the UI's words, for a view that puts it at one field) and `reset()`; it is a TanStack Query
   mutation. After it, the resources it changes are read again once: through the change's own
   Activity entry and its row in `ON_ACTIVITY`, or, for a change that records no entry, through
-  the `stale` of its declaration (none so far). A view does not read again itself. The
+  the `stale` of its declaration (none so far). Every change of the UI is declared there; only
+  signing in and out (`composables/useSession.ts`) are not. A view does not read again itself. The
   request (a secret's value, a key) is not kept once the change is done: the mutation is reset
   and dropped from the cache at once.
 - **Where a failed change appears** (`utils/failures.ts`, decided once by its kind, when the
@@ -185,7 +186,9 @@ section describes, until it moves into the module (#212).
   `update_running` beside the Images' buttons, `domain_suspicious` of an Allowlist entry for a
   domain (`AllowlistRefusal`, with its Signals and how to lift them), `force_required` of the
   Watchlist and the Legitimate domains and `watchlist_recreate_force_required` of the Watchlist
-  (with the command for the Host). The module presents none of them, and the view reads them from `error`.
+  (with the command for the Host), and SSH access's `ssh_missing`, `ssh_pending` and
+  `ssh_not_applied` (saved, only not yet in the VM: a warning in the section, whichever change it
+  was). The module presents none of them, and the view reads them from `error`.
 - **Details** of a failure: its code and the Host's `message`, which the backend always words
   itself; never its `detail`, which may pass on another program's output, from inside a VM too
   (docs/control-room-api.md, "Errors").

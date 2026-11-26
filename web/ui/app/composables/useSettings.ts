@@ -11,12 +11,20 @@ export interface Saved {
 export function useSettings() {
   const info = ref<Record<string, SettingInfo>>({})
   const draft = reactive<Record<string, string>>({})
-  const errors = reactive<Record<string, Problem | { code: 'server', error: unknown }>>({})
+  const errors = reactive<Record<string, Problem | { code: 'server', text: string }>>({})
   const loading = ref(true)
   const loadError = ref<unknown>(null)
-  const saving = ref(false)
-  const saveError = ref<unknown>(null)
+  const patch = useChange('setSettings', { form: true })
+  const saving = patch.busy
+  // a refusal of one Setting shows at its field (errors); any other failure below the form
+  const saveError = computed(() => {
+    const e = patch.shown.value
+    return e instanceof ApiError && e.field && e.field in info.value ? null : e
+  })
   const saved = ref<Saved | null>(null)
+  // this browser's own save: its Activity entry reads the Settings again, never "changed
+  // elsewhere" (it may come before the answer: `arrived`)
+  let own: 'saving' | 'arrived' | 'saved' | null = null
   /** the Settings changed elsewhere while fields were being edited: loaded after save or discard */
   const changedElsewhere = ref(false)
 
@@ -46,12 +54,17 @@ export function useSettings() {
     }
   }
 
-  // a change from elsewhere never throws away what is typed: it waits until nothing is edited
+  // a change from elsewhere never throws away what is typed: it waits until nothing is edited; a
+  // failed change changed nothing
   useReloadOnActivity(() => {
-    if (saving.value) return          // saving loads the new values itself
-    if (dirty.value.length) changedElsewhere.value = true
+    if (own === 'saving') own = 'arrived'
+    else if (own === 'saved') {
+      own = null
+      void load()
+    }
+    else if (dirty.value.length) changedElsewhere.value = true
     else void load()
-  }, { kinds: ['settings'] })
+  }, { kinds: ['settings'], match: entry => entry?.outcome !== 'failed' })
   watch(() => dirty.value.length, (n) => {
     if (n === 0 && changedElsewhere.value) void load()
   })
@@ -68,13 +81,13 @@ export function useSettings() {
 
   function discard() {
     adopt(info.value)
-    saveError.value = null
+    patch.reset()
   }
 
   async function save(): Promise<boolean> {
     if (saving.value) return false
     saved.value = null
-    saveError.value = null
+    patch.reset()
     for (const key of Object.keys(errors)) delete errors[key]
     const body: Record<string, SettingValue> = {}
     for (const key of dirty.value) {
@@ -83,20 +96,21 @@ export function useSettings() {
       else body[key] = toSend(key, draft[key] ?? '', info.value[key]!)
     }
     if (Object.keys(errors).length || !Object.keys(body).length) return false
-    saving.value = true
-    try {
-      saved.value = await api<Saved>('/settings', { method: 'PATCH', body })
-      await load()
-      return true
-    }
-    catch (e) {
-      if (e instanceof ApiError && e.field && e.field in info.value) errors[e.field] = { code: 'server', error: e }
-      else saveError.value = e
+    own = 'saving'
+    const r = await patch.run(body)
+    const arrived = own === 'arrived'
+    own = null
+    if (!r.ok) {
+      const e = r.error
+      if (e instanceof ApiError && e.field && e.field in info.value) errors[e.field] = { code: 'server', text: patch.text.value ?? '' }
+      // an entry that came meanwhile was another's change
+      if (arrived) changedElsewhere.value = true
       return false
     }
-    finally {
-      saving.value = false
-    }
+    saved.value = r.data as Saved
+    if (arrived) void load()
+    else own = 'saved'
+    return true
   }
 
   return { info, draft, errors, keys, dirty, loading, loadError, saving, saveError, saved, changedElsewhere, load, setDraft, restoreDefault, discard, save }

@@ -6,6 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resetSessionForTests } from '~/composables/useSession'
 import { resetLiveForTests } from '~/composables/useLive'
+import { resourcesForTests } from '~/utils/resources'
 import { FakeEventSource } from './fakes'
 import { $, $$, changes, click, fail, must, ok, openApp, settle, type, unmountAll, vm, waitFor } from './access-helpers'
 
@@ -287,5 +288,39 @@ describe('GitHub App section follows the Activity', () => {
     const input = must('[data-testid="app-id"]')
     expect(((input.matches('input') ? input : input.querySelector('input')) as HTMLInputElement).value).toBe('654321')
     expect((must('[data-testid="app-key"] textarea, textarea[data-testid="app-key"]') as HTMLTextAreaElement).value).toBe(KEY)
+  })
+})
+
+describe('Access changes and their failures (#215)', () => {
+  beforeEach(() => {
+    useState('toasts').value = []
+  })
+  const toasts = () => useState<{ title?: string, duration?: number }[]>('toasts').value.map(t => [t.title, t.duration])
+
+  it('a refused Claude token shows at its form with Details, and the token is kept nowhere', async () => {
+    await openApp('/vms/work/access', { ...ACCESS, 'PUT /vms/work/claude-token': fail(422, 'claude_token_rejected', 'Anthropic rejected the token') }, [workVm()])
+    await type('[data-testid="claude-input"]', TOKEN)
+    await click('[data-testid="claude-submit"]')
+    expect(must('[data-testid="claude-error"] [data-testid="fault-message"]').textContent).toBe('claude_token_rejected: Anthropic rejected the token')
+    expect(toasts()).toEqual([])
+    const kept = JSON.stringify(resourcesForTests().client.getMutationCache().getAll().map(m => m.state))
+    expect(kept).not.toContain(TOKEN.slice(13, 40))
+  })
+
+  it('a failed removal of the Claude token shows in its dialog', async () => {
+    await openApp('/vms/work/access', { ...ACCESS, 'DELETE /vms/work/claude-token': fail(502, 'action_failed', 'agentbox failed') }, [workVm()])
+    await click('[data-testid="claude-remove"]')
+    await click('[data-testid="confirm-action"]')
+    expect(must('[data-testid="confirm-body"] [data-testid="fault-message"]').textContent).toBe('action_failed: agentbox failed')
+    expect(toasts()).toEqual([])
+  })
+
+  it('refused GitHub owners show at their form with Details', async () => {
+    await openApp('/vms/work/access', { ...ACCESS, 'PUT /vms/work/github-owners': fail(400, 'invalid_github_owner', 'Invalid owner') }, [workVm()])
+    await click('[data-testid="owners-edit"]')
+    await type('[data-testid="owner-input"]', 'acme')
+    await click('[data-testid="owners-save"]')
+    expect(must('[data-testid="github-owners"] [data-testid="fault-message"]').textContent).toBe('invalid_github_owner: Invalid owner')
+    expect(toasts()).toEqual([])
   })
 })

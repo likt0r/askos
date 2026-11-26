@@ -72,14 +72,7 @@ function label(key: string) {
         </ul>
       </template>
     </UAlert>
-    <UAlert
-      v-if="saveError"
-      color="error"
-      variant="subtle"
-      icon="i-lucide-circle-alert"
-      :title="errorText(saveError)"
-      data-testid="settings-save-error"
-    />
+    <ChangeFailure :error="saveError" data-testid="settings-save-error" />
     <UAlert
       v-if="problems"
       color="error"

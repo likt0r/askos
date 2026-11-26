@@ -380,3 +380,23 @@ describe('SSH access', () => {
     expect(document.body.textContent).toContain('jede offene SSH-Sitzung von work endet')
   })
 })
+
+describe('SSH changes and their failures (#215)', () => {
+  it('a failed switch is a toast that stays; one saved anyway is said in the section', async () => {
+    useState('toasts').value = []
+    await openSsh({}, { 'PUT /vms/work/ssh': fail(502, 'action_failed', 'agentbox failed') })
+    await click(switchButton())
+    expect(useState<{ title?: string, duration?: number }[]>('toasts').value.map(t => [t.title, t.duration]))
+      .toEqual([['SSH access could not be switched', 0]])
+    expect($('[data-testid="ssh-error"]')).toBeNull()
+  })
+
+  it('a refused key shows Details beside the form, never as a toast', async () => {
+    useState('toasts').value = []
+    await openSsh({ keys: [] }, { 'POST /vms/work/ssh-keys': fail(400, 'ssh_key_too_weak', 'Key too weak') })
+    await type('[data-testid="ssh-key-input"]', 'ssh-rsa AAAAB3NzaC1yc2E old')
+    await click('[data-testid="ssh-key-add"]')
+    expect(must('[data-testid="ssh-error"] [data-testid="fault-message"]').textContent).toBe('ssh_key_too_weak: Key too weak')
+    expect(useState<unknown[]>('toasts').value).toEqual([])
+  })
+})

@@ -8,16 +8,15 @@ import type { Vm } from '~/utils/live'
 const props = defineProps<{ vm: Vm }>()
 const { t } = useI18n()
 const live = useLive()
-const errorText = useErrorText()
 const when = useWhen()
 
 const token = ref('')
-const busy = ref(false)
-const error = ref<unknown>(null)
+const set = useChange('setClaudeToken', { form: true })
+const unset = useChange('removeClaudeToken', { form: true })
+const busy = set.busy
+const removeBusy = unset.busy
 const stored = ref<{ length: number } | null>(null)
 const removeOpen = ref(false)
-const removeBusy = ref(false)
-const removeError = ref<string | null>(null)
 const removed = ref(false)
 
 const since = computed(() => (typeof props.vm.claude_token_since === 'string' ? props.vm.claude_token_since : null))
@@ -27,54 +26,36 @@ const looksRight = computed(() => {
 })
 
 /** a refusal of the token itself: the stored one is still in use */
-const oldStays = computed(() => error.value instanceof ApiError
-  && ['claude_token_rejected', 'anthropic_unavailable', 'invalid_claude_token', 'invalid_field'].includes(error.value.code))
+const oldStays = computed(() => set.shown.value instanceof ApiError
+  && ['claude_token_rejected', 'anthropic_unavailable', 'invalid_claude_token', 'invalid_field'].includes(set.shown.value.code))
 
 async function submit() {
   const value = token.value.replace(/\s+/g, '')
   if (!value || busy.value) return
   // gone from the page before the answer comes
   token.value = ''
-  busy.value = true
-  error.value = null
   stored.value = null
   removed.value = false
-  try {
-    const r = await api<{ stored: boolean, length: number }>(`/vms/${props.vm.name}/claude-token`, { method: 'PUT', body: { token: value } })
-    stored.value = { length: typeof r?.length === 'number' ? r.length : 0 }
-    void live.refetchVms()
-  }
-  catch (e) {
-    error.value = e
-  }
-  finally {
-    busy.value = false
-  }
+  const r = await set.run({ vm: props.vm.name, token: value })
+  if (!r.ok) return
+  const length = (r.data as { length?: number } | null)?.length
+  stored.value = { length: typeof length === 'number' ? length : 0 }
+  void live.refetchVms()
 }
 
 function askRemove() {
-  removeError.value = null
+  unset.reset()
   removeOpen.value = true
 }
 
 async function remove() {
   if (removeBusy.value) return
-  removeBusy.value = true
-  removeError.value = null
-  error.value = null
+  set.reset()
   stored.value = null
-  try {
-    await api(`/vms/${props.vm.name}/claude-token`, { method: 'DELETE' })
-    removed.value = true
-    removeOpen.value = false
-    void live.refetchVms()
-  }
-  catch (e) {
-    removeError.value = errorText(e)
-  }
-  finally {
-    removeBusy.value = false
-  }
+  if (!(await unset.run(props.vm.name)).ok) return
+  removed.value = true
+  removeOpen.value = false
+  void live.refetchVms()
 }
 </script>
 
@@ -145,23 +126,14 @@ async function remove() {
       :description="t('access.claude.remove.revoke')"
       data-testid="claude-removed"
     />
-    <UAlert
-      v-if="error"
-      color="error"
-      variant="subtle"
-      icon="i-lucide-circle-alert"
-      :title="errorText(error)"
-      :description="oldStays ? t('access.claude.oldStays') : undefined"
-      role="alert"
-      data-testid="claude-error"
-    />
+    <ChangeFailure :error="set.shown.value" :description="oldStays ? t('access.claude.oldStays') : undefined" data-testid="claude-error" />
     <AccessConfirmDialog
       v-model:open="removeOpen"
       :title="t('access.claude.remove.title', { vm: props.vm.name })"
       :description="t('access.claude.remove.text', { vm: props.vm.name })"
       :confirm-label="t('access.claude.remove.confirm')"
       :busy="removeBusy"
-      :error="removeError"
+      :failure="unset.shown.value"
       @confirm="remove"
     />
   </section>
