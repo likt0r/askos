@@ -129,8 +129,8 @@ section describes, until it moves into the module (#212).
 - **Declaring a resource**: one line in `RESOURCES`, its name, its path and the type of its
   answer (`images: declare<ImagesOverview>('/images')`). The key in the cache is `[name]`.
 - **Asking for one**: `const images = useResource('images')` gives `data` (undefined until an
-  answer came), `loading` (nothing yet and a read on the way), `error` (why the last read failed)
-  and `retry()`. Every view that asks shares one copy and one read. `{ enabled: open }` reads
+  answer came), `loading` (nothing yet and a read on the way), `fetching` (a read on the way,
+  the first or a read again), `error` (why the last read failed) and `retry()`. Every view that asks shares one copy and one read. `{ enabled: open }` reads
   only while a dialog is open; `{ extra: true }` declares a read whose failure the view does not
   show. A view does not know the path, when to read, or how to drop a late answer.
 - **Showing a failed read**: `<ReadFailure :resource="images" />`, in place of the section.
@@ -145,8 +145,9 @@ section describes, until it moves into the module (#212).
   is written into the cache (`build`, through `applyBuild`). An event that only says something
   changed marks the resource stale: `images` after a `build` event whose status is not `running`
   or that `applyBuild` cannot place, after `updating` of the `services` event goes from true to
-  false, and after the Activity codes `maintenance.versions`, `update-now`,
-  `recipe.set`, `recipe.restore`, `recipe.remove` (a Recipe's Image comes or goes) and
+  false, when the version check (`agentbox-versions.service` in the `services` event) stops
+  running (started by hand, it records no Activity entry), and after the Activity codes
+  `maintenance.versions`, `update-now`, `recipe.set`, `recipe.restore`, `recipe.remove` (a Recipe's Image comes or goes) and
   `create`, `delete`, `set-image`, `reset`, `reset.automatic`, `reset.update` (which VMs use
   and pin each Build). A write keeps a stale mark and a failed read's error. A
   stale resource that a view shows is read again; one that nothing shows is read when a view

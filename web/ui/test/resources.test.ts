@@ -79,6 +79,16 @@ describe('the stale table for images (without a view)', () => {
     expect(stale()).toBe(true)
   })
 
+  it('marks it stale when the version check ends, also one started by hand, not while it runs or stops', () => {
+    const check = (state: string) => ({ units: [{ unit: 'agentbox-versions.service', state }], updating: false })
+    live.emit('services', check('stopped'))
+    live.emit('services', check('running'))
+    live.emit('services', check('stopping'))
+    expect(stale()).toBe(false)
+    live.emit('services', check('stopped'))
+    expect(stale()).toBe(true)
+  })
+
   it('marks it stale when the update of every Image ends, not while it runs or stops', () => {
     live.emit('services', { units: [], updating: false })
     live.emit('services', { units: [], updating: true })
@@ -238,6 +248,8 @@ describe('reading a resource', () => {
     vi.useFakeTimers()
     try {
       const api = fakeApi({ 'GET /images': OK(overview()) })
+      expect(r.client.getDefaultOptions().queries).toMatchObject({ staleTime: Infinity, retry: false,
+        refetchOnWindowFocus: false, refetchOnReconnect: false, refetchInterval: false })
       const observer = new QueryObserver(r.client, { queryKey: ['images'], queryFn: () => r.read('images') })
       const off = observer.subscribe(() => {})
       await vi.advanceTimersByTimeAsync(0)

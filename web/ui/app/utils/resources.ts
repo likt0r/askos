@@ -46,22 +46,32 @@ interface EventRow {
   stale?: (event: any, before: any) => ResourceName[]
 }
 
-export const ON_EVENT: Record<string, EventRow> = {
+const ON_EVENT: Record<string, EventRow> = {
   // one Build; once it ended, what it changed (the current Build, who uses what, older Builds
   // removed) is read again
   build: {
     write: { images: (data, event: BuildEvent) => (event?.image && event.build ? applyBuild(data, event) : data) },
     stale: (event: BuildEvent) => (event?.status !== 'running' ? ['images'] : []),
   },
-  // the update of every Image ended: it may have built nothing, so no `build` event says so
+  // the update of every Image ended: it may have built nothing, so no `build` event says so; the
+  // version check ended (`available`, what a Build would update): started by hand, it records no
+  // Activity entry
   services: {
-    stale: (event, before) => (before?.updating === true && event?.updating === false ? ['images'] : []),
+    stale: (event, before) => ((before?.updating === true && event?.updating === false)
+      || (versionCheckRuns(before) && !versionCheckRuns(event)) ? ['images'] : []),
   },
+}
+
+const VERSION_CHECK = 'agentbox-versions.service'
+
+function versionCheckRuns(services: { units?: { unit?: string, state?: string }[] } | null | undefined) {
+  const unit = services?.units?.find(u => u?.unit === VERSION_CHECK)
+  return unit?.state === 'running' || unit?.state === 'stopping'
 }
 
 /** Activity entries (`code ?? action`) after which resources are read again. The end of a Build
  * needs no row: its `build` event marks `images` stale. */
-export const ON_ACTIVITY: Record<string, ResourceName[]> = {
+const ON_ACTIVITY: Record<string, ResourceName[]> = {
   'maintenance.versions': ['images'],
   'update-now': ['images'],
   // a Recipe defines an Image: it comes, changes or goes without a Build
@@ -231,7 +241,7 @@ export interface Resource<T> {
   data: Readonly<Ref<T | undefined>>
   /** nothing came yet and a read is on the way */
   loading: ComputedRef<boolean>
-  /** a read is on the way */
+  /** a read is on the way (the first or a read again) */
   fetching: ComputedRef<boolean>
   /** why the last read failed; null after one that succeeded */
   error: Readonly<Ref<unknown>>

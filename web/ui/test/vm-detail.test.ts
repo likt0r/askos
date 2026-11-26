@@ -919,7 +919,7 @@ describe('tool versions follow the Activity', () => {
     es.emit('build', { image: 'base', build: '20261103-1200', status: 'ok', step: 'done', started: 't', finished: 't', error: null, problems: [], actor: 'timer', unit: 'u' })
     await wait(() => expect(loads()).toBe(2))
     es.emit('activity', entry('build.ok', 'build'))
-    await new Promise(r => setTimeout(r, 300))
+    await flushPromises()
     expect(loads()).toBe(2)
   })
 
