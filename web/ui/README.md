@@ -52,14 +52,21 @@ links in the build are dropped). A Git checkout on the Host has no `dist/`.
 ```
 app/
   app.vue                  UApp, the layout, the page
-  layouts/default.vue      shell: sidebar navigation, reload prompt, host bar, connection notice, page
+  error.vue                the whole window when the shell itself fails (Nuxt's own error page
+                           never shows)
+  layouts/default.vue      shell: sidebar navigation, reload prompt, host bar, connection notice,
+                           page area (components/fault/FaultBoundary)
   layouts/bare.vue         sign-in
   middleware/auth.global   every page but /sign-in needs a session (GET /session)
   pages/                   /sign-in, /vms, /vms/<vm>/{web,access,log,pair}, /allowlist,
-                           /watchlist, /activity, /system, /settings
+                           /watchlist, /activity, /system, /settings; [...path] for every other
+                           address (this page does not exist)
   components/              ConnectionStatus, ConnectionNotice, HostBar, LanguageSwitch,
                            SignOutButton, VmList, VmStateBadge, PlaceholderView, ReadFailure
                            (where a failed read of a resource shows)
+  components/fault/        FaultBoundary (a fault that stops the page shows in the page area,
+                           cleared by going elsewhere), FaultView (unknown address, stopped view,
+                           failed shell), FaultDetails (the message, folded away, copyable)
   components/activity/     ActivityFilters, ActivityList
   components/host/         HostTiles, Sparkline (host bar details and the System page)
   components/system/       SystemHostReboot, SystemImages, SystemImageCard, SystemImageDefinition
@@ -85,7 +92,11 @@ app/
                            listener), useReloadPrompt (own version vs. `version` event),
                            useLiveEvent (live.on() for a component, bursts gathered),
                            useReloadOnActivity (a view's load on the Activity entries that change its data),
-                           useWhen (times in the UI language)
+                           useWhen (times in the UI language), useFaultToast (a fault the UI can
+                           go on from: a toast that stays, with Details)
+  plugins/faults.client.ts Vue's error handler (a fault outside the page area: a toast for one in an
+                           event handler, else error.vue) and unhandled promise rejections (a toast);
+                           nothing about a fault is sent to the Host
   utils/api.ts             fetch for /api/v1: X-Agentbox: 1 on changes, ApiError with the code
   utils/resources.ts       the resources module: every resource declared once, the cache
                            (TanStack Query), the table of what an event does, useResource, change
@@ -95,13 +106,15 @@ app/
                            `default_language` of the Settings if en or de (once signed in), else
                            the browser's language, else English; the sign-in page skips the Settings
   utils/signInLink.ts      the token of a sign-in link in the sign-in page's fragment (#link=)
+  utils/faults.ts          a fault's message for Details (never its stack), which faults leave the
+                           view usable
   utils/activity, clock, host, images, notifications, settings, vmRules, access
                            plain functions for the views above (formatting, filters, merging
                            events, validation); Vitest tests them without a component
 public/notification-sw.js  service worker that only shows notifications (Android's Chrome
                            has no `new Notification`); served by the backend as a file
 i18n/locales/{en,de}.ts    UI strings of the shell; every API error code has a translation
-i18n/locales/{en,de}/<area>.ts   strings per area (access, activity, notifications, read,
+i18n/locales/{en,de}/<area>.ts   strings per area (access, activity, fault, notifications, read,
                            settings, system, vm), spread into en.ts and de.ts (vm.ts sits under `vm`)
 test/                      Vitest
 ```

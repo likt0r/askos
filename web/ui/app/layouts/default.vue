@@ -1,5 +1,6 @@
 <script setup lang="ts">
-// The app shell: navigation, the host bar, the live connection's state, the page.
+// The app shell: navigation, the host bar, the live connection's state, the page (or the fault
+// that stopped it).
 import type { NavigationMenuItem } from '@nuxt/ui'
 
 const { t } = useI18n()
@@ -88,7 +89,9 @@ onBeforeUnmount(() => {
       <HostBar />
       <ConnectionNotice />
       <main class="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
-        <slot />
+        <FaultBoundary>
+          <slot />
+        </FaultBoundary>
       </main>
     </div>
   </UDashboardGroup>
