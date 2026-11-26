@@ -72,6 +72,14 @@ function addFaultyRoutes() {
     component: defineComponent({ render: () => h('div', [h(Row, { n: 1 }), h(Row, { n: 2 }), h(Row, { n: 3 })]) }),
   })
   router.addRoute({
+    path: '/test-offline-in-setup',
+    component: defineComponent({
+      setup() {
+        throw new ApiError(0, 'network', 'The Control Room cannot be reached')
+      },
+    }),
+  })
+  router.addRoute({
     path: '/test-throws-on-click',
     component: defineComponent({
       setup() {
@@ -85,9 +93,10 @@ function addFaultyRoutes() {
   })
 }
 
-/** Requests that could carry something to the Host: everything but reads. */
+/** Requests other than the reads the app makes on its own: anything that could carry a fault. */
+const READS = ['GET /session', 'GET /version', 'GET /host']
 function sent(api: ReturnType<typeof fakeApi>) {
-  return api.calls.filter(c => c.method !== 'GET').map(c => `${c.method} ${c.path}`)
+  return api.calls.map(c => `${c.method} ${c.path}`).filter(c => !READS.includes(c))
 }
 
 /** The toasts shown: their titles and how long they stay (0: until dismissed). */
@@ -177,6 +186,36 @@ describe('a fault in a view', () => {
     expect(byTestId('fault').attributes('data-kind')).toBe('view')
     expect(byTestId('fault-message').text()).toBe('row 1 went wrong')
     expect(useError().value).toBeFalsy()
+    // each one is in the console
+    const logged = vi.mocked(console.error).mock.calls.map(([e]) => (e instanceof Error ? e.message : null))
+    expect(logged).toEqual(expect.arrayContaining(['row 1 went wrong', 'row 2 went wrong', 'row 3 went wrong']))
+    expect(exists('nav-vms')).toBe(true)
+    expect(sent(api)).toEqual([])
+  })
+
+  it('when the fault view itself fails, the full-screen page takes it', async () => {
+    const api = fakeApi({ 'GET /session': SIGNED_IN })
+    addFaultyRoutes()
+    const i18n = useNuxtApp().$i18n
+    const t = i18n.t.bind(i18n)
+    vi.spyOn(i18n, 't').mockImplementation(((key: string, ...rest: unknown[]) => {
+      if (key === 'fault.view.title') throw new Error('the fault view broke')
+      return (t as (...a: unknown[]) => string)(key, ...rest)
+    }) as typeof i18n.t)
+    // it reaches the app: its handler shows app/error.vue (test-utils' mount, the root here,
+    // rejects with it instead)
+    const failed = await open('/test-throws-in-render').then(() => null, (e: Error) => e)
+    expect(failed?.message ?? useError().value?.message).toBe('the fault view broke')
+    expect(sent(api)).toEqual([])
+  })
+
+  it('a Control Room out of reach is the connection notice\'s to say', async () => {
+    const api = fakeApi({ 'GET /session': SIGNED_IN })
+    addFaultyRoutes()
+    await open('/test-offline-in-setup')
+    expect(exists('fault')).toBe(false)
+    expect(useError().value).toBeFalsy()
+    expect(toasts()).toEqual([])
     expect(exists('nav-vms')).toBe(true)
     expect(sent(api)).toEqual([])
   })
@@ -281,6 +320,33 @@ describe('outside the page area', () => {
     expect(useError().value?.message).toBe('the layout broke')
     expect(toasts()).toEqual([])
     expect(sent(api)).toEqual([])
+  })
+
+  it('app/error.vue shows the fault itself, not its cause, and a request\'s 404 as a fault', async () => {
+    fakeApi({ 'GET /session': SIGNED_IN })
+    await open('/vms')
+    const handler = useNuxtApp().vueApp.config.errorHandler!
+    handler(new Error('chart failed', { cause: new TypeError('x is undefined') }), null, 'render function')
+    await flushPromises()
+    let page = await mountSuspended(ErrorPage, { props: { error: useError().value! } })
+    expect(page.find('[data-testid="fault"]').attributes('data-kind')).toBe('shell')
+    expect(page.find('[data-testid="fault-message"]').text()).toBe('chart failed')
+    page.unmount()
+
+    await clearError()
+    handler(new ApiError(404, 'vm_not_found', 'Host text'), null, 'render function')
+    await flushPromises()
+    page = await mountSuspended(ErrorPage, { props: { error: useError().value! } })
+    expect(page.find('[data-testid="fault"]').attributes('data-kind')).toBe('shell')
+    expect(page.find('[data-testid="fault-message"]').text()).toBe('ApiError 404 vm_not_found')
+    page.unmount()
+
+    // an ended session or a lost connection: neither
+    await clearError()
+    handler(new ApiError(0, 'network', 'x'), null, 'render function')
+    handler(new ApiError(401, 'unauthenticated', 'x'), null, 'render function')
+    await flushPromises()
+    expect(useError().value).toBeFalsy()
   })
 
   it('app/error.vue renders without the layout, with Reload and the message, in both languages', async () => {
