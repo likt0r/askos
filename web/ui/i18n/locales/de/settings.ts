@@ -7,6 +7,7 @@ export default {
     restore: 'Standard verwenden',
     save: '{n} Änderung speichern | {n} Änderungen speichern',
     discard: 'Änderungen verwerfen',
+    changedElsewhere: 'Die Einstellungen wurden anderswo geändert. Speichere oder verwirf deine Änderungen, um sie zu sehen.',
     saved: '{n} Einstellung gespeichert. | {n} Einstellungen gespeichert.',
     unchanged: 'Nichts geändert.',
     automatic: 'automatisch',

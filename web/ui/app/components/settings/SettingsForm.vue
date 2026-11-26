@@ -3,7 +3,7 @@
 const { t, te } = useI18n()
 const errorText = useErrorText()
 const s = useSettings()
-const { info, draft, errors, keys, dirty, loading, loadError, saving, saveError, saved } = s
+const { info, draft, errors, keys, dirty, loading, loadError, saving, saveError, saved, changedElsewhere } = s
 const { chosen, followDefaultLanguage } = useLanguage()
 
 onMounted(() => void s.load())
@@ -48,6 +48,14 @@ function label(key: string) {
       data-testid="settings-load-error"
     />
 
+    <UAlert
+      v-if="changedElsewhere"
+      color="info"
+      variant="subtle"
+      icon="i-lucide-info"
+      :title="t('settings.changedElsewhere')"
+      data-testid="settings-changed-elsewhere"
+    />
     <UAlert
       v-if="saved"
       color="success"

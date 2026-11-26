@@ -350,6 +350,19 @@ describe('Allowlist view', () => {
     await waitFor(() => expect(loads()).toBe(2))
   })
 
+  it('reloads when a VM is deleted (its entries go), not on other actions, and after a reconnect without resume', async () => {
+    const { api, es } = await openApp('/allowlist', { 'GET /allowlist': ok(entries()) })
+    const loads = () => api.calls.filter(c => c.path === '/allowlist').length
+    es.emit('activity', { time: '2026-11-03T12:00:00Z', vm: 'work', actor: 'root', kind: 'action', action: 'start', code: 'start', outcome: 'ok', description: '' })
+    es.emit('hello', { stream: 'x', resumed: true })
+    await new Promise(r => setTimeout(r, 500))
+    expect(loads()).toBe(1)
+    es.emit('activity', { time: '2026-11-03T12:00:00Z', vm: 'work', actor: 'root', kind: 'action', action: 'delete', code: 'delete', outcome: 'ok', description: '' })
+    await waitFor(() => expect(loads()).toBe(2))
+    es.emit('hello', { stream: 'y', resumed: false })
+    await waitFor(() => expect(loads()).toBe(3))
+  })
+
   it('shows a failed load with its translated error', async () => {
     await openApp('/allowlist', { 'GET /allowlist': fail(502, 'journal_failed') })
     expect(must('[data-testid="allowlist-error"]').textContent).toContain('Reading the Host\'s journal failed.')

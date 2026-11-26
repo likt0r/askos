@@ -68,6 +68,13 @@ function check(domain: string) {
   if (typeof document !== 'undefined') document.querySelector('[data-testid="domain-check"]')?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
 }
 
+// what each list follows: the Activity entries that change it (a reconnect that could not
+// resume loads them all); a change also re-runs the domain check
+useReloadOnActivity(() => listsChanged(loadWatchlist), { codes: ['watch-add', 'watch-remove', 'watch-set-note', 'migrate-lists', 'maintenance.feeds'] })
+useReloadOnActivity(() => listsChanged(loadLegitimate), { codes: ['legitimate-add', 'legitimate-remove', 'legitimate-set-note', 'migrate-lists'] })
+useReloadOnActivity(() => { harmlessChanged(); void checker.value?.check() }, { codes: ['mark-harmless', 'unmark-harmless'] })
+useReloadOnActivity(() => alerts.value?.load(), { codes: ['mark-seen'] })
+
 onMounted(() => {
   void loadHarmless()
   void loadWatchlist()

@@ -263,6 +263,20 @@ describe('Web tab', () => {
     await waitFor(() => expect(loads()).toBe(2))
   })
 
+  it('reloads the entries and Forbids on an Allowlist change, not on others, and after a reconnect without resume', async () => {
+    const { api, es } = await openApp('/vms/work/web', ROUTES)
+    const loads = () => [api.calls.filter(c => c.path === '/vms/work/allowlist').length, api.calls.filter(c => c.path === '/vms/work/forbids').length]
+    expect(loads()).toEqual([1, 1])
+    const entry = (kind: string, action: string) => ({ time: '2026-11-03T12:00:00Z', vm: 'work', actor: 'root', kind, action, code: action, outcome: 'ok', description: '' })
+    es.emit('activity', entry('action', 'start'))
+    await new Promise(r => setTimeout(r, 500))
+    expect(loads()).toEqual([1, 1])
+    es.emit('activity', entry('allowlist', 'forbid'))
+    await waitFor(() => expect(loads()).toEqual([2, 2]))
+    es.emit('hello', { stream: 'y', resumed: false })
+    await waitFor(() => expect(loads()).toEqual([3, 3]))
+  })
+
   it('reloads the blocked list on an Alert of this VM', async () => {
     const { api, es } = await openApp('/vms/work/web', ROUTES)
     const loads = () => api.calls.filter(c => c.path === '/vms/work/blocked').length

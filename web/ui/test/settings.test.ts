@@ -532,6 +532,66 @@ describe('Settings page', () => {
     })
   })
 
+  describe('follows the Activity', () => {
+    const entry = { time: '2026-11-03T12:00:00Z', vm: null, actor: 'root', kind: 'settings', action: 'set-settings', code: 'set-settings', outcome: 'ok', description: '' }
+    const wait = (check: () => void) => vi.waitFor(check, { timeout: 3000, interval: 20 })
+
+    async function open() {
+      let current = settingsBody()
+      const opened = await openPage('/settings', { 'GET /settings': () => ok(current), 'PATCH /settings': ok(changedBody) })
+      return { ...opened, change: (values: Record<string, string | number | boolean>) => { current = settingsBody(values) } }
+    }
+
+    it('loads the new values when the Settings changed elsewhere', async () => {
+      const { wrapper, api, es, change } = await open()
+      expect((input(wrapper, 'reset_age_days').element as HTMLInputElement).value).toBe('7')
+      change({ reset_age_days: 30 })
+      es.emit('activity', entry)
+      await wait(() => expect(reads(api.calls)).toBe(2))
+      await flushPromises()
+      expect((input(wrapper, 'reset_age_days').element as HTMLInputElement).value).toBe('30')
+      expect(wrapper.find('[data-testid="settings-changed-elsewhere"]').exists()).toBe(false)
+    })
+
+    it('keeps what is typed, says so, and loads after discard', async () => {
+      const { wrapper, api, es, change } = await open()
+      await type(wrapper, 'reset_age_days', '9')
+      change({ reset_age_days: 30 })
+      es.emit('activity', entry)
+      await new Promise(r => setTimeout(r, 500))
+      await flushPromises()
+      expect(reads(api.calls)).toBe(1)
+      expect((input(wrapper, 'reset_age_days').element as HTMLInputElement).value).toBe('9')
+      expect(wrapper.find('[data-testid="settings-changed-elsewhere"]').exists()).toBe(true)
+      await wrapper.find('[data-testid="settings-discard"]').trigger('click')
+      await wait(() => expect(reads(api.calls)).toBe(2))
+      await flushPromises()
+      expect((input(wrapper, 'reset_age_days').element as HTMLInputElement).value).toBe('30')
+      expect(wrapper.find('[data-testid="settings-changed-elsewhere"]').exists()).toBe(false)
+    })
+
+    it('does not say the Settings changed elsewhere after its own save', async () => {
+      const { wrapper, es, change } = await open()
+      await type(wrapper, 'reset_age_days', '9')
+      change({ reset_age_days: 9 })
+      await save(wrapper).trigger('click')
+      await flushPromises()
+      es.emit('activity', entry)
+      await new Promise(r => setTimeout(r, 500))
+      expect(wrapper.find('[data-testid="settings-changed-elsewhere"]').exists()).toBe(false)
+      expect((input(wrapper, 'reset_age_days').element as HTMLInputElement).value).toBe('9')
+    })
+
+    it('loads after a reconnect without resume, not after one that resumed', async () => {
+      const { api, es } = await open()
+      es.emit('hello', { stream: 'x', resumed: true })
+      await new Promise(r => setTimeout(r, 500))
+      expect(reads(api.calls)).toBe(1)
+      es.emit('hello', { stream: 'y', resumed: false })
+      await wait(() => expect(reads(api.calls)).toBe(2))
+    })
+  })
+
   describe('problems from the backend', () => {
     it('shows invalid_setting with a field next to that field, translated, and marks nothing as saved', async () => {
       const { wrapper, api } = await openPage('/settings', {

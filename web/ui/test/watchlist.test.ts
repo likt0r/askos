@@ -106,6 +106,59 @@ describe('Watchlist view', () => {
     await waitFor(() => expect(loads()).toBe(before + 1))
   })
 
+  describe('follows the Activity', () => {
+    const entry = (action: string) => ({ time: '2026-11-03T12:00:00Z', vm: null, actor: 'root', kind: 'watchlist', action, code: action, outcome: 'ok', description: '' })
+    async function open() {
+      const opened = await openApp('/watchlist', routes())
+      const loads = () => ({
+        harmless: opened.api.calls.filter(c => c.path === '/watchlist/harmless').length,
+        watchlist: opened.api.calls.filter(c => c.path === '/watchlist').length,
+        legitimate: opened.api.calls.filter(c => c.path === '/watchlist/legitimate').length,
+        alerts: opened.api.calls.filter(c => c.path === '/vms/work/alerts').length,
+      })
+      return { ...opened, loads, before: loads() }
+    }
+
+    it.each([
+      ['watch-add', 'watchlist'], ['watch-remove', 'watchlist'], ['watch-set-note', 'watchlist'], ['maintenance.feeds', 'watchlist'],
+      ['legitimate-add', 'legitimate'], ['legitimate-remove', 'legitimate'], ['legitimate-set-note', 'legitimate'],
+      ['mark-harmless', 'harmless'], ['unmark-harmless', 'harmless'], ['mark-seen', 'alerts'],
+    ] as const)('%s loads the %s and nothing else', async (code, list) => {
+      const { es, loads, before } = await open()
+      es.emit('activity', entry(code))
+      await waitFor(() => expect(loads()[list]).toBe(before[list] + 1))
+      await new Promise(r => setTimeout(r, 400))
+      const after = loads()
+      for (const other of ['harmless', 'watchlist', 'legitimate', 'alerts'] as const) {
+        // a Harmless mark also reloads the Alerts (they leave out harmless destinations)
+        if (other !== list && !(list === 'harmless' && other === 'alerts')) expect(after[other], other).toBe(before[other])
+      }
+    })
+
+    it('migrate-lists loads the Watchlist and the Legitimate domains', async () => {
+      const { es, loads, before } = await open()
+      es.emit('activity', entry('migrate-lists'))
+      await waitFor(() => expect(loads()).toMatchObject({ watchlist: before.watchlist + 1, legitimate: before.legitimate + 1, harmless: before.harmless }))
+    })
+
+    it('ignores other entries, and a hello that resumed', async () => {
+      const { es, loads, before } = await open()
+      es.emit('activity', entry('something-else'))
+      es.emit('hello', { stream: 'x', resumed: true })
+      await new Promise(r => setTimeout(r, 500))
+      expect(loads()).toEqual(before)
+    })
+
+    it('loads all three lists and the Alerts after a reconnect without resume', async () => {
+      const { es, loads, before } = await open()
+      es.emit('hello', { stream: 'y', resumed: false })
+      await waitFor(() => expect(loads()).toMatchObject({
+        harmless: before.harmless + 1, watchlist: before.watchlist + 1, legitimate: before.legitimate + 1,
+      }))
+      expect(loads().alerts).toBeGreaterThan(before.alerts)
+    })
+  })
+
   it('words the reasons of the Signals in German, and keeps the English text it cannot word', async () => {
     await useNuxtApp().$i18n.setLocale('de')
     await openApp('/watchlist', routes({
