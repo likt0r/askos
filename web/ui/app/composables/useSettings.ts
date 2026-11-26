@@ -67,11 +67,15 @@ export function useSettings() {
 
   // a change from elsewhere never throws away what is typed: it waits until nothing is edited (a
   // failed change counts too: agentbox may have saved before it failed). While this browser saves,
-  // the read after its save brings what changed.
+  // the read after its save brings what changed. The first entry after its own save is taken for
+  // that save's: it is never said to come from elsewhere (it is still read when nothing is typed).
+  let ownEntry = false
   useReloadOnActivity(() => {
     if (saving.value) return
-    if (dirty.value.length) changedElsewhere.value = true
-    else void load()
+    const own = ownEntry
+    ownEntry = false
+    if (!dirty.value.length) void load()
+    else if (!own) changedElsewhere.value = true
   }, { kinds: ['settings'] })
   watch(() => dirty.value.length, (n) => {
     if (n === 0 && changedElsewhere.value) void load()
@@ -105,6 +109,7 @@ export function useSettings() {
     }
     if (Object.keys(errors).length || !Object.keys(body).length) return false
     reading.value = true
+    ownEntry = true
     try {
       const r = await patch.run(body)
       if (!r.ok) {

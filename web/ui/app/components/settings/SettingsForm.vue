@@ -44,7 +44,7 @@ function label(key: string) {
       variant="subtle"
       icon="i-lucide-circle-alert"
       :title="errorText(loadError)"
-      :actions="[{ label: t('settings.retry'), color: 'error', variant: 'outline', onClick: () => s.load() }]"
+      :actions="[{ label: t('settings.retry'), color: 'error', variant: 'outline', onClick: () => s.load(true) }]"
       data-testid="settings-load-error"
     />
 
