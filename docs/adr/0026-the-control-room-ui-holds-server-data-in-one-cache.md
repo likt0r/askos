@@ -1,6 +1,6 @@
 # The Control Room UI holds all server data in one cache; an event writes into it or marks it stale
 
-Status: Accepted (#212), by the owner on 2026-11-26. Built so far: the resources module with its first resource, `images`, its rows of the table and the read-failure element (#214, `web/ui/app/utils/resources.ts`, `web/ui/app/components/ReadFailure.vue`). The other steps are the children of #212.
+Status: Accepted (#212), by the owner on 2026-11-26. Built so far: the resources module with its first resource, `images`, its rows of the table and the read-failure element (#214, `web/ui/app/utils/resources.ts`, `web/ui/app/components/ReadFailure.vue`); changes through it with their failures placed by kind, for the Images and the GitHub App (#215, `useChange`, `web/ui/app/utils/failures.ts`). Details show a failure's code and message, not its `detail` (#224). The other steps are the children of #212.
 
 ## Context
 
@@ -54,7 +54,7 @@ One place names the kind of every failure and picks where it appears. The text f
 - **The error page replaces the page area only.** The navigation and the host bar stay, so the owner keeps the way out and still sees the VMs. A full-screen error page appears only when the shell itself fails. Both are in English and German.
 - **A view names only the refusals it words itself**, such as `domain_suspicious`, `force_required` or the field of a Setting; everything else takes the default of its kind.
 - **A view may declare a read an extra.** Its failure then shows nothing there: the mark for a missing Installation beside a VM's GitHub owners, the longest duration offered for Open web.
-- **"Details" shows the Host's own English text of a failure**, folded away and copyable, once it is checked that this text cannot carry a secret (#215); `docs/control-room-api.md` says so today only for a failure's `params`.
+- **"Details" shows the Host's own English text of a failure**, folded away and copyable, once it is checked that this text cannot carry a secret (#215). The check found that the backend words `message` itself, while `detail` may pass on another program's output, from inside a VM too; Details shows the code and `message`, not `detail` (#224, `docs/control-room-api.md`, "Errors").
 - **A fault of the UI stays in the browser.** Nothing is reported to the Host.
 
 ### Tests

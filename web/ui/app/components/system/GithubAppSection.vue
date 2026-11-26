@@ -21,14 +21,15 @@ const appId = ref('')
 const key = ref('')
 const keyFile = ref<string | null>(null)
 const confirming = ref(false)
-const saving = ref(false)
-const saveError = ref<unknown>(null)
+// a key file too large to be one, refused before anything is sent
+const fileError = ref<unknown>(null)
 const saved = ref<{ id: number, added: boolean } | null>(null)
+const put = useChange((body: { app_id: number, private_key: string }) => ({ method: 'PUT', path: '/github-app', body }), { form: true })
+const saving = put.busy
 
 const removing = ref<GithubApp | null>(null)
 const removeOpen = ref(false)
-const removeBusy = ref(false)
-const removeError = ref<unknown>(null)
+const del = useChange((id: number) => ({ method: 'DELETE', path: `/github-app/${id}` }), { form: true })
 
 const appIdValid = computed(() => /^[1-9]\d{0,11}$/.test(appId.value.trim()))
 const keyLooksRight = computed(() => /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(key.value))
@@ -71,7 +72,8 @@ function startEdit(mode: 'add' | 'replace', app?: GithubApp) {
   appId.value = app ? String(app.id) : ''
   key.value = ''
   keyFile.value = null
-  saveError.value = null
+  fileError.value = null
+  put.reset()
   saved.value = null
   editing.value = mode
 }
@@ -88,9 +90,10 @@ async function chooseFile(event: Event) {
   input.value = ''
   if (!file) return
   if (file.size > 8000) {
-    saveError.value = new ApiError(400, 'invalid_private_key', t('errors.invalid_private_key'))
+    fileError.value = new ApiError(400, 'invalid_private_key', t('errors.invalid_private_key'))
     return
   }
+  fileError.value = null
   key.value = await file.text()
   keyFile.value = file.name
 }
@@ -101,51 +104,30 @@ async function save() {
   // the key leaves the page with the request
   key.value = ''
   keyFile.value = null
-  saving.value = true
-  saveError.value = null
-  try {
-    const r = await api<{ id: number, added?: boolean }>('/github-app', { method: 'PUT', body })
-    saved.value = { id: r?.id ?? body.app_id, added: r?.added ?? false }
-    confirming.value = false
-    editing.value = null
-    toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t(saved.value.added ? 'githubApp.add.done' : 'githubApp.replace.done', { id: saved.value.id }) })
-    void load()
-  }
-  catch (e) {
-    saveError.value = e
-    confirming.value = false
-  }
-  finally {
-    saving.value = false
-  }
+  fileError.value = null
+  const r = await put.run(body)
+  confirming.value = false
+  if (!r.ok) return
+  const answer = r.data as { id?: number, added?: boolean } | null
+  saved.value = { id: answer?.id ?? body.app_id, added: answer?.added ?? false }
+  editing.value = null
+  toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t(saved.value.added ? 'githubApp.add.done' : 'githubApp.replace.done', { id: saved.value.id }) })
 }
 
 function askRemove(app: GithubApp) {
   removing.value = app
-  removeError.value = null
+  del.reset()
   removeOpen.value = true
 }
 
 async function remove() {
   const app = removing.value
-  if (!app) return
-  removeBusy.value = true
-  removeError.value = null
-  try {
-    await api(`/github-app/${app.id}`, { method: 'DELETE' })
-    removeOpen.value = false
-    saved.value = null
-    // a new key for the App just removed has nothing left to replace
-    if (editing.value === 'replace' && appId.value === String(app.id)) cancelEdit()
-    toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t('githubApp.remove.done', { id: app.id }) })
-    void load()
-  }
-  catch (e) {
-    removeError.value = e
-  }
-  finally {
-    removeBusy.value = false
-  }
+  if (!app || !(await del.run(app.id)).ok) return
+  removeOpen.value = false
+  saved.value = null
+  // a new key for the App just removed has nothing left to replace
+  if (editing.value === 'replace' && appId.value === String(app.id)) cancelEdit()
+  toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t('githubApp.remove.done', { id: app.id }) })
 }
 
 onMounted(load)
@@ -285,7 +267,8 @@ useReloadOnActivity(load, { codes: ['set-github-app', 'remove-github-app', 'set-
       <p v-if="key && !keyLooksRight" class="text-sm text-error">
         {{ t('errors.invalid_private_key') }}
       </p>
-      <UAlert v-if="saveError" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(saveError)" :description="t('githubApp.replace.nothingChanged')" role="alert" data-testid="app-replace-error" />
+      <UAlert v-if="fileError" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(fileError)" :description="t('githubApp.replace.nothingChanged')" role="alert" data-testid="app-replace-error" />
+      <ChangeFailure :error="put.shown.value" :description="t('githubApp.replace.nothingChanged')" data-testid="app-replace-error" />
       <div class="flex flex-wrap justify-end gap-2">
         <UButton color="neutral" variant="outline" :label="t('access.common.cancel')" :disabled="saving" @click="cancelEdit" />
         <UButton type="submit" icon="i-lucide-shield-check" :label="editing === 'add' ? t('githubApp.add.submit') : t('githubApp.replace.submit')" :disabled="!canSave" data-testid="app-replace-submit" />
@@ -307,8 +290,8 @@ useReloadOnActivity(load, { codes: ['set-github-app', 'remove-github-app', 'set-
       :title="t('githubApp.remove.confirmTitle', { id: removing?.id ?? '' })"
       :description="t('githubApp.remove.confirmText')"
       :confirm-label="t('githubApp.remove.confirm')"
-      :busy="removeBusy"
-      :error="removeError ? errorText(removeError) : null"
+      :busy="del.busy.value"
+      :failure="del.shown.value"
       @confirm="remove"
     />
   </section>

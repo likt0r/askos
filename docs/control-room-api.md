@@ -38,7 +38,10 @@ Every error has the same shape and an HTTP status that fits:
 ```
 
 - `code`: stable, snake_case; the UI translates it. New codes may be added.
-- `message`: short English text, a fallback when the UI has no translation.
+- `message`: short English text, a fallback when the UI has no translation. The backend words
+  it itself, from its own table (`AGENTBOX_ERRORS`) or a fixed text that names at most a field of
+  the request; it never carries a value from a request, a file or another program. The UI shows it
+  behind "Details".
 - `field` (optional): the request field that is wrong.
 - `params` (optional): the parameters the UI words a refusal with, for the codes that have
   them: `invalid_pattern` (`reason`), `pattern_too_broad` (`host`), the VM variable
@@ -47,8 +50,9 @@ Every error has the same shape and an HTTP status that fits:
   `secret_name_is_env` name (`name`, never a value), and the command
   that finishes a change of SSH access (`finish` of `ssh_not_applied`), each only in the form
   agentbox gives it.
-- `detail` (optional): agentbox's own message (English, untranslated, for diagnosis);
-  never shown as the main text.
+- `detail` (optional): agentbox's own message (English, untranslated, for diagnosis), without
+  the request's own secret (`hide`). It may pass on another program's output, from inside a VM
+  too, and so a secret the request did not carry; the UI does not show it.
 
 Codes from the backend itself:
 

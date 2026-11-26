@@ -63,6 +63,7 @@ export default {
     images: {
       title: 'Images and Builds',
       rebuildAll: 'Rebuild all Images',
+      rebuildFailed: 'The Build could not be started',
       loading: 'Loading Images…',
       source: 'Builds come from the installed Release {release}; the last {n} Builds of each Image are kept',
       repository: 'Repository',

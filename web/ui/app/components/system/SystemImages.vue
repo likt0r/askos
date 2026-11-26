@@ -28,60 +28,43 @@ const updateOpen = computed({
   },
 })
 const updateImage = computed(() => overview.value?.images.find(i => i.name === updating.value) ?? null)
-const updateError = ref<string | null>(null)
 
 function openUpdate(name: string) {
-  updateError.value = null
-  startError.value = null
+  images.update.reset()
   updating.value = name
 }
 
 // Update now: every Image that has a Build, and their VMs
 const updateNowOpen = ref(false)
-const updateNowError = ref<string | null>(null)
 const built = computed(() => (overview.value?.images ?? []).filter(i => !!i.current))
 const anyUpdate = computed(() => built.value.some(i => i.update))
 
 function openUpdateNow() {
-  updateNowError.value = null
-  startError.value = null
+  images.updateNow.reset()
   updateNowOpen.value = true
 }
 
 async function updateNow(vms: string[]) {
-  updateNowError.value = null
-  if (await images.startUpdate(vms)) {
-    updateNowOpen.value = false
-    toast.add({
-      title: t('system.updateNow.started'),
-      description: vms.length ? t('system.updateNow.startedText', { vms: vms.join(', ') }) : t('system.updateNow.startedBuildOnly'),
-      color: 'success',
-      icon: 'i-lucide-check',
-    })
-  }
-  else {
-    updateNowError.value = errorText(startError.value)
-    startError.value = null       // said in the dialog
-  }
+  if (!await images.startUpdate(vms)) return
+  updateNowOpen.value = false
+  toast.add({
+    title: t('system.updateNow.started'),
+    description: vms.length ? t('system.updateNow.startedText', { vms: vms.join(', ') }) : t('system.updateNow.startedBuildOnly'),
+    color: 'success',
+    icon: 'i-lucide-check',
+  })
 }
 
 async function update(vms: string[]) {
   const name = updating.value
-  if (!name) return
-  updateError.value = null
-  if (await images.start(name, vms)) {
-    updating.value = null
-    toast.add({
-      title: t('system.update.started', { image: name }),
-      description: vms.length ? t('system.update.startedText', { vms: vms.join(', ') }) : undefined,
-      color: 'success',
-      icon: 'i-lucide-check',
-    })
-  }
-  else {
-    updateError.value = errorText(startError.value)
-    startError.value = null       // said in the dialog
-  }
+  if (!name || !await images.startImageUpdate(name, vms)) return
+  updating.value = null
+  toast.add({
+    title: t('system.update.started', { image: name }),
+    description: vms.length ? t('system.update.startedText', { vms: vms.join(', ') }) : undefined,
+    color: 'success',
+    icon: 'i-lucide-check',
+  })
 }
 </script>
 
@@ -195,7 +178,7 @@ async function update(vms: string[]) {
       :images="[updateImage]"
       :available="available"
       :loading="starting === updateImage.name"
-      :error="updateError"
+      :failure="images.update.shown.value"
       @confirm="update"
     />
     <SystemUpdateDialog
@@ -205,7 +188,7 @@ async function update(vms: string[]) {
       everything
       :available="available"
       :loading="starting === 'update'"
-      :error="updateNowError"
+      :failure="images.updateNow.shown.value"
       @confirm="updateNow"
     />
   </section>

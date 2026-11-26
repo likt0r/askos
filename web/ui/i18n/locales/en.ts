@@ -1,6 +1,7 @@
 // English UI strings. Keep the keys in sync with de.ts (test/i18n.test.ts checks it).
 import access from './en/access'
 import activity from './en/activity'
+import change from './en/change'
 import fault from './en/fault'
 import notifications from './en/notifications'
 import read from './en/read'
@@ -11,6 +12,7 @@ import vm from './en/vm'
 export default {
   ...access,
   ...activity,
+  ...change,
   ...fault,
   ...notifications,
   ...read,

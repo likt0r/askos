@@ -8,7 +8,9 @@ const props = withDefaults(defineProps<{
   color?: 'error' | 'warning' | 'primary'
   busy?: boolean
   error?: string | null
-}>(), { color: 'error', description: undefined, busy: false, error: null })
+  /** the failure of the change it confirms (its `shown`) */
+  failure?: unknown
+}>(), { color: 'error', description: undefined, busy: false, error: null, failure: null })
 const emit = defineEmits<{ confirm: [] }>()
 const open = defineModel<boolean>('open', { default: false })
 const { t } = useI18n()
@@ -16,10 +18,11 @@ const { t } = useI18n()
 
 <template>
   <UModal v-model:open="open" :title="props.title" :description="props.description" :dismissible="!props.busy">
-    <template v-if="$slots.default || props.error" #body>
+    <template v-if="$slots.default || props.error || props.failure" #body>
       <div class="space-y-3" data-testid="confirm-body">
         <slot />
         <UAlert v-if="props.error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="props.error" role="alert" />
+        <ChangeFailure :error="props.failure" />
       </div>
     </template>
     <template #footer>

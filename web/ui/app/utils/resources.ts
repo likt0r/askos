@@ -3,13 +3,17 @@
 // for a resource by name (`useResource('images')`) and gets its data, whether it is loading and
 // its failure; it knows neither the path nor when the data is read again.
 //
-// Data is read again only for a reason the stream or the owner gives: a row of the table below, a
-// change made in this browser (`change`), a `hello` with `resumed: false` that is not the first,
-// or "Retry". Never by the clock, never on window focus, never as an automatic retry; a read that
+// Changes run through it too (`useChange`): it runs the request, marks what the change makes stale
+// and presents a failure where utils/failures.ts says.
+//
+// Data is read again only for a reason the stream or the owner gives: a row of the tables below
+// (an event, an Activity entry, a change made in this browser), a `hello` with `resumed: false`
+// that is not the first, or "Retry". Never by the clock, never on window focus, never as an automatic retry; a read that
 // failed because the Control Room could not be reached is read again with the next `hello`.
-import { notifyManager, QueryClient, useQuery } from '@tanstack/vue-query'
+import { notifyManager, QueryClient, useMutation, useQuery } from '@tanstack/vue-query'
 import { computed, type ComputedRef, type MaybeRefOrGetter, type Ref, toValue } from 'vue'
 import { api, ApiError } from './api'
+import { failurePlace, unreachable } from './failures'
 import { applyBuild, type BuildEvent, type ImagesOverview } from './images'
 import type { Live } from './live'
 
@@ -269,15 +273,80 @@ export function useResource<N extends ResourceName>(name: N, options: ResourceOp
   }
 }
 
-/** A change made in this browser: runs the request and marks what it changes stale, whether it
- * succeeded or was refused (a refusal may say that something else runs already). */
-export async function change<T = unknown>(path: string, options: Parameters<typeof api>[1], stale: ResourceName[]): Promise<T> {
+// ---- changes ---------------------------------------------------------------------------------
+
+type Method = 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+
+export interface ChangeRequest {
+  method: Method
+  path: string
+  body?: unknown
+}
+
+/** The changes that make resources stale without an Activity entry saying so: one that records
+ * an entry is read again through its row in ON_ACTIVITY, once (the owner on #215). */
+const ON_CHANGE: { method: Method, path: RegExp, stale: ResourceName[] }[] = []
+
+function staleAfter(request: ChangeRequest): ResourceName[] {
+  const path = request.path.split('?')[0]!
+  return ON_CHANGE.filter(row => row.method === request.method && row.path.test(path)).flatMap(row => row.stale)
+}
+
+export interface ChangeOptions {
+  /** sent from a form or a dialog: a failure appears there (ChangeFailure), else as a toast */
+  form?: boolean
+  /** the codes the view words itself: the module presents none of them */
+  own?: string[]
+  /** the toast's title for a failure (default: "That did not work") */
+  failed?: () => string
+}
+
+export type ChangeResult<T> = { ok: true, data: T } | { ok: false, error: unknown }
+
+export interface Change<A, T> {
+  /** run the request; a failure is presented by its kind (utils/failures.ts) */
+  run: (args: A) => Promise<ChangeResult<T>>
+  busy: ComputedRef<boolean>
+  /** the last failure; null after a success or reset() */
+  error: Readonly<Ref<unknown>>
+  /** the failure the form shows (ChangeFailure): none for an own code or one shown elsewhere */
+  shown: ComputedRef<unknown>
+  reset: () => void
+}
+
+/** A change for a view: `request` turns the view's arguments into the request. It runs through
+ * the module (a TanStack Query mutation), marks what the change makes stale (ON_CHANGE), and
+ * presents its failure: at the form for one sent from a form, else as a toast that stays. */
+export function useChange<A = void, T = unknown>(request: (args: A) => ChangeRequest, options: ChangeOptions = {}): Change<A, T> {
   const r = useResources()
-  try {
-    return await api<T>(path, options)
-  }
-  finally {
-    await Promise.all(stale.map(name => r.markStale(name)))
+  const live = useLive()
+  const showToast = useChangeToast()
+  const own = new Set(options.own ?? [])
+  const place = (error: unknown) => failurePlace(error, { form: !!options.form, live: live.state.connection === 'live' })
+  const mutation = useMutation({
+    mutationFn: (req: ChangeRequest) => api<T>(req.path, { method: req.method, body: req.body }),
+    onSettled: async (_data, _error, req) => {
+      await Promise.all(staleAfter(req).map(name => r.markStale(name)))
+    },
+  }, r.client)
+  return {
+    async run(args: A) {
+      try {
+        return { ok: true, data: await mutation.mutateAsync(request(args)) }
+      }
+      catch (error) {
+        if (!(error instanceof ApiError && own.has(error.code)) && place(error) === 'toast') showToast(error, options.failed?.())
+        return { ok: false, error }
+      }
+    },
+    busy: computed(() => mutation.isPending.value),
+    error: computed(() => mutation.error.value),
+    shown: computed(() => {
+      const error = mutation.error.value
+      if (!error || (error instanceof ApiError && own.has(error.code))) return null
+      return place(error) === 'form' ? error : null
+    }),
+    reset: () => mutation.reset(),
   }
 }
 
@@ -286,7 +355,3 @@ export function onMissedEvents(fn: () => void) {
   return useResources().onMissedEvents(fn)
 }
 
-/** Whether a read failed only because the Control Room could not be reached. */
-export function unreachable(error: unknown) {
-  return error instanceof ApiError && error.code === 'network'
-}

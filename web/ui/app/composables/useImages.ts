@@ -10,7 +10,7 @@ export function useImages() {
   const live = useLive()
   const resource = useResource('images')
   const overview = resource.data
-  const startError = ref<unknown>(null)
+  const { t } = useI18n()
   const starting = ref<string | null>(null)
   const logs = reactive<Record<string, BuildLog>>({})
   const logErrors = reactive<Record<string, unknown>>({})
@@ -65,37 +65,51 @@ export function useImages() {
   })
   const updating = computed(() => updateUnit.value ?? overview.value?.updating ?? false)
 
-  /** Update now: the version check, a Build of every Image with an update, then a Reset of
-   * these VMs onto the newest Build of their Image. Whether it started. */
-  async function startUpdate(reset: string[] = []) {
-    starting.value = 'update'
-    startError.value = null
+  // a rebuild from its button: a failure is a toast, except a Build or an update that runs
+  // already, which the page says beside its buttons
+  const RUNNING = ['build_running', 'update_running']
+  const rebuild = useChange((target: string) => ({ method: 'POST', path: '/builds', body: { image: target } }),
+    { own: RUNNING, failed: () => t('system.images.rebuildFailed') })
+  // an Update of one Image and Update now, from their dialogs: a failure shows there
+  const update = useChange((a: { image: string, reset: string[] }) =>
+    ({ method: 'POST', path: '/builds', body: a.reset.length ? { image: a.image, reset: a.reset } : { image: a.image } }), { form: true })
+  const updateNow = useChange((reset: string[]) =>
+    ({ method: 'POST', path: '/updates', body: reset.length ? { reset } : {} }), { form: true })
+  /** a rebuild refused because a Build or an update runs already */
+  const startError = computed(() => {
+    const error = rebuild.error.value
+    return error instanceof ApiError && RUNNING.includes(error.code) ? error : null
+  })
+
+  /** Start a Build of an Image (or "all"). Whether it started. */
+  async function start(target: string) {
+    starting.value = target
     try {
-      await change('/updates', { method: 'POST', body: reset.length ? { reset } : {} }, ['images'])
-      return true
-    }
-    catch (e) {
-      startError.value = e
-      return false
+      return (await rebuild.run(target)).ok
     }
     finally {
       starting.value = null
     }
   }
 
-  /** Start a Build of an Image (or "all"); with `reset` an Update: when the Build succeeds,
-   * its unit resets these VMs onto it. Whether it started. */
-  async function start(target: string, reset: string[] = []) {
-    starting.value = target
-    startError.value = null
+  /** An Update: a Build of the Image, and when it succeeds, its unit resets these VMs onto it.
+   * Whether it started. */
+  async function startImageUpdate(image: string, reset: string[]) {
+    starting.value = image
     try {
-      // refused because another Build runs, the overview read again shows it, and the buttons say so
-      await change('/builds', { method: 'POST', body: reset.length ? { image: target, reset } : { image: target } }, ['images'])
-      return true
+      return (await update.run({ image, reset })).ok
     }
-    catch (e) {
-      startError.value = e
-      return false
+    finally {
+      starting.value = null
+    }
+  }
+
+  /** Update now: the version check, a Build of every Image with an update, then a Reset of
+   * these VMs onto the newest Build of their Image. Whether it started. */
+  async function startUpdate(reset: string[] = []) {
+    starting.value = 'update'
+    try {
+      return (await updateNow.run(reset)).ok
     }
     finally {
       starting.value = null
@@ -105,7 +119,7 @@ export function useImages() {
   // the overview follows `build` events in the resources module; here the start error and the log
   const offBuild = live.on('build', (event: BuildEvent) => {
     if (!event?.image || !event.build) return
-    startError.value = null     // what it said (a Build running already) is out of date
+    rebuild.reset()             // what it said (a Build running already) is out of date
     if (event.status !== 'running') {
       const key = logKey(event.image, event.build)
       if (logs[key]) void fetchLog(event.image, event.build)
@@ -144,5 +158,5 @@ export function useImages() {
     offMissed()
   })
 
-  return { resource, startError, starting, updating, logs, logErrors, logLoading, start, startUpdate, fetchLog }
+  return { resource, startError, starting, updating, update, updateNow, logs, logErrors, logLoading, start, startImageUpdate, startUpdate, fetchLog }
 }
