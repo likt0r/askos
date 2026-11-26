@@ -603,6 +603,48 @@ describe('Settings page', () => {
       expect((input(wrapper, 'reset_age_days').element as HTMLInputElement).value).toBe('9')
     })
 
+    it('its own save stays running through the read after it: no second save', async () => {
+      let hold = false
+      let release!: () => void
+      let current = settingsBody()
+      const { wrapper, api } = await openPage('/settings', {
+        'GET /settings': () => (hold ? new Promise(resolve => { release = () => resolve(ok(current)) }) : ok(current)),
+        'PATCH /settings': () => { hold = true; current = settingsBody({ reset_age_days: 9 }); return ok(changedBody) },
+      })
+      await type(wrapper, 'reset_age_days', '9')
+      await save(wrapper).trigger('click')
+      await flushPromises()
+      expect(reads(api.calls)).toBe(2)
+      expect(save(wrapper).attributes('disabled')).toBeDefined()
+      await save(wrapper).trigger('click')
+      await flushPromises()
+      expect(patches(api.calls)).toHaveLength(1)
+      release()
+      await flushPromises()
+      expect(save(wrapper).exists()).toBe(false)
+    })
+
+    it('its own save that failed after agentbox stored it reads what is stored, keeping what is typed', async () => {
+      let current = settingsBody()
+      const { wrapper, api } = await openPage('/settings', {
+        'GET /settings': () => ok(current),
+        'PATCH /settings': () => {
+          current = settingsBody({ reset_age_days: 9 })
+          return { status: 502, body: { error: { code: 'action_failed', message: 'saved, but not applied' } } }
+        },
+      })
+      await type(wrapper, 'reset_age_days', '9')
+      await type(wrapper, 'builds_kept', '5')
+      await save(wrapper).trigger('click')
+      await flushPromises()
+      expect(reads(api.calls)).toBe(2)
+      expect((input(wrapper, 'reset_age_days').element as HTMLInputElement).value).toBe('9')
+      expect((input(wrapper, 'builds_kept').element as HTMLInputElement).value).toBe('5')
+      // stored now: no change any more; the other one stays to save
+      expect(save(wrapper).text()).toBe('Save 1 change')
+      expect(wrapper.find('[data-testid="settings-changed-elsewhere"]').exists()).toBe(false)
+    })
+
     it('a failed change of the Settings may have saved (applied or not): it is followed like any other', async () => {
       const { wrapper, api, es, change } = await open()
       change({ reset_age_days: 30 })
@@ -611,11 +653,6 @@ describe('Settings page', () => {
       await flushPromises()
       expect((input(wrapper, 'reset_age_days').element as HTMLInputElement).value).toBe('30')
     })
-
-
-
-
-
 
     it('loads after a reconnect without resume, not after one that resumed', async () => {
       const { api, es } = await open()

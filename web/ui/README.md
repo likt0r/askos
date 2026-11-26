@@ -175,7 +175,8 @@ section describes, until it moves into the module (#212).
   the `stale` of its declaration (none so far). Every change of the UI is declared there; only
   signing in and out (`composables/useSession.ts`) are not. A view does not read again itself,
   with one exception the owner settled on #215: the Settings form holds a draft, so it reads the
-  Settings right after its own save, and its Activity entry reads them once more. The
+  Settings right after its own save (and after one that failed with a 5xx, as agentbox may have
+  stored it, keeping what is typed); its Activity entry, coming after that, reads them once more. The
   request (a secret's value, a key) is not kept once the change is done: the mutation is reset
   and dropped from the cache at once.
 - **Where a failed change appears** (`utils/failures.ts`, decided once by its kind, when the
