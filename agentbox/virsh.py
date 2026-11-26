@@ -11,15 +11,18 @@ from .registry import dom
 # Each call has its own limit so a hanging guest agent or libvirtd cannot block
 # agentbox (guest-agent commands get 10 s on top of that inside virsh).
 TIMEOUT = paths.tunable("AGENTBOX_VIRSH_TIMEOUT", 15)
+# a transient domain's start (create_transient) has this limit, not TIMEOUT
+CREATE_TIMEOUT = 120
 # state() of a domain libvirt does not know (or cannot tell)
 MISSING = "missing"
+_COMMAND = ("virsh", "-q", "-c", "qemu:///system")
 
 
 def _virsh(args, timeout, **kw):
     limit = TIMEOUT if timeout is None else min(timeout, TIMEOUT)
     env = dict(os.environ, LC_ALL="C", **kw.pop("env", {}))
     try:
-        return subprocess.run(["virsh", "-q", "-c", "qemu:///system", *args], capture_output=True, text=True,
+        return subprocess.run([*_COMMAND, *args], capture_output=True, text=True,
                               errors="replace", env=env, timeout=limit, **kw)
     except subprocess.TimeoutExpired:
         return subprocess.CompletedProcess(args, 124, "", f"virsh does not answer within {limit:g} s")
@@ -217,12 +220,15 @@ def agent_command(name, command, carries_data, seconds, timeout=None):
 
 
 # --- definitions: a VM's domain, its network and the storage pool of the disk directory --------
-# A definition virsh refuses raises Fail with `what` (the call in the caller's words) in its message.
+# A definition virsh refuses raises Fail with `what` (the call in the caller's words) in its
+# message. A network's without `what` gives virsh's answer, and the caller decides what a
+# failure means.
 
 def _checked(what, *args):
     r = run(*args)
-    if r.returncode != 0:
+    if r.returncode != 0 and what is not None:
         programs.fail(r, what, program="virsh")
+    return r
 
 
 def _define(verb, xml, what):
@@ -230,7 +236,7 @@ def _define(verb, xml, what):
     with tempfile.NamedTemporaryFile("w", suffix=".xml") as f:
         f.write(xml)
         f.flush()
-        _checked(what, verb, f.name)
+        return _checked(what, verb, f.name)
 
 
 def define_domain(xml, what):
@@ -247,33 +253,40 @@ def network_definition(name):
     """The VM's network as libvirt defines it (virsh net-dumpxml), None when virsh has none: its
     "bridge", "address" and "mac" (each None when the definition has none), its "uuid" (or None),
     whether DNS is switched off ("dns_off"), whether it sends anything on ("forwarding": a
-    <forward> of packets or a DNS <forwarder>) and the values of its "dnsmasq_options"."""
+    <forward> of packets or a DNS <forwarder>) and the values of its "dnsmasq_options"; the
+    "forward_mode" of its <forward>, the "family", "netmask" and "prefix" of its <ip> (each
+    None when the definition has none, "" when it is empty) and how many <bridge>, <ip> and
+    <forward> elements it has ("elements", by name)."""
     r = run("net-dumpxml", dom(name))
     if r.returncode != 0:
         return None
     xml = r.stdout
-    found = {k: re.search(rf"<{tag}\b[^>]*\b{attr}=['\"]([^'\"]+)", xml)
-             for k, (tag, attr) in {"bridge": ("bridge", "name"), "address": ("ip", "address"),
-                                    "mac": ("host", "mac")}.items()}
-    found = {k: m.group(1) if m else None for k, m in found.items()}
+
+    def value(tag, attr, chars="+"):
+        m = re.search(rf"<{tag}\b[^>]*\b{attr}=['\"]([^'\"]{chars})", xml)
+        return m.group(1) if m else None
     uuid = re.search(r"<uuid>([^<]+)</uuid>", xml)
-    return {**found, "uuid": uuid.group(1) if uuid else None,
+    return {"bridge": value("bridge", "name"), "address": value("ip", "address"), "mac": value("host", "mac"),
+            "uuid": uuid.group(1) if uuid else None,
             "dns_off": bool(re.search(r"<dns\b[^>]*\benable=['\"]no['\"]", xml)),
             "forwarding": bool(re.search(r"<forwarder\b|<forward\b", xml)),
-            "dnsmasq_options": re.findall(r"<dnsmasq:option\s+value=['\"]([^'\"]*)['\"]", xml)}
+            "dnsmasq_options": re.findall(r"<dnsmasq:option\s+value=['\"]([^'\"]*)['\"]", xml),
+            "forward_mode": value("forward", "mode", "*"), "family": value("ip", "family", "*"),
+            "netmask": value("ip", "netmask", "*"), "prefix": value("ip", "prefix", "*"),
+            "elements": {tag: len(re.findall(rf"<{tag}\b[^>]*>", xml)) for tag in ("bridge", "ip", "forward")}}
 
 
-def define_network(xml, what):
+def define_network(xml, what=None):
     """Define the VM's network from its XML, anew when it exists."""
-    _define("net-define", xml, what)
+    return _define("net-define", xml, what)
 
 
-def start_network(name, what):
-    _checked(what, "net-start", dom(name))
+def start_network(name, what=None):
+    return _checked(what, "net-start", dom(name))
 
 
-def stop_network(name, what):
-    _checked(what, "net-destroy", dom(name))
+def stop_network(name, what=None):
+    return _checked(what, "net-destroy", dom(name))
 
 
 def autostart_network(name, what):
@@ -281,8 +294,8 @@ def autostart_network(name, what):
     _checked(what, "net-autostart", dom(name))
 
 
-def undefine_network(name, what):
-    _checked(what, "net-undefine", dom(name))
+def undefine_network(name, what=None):
+    return _checked(what, "net-undefine", dom(name))
 
 
 def pool_on(directory):
@@ -301,3 +314,11 @@ def define_pool(name, directory):
     _define("pool-define", xml, "create storage pool")
     _checked("autostart storage pool", "pool-autostart", name)
     _checked("start storage pool", "pool-start", name)
+
+
+# --- a build VM: its transient domain -----------------------------------------------------------
+
+def create_transient(name, xml_path):
+    """Start the VM as a transient domain from the XML in this file: libvirt keeps no definition
+    of it. Raises Fail when virsh refuses it or does not answer within CREATE_TIMEOUT."""
+    programs.run([*_COMMAND, "create", xml_path], CREATE_TIMEOUT, what=f"virsh create {dom(name)}", c_locale=True)
