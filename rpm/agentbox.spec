@@ -9,9 +9,9 @@
 # writes Settings, the VM registry, the certificate or the Host setup (ADR 0009).
 #
 # An update restarts the Control Room, the Alert watch, the expiry and cleanup timers and, when
-# their code changed, the proxies of the VMs, and never a VM; on a Host from before the Maintenance window
-# it takes the timers that window replaced. Removal also takes the units agentbox regenerate
-# wrote (docs/releasing.md). rpm/upgrade-test.sh checks both.
+# their code changed, the proxies of the VMs, and never a VM. Removal also takes the units
+# agentbox regenerate wrote (docs/releasing.md). rpm/upgrade-test.sh checks both. What the
+# scriptlets do beyond rpm's macros is in rpm/agentbox-package; they only call it.
 
 Name:           agentbox
 Version:        @VERSION@
@@ -60,7 +60,7 @@ Requires:       socat
 Requires:       openssl
 Requires:       iproute
 Requires:       curl
-# visudo and chattr in %%post
+# visudo and chattr of agentbox-package in %%post
 Requires(post): sudo >= 1.9.10
 Requires(post): e2fsprogs
 # agentbox setup: the owner user into libvirt and the members of agentbox-journal (usermod,
@@ -73,9 +73,6 @@ Requires:       e2fsprogs
 # The Containerfile and guest files are the Base image's build context: they belong to the
 # VMs, not to the Host. Keep them byte for byte (no shebang rewriting) and take no
 # dependencies from them.
-# the proxy code: the proxy, the classifier it loads and what of the package both import
-# (the package itself and the leaf modules; tests/test_list_records.py checks this list against their imports)
-%global proxy_code %{_libexecdir}/agentbox-proxy %{_libexecdir}/agentbox-suspicious %{_prefix}/lib/agentbox/agentbox/__init__.py %{_prefix}/lib/agentbox/agentbox/list_records.py %{_prefix}/lib/agentbox/agentbox/proxy_log.py
 %global __brp_mangle_shebangs_exclude_from ^%{_datadir}/agentbox/vm/
 %global __requires_exclude_from ^%{_datadir}/agentbox/vm/
 
@@ -112,6 +109,8 @@ install -m 0755 proxy/agentbox-proxy proxy/agentbox-suspicious proxy/agentbox-fe
     github-app/agentbox-gh-tokend github-app/agentbox-claude-route web/agentbox-web %{buildroot}%{_libexecdir}/
 # loaded by agentbox-web from next to it, not run
 install -m 0644 web/agentbox-readings %{buildroot}%{_libexecdir}/
+# run by the scriptlets
+install -m 0755 rpm/agentbox-package %{buildroot}%{_libexecdir}/
 
 # the Control Room UI
 install -d -m 0755 %{buildroot}%{_datadir}/agentbox/web/ui
@@ -166,64 +165,21 @@ AGENTBOX_CONF_DIR="$lists" %{python3} -I -B proxy/agentbox-suspicious --self-tes
 rm -rf "$lists"
 
 %pre
-# update only: the proxy code of the Release this one replaces (agentbox-proxy, the
-# classifier agentbox-suspicious it loads and the package module both import), taken before its files are replaced, for
-# %%posttrans. An update that stopped after replacing them left the code the proxies run
-# here already, so that one is kept. Under /run, like the restart %%posttrans may leave
-# pending: the Host restarting starts the proxies with the installed code anyway.
-if [ $1 -gt 1 ] && [ ! -e /run/agentbox-proxy-code ]; then
-    cat %{proxy_code} 2>/dev/null | sha256sum > /run/agentbox-proxy-code || :
+# update only: the hash of the proxy code of the Release this one replaces, taken by that
+# Release's agentbox-package before its files are replaced; an update from a Release without
+# one restarts no proxy
+if [ $1 -gt 1 ] && [ -x %{_libexecdir}/agentbox-package ]; then
+    %{_libexecdir}/agentbox-package proxy-code-snapshot || :
 fi
 
 %post
-# The rule is checked at build time; a Host whose sudo reads it differently keeps a
-# working sudo: the rule is set aside (sudo skips names with a dot) and the Control
-# Room cannot act until it is fixed.
-if ! visudo -cqf %{_sysconfdir}/sudoers.d/agentbox-web; then
-    mv -f %{_sysconfdir}/sudoers.d/agentbox-web %{_sysconfdir}/sudoers.d/agentbox-web.rejected
-    echo "agentbox: visudo rejects %{_sysconfdir}/sudoers.d/agentbox-web, set aside as agentbox-web.rejected" >&2
-fi
+%{_libexecdir}/agentbox-package sudoers-check
 if [ $1 -eq 1 ]; then
-    # VM disks without copy-on-write, which slows them down on btrfs;
-    # only for directories that are still empty, as on a new Host
-    for d in %{_sharedstatedir}/agentbox/images %{_sharedstatedir}/agentbox/vms; do
-        if [ -z "$(ls -A "$d")" ]; then chattr +C "$d" 2>/dev/null || :; fi
-    done
+    %{_libexecdir}/agentbox-package nocow-directories
 fi
 # the Activity journal's runtime directory, owned as journald owns it, and the directory of
 # the Control Room's sign-in links (agentbox.tmpfiles)
 %tmpfiles_create agentbox.conf
-# update only: the timers of the weekly rebuild and the version check that agentbox regenerate
-# wrote before the Maintenance window (#49), and the service only the rebuild timer started, are
-# disabled, stopped and deleted, and systemd forgets them; a run under way finishes. A timer whose
-# disabling fails stays, with its service, for agentbox regenerate to take away (while
-# agentbox-rebuild.timer is still there, the Maintenance window leaves the weekly rebuild to it, so
-# their Builds do not collide). The old Reset check's timer, agentbox-weekly.timer, stays: until
-# `agentbox regenerate` (or `agentbox setup`) writes the Maintenance window's timer and takes it
-# away, its `agentbox weekly-check` runs the whole window (agentbox/maintenance.py), at the old
-# Reset time; the package says so.
-if [ $1 -gt 1 ]; then
-    found=
-    for unit in agentbox-rebuild.timer agentbox-versions.timer; do
-        if [ -f "%{_sysconfdir}/systemd/system/$unit" ]; then found="$found $unit"; fi
-    done
-    if [ -n "$found" ]; then
-        for unit in $found; do
-            if /usr/lib/systemd/systemd-update-helper remove-system-units $unit; then
-                rm -f "%{_sysconfdir}/systemd/system/$unit"
-                if [ $unit = agentbox-rebuild.timer ]; then
-                    rm -f "%{_sysconfdir}/systemd/system/agentbox-rebuild.service"
-                fi
-            else
-                echo "agentbox: $unit could not be disabled; sudo agentbox regenerate takes it away" >&2
-            fi
-        done
-        systemctl daemon-reload || :
-        echo "agentbox: the Feeds, the version check, the weekly rebuild and the Reset check now run one" \
-             "after another in one Maintenance window; until sudo agentbox regenerate writes its timer" \
-             "(once), the Reset check's timer runs the whole window at the old Reset time" >&2
-    fi
-fi
 # No %%systemd_post: its preset would leave the units disabled on a new Host anyway, and
 # would disable the ones a Host has enabled. agentbox setup enables and starts what it needs.
 
@@ -240,25 +196,12 @@ fi
 # install. Running instances of the templates end with their connection or Build. The
 # Host's records and state in /etc/agentbox and /var/lib/agentbox, its VMs and their
 # networks stay (docs/releasing.md).
-if [ $1 -eq 0 ] && cd %{_sysconfdir}/systemd/system 2>/dev/null; then
-    generated="agentbox-proxy-*.socket agentbox-proxy-*.service agentbox-ghvm-*.socket agentbox-ghvm-*@.service
-               agentbox-claude-*.socket agentbox-claude-*@.service agentbox-gui-*.socket agentbox-gui-*@.service agentbox-maintenance.timer
-               agentbox-maintenance.service agentbox-feeds.timer agentbox-feeds.service
-               agentbox-build@.service agentbox-versions.service agentbox-versions-fetch.service
-               agentbox-weekly.timer agentbox-weekly.service agentbox-rebuild.timer agentbox-rebuild.service
-               agentbox-versions.timer"
-    units=
-    for unit in $generated; do
-        case $unit in
-            *@.service) ;;
-            *) if [ -f "$unit" ]; then units="$units $unit"; fi ;;
-        esac
-    done
+if [ $1 -eq 0 ]; then
+    units=$(%{_libexecdir}/agentbox-package generated-units)
     if [ -n "$units" ]; then
         /usr/lib/systemd/systemd-update-helper remove-system-units $units || :
     fi
-    rm -f $generated
-    systemctl daemon-reload || :
+    %{_libexecdir}/agentbox-package forget-generated-units
 fi
 
 %postun
@@ -266,28 +209,9 @@ fi
 %systemd_postun_with_restart agentbox-web.service agentbox-alert-watch.service agentbox-allowlist-expire.timer agentbox-container-image-cleanup.timer
 
 %posttrans
-# update only: when this Release brings other proxy code, the proxies of the VMs that run
-# restart; proxies that do not run stay stopped. Their sockets stay,
-# so a VM loses only its open tunnels while new connections wait. try-restart at once rather
-# than systemd-update-helper's mark: a proxy that is stopped would keep the mark once it
-# starts, and the next package update with units would restart it. A restart that fails
-# stays pending, and the next update tries it again, whatever it changes. The token service
-# and the Orca ports (a process per connection) and the timers' services take the new code
-# with their next start; no VM is touched.
-if [ -f /run/agentbox-proxy-code ]; then
-    code=$(cat %{proxy_code} | sha256sum)
-    if [ "$code" != "$(cat /run/agentbox-proxy-code)" ]; then
-        touch /run/agentbox-proxy-restart
-    fi
-    rm -f /run/agentbox-proxy-code
-fi
-if [ -e /run/agentbox-proxy-restart ]; then
-    if systemctl try-restart 'agentbox-proxy-*.service'; then
-        rm -f /run/agentbox-proxy-restart
-    else
-        echo "agentbox: the proxies keep the old code; the next update restarts them again" >&2
-    fi
-fi
+# update only: the proxies of the VMs that run restart when this Release brings other proxy
+# code, or when the restart of an update before failed; no VM is touched
+%{_libexecdir}/agentbox-package proxy-code-restart
 
 %files
 %license LICENSE
@@ -301,6 +225,7 @@ fi
 %{_libexecdir}/agentbox-claude-route
 %{_libexecdir}/agentbox-web
 %{_libexecdir}/agentbox-readings
+%{_libexecdir}/agentbox-package
 %{_datadir}/agentbox/
 %{_unitdir}/agentbox-web.service
 %{_unitdir}/agentbox-vmnet.service

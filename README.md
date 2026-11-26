@@ -940,19 +940,17 @@ midnight; `sudo agentbox maintenance` by hand always runs one and does not count
 is caught up: when the window of `rebuild_day` did not start it (the Host was off, or the Build
 could not start), the next window starts it, once, whatever day that is; the one after that waits
 for the next `rebuild_day`. A day that only became `rebuild_day` because you changed the setting
-is not caught up. While the old weekly rebuild timer is still there (an update could not disable
-it), it does the weekly rebuild and the window leaves it to it.
+is not caught up.
 Agent Box never wakes a sleeping Host for it: that is the Host's business (an autosuspend that
 reads the timer, for instance). The Feeds also keep their own timer, ten minutes after boot
 and then every `feed_interval_hours`, for a Host that is awake for long. The [Container image
 cleanup](#containers-in-a-vm) is no step of the window: its own timer runs it every hour.
 
 **After updating from a Release before the Maintenance window, run `sudo agentbox regenerate`
-once.** The update cannot write the window's timer (the package runs no `agentbox` command), so
-it takes away only the old timers of the version check and the weekly rebuild. The old Reset
-check's timer stays and runs the whole window at the old Reset time (two hours after the
+once.** The update cannot write the window's timer (the package runs no `agentbox` command). The
+old Reset check's timer runs the whole window at the old Reset time (two hours after the
 `maintenance_time` the Settings show), so maintenance goes on until then. `regenerate` writes
-`agentbox-maintenance.timer` and takes the old timer away; from then on the window runs at
+`agentbox-maintenance.timer` and takes the old timers away; from then on the window runs at
 `maintenance_time`. Until it runs, `agentbox status` and the Control Room's System page say
 that the window's timer is missing.
 

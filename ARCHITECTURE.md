@@ -1798,18 +1798,10 @@ weekly rebuild is judged by date alone, not by the clock time the window begins 
 `feed_interval_hours`) for a Host that is awake for long. The Container image cleanup is no
 step of the window: its own timer runs it every hour (see VMs). `maintenance_time` replaced
 `reset_time` and `rebuild_time` and the three timers of before (`agentbox-weekly`,
-`agentbox-rebuild`, `agentbox-versions.timer`). An RPM update disables and deletes
-`agentbox-rebuild.timer` and `agentbox-versions.timer` on a Host that has them, with
-`agentbox-rebuild.service`, each only when disabling it worked, and says that `regenerate`
-writes the window's timer once; it runs no `agentbox` command and enables nothing (ADR 0009).
-While `agentbox-rebuild.timer` is still there (its disabling failed), it still runs its own
-weekly Build of every Image, so the window starts no weekly rebuild, which that Build would
-refuse or collide with; it records `maintenance.rebuild` with the reason `old-timer` and counts
-the day as rebuilt.
-It leaves the old Reset check's `agentbox-weekly.timer`, which runs `agentbox --actor=timer
-weekly-check` at the old `reset_time`: as long as the window's timer is missing,
-`weekly-check` called by the timer runs the whole window instead of the Reset check alone, so
-maintenance goes on without a gap, at the old Reset time, until `regenerate`. `regenerate`
+`agentbox-rebuild`, `agentbox-versions.timer`). The old Reset check's `agentbox-weekly.timer`
+runs `agentbox --actor=timer weekly-check` at the old `reset_time`: as long as the window's
+timer is missing, `weekly-check` called by the timer runs the whole window instead of the Reset
+check alone, so maintenance goes on without a gap, at the old Reset time, until `regenerate`. `regenerate`
 writes the window's timer and deletes whatever is left of the old ones; after that, and by hand
 at any time, `weekly-check` is the Reset check alone. While the window's timer is missing on a
 Host whose timers `regenerate` wrote before, `agentbox status` (text, and `host_warnings` with
@@ -2081,6 +2073,7 @@ need not be there or belong to another Release.
 | CLI package and `VERSION` | `/usr/lib/agentbox/` | `VERSION` |
 | Proxy, classifier, Feeds, token service, Anthropic route | `/usr/libexec/agentbox-{proxy,suspicious,feeds,gh-tokend,claude-route}` | `PROXY`, `SUSPICIOUS`, `FEEDS_PROGRAM`, `TOKEND`, `CLAUDE_ROUTE` |
 | Control Room backend and its readings | `/usr/libexec/agentbox-{web,readings}` | `WEB_BACKEND` |
+| What the package's scriptlets run (the sudoers rule's check, the VM disk directories without copy-on-write, the proxies' restart, the units `agentbox regenerate` wrote) | `/usr/libexec/agentbox-package` | `PACKAGE_SCRIPT` |
 | Control Room UI | `/usr/share/agentbox/web/ui/` | `WEB_UI` |
 | Containerfile and guest files ([ADR 0010](docs/adr/0010-images-are-built-from-the-installed-release.md)): `vm/…` and `github-app/…` as in the repository | `/usr/share/agentbox/vm/` | `VM_SOURCE` |
 | Lists a new Host starts with (Allowlist, Watchlist, Legitimate domains) | `/usr/share/agentbox/lists/` | `SEED_LISTS` |
@@ -2101,9 +2094,7 @@ Host's Fedora keys from
 sign-in links lie in `/run/agentbox-sign-in-links` (`SIGN_IN_LINKS`), which the package's
 tmpfiles entry makes at every boot. An update of the RPM replaces only the package's files: it
 restarts the Control Room, the Alert watch, the expiry timer, the Container image cleanup timer and, when their code changed, the VMs' proxies,
-and never a VM; on a Host from before the Maintenance window it disables and deletes the timers
-of the version check and the weekly rebuild, and leaves the old Reset timer, which runs the
-whole window until `agentbox regenerate`; removing it also disables and deletes the units `agentbox regenerate` wrote,
+and never a VM; removing it also disables and deletes the units `agentbox regenerate` wrote,
 and leaves the records, the state and the VMs ([docs/releasing.md](docs/releasing.md)).
 
 Files `agentbox` opens or runs itself are moved under `AGENTBOX_ROOT` in tests; paths it

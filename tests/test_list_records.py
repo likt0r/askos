@@ -49,17 +49,22 @@ class SeamTest(unittest.TestCase):
                 self.assertEqual(self.imports(program), LEAVES)
 
     def test_the_rpm_restarts_the_proxies_when_a_module_they_import_changes(self):
+        with open(os.path.join(REPO, "rpm", "agentbox-package")) as f:
+            script = f.read()
+        code = re.search(r'^proxy_code="(.*)"$', script, re.M).group(1).split()
+        imported = set().union(*(self.imports(p) for p in ("agentbox-proxy", "agentbox-suspicious")))
+        modules = {"/usr/lib/agentbox/agentbox/" + (m.split(".", 1)[1] if "." in m else "__init__") + ".py"
+                   for m in imported}
+        self.assertEqual(set(code), {"/usr/libexec/agentbox-proxy", "/usr/libexec/agentbox-suspicious"} | modules)
+        # %pre takes the old code's hash, %posttrans the new one's, both of the same list
+        for subcommand in ("proxy-code-snapshot", "proxy-code-restart"):
+            body = re.search(r"^    %s\)\n(.*?)^        ;;$" % subcommand, script, re.M | re.S).group(1)
+            self.assertIn("cat $proxy_code", body, subcommand)
         with open(os.path.join(REPO, "rpm", "agentbox.spec")) as f:
             spec = f.read()
-        code = re.search(r"^%global proxy_code (.*)$", spec, re.M).group(1).split()
-        imported = set().union(*(self.imports(p) for p in ("agentbox-proxy", "agentbox-suspicious")))
-        modules = {"%{_prefix}/lib/agentbox/agentbox/" + (m.split(".", 1)[1] if "." in m else "__init__") + ".py"
-                   for m in imported}
-        self.assertEqual(set(code), {"%{_libexecdir}/agentbox-proxy", "%{_libexecdir}/agentbox-suspicious"} | modules)
-        # %pre takes the old code's hash, %posttrans the new one's, both of the same list
-        for scriptlet in ("%pre", "%posttrans"):
+        for scriptlet, subcommand in (("%pre", "proxy-code-snapshot"), ("%posttrans", "proxy-code-restart")):
             body = re.search(r"^%s\n(.*?)(?=^%%[a-z]+\b)" % scriptlet, spec, re.M | re.S).group(1)
-            self.assertIn("cat %{proxy_code}", body, scriptlet)
+            self.assertIn("%{_libexecdir}/agentbox-package " + subcommand, body, scriptlet)
 
     def test_no_proxy_program_imports_more_of_the_package_inside_a_function(self):
         for program in PROGRAMS:

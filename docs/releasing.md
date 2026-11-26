@@ -87,9 +87,8 @@ agentbox version                                          # agentbox X.Y.Z
 An update replaces the package's files under `/usr` and nothing of the Host's (ADR 0009). The
 Host setup, Settings, the VM registry, the Allowlist, Watchlist and Legitimate domains, the
 Control Room's password and certificate, the GitHub App, Images, Builds and disks in
-`/etc/agentbox` and `/var/lib/agentbox` stay byte for byte; no unit is enabled, none is
-disabled except two timers the Maintenance window replaced (below), and no `agentbox` command
-runs.
+`/etc/agentbox` and `/var/lib/agentbox` stay byte for byte; no unit is enabled or disabled,
+and no `agentbox` command runs.
 
 - **No VM is started, stopped, paused, reset or defined again.** The next Build (`agentbox
   build`, or the weekly rebuild) uses the new Release's Containerfiles, and a VM gets that
@@ -105,20 +104,12 @@ runs.
 - **The token service and the Orca port of each VM** start a process per connection, and the
   Maintenance window, the Feeds and the Builds a new run each time: each takes the new Release
   from its next start.
-- **The timers of the weekly rebuild and the version check** (`agentbox-rebuild`,
-  `agentbox-versions.timer`), which a Host set up before the Maintenance window has, are
-  disabled, stopped and deleted by the update, with `agentbox-rebuild.service` (a run under way
-  finishes); a timer whose disabling fails stays, with its service, and `regenerate` takes it
-  away. These are the only units an update takes away. The old Reset check's timer
-  (`agentbox-weekly`) stays: as long as the Maintenance window's timer is missing, the
-  `agentbox weekly-check` it starts runs the whole window (Feeds, version check and its Builds,
-  the weekly rebuild when due, Reset check) at the old Reset time, once per turn, so
-  maintenance goes on without a gap. The update prints that.
 - **Once, after the first update to a Release with the Maintenance window: `sudo agentbox
   regenerate`.** It writes `agentbox-maintenance.timer`, which runs the window at
   `maintenance_time` (two hours before the old Reset time, unless the Settings say otherwise),
-  and takes away `agentbox-weekly` and whatever else is left of the old timers. Until then the
-  window keeps running at the old Reset time, and `agentbox status` and the Control Room's
+  and takes away the old timers. Until then the old Reset check's timer (`agentbox-weekly`)
+  runs the whole window at the old Reset time, once per turn, so maintenance goes on without a
+  gap, and `agentbox status` and the Control Room's
   System page say that its timer is missing. The maintainer adds this step to the notes of the
   draft GitHub release of that Release before publishing it.
 - **The units and VM networks `agentbox regenerate` wrote, and the ports of the firewalld
@@ -129,10 +120,8 @@ runs.
   `regenerate` names it. A socket whose unit changed is restarted on its new address, a VM's
   proxy stopped first.
 
-`rpm/upgrade-test.sh` checks all of this in CI (the timers of before the Maintenance window
-only `tests/test_rpm.py` and `tests/test_maintenance.py`, since its older Release is built from
-the same commit): it updates an older Release on a Host in use to the RPM of the pull request,
-reinstalls it and removes it.
+`rpm/upgrade-test.sh` checks all of this in CI: it updates an older Release on a Host in use to
+the RPM of the pull request, reinstalls it and removes it.
 
 ### Automatic updates
 
