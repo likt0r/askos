@@ -52,8 +52,8 @@ def read(*parts):
 
 
 def generated_patterns():
-    """The file names the spec's %preun disables and deletes on removal."""
-    return re.search(r'^\s*generated="([^"]*)"', read("rpm", "agentbox.spec"), re.MULTILINE).group(1).split()
+    """The file names the spec's %preun disables and deletes on removal (rpm/agentbox-package)."""
+    return re.search(r'^\s*generated="([^"]*)"', read("rpm", "agentbox-package"), re.MULTILINE).group(1).split()
 
 
 class GeneratedUnitsTest(unittest.TestCase):

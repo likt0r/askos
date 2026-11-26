@@ -24,14 +24,11 @@ A step that fails is recorded in Activity (maintenance.<step>, outcome failed, t
 call: `timer`) and the window goes on with the next one; a step that succeeded is recorded too,
 so the timeline shows the window's order: an entry is written when its step ends, so the
 Builds' own entries (build.*) and the Resets' (reset.*) come before maintenance.versions,
-maintenance.rebuild and maintenance.reset-check. A rebuild that is not due records nothing; while
-the old rebuild timer is still there (agentbox-rebuild.timer, which the RPM could not disable), the
-window starts no rebuild, so it cannot collide with that timer's Build, and records
-maintenance.rebuild with the reason old-timer. A step whose Builds failed counts as failed: a
-Build of the step's unit begun since the step began, on the request of the window (actor `timer`
-for the version check's update, the window's own actor for the rebuild), that did not become
-usable, or a run of that unit that failed before it began a Build at all (images.failed_since,
-images.unit_failed_since).
+maintenance.rebuild and maintenance.reset-check. A rebuild that is not due records nothing. A
+step whose Builds failed counts as failed: a Build of the step's unit begun since the step
+began, on the request of the window (actor `timer` for the version check's update, the window's
+own actor for the rebuild), that did not become usable, or a run of that unit that failed before
+it began a Build at all (images.failed_since, images.unit_failed_since).
 
 Two windows never run at once, and the timer runs one window per turn: a window it starts (actor
 `timer`) does nothing when a window it started already began at or after the latest turn of
@@ -67,7 +64,6 @@ LOCK = os.path.join(paths.STATE, "maintenance")
 RECORD = os.path.join(paths.STATE, "maintenance.json")
 TIMER = f"{generate.MAINTENANCE}.timer"
 OLD_TIMER = "agentbox-weekly.timer"         # the old Reset check's, which runs weekly-check until regenerate
-OLD_REBUILD_TIMER = "agentbox-rebuild.timer"  # the old weekly rebuild's, when the RPM could not disable it
 FEEDS_UNIT = "agentbox-feeds.service"
 VERSIONS_UNIT = "agentbox-versions.service"
 START_SECONDS = 3 * 3600        # systemctl start of a step's unit; the units have time limits of their own
@@ -222,23 +218,13 @@ def _versions(say, begun, as_json):
 
 def _rebuild(say, begun, as_json):
     """Due or not by the time the window began, however long the Builds before took. The wait
-    comes also when the start failed: its unit may run all the same. While the old rebuild timer
-    is still there (the RPM could not disable it), that timer rebuilds: the window leaves the
-    rebuild to it, so their two Builds do not collide, and says so; the day counts as rebuilt."""
+    comes also when the start failed: its unit may run all the same."""
     values = settings.load()
     record = _read()
     if not rebuild_due(begun, values["rebuild_day"], _recorded("rebuild", record),
                        _recorded("rebuild_day_changed", record)):
         say(f"No weekly rebuild today (rebuild_day: {values['rebuild_day']})")
         return "skipped", None
-    if _unit_file(OLD_REBUILD_TIMER):
-        message = (f"weekly rebuild left to {OLD_REBUILD_TIMER}, which is still there (sudo agentbox "
-                   "regenerate takes it away)")
-        say(f"Maintenance window: {message}")
-        _update(rebuild=begun)
-        activity.record("action", "maintenance.rebuild", f"Maintenance window: {message}",
-                        params={"reason": "old-timer"})
-        return "skipped", message
     started = int(time.time())
     try:
         name = images.start("all")

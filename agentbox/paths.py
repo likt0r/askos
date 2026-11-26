@@ -17,6 +17,7 @@ lies under the prefix /usr, where the RPM puts it (ADR 0009):
   libexec/agentbox-claude-route                                 CLAUDE_ROUTE
   libexec/agentbox-web                                          WEB_BACKEND
   libexec/agentbox-readings       (loaded by agentbox-web)
+  libexec/agentbox-package        run by the RPM's scriptlets   PACKAGE_SCRIPT
   share/agentbox/web/ui/          the Control Room UI           WEB_UI
   share/agentbox/vm/              Containerfile and guest files  VM_SOURCE
                                   (vm/..., github-app/..., the Base image's build context)
@@ -57,6 +58,8 @@ VIRTIOFSD = LIBEXEC + "/virtiofsd"
 # run or read by agentbox and the Control Room
 SUSPICIOUS = host(LIBEXEC + "/agentbox-suspicious")
 WEB_BACKEND = host(LIBEXEC + "/agentbox-web")
+# what the RPM's scriptlets do beyond rpm's macros (rpm/agentbox-package); agentbox never runs it
+PACKAGE_SCRIPT = LIBEXEC + "/agentbox-package"
 WEB_UI = host(SHARE + "/web/ui")
 VM_SOURCE = host(SHARE + "/vm")              # Builds from the installed Release (ADR 0010, #96)
 SEED_LISTS = host(SHARE + "/lists")

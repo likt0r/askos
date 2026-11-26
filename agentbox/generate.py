@@ -980,8 +980,8 @@ Persistent=true
 WantedBy=timers.target
 """
 
-# the timers of before the Maintenance window (#49) and the services only they started; the
-# package removes them on update (rpm/agentbox.spec), regenerate whatever is left of them
+# the timers of before the Maintenance window (#49) and the services only they started;
+# regenerate removes whatever is left of them
 RETIRED_TIMERS = ("agentbox-weekly.timer", "agentbox-rebuild.timer", "agentbox-versions.timer")
 RETIRED_SERVICES = ("agentbox-weekly.service", "agentbox-rebuild.service")
 

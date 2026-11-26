@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(TESTS))
 from fake_journald import Journald  # noqa: E402
 from test_lifecycle import CURRENT_BASE, LifecycleTest, fake  # noqa: E402
 from test_vms import VmsTest  # noqa: E402
-from agentbox import maintenance, settings  # noqa: E402
+from agentbox import generate, maintenance, settings  # noqa: E402
 
 UNIT = [sys.executable, os.path.join(TESTS, "fake_unit.py")]
 NEW = "20261112-000000"      # the Build a slow Build makes; newer than the current one, CURRENT_BASE
@@ -349,26 +349,6 @@ class RebuildDayTest(MaintenanceTest):
         self.units(**{ALL: ["--take-request", "all", "--hold", "0.1", "--target", "all"]})
         self.window(by_hand=True)
         self.assertIn(("start", ALL), self.order())
-
-    def test_the_old_rebuild_timer_still_there_rebuilds_instead(self):
-        # the RPM could not disable agentbox-rebuild.timer: it stays until regenerate and runs
-        # its own Build of every Image on the rebuild day; the window starts none to collide with it
-        self.settings(maintenance_time="00:00", rebuild_day=today())
-        open(self.path("etc/systemd/system/agentbox-rebuild.timer"), "w").close()
-        self.units(**{ALL: ["--take-request", "all", "--hold", "0.1", "--target", "all"]})
-        code, out, _ = self.run_agentbox("--actor=timer", "maintenance", "--json")
-        self.assertEqual(code, 0)
-        self.assertNotIn(("start", ALL), self.order())
-        message = ("weekly rebuild left to agentbox-rebuild.timer, which is still there (sudo agentbox regenerate "
-                   "takes it away)")
-        self.assertEqual(json.loads(out)["steps"][2], {"step": "rebuild", "outcome": "skipped", "message": message})
-        self.assertEqual(self.entries(), [("maintenance.feeds", "ok"), ("maintenance.versions", "ok"),
-                                          ("maintenance.rebuild", "ok"), ("maintenance.reset-check", "ok")])
-        entry = self.journald.entries()[2]
-        self.assertEqual((entry["AGENTBOX_DESCRIPTION"], entry["AGENTBOX_PARAM_REASON"]),
-                         (f"Maintenance window: {message}", "old-timer"))
-        # the day counts as rebuilt: no catch-up once regenerate took the old timer away
-        self.assertEqual(self.record()["rebuild"], days_ago(0))
 
     def forget(self):
         os.remove(os.path.join(self.dir, "calls.jsonl"))
@@ -727,6 +707,12 @@ class TimerTest(VmsTest):
         self.scenario()
         self.ok("regenerate")
         self.assertFalse(self.exists("etc/systemd/system/agentbox-weekly.timer"))
+
+    def test_regenerate_takes_away_what_the_package_leaves(self):
+        # the package takes none of the timers of before the window, nor the services they started
+        self.assertEqual(set(generate.RETIRED_TIMERS),
+                         {"agentbox-weekly.timer", "agentbox-rebuild.timer", "agentbox-versions.timer"})
+        self.assertEqual(set(generate.RETIRED_SERVICES), {"agentbox-weekly.service", "agentbox-rebuild.service"})
 
 
 if __name__ == "__main__":

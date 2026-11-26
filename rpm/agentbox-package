@@ -1,0 +1,109 @@
+#!/usr/bin/sh
+# What the package's scriptlets do beyond rpm's own macros (rpm/agentbox.spec, ADR 0009),
+# installed as /usr/libexec/agentbox-package (agentbox/paths.py, PACKAGE_SCRIPT). The
+# scriptlets decide from rpm's count whether it is an install, an update or a removal and call
+# one subcommand each:
+#
+#   sudoers-check           %post: the installed sudoers rule of the Control Room, set aside
+#                           when visudo rejects it
+#   nocow-directories       %post, install only: the VM disk directories without copy-on-write
+#   proxy-code-snapshot     %pre, update only: the hash of the proxy code being replaced
+#   proxy-code-restart      %posttrans: the proxies restarted when their code changed
+#   generated-units         %preun, removal only: the units agentbox regenerate wrote, that exist
+#   forget-generated-units  %preun, removal only: those deleted, and systemd forgets them
+#
+# It never runs agentbox (a root-run CLI in the middle of a transaction, of half old and half
+# new files) and never enables, starts or opens anything: its only systemctl calls are the
+# proxies' try-restart and daemon-reload (tests/test_rpm.py).
+
+rule=/etc/sudoers.d/agentbox-web
+disks="/var/lib/agentbox/images /var/lib/agentbox/vms"
+# the proxy code: the proxy, the classifier it loads and what of the package both import (the
+# package itself and the leaf modules; tests/test_list_records.py checks this list against their
+# imports)
+proxy_code="/usr/libexec/agentbox-proxy /usr/libexec/agentbox-suspicious /usr/lib/agentbox/agentbox/__init__.py /usr/lib/agentbox/agentbox/list_records.py /usr/lib/agentbox/agentbox/proxy_log.py"
+code_before=/run/agentbox-proxy-code
+restart_pending=/run/agentbox-proxy-restart
+units_dir=/etc/systemd/system
+# the unit files agentbox regenerate writes (tests/test_rpm_upgrade.py checks this list against
+# what it writes), and those of the timers it takes away (generate.RETIRED_TIMERS)
+generated="agentbox-proxy-*.socket agentbox-proxy-*.service agentbox-ghvm-*.socket agentbox-ghvm-*@.service
+           agentbox-claude-*.socket agentbox-claude-*@.service agentbox-gui-*.socket agentbox-gui-*@.service agentbox-maintenance.timer
+           agentbox-maintenance.service agentbox-feeds.timer agentbox-feeds.service
+           agentbox-build@.service agentbox-versions.service agentbox-versions-fetch.service
+           agentbox-weekly.timer agentbox-weekly.service agentbox-rebuild.timer agentbox-rebuild.service
+           agentbox-versions.timer"
+
+case $1 in
+    sudoers-check)
+        # The rule is checked at build time; a Host whose sudo reads it differently keeps a
+        # working sudo: the rule is set aside (sudo skips names with a dot) and the Control
+        # Room cannot act until it is fixed.
+        if ! visudo -cqf "$rule"; then
+            mv -f "$rule" "$rule.rejected"
+            echo "agentbox: visudo rejects $rule, set aside as agentbox-web.rejected" >&2
+        fi
+        ;;
+    nocow-directories)
+        # VM disks without copy-on-write, which slows them down on btrfs; only for directories
+        # that are still empty, as on a new Host
+        for d in $disks; do
+            if [ -z "$(ls -A "$d")" ]; then chattr +C "$d" 2>/dev/null || :; fi
+        done
+        ;;
+    proxy-code-snapshot)
+        # Run from the Release being replaced, before its files are: the hash of its proxy code,
+        # for proxy-code-restart. An update that stopped after replacing them left the code the
+        # proxies run here already, so that one is kept. Under /run, like the restart that may
+        # stay pending: the Host restarting starts the proxies with the installed code anyway.
+        if [ ! -e "$code_before" ]; then
+            cat $proxy_code 2>/dev/null | sha256sum > "$code_before" || :
+        fi
+        ;;
+    proxy-code-restart)
+        # When this Release brings other proxy code, the proxies of the VMs that run restart;
+        # proxies that do not run stay stopped. Their sockets stay, so a VM loses only its open
+        # tunnels while new connections wait. try-restart at once rather than
+        # systemd-update-helper's mark: a proxy that is stopped would keep the mark once it
+        # starts, and the next package update with units would restart it. A restart that fails
+        # stays pending, and the next update tries it again, whatever it changes. The token
+        # service and the Orca ports (a process per connection) and the timers' services take
+        # the new code with their next start; no VM is touched.
+        if [ -f "$code_before" ]; then
+            code=$(cat $proxy_code | sha256sum)
+            if [ "$code" != "$(cat "$code_before")" ]; then
+                touch "$restart_pending"
+            fi
+            rm -f "$code_before"
+        fi
+        if [ -e "$restart_pending" ]; then
+            if systemctl try-restart 'agentbox-proxy-*.service'; then
+                rm -f "$restart_pending"
+            else
+                echo "agentbox: the proxies keep the old code; the next update restarts them again" >&2
+            fi
+        fi
+        ;;
+    generated-units)
+        # The units to disable and stop: those there, without the templates, whose instances
+        # end with their connection or Build.
+        if cd "$units_dir" 2>/dev/null; then
+            for unit in $generated; do
+                case $unit in
+                    *@.service) ;;
+                    *) if [ -f "$unit" ]; then echo "$unit"; fi ;;
+                esac
+            done
+        fi
+        ;;
+    forget-generated-units)
+        if cd "$units_dir" 2>/dev/null; then
+            rm -f $generated
+            systemctl daemon-reload || :
+        fi
+        ;;
+    *)
+        echo "Usage: agentbox-package sudoers-check|nocow-directories|proxy-code-snapshot|proxy-code-restart|generated-units|forget-generated-units" >&2
+        exit 2
+        ;;
+esac

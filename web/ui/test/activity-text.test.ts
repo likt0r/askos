@@ -367,9 +367,7 @@ describe('Activity text (unit)', () => {
     }
   })
 
-  it('words a rebuild left to the old timer and a window that ran already in its turn', () => {
-    expect(activityText(coded(0, 'maintenance.rebuild', { reason: 'old-timer' }, 'stored'), tr))
-      .toBe('activity.actions.maintenanceRebuildOldTimer')
+  it('words a window that ran already in its turn', () => {
     expect(activityText(coded(0, 'maintenance.skipped', { reason: 'already-ran', time: '02:00' }, 'stored'), tr))
       .toBe('activity.actions.maintenanceSkipped {"time":"02:00"}')
     // a reason this UI does not know, or without the time: the stored text

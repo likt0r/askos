@@ -2,7 +2,8 @@
 
 PackageTest needs only the repository: the spec with the service users, units and sudoers
 rule it installs under the prefix /usr, what it requires, and scriptlets that enable, start
-and open nothing.
+and open nothing. PackageScriptTest runs the subcommands of rpm/agentbox-package, which the
+scriptlets call, on a temporary directory.
 
 InstalledTest is the installation test. rpm/install-test.sh runs it as root in a fresh
 Fedora container right after installing the RPM, with AGENTBOX_RPM_STATE naming the
@@ -57,6 +58,8 @@ DIRECTORIES = {"/etc/agentbox": ("root", "root", 0o755),
                "/var/lib/agentbox": ("root", "root", 0o755),
                "/var/lib/agentbox/images": ("root", "root", 0o711),
                "/var/lib/agentbox/vms": ("root", "root", 0o711)}
+# what the scriptlets do beyond rpm's macros (agentbox.paths.PACKAGE_SCRIPT)
+PACKAGE_SCRIPT = os.path.join(RPM, "agentbox-package")
 SCRIPTLETS = ("pre", "post", "preun", "postun", "pretrans", "posttrans", "preuntrans", "postuntrans")
 # the systemctl calls of the scriptlets (tests/test_rpm_upgrade.py): an update that changes the
 # proxy code restarts the proxies that run and starts none, and removal has systemd forget the
@@ -198,11 +201,14 @@ class PackageTest(unittest.TestCase):
         # its regular expression needs sudo 1.9.10
         self.assertRegex(self.spec, r"(?m)^Requires:\s+sudo >= 1\.9\.10$")
         self.assertRegex(self.spec, r"(?m)^BuildRequires:\s+sudo >= 1\.9\.10$")
-        # and %post's visudo checks it, so an update brings that sudo before %post runs
+        # and agentbox-package's visudo checks it in %post, so an update brings that sudo before %post runs
         self.assertRegex(self.spec, r"(?m)^Requires\(post\):\s+sudo >= 1\.9\.10$")
         # checked when built and again when installed
         self.assertIn("visudo -cqf rpm/agentbox-web.sudoers", spec_sections(self.spec, ("check",)))
-        self.assertIn("visudo -cqf %{_sysconfdir}/sudoers.d/agentbox-web", spec_sections(self.spec, ("post",)))
+        self.assertIn("%{_libexecdir}/agentbox-package sudoers-check", spec_sections(self.spec, ("post",)))
+        script = meaningful(read("rpm", "agentbox-package"))
+        self.assertIn("rule=/etc/sudoers.d/agentbox-web", script)
+        self.assertIn('        if ! visudo -cqf "$rule"; then', script)
 
     def test_visudo_takes_the_sudoers_rule(self):
         """As the spec's %check runs it; where there is no visudo, or one without the regular
@@ -241,114 +247,147 @@ class PackageTest(unittest.TestCase):
 
     def test_the_scriptlets_enable_start_and_open_nothing(self):
         """No preset on install (it could also disable what an existing Host has enabled), no
-        firewall, no agentbox call; on update and removal never the rules of the VM networks."""
+        firewall, no agentbox call; on update and removal never the rules of the VM networks.
+        Neither does agentbox-package, which they call."""
         scriptlets = without_systemctl_calls(spec_sections(self.spec, SCRIPTLETS))
-        for forbidden in ("systemctl", "firewall-cmd", "nft ", "%{_bindir}/agentbox", "/usr/bin/agentbox",
-                          "agentbox setup", "vmnet"):
-            self.assertNotIn(forbidden, scriptlets)
+        script = without_systemctl_calls("\n".join(meaningful(read("rpm", "agentbox-package"))))
+        for text in (scriptlets, script):
+            for forbidden in ("systemctl", "firewall-cmd", "nft ", "%{_bindir}/agentbox", "/usr/bin/agentbox",
+                              "agentbox setup", "vmnet"):
+                self.assertNotIn(forbidden, text)
         self.assertNotRegex(scriptlets, r"%systemd_(user_)?post\b")
+        # beyond rpm's macros the scriptlets only call agentbox-package and systemd-update-helper
+        for forbidden in ("visudo", "chattr", "sha256sum", "rm ", "mv ", "/run/"):
+            self.assertNotIn(forbidden, scriptlets)
+        self.assertEqual(set(re.findall(r"agentbox-package ([a-z-]+)", scriptlets)),
+                         {"proxy-code-snapshot", "sudoers-check", "nocow-directories", "generated-units",
+                          "forget-generated-units", "proxy-code-restart"})
+        self.assertIn("install -m 0755 rpm/agentbox-package %{buildroot}%{_libexecdir}/", self.spec)
+        self.assertIn("%{_libexecdir}/agentbox-package", spec_sections(self.spec, ("files",)))
+        self.assertEqual(paths.PACKAGE_SCRIPT, "/usr/libexec/agentbox-package")
         units = ("agentbox-web.service agentbox-alert-watch.service agentbox-allowlist-expire.timer "
                  "agentbox-container-image-cleanup.timer")
         self.assertIn(f"%systemd_preun {units}", scriptlets)
         self.assertIn(f"%systemd_postun_with_restart {units}", scriptlets)
 
 
-class RetiredTimersTest(unittest.TestCase):
-    """#49: an update takes the timers of the version check and the weekly rebuild (and the service
-    only the rebuild timer started), as %post runs it: the block of the spec with
-    /etc/systemd/system under a temporary directory, systemd-update-helper and systemctl stand-ins
-    that record their arguments. The old Reset check's timer stays: until regenerate, its
-    weekly-check runs the whole Maintenance window (test_maintenance.TransitionTest)."""
-
-    RETIRED = ("agentbox-rebuild.timer", "agentbox-versions.timer")
-    LEFT_FOR_REGENERATE = ("agentbox-weekly.timer", "agentbox-weekly.service")
-    KEPT = ("agentbox-maintenance.timer", "agentbox-maintenance.service", "agentbox-feeds.timer",
-            "agentbox-feeds.service", "agentbox-versions.service", "agentbox-versions-fetch.service",
-            "agentbox-build@.service", "agentbox-proxy-work.socket")
+class PackageScriptTest(unittest.TestCase):
+    """The subcommands of rpm/agentbox-package as the scriptlets call them, with its paths under a
+    temporary directory and stand-ins for systemctl, visudo and chattr that record their
+    arguments."""
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.dir = tmp.name
         self.units = os.path.join(self.dir, "etc", "systemd", "system")
-        os.makedirs(self.units)
-        os.makedirs(os.path.join(self.dir, "bin"))
-        for name in ("systemd-update-helper", "systemctl"):
+        for sub in ("etc/systemd/system", "etc/sudoers.d", "var/lib/agentbox/images", "var/lib/agentbox/vms", "run",
+                    "usr/libexec", "usr/lib/agentbox/agentbox", "bin"):
+            os.makedirs(os.path.join(self.dir, sub))
+        for name in ("systemctl", "visudo", "chattr"):
             with open(os.path.join(self.dir, "bin", name), "w") as f:
-                # a unit named in the file "fails" cannot be disabled
+                # a program named in the file "fails" fails
                 f.write(f'#!/bin/sh\necho "{name} $*" >> "{self.dir}/calls"\n'
-                        f'for unit in "$@"; do grep -qxF "$unit" "{self.dir}/fails" 2>/dev/null && exit 1; done\n'
-                        'exit 0\n')
+                        f'grep -qxF {name} "{self.dir}/fails" 2>/dev/null && exit 1\nexit 0\n')
             os.chmod(os.path.join(self.dir, "bin", name), 0o755)
-        post = spec_sections(read("rpm", "agentbox.spec"), ("post",))
-        block = re.search(r"(?ms)^if \[ \$1 -gt 1 \]; then\n    found=\n.*?^fi$", post).group(0)
-        self.script = (block.replace("%{_sysconfdir}", os.path.join(self.dir, "etc"))
-                       .replace("/usr/lib/systemd/systemd-update-helper", os.path.join(self.dir, "bin",
-                                                                                       "systemd-update-helper")))
+        self.script = read("rpm", "agentbox-package")
+        for path in ("/etc/", "/var/lib/", "/run/", "/usr/"):
+            self.script = self.script.replace(path, self.dir + path)
 
-    def unit(self, *names):
-        for name in names:
-            with open(os.path.join(self.units, name), "w") as f:
-                f.write("[Unit]\n")
-
-    def post(self, arg):
-        """The block as %post runs it, $1 = arg (1: install, 2: update); (stderr, calls)."""
-        r = subprocess.run(["/bin/sh", "-c", self.script, "post", str(arg)], capture_output=True, text=True,
-                           env={"PATH": os.path.join(self.dir, "bin") + ":/usr/bin:/bin"})
-        self.assertEqual(r.returncode, 0, r.stderr)
+    def run_script(self, subcommand):
+        """(exit code, stdout, stderr, the calls of the stand-ins)."""
+        r = subprocess.run(["/bin/sh", "-c", self.script, "agentbox-package", subcommand], capture_output=True,
+                           text=True, env={"PATH": os.path.join(self.dir, "bin") + ":/usr/bin:/bin"})
         try:
             with open(os.path.join(self.dir, "calls")) as f:
                 calls = f.read().splitlines()
+            os.remove(os.path.join(self.dir, "calls"))
         except FileNotFoundError:
             calls = []
-        return r.stderr, calls
+        return r.returncode, r.stdout, r.stderr, calls
 
-    def test_an_update_disables_and_deletes_them_and_says_what_runs_until_regenerate(self):
-        self.unit(*self.RETIRED, "agentbox-rebuild.service", *self.LEFT_FOR_REGENERATE, *self.KEPT)
-        err, calls = self.post(2)
-        self.assertEqual(calls, [f"systemd-update-helper remove-system-units {u}" for u in self.RETIRED]
-                         + ["systemctl daemon-reload"])
-        self.assertEqual(sorted(os.listdir(self.units)), sorted(self.KEPT + self.LEFT_FOR_REGENERATE))
-        self.assertIn("Maintenance window", err)
-        self.assertIn("sudo agentbox regenerate", err)
-        self.assertIn("the Reset check's timer runs the whole window at the old Reset time", err)
-
-    def test_the_old_reset_timer_stays_for_regenerate(self):
-        self.unit(*self.LEFT_FOR_REGENERATE, *self.KEPT)
-        self.assertEqual(self.post(2), ("", []))
-        self.assertEqual(sorted(os.listdir(self.units)), sorted(self.KEPT + self.LEFT_FOR_REGENERATE))
-
-    def test_only_what_was_disabled_is_deleted(self):
-        self.unit(*self.RETIRED, "agentbox-rebuild.service", *self.KEPT)
+    def fails(self, *names):
         with open(os.path.join(self.dir, "fails"), "w") as f:
-            f.write("agentbox-rebuild.timer\n")
-        err, calls = self.post(2)
-        self.assertEqual(calls, [f"systemd-update-helper remove-system-units {u}" for u in self.RETIRED]
-                         + ["systemctl daemon-reload"])
-        # the rebuild timer could not be disabled: it stays, with its service, for regenerate
-        self.assertEqual(sorted(os.listdir(self.units)),
-                         sorted(self.KEPT + ("agentbox-rebuild.timer", "agentbox-rebuild.service")))
-        self.assertIn("agentbox-rebuild.timer could not be disabled; sudo agentbox regenerate takes it away", err)
+            f.write("".join(name + "\n" for name in names))
 
-    def test_only_those_there_and_a_service_left_alone(self):
-        self.unit("agentbox-versions.timer", "agentbox-rebuild.service", *self.KEPT)
-        _, calls = self.post(2)
-        self.assertEqual(calls, ["systemd-update-helper remove-system-units agentbox-versions.timer",
-                                 "systemctl daemon-reload"])
-        self.assertEqual(sorted(os.listdir(self.units)), sorted(self.KEPT + ("agentbox-rebuild.service",)))
+    def write(self, rel, text="x\n"):
+        with open(os.path.join(self.dir, rel), "w") as f:
+            f.write(text)
 
-    def test_a_host_without_them_and_an_install_are_left_alone(self):
-        self.unit(*self.KEPT)
-        self.assertEqual(self.post(2), ("", []))
-        self.unit(*self.RETIRED)
-        self.assertEqual(self.post(1), ("", []))
-        self.assertEqual(sorted(os.listdir(self.units)), sorted(self.KEPT + self.RETIRED))
+    def read(self, rel):
+        with open(os.path.join(self.dir, rel)) as f:
+            return f.read()
 
-    def test_regenerate_takes_away_what_the_package_leaves(self):
-        self.assertEqual(set(self.RETIRED + self.LEFT_FOR_REGENERATE[:1]), set(generate.RETIRED_TIMERS))
-        self.assertEqual({"agentbox-weekly.service", "agentbox-rebuild.service"}, set(generate.RETIRED_SERVICES))
-        self.assertIn("for unit in agentbox-rebuild.timer agentbox-versions.timer; do", self.script)
-        self.assertNotIn("agentbox-weekly", self.script)
+    def exists(self, rel):
+        return os.path.exists(os.path.join(self.dir, rel))
+
+    def test_a_rule_visudo_rejects_is_set_aside(self):
+        self.write("etc/sudoers.d/agentbox-web")
+        self.assertEqual(self.run_script("sudoers-check"),
+                         (0, "", "", [f"visudo -cqf {self.dir}/etc/sudoers.d/agentbox-web"]))
+        self.assertTrue(self.exists("etc/sudoers.d/agentbox-web"))
+        self.fails("visudo")
+        code, _, err, _ = self.run_script("sudoers-check")
+        self.assertEqual(code, 0)
+        self.assertEqual(err, f"agentbox: visudo rejects {self.dir}/etc/sudoers.d/agentbox-web, set aside as "
+                              "agentbox-web.rejected\n")
+        self.assertFalse(self.exists("etc/sudoers.d/agentbox-web"))
+        self.assertTrue(self.exists("etc/sudoers.d/agentbox-web.rejected"))
+
+    def test_only_empty_disk_directories_lose_copy_on_write(self):
+        self.write("var/lib/agentbox/vms/work-data.qcow2")
+        self.fails("chattr")         # as on a file system other than btrfs: nothing said
+        self.assertEqual(self.run_script("nocow-directories"),
+                         (0, "", "", [f"chattr +C {self.dir}/var/lib/agentbox/images"]))
+
+    def test_the_proxies_restart_only_when_their_code_changed_and_a_failed_restart_stays_pending(self):
+        for rel in ("libexec/agentbox-proxy", "libexec/agentbox-suspicious", "lib/agentbox/agentbox/__init__.py",
+                    "lib/agentbox/agentbox/list_records.py", "lib/agentbox/agentbox/proxy_log.py"):
+            self.write("usr/" + rel)
+        self.assertEqual(self.run_script("proxy-code-snapshot"), (0, "", "", []))
+        # the same code: nothing restarts
+        self.assertEqual(self.run_script("proxy-code-restart"), (0, "", "", []))
+        self.assertFalse(self.exists("run/agentbox-proxy-code"))
+        # other code (an update that stopped half way and is done again keeps the first hash),
+        # and the restart fails: it stays pending
+        self.run_script("proxy-code-snapshot")
+        snapshot = self.read("run/agentbox-proxy-code")
+        self.write("usr/lib/agentbox/agentbox/proxy_log.py", "y\n")
+        self.run_script("proxy-code-snapshot")
+        self.assertEqual(self.read("run/agentbox-proxy-code"), snapshot)
+        self.fails("systemctl")
+        self.assertEqual(self.run_script("proxy-code-restart"),
+                         (0, "", "agentbox: the proxies keep the old code; the next update restarts them again\n",
+                          ["systemctl try-restart agentbox-proxy-*.service"]))
+        self.assertTrue(self.exists("run/agentbox-proxy-restart"))
+        self.assertFalse(self.exists("run/agentbox-proxy-code"))
+        # the next update, whatever it changes, restarts them
+        self.fails()
+        self.assertEqual(self.run_script("proxy-code-restart"),
+                         (0, "", "", ["systemctl try-restart agentbox-proxy-*.service"]))
+        self.assertFalse(self.exists("run/agentbox-proxy-restart"))
+
+    def test_the_generated_units_are_named_and_forgotten(self):
+        generated = ("agentbox-proxy-work.socket", "agentbox-proxy-work.service", "agentbox-ghvm-work@.service",
+                     "agentbox-maintenance.timer", "agentbox-build@.service")
+        kept = ("agentbox-web.service", "agentbox-vmnet.service", "other.service")
+        for name in generated + kept:
+            self.write("etc/systemd/system/" + name, "[Unit]\n")
+        code, out, err, calls = self.run_script("generated-units")
+        # without the templates, whose instances end on their own
+        self.assertEqual((code, sorted(out.split()), err, calls),
+                         (0, ["agentbox-maintenance.timer", "agentbox-proxy-work.service",
+                              "agentbox-proxy-work.socket"], "", []))
+        self.assertEqual(self.run_script("forget-generated-units"), (0, "", "", ["systemctl daemon-reload"]))
+        self.assertEqual(sorted(os.listdir(self.units)), sorted(kept))
+
+    def test_without_the_unit_directory_nothing_is_done(self):
+        os.rmdir(self.units)
+        self.assertEqual(self.run_script("generated-units"), (0, "", "", []))
+        self.assertEqual(self.run_script("forget-generated-units"), (0, "", "", []))
+
+    def test_an_unknown_subcommand_is_refused(self):
+        self.assertEqual(self.run_script("setup")[0], 2)
 
 
 @unittest.skipUnless(STATE, "only in the installation test (rpm/install-test.sh)")
@@ -376,7 +415,7 @@ class InstalledTest(unittest.TestCase):
         """agentbox.paths as the installed package sees itself (no AGENTBOX_ROOT)."""
         code = ("import json, sys; sys.path.insert(0, '/usr/lib/agentbox'); from agentbox import paths; "
                 "print(json.dumps({k: getattr(paths, k) for k in ('PREFIX', 'INSTALLED', 'CLI', 'VERSION', "
-                "'PROXY', 'TOKEND', 'FEEDS_PROGRAM', 'SUSPICIOUS', 'WEB_BACKEND', 'WEB_UI', "
+                "'PROXY', 'TOKEND', 'FEEDS_PROGRAM', 'SUSPICIOUS', 'WEB_BACKEND', 'PACKAGE_SCRIPT', 'WEB_UI', "
                 "'VM_SOURCE', 'SEED_LISTS', 'CONF', 'STATE', 'SYSTEMD')}))")
         r = subprocess.run(["/usr/bin/python3", "-I", "-c", code], capture_output=True, text=True, check=True,
                            env={"PATH": "/usr/bin"})
@@ -387,7 +426,8 @@ class InstalledTest(unittest.TestCase):
         self.assertEqual((p["PREFIX"], p["INSTALLED"], p["CLI"], p["CONF"], p["STATE"], p["SYSTEMD"]),
                          ("/usr", True, "/usr/bin/agentbox", "/etc/agentbox", "/var/lib/agentbox",
                           "/etc/systemd/system"))
-        named = [p[k] for k in ("CLI", "VERSION", "PROXY", "TOKEND", "FEEDS_PROGRAM", "SUSPICIOUS", "WEB_BACKEND")]
+        named = [p[k] for k in ("CLI", "VERSION", "PROXY", "TOKEND", "FEEDS_PROGRAM", "SUSPICIOUS", "WEB_BACKEND",
+                                "PACKAGE_SCRIPT")]
         named += [os.path.join(p["WEB_UI"], "index.html"), os.path.join(p["VM_SOURCE"], "vm", "Containerfile")]
         named += [os.path.join(p["SEED_LISTS"], name) for name in SEEDS]
         for path in named:
@@ -407,7 +447,8 @@ class InstalledTest(unittest.TestCase):
         """Byte for byte, so nothing rewrote a shebang or a guest file on the way."""
         pairs = [(os.path.join(REPO, "bin", "agentbox"), "/usr/bin/agentbox"),
                  (os.path.join(REPO, "VERSION"), "/usr/lib/agentbox/VERSION"),
-                 (os.path.join(REPO, "web", "agentbox-readings"), "/usr/libexec/agentbox-readings")]
+                 (os.path.join(REPO, "web", "agentbox-readings"), "/usr/libexec/agentbox-readings"),
+                 (PACKAGE_SCRIPT, "/usr/libexec/agentbox-package")]
         pairs += [(os.path.join(REPO, d, name), f"/usr/libexec/{name}") for name, d in PROGRAMS.items()]
         pairs += [(os.path.join(REPO, "agentbox", n), f"/usr/lib/agentbox/agentbox/{n}")
                   for n in os.listdir(os.path.join(REPO, "agentbox")) if n.endswith(".py")]
@@ -570,8 +611,10 @@ class InstalledTest(unittest.TestCase):
     def test_the_scriptlets_start_and_open_nothing(self):
         """As rpm runs them (macros expanded): no preset on install, units stopped and disabled
         only on removal and restarted only on update, never the rules of the VM networks."""
-        with open(os.path.join(STATE, "scripts"), encoding="utf-8") as f:
-            scripts = without_systemctl_calls("\n".join(meaningful(f.read())))
+        scripts = ""
+        for path in (os.path.join(STATE, "scripts"), "/usr/libexec/agentbox-package"):
+            with open(path, encoding="utf-8") as f:
+                scripts += without_systemctl_calls("\n".join(meaningful(f.read()))) + "\n"
         for forbidden in ("systemctl", "firewall-cmd", "install-system-units", "agentbox-vmnet", "/usr/bin/agentbox"):
             self.assertNotIn(forbidden, scripts)
         verbs = set(re.findall(r"systemd-update-helper (\S+)", scripts))
