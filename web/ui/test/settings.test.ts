@@ -657,25 +657,47 @@ describe('Settings page', () => {
       expect(wrapper.find('[data-testid="settings-changed-elsewhere"]').exists()).toBe(false)
     })
 
-    it('its own refused save\'s failed entry is not said to come from elsewhere', async () => {
+    it('a change from elsewhere during a refused save is said once the save is over', async () => {
+      let release!: () => void
       let current = settingsBody()
-      const { wrapper, api, es } = await openPage('/settings', {
+      const { wrapper, es } = await openPage('/settings', {
         'GET /settings': () => ok(current),
-        'PATCH /settings': { status: 400, body: { error: { code: 'invalid_setting', message: 'Invalid setting' } } },
+        'PATCH /settings': () => new Promise(resolve => {
+          release = () => resolve({ status: 409, body: { error: { code: 'setting_cli_only', message: 'x' } } })
+        }),
       })
       await type(wrapper, 'reset_age_days', '9')
       await save(wrapper).trigger('click')
       await flushPromises()
-      es.emit('activity', { ...entry, outcome: 'failed' })
-      await new Promise(r => setTimeout(r, 500))
-      expect(wrapper.find('[data-testid="settings-changed-elsewhere"]').exists()).toBe(false)
-      expect((input(wrapper, 'reset_age_days').element as HTMLInputElement).value).toBe('9')
-      expect(reads(api.calls)).toBe(1)
-      // a later one is another's
-      current = settingsBody({ reset_age_days: 30 })
+      current = settingsBody({ builds_kept: 5 })
       es.emit('activity', entry)
+      await new Promise(r => setTimeout(r, 500))
+      release()
+      await flushPromises()
+      expect(wrapper.find('[data-testid="settings-changed-elsewhere"]').exists()).toBe(true)
+    })
+
+    it('after its own save, a later change from elsewhere is still said', async () => {
+      let release!: () => void
+      let current = settingsBody()
+      const { wrapper, es } = await openPage('/settings', {
+        'GET /settings': () => ok(current),
+        'PATCH /settings': () => new Promise(resolve => { release = () => resolve(ok(changedBody)) }),
+      })
+      await type(wrapper, 'reset_age_days', '9')
+      await save(wrapper).trigger('click')
+      await flushPromises()
+      current = settingsBody({ reset_age_days: 9 })
+      es.emit('activity', entry)               // its own, during the save
+      await new Promise(r => setTimeout(r, 500))
+      release()
+      await flushPromises()
+      await type(wrapper, 'builds_kept', '5')
+      current = settingsBody({ reset_age_days: 9, rebuild_day: 'fri' })
+      es.emit('activity', entry)               // another's, while a field is edited
       await wait(() => expect(wrapper.find('[data-testid="settings-changed-elsewhere"]').exists()).toBe(true))
     })
+
 
     it('"Retry" after a failed read keeps what is typed', async () => {
       let failing = false

@@ -66,16 +66,17 @@ export function useSettings() {
   }
 
   // a change from elsewhere never throws away what is typed: it waits until nothing is edited (a
-  // failed change counts too: agentbox may have saved before it failed). While this browser saves,
-  // the read after its save brings what changed. The first entry after its own save is taken for
-  // that save's: it is never said to come from elsewhere (it is still read when nothing is typed).
-  let ownEntry = false
+  // failed change counts too: agentbox may have saved before it failed). An entry that comes
+  // while this browser saves waits for the save's end: a save that succeeded or failed with a 5xx
+  // reads what is stored then, a refused one follows the entry as below.
+  let missed = false
+  function followEntry() {
+    if (dirty.value.length) changedElsewhere.value = true
+    else void load()
+  }
   useReloadOnActivity(() => {
-    if (saving.value) return
-    const own = ownEntry
-    ownEntry = false
-    if (!dirty.value.length) void load()
-    else if (!own) changedElsewhere.value = true
+    if (saving.value) missed = true
+    else followEntry()
   }, { kinds: ['settings'] })
   watch(() => dirty.value.length, (n) => {
     if (n === 0 && changedElsewhere.value) void load()
@@ -109,7 +110,8 @@ export function useSettings() {
     }
     if (Object.keys(errors).length || !Object.keys(body).length) return false
     reading.value = true
-    ownEntry = true
+    missed = false
+    let read = false
     try {
       const r = await patch.run(body)
       if (!r.ok) {
@@ -117,7 +119,10 @@ export function useSettings() {
         if (e instanceof ApiError && e.field && e.field in info.value) errors[e.field] = { code: 'server', text: () => patch.text.value ?? '' }
         // a refusal stored nothing; a failure of agentbox may have come after it saved ("saved, but
         // not applied"): what is stored now, without throwing away what is typed
-        if (e instanceof ApiError && e.status >= 500) await load(true)
+        if (e instanceof ApiError && e.status >= 500) {
+          await load(true)
+          read = true
+        }
         return false
       }
       saved.value = r.data as Saved
@@ -125,10 +130,13 @@ export function useSettings() {
       // reads once more (an exception the owner settled on #215: waiting for the entry could leave
       // the form saving for good)
       await load()
+      read = true
       return true
     }
     finally {
       reading.value = false
+      if (missed && !read) followEntry()
+      missed = false
     }
   }
 
