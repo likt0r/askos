@@ -31,7 +31,9 @@ const note = ref('')
 // the command
 const addChange = useChange('legitimateAdd', { form: true, own: ['force_required'] })
 const adding = addChange.busy
+// the domain whose refusal shows the command for the Host; a pattern's shows no command
 const refused = ref<string | null>(null)
+const forced = computed(() => addChange.error.value instanceof ApiError && addChange.error.value.code === 'force_required')
 const domain = computed(() => normalizeDomain(domainInput.value))
 const pattern = computed(() => patternInput.value.trim())
 const canAdd = computed(() => (kind.value === 'regex' ? looksLikePattern(pattern.value) : looksLikeDomain(domain.value))
@@ -43,7 +45,7 @@ async function add() {
   const entry: Target = kind.value === 'regex' ? { domain: null, regex: pattern.value } : { domain: domain.value, regex: null }
   const r = await addChange.run({ target: entry, note: note.value.trim() })
   if (!r.ok) {
-    if (r.error instanceof ApiError && r.error.code === 'force_required' && entry.domain) refused.value = entry.domain
+    if (r.error instanceof ApiError && r.error.code === 'force_required') refused.value = entry.domain
     return
   }
   const answer = r.data as { builtin?: boolean } | null
@@ -129,8 +131,8 @@ function remove() {
       {{ t('watchlist.legitimate.tooLong') }}
     </p>
     <ChangeFailure :error="addChange.shown.value" data-testid="legitimate-add-error" />
-    <UAlert v-if="refused" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(addChange.error.value)" role="alert" data-testid="legitimate-add-error">
-      <template #description>
+    <UAlert v-if="forced" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(addChange.error.value)" role="alert" data-testid="legitimate-add-error">
+      <template v-if="refused" #description>
         {{ t('watchlist.legitimate.onlyCli') }}
         <code class="mt-1 block break-all font-mono text-xs">sudo agentbox legitimate-add {{ refused }} --force</code>
       </template>

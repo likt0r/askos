@@ -60,10 +60,10 @@ async function check(d?: string) {
   }
 }
 
-// the result shows the mark once the page checks again on the change's Activity entry
 async function setMark() {
   const d = result.value?.domain
   if (!d || !(await mark.run({ domain: d, regex: null })).ok) return
+  input.value = d          // the page checks it again on the change's Activity entry
   toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t('watchlist.harmless.marked', { domain: d }) })
 }
 
@@ -75,6 +75,7 @@ function askUnmark() {
 async function removeMark() {
   const d = result.value?.domain
   if (!d || !(await unmark.run({ domain: d, regex: null })).ok) return
+  input.value = d
   toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t('watchlist.harmless.unmarked', { domain: d }) })
   confirmUnmark.value = false
 }

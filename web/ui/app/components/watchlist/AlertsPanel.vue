@@ -58,10 +58,9 @@ async function markSeen(vm: string, domain?: string) {
   }
 }
 
+// every VM's, one after the other; one that fails says so in its own toast
 async function markAllSeen() {
-  for (const vm of vmsWithNew.value) {
-    if (!await markSeen(vm)) return
-  }
+  for (const vm of vmsWithNew.value) await markSeen(vm)
 }
 
 watch(() => `${live.state.loaded}:${vmNames.value.join()}`, () => void load(), { immediate: true })
@@ -86,6 +85,7 @@ defineExpose({ load })
         icon="i-lucide-check-check"
         :label="t('watchlist.alerts.allSeen')"
         :loading="busy !== null"
+        :disabled="busy !== null"
         data-testid="alerts-all-seen"
         @click="markAllSeen"
       />
@@ -137,6 +137,7 @@ defineExpose({ load })
             icon="i-lucide-check"
             :label="t('watchlist.alerts.markSeen')"
             :loading="busy === `${a.vm}/${a.domain}`"
+            :disabled="busy !== null"
             data-testid="alert-seen"
             @click="markSeen(a.vm, a.domain)"
           />

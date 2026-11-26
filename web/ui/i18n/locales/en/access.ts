@@ -294,7 +294,7 @@ export default {
       first: 'first {when}',
       check: 'Check',
       markSeen: 'Seen',
-      markSeenFailed: 'The Alert could not be marked as seen',
+      markSeenFailed: 'Could not mark as seen',
     },
     feeds: {
       title: 'Feeds',

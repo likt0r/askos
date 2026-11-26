@@ -291,7 +291,7 @@ export default {
       first: 'zuerst {when}',
       check: 'Prüfen',
       markSeen: 'Gesehen',
-      markSeenFailed: 'Der Alert konnte nicht als gesehen markiert werden',
+      markSeenFailed: 'Konnte nicht als gesehen markiert werden',
     },
     feeds: {
       title: 'Feeds',
