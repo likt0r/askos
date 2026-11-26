@@ -16,7 +16,8 @@ const shown = computed(() => {
   const r = props.resource
   if (r.extra || !r.error.value) return null
   if (live.state.connection === 'reconnecting') return null
-  if (unreachable(r.error.value) && live.state.connection !== 'live') return null
+  // not before the stream is live, nor while the read again after a `hello` is on the way
+  if (unreachable(r.error.value) && (live.state.connection !== 'live' || r.fetching.value)) return null
   return r.data.value === undefined ? 'failed' : 'stale'
 })
 const retrying = ref(false)

@@ -6,7 +6,8 @@ import type { Vm } from '~/utils/live'
 const props = defineProps<{ vm: Vm }>()
 const { t } = useI18n()
 
-const overview = useResource('images', { extra: true }).data
+const images = useResource('images', { extra: true })
+const overview = images.data
 
 const diskBuild = computed(() => props.vm.system_disk?.build ?? null)
 const diskImage = computed(() => props.vm.system_disk?.image ?? props.vm.image ?? null)
@@ -26,6 +27,7 @@ const changes = computed(() => (build.value?.updates?.length ?? 0) > 0 || !!pack
     <h4 class="text-xs font-medium uppercase tracking-wide text-dimmed">
       {{ t('vm.overview.versions') }}
     </h4>
+    <ReadFailure :resource="images" />
     <p v-if="!diskBuild" class="text-sm text-muted">
       {{ t('vm.overview.versionsNoDisk') }}
     </p>

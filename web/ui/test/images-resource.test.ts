@@ -146,6 +146,29 @@ describe('a failed read of the Images', () => {
     expect(pinnable()).toEqual(['__current__', '2', '1'])
   })
 
+  it('the Create dialog picks its Image from the Images read again, not from the stale copy', async () => {
+    let host: unknown = { ...IMAGES, images: [...IMAGES.images, { ...IMAGES.images[0]!, name: 'rust', base: false, vms: [] }] }
+    let release: (() => void) | null = null
+    fakeApi({ 'GET /session': SIGNED_IN,
+      'GET /images': () => (release === null ? OK(host) : new Promise(resolve => { const r = release!; release = () => { r(); resolve(OK(host)) } })) as never,
+      'GET /settings': OK({ settings: { default_image: { value: 'rust' } } }) })
+    const { es } = await openApp('/vms', [WORK])
+    await click('vm-create')
+    expect(byTestId('create-image').text()).toContain('rust')
+    document.body.querySelectorAll<HTMLElement>('[data-testid="create-dialog"] button').forEach((b) => { if (b.textContent?.trim() === 'Cancel') b.click() })
+    await flushPromises()
+    // the Recipe of rust goes while the dialog is closed
+    host = IMAGES
+    release = () => {}
+    es.emit('activity', { time: 't', vm: null, actor: 'owner', kind: 'recipe', action: 'recipe.remove', code: 'recipe.remove', outcome: 'ok', description: '' })
+    await click('vm-create')
+    expect(byTestId('create-image').text()).not.toContain('rust')
+    release!()
+    await flushPromises()
+    expect(byTestId('create-image').text()).toContain('base')
+    expect(byTestId('create-image').text()).not.toContain('rust')
+  })
+
   it('in the Create dialog, with Retry', async () => {
     let fail = true
     fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': () => (fail ? FAILED : OK(IMAGES)), 'GET /settings': OK({ settings: {} }) })
@@ -164,7 +187,7 @@ describe('a failed read of the Images', () => {
   it('a VM\'s versions are an extra: they show unknown, nothing else', async () => {
     fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': FAILED })
     await openApp('/vms/work/web', [WORK])
-    expect(failure()).toBeNull()
+    expect(failure(byTestId('overview-versions').element)).toBeNull()
     expect(byTestId('overview-versions').text()).toContain('unknown')
   })
 
@@ -195,6 +218,25 @@ describe('a failed read of the Images', () => {
     es.emit('hello', { stream: 'ab12cd34', resumed: true })
     await flushPromises()
     expect(reads(api)).toBe(3)
+    expect(failure()).toBeNull()
+  })
+
+  it('says nothing while the read again after the connection came back is on the way', async () => {
+    let answer: () => unknown = () => OK(IMAGES)
+    let release!: () => void
+    fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': () => answer() as never })
+    const { es } = await openApp('/system', [WORK])
+    answer = OFFLINE
+    es.emit('activity', { time: 't', vm: null, actor: 'timer', kind: 'action', action: 'build.ok', code: 'build.ok', outcome: 'ok', description: '' })
+    es.drop()
+    await flushPromises()
+    answer = () => new Promise(resolve => { release = () => resolve(OK(IMAGES)) })
+    es.emit('hello', { stream: 'ab12cd34', resumed: true })
+    await flushPromises()
+    expect(exists('connection-notice')).toBe(false)
+    expect(failure()).toBeNull()
+    release()
+    await flushPromises()
     expect(failure()).toBeNull()
   })
 

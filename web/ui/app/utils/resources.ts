@@ -146,21 +146,21 @@ export function createResources(live: Pick<Live, 'on' | 'state'>) {
     else query.setState({ data: next, dataUpdatedAt: Date.now() })
   }
 
-  client.getQueryCache().subscribe((event) => {
+  const offs = [client.getQueryCache().subscribe((event) => {
     if (event.type !== 'updated' || (event.action.type !== 'success' && event.action.type !== 'error')) return
     const name = event.query.queryKey[0] as ResourceName
     if (again.delete(name)) void markStale(name)
-  })
+  })]
 
   // the last of each event, for a row that compares (`services`: did the update end?)
   const before: Record<string, unknown> = { services: live.state.services }
-  const offs = Object.entries(ON_EVENT).map(([eventName, row]) => live.on(eventName, (data: unknown) => {
+  offs.push(...Object.entries(ON_EVENT).map(([eventName, row]) => live.on(eventName, (data: unknown) => {
     for (const [name, apply] of Object.entries(row.write ?? {}) as [ResourceName, (d: any, e: any) => any][]) {
       write(name, d => apply(d, data))
     }
     for (const name of row.stale?.(data, before[eventName]) ?? []) void markStale(name)
     before[eventName] = data
-  }))
+  })))
 
   offs.push(live.on('activity', (entry: { code?: string, action?: string } | null) => {
     const code = entry?.code ?? entry?.action
@@ -231,6 +231,8 @@ export interface Resource<T> {
   data: Readonly<Ref<T | undefined>>
   /** nothing came yet and a read is on the way */
   loading: ComputedRef<boolean>
+  /** a read is on the way */
+  fetching: ComputedRef<boolean>
   /** why the last read failed; null after one that succeeded */
   error: Readonly<Ref<unknown>>
   extra: boolean
@@ -250,6 +252,7 @@ export function useResource<N extends ResourceName>(name: N, options: ResourceOp
     name,
     data: query.data as Readonly<Ref<ResourceData<N> | undefined>>,
     loading: computed(() => query.isLoading.value),
+    fetching: computed(() => query.isFetching.value),
     error: query.error,
     extra: !!options.extra,
     retry: async () => { await query.refetch() },

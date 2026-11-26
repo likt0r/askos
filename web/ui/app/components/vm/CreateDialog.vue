@@ -39,9 +39,10 @@ async function loadDefaults() {
   if (typeof s.default_data_disk_gib?.value === 'number') form.disk = s.default_data_disk_gib.value
 }
 
-// the Image the Settings name, else the first with a Build, once both are known
-watch([images, defaults], ([list, s]) => {
-  if (!open.value || form.image || !list || !s) return
+// the Image the Settings name, else the first with a Build, once both are known (not from a
+// copy that is being read again)
+watch([images, defaults, overview.fetching], ([list, s, fetching]) => {
+  if (!open.value || form.image || !list || !s || fetching) return
   const usable = list.filter(i => i.current).map(i => i.name)
   const wanted = typeof s.default_image?.value === 'string' ? s.default_image.value : 'base'
   form.image = usable.includes(wanted) ? wanted : usable[0] ?? ''
