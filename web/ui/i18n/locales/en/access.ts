@@ -276,6 +276,7 @@ export default {
       explain: 'A harmless mark stops Alerts; it never unblocks.',
       unmarkTitle: 'Remove the harmless mark of {domain}?',
       unmarkText: 'Reaching it will raise Alerts again.',
+      markFailed: 'The domain could not be marked as harmless',
       empty: 'No domain is marked as harmless.',
     },
     alerts: {
@@ -293,6 +294,7 @@ export default {
       first: 'first {when}',
       check: 'Check',
       markSeen: 'Seen',
+      markSeenFailed: 'Could not mark as seen',
     },
     feeds: {
       title: 'Feeds',

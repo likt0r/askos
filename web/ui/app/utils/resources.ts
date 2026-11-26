@@ -13,7 +13,7 @@
 import { notifyManager, QueryClient, useMutation, useQuery } from '@tanstack/vue-query'
 import { computed, type ComputedRef, type MaybeRefOrGetter, type Ref, ref, toValue } from 'vue'
 import { api, ApiError } from './api'
-import { allowlistEntryPath, type AllowlistEntry, forbidPath, type ForbidEntry } from './access'
+import { allowlistEntryPath, type AllowlistEntry, entryPath, forbidPath, type ForbidEntry, type Target } from './access'
 import { failurePlace, type FailurePlace, unreachable } from './failures'
 import { applyBuild, type BuildEvent, type ImagesOverview } from './images'
 import type { Live } from './live'
@@ -178,6 +178,33 @@ const CHANGES = {
   // Open web: its time comes with the VM (`open_web_until`)
   openWeb: declareChange((a: { vm: string, minutes: number }) => ({ method: 'POST', path: `/vms/${a.vm}/open-web`, body: { minutes: a.minutes } })),
   closeWeb: declareChange((vm: string) => ({ method: 'DELETE', path: `/vms/${vm}/open-web` })),
+  // the Watchlist kept by hand, Legitimate domains, Harmless marks, Alerts seen (each records an
+  // Activity entry: watch-*, legitimate-*, mark-harmless, unmark-harmless, mark-seen)
+  watchAdd: declareChange((a: { target: Target, category: string, source: string, note: string }) => ({
+    method: 'POST',
+    path: '/watchlist/entries',
+    body: { ...targetBody(a.target), category: a.category, ...(a.source ? { source: a.source } : {}), ...(a.note ? { note: a.note } : {}) },
+  })),
+  setWatchNote: declareChange((a: { target: Target, note: string }) =>
+    ({ method: 'PUT', path: entryPath('/watchlist/entries', a.target, 'note'), body: { note: a.note } })),
+  watchRemove: declareChange((target: Target) => ({ method: 'DELETE', path: entryPath('/watchlist/entries', target) })),
+  legitimateAdd: declareChange((a: { target: Target, note: string }) => ({
+    method: 'POST',
+    path: '/watchlist/legitimate',
+    body: { ...targetBody(a.target), ...(a.note ? { note: a.note } : {}) },
+  })),
+  setLegitimateNote: declareChange((a: { target: Target, note: string }) =>
+    ({ method: 'PUT', path: entryPath('/watchlist/legitimate', a.target, 'note'), body: { note: a.note } })),
+  legitimateRemove: declareChange((target: Target) => ({ method: 'DELETE', path: entryPath('/watchlist/legitimate', target) })),
+  markHarmless: declareChange((target: Target) => ({ method: 'PUT', path: entryPath('/watchlist/harmless', target) })),
+  unmarkHarmless: declareChange((target: Target) => ({ method: 'DELETE', path: entryPath('/watchlist/harmless', target) })),
+  markSeen: declareChange((a: { vm: string, domain?: string }) =>
+    ({ method: 'POST', path: `/vms/${a.vm}/alerts/seen`, body: a.domain ? { domain: a.domain } : {} })),
+}
+
+/** A domain or a pattern in a request's body. */
+function targetBody(t: Target) {
+  return t.regex != null ? { regex: t.regex } : { domain: t.domain }
 }
 
 export type ChangeName = keyof typeof CHANGES

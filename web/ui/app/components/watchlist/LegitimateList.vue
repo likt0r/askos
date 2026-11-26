@@ -6,7 +6,6 @@
 import type { LegitimateDomain, RegexCheck, Target } from '~/utils/access'
 
 const props = defineProps<{ domains: LegitimateDomain[], loaded: boolean, error?: unknown }>()
-const emit = defineEmits<{ changed: [] }>()
 const { t } = useI18n()
 const errorText = useErrorText()
 const toast = useToast()
@@ -28,9 +27,13 @@ const domainInput = ref('')
 const patternInput = ref('')
 const checked = ref<RegexCheck | null>(null)
 const note = ref('')
-const adding = ref(false)
-const addError = ref<unknown>(null)
+// a domain that would lift strong Signals only the CLI may add (--force): the view says so with
+// the command
+const addChange = useChange('legitimateAdd', { form: true, own: ['force_required'] })
+const adding = addChange.busy
+// the domain whose refusal shows the command for the Host; a pattern's shows no command
 const refused = ref<string | null>(null)
+const forced = computed(() => addChange.error.value instanceof ApiError && addChange.error.value.code === 'force_required')
 const domain = computed(() => normalizeDomain(domainInput.value))
 const pattern = computed(() => patternInput.value.trim())
 const canAdd = computed(() => (kind.value === 'regex' ? looksLikePattern(pattern.value) : looksLikeDomain(domain.value))
@@ -38,37 +41,29 @@ const canAdd = computed(() => (kind.value === 'regex' ? looksLikePattern(pattern
 
 async function add() {
   if (!canAdd.value) return
-  adding.value = true
-  addError.value = null
   refused.value = null
   const entry: Target = kind.value === 'regex' ? { domain: null, regex: pattern.value } : { domain: domain.value, regex: null }
-  try {
-    const answer = await api<{ added?: number, builtin?: boolean, message?: string }>('/watchlist/legitimate', {
-      method: 'POST',
-      body: { ...(entry.regex != null ? { regex: entry.regex } : { domain: entry.domain }), ...(note.value.trim() ? { note: note.value.trim() } : {}) },
-    })
-    const fresh = !answer?.builtin && !props.domains.some(x => entryValue(x) === entryValue(entry) && (x.regex != null) === (entry.regex != null))
-    toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t(fresh ? 'watchlist.legitimate.added' : 'watchlist.legitimate.already', { domain: entryValue(entry) }) })
-    domainInput.value = ''
-    patternInput.value = ''
-    note.value = ''
-    emit('changed')
+  const r = await addChange.run({ target: entry, note: note.value.trim() })
+  if (!r.ok) {
+    if (r.error instanceof ApiError && r.error.code === 'force_required') refused.value = entry.domain
+    return
   }
-  catch (e) {
-    if (e instanceof ApiError && e.code === 'force_required' && entry.domain) refused.value = entry.domain
-    addError.value = e
-  }
-  finally {
-    adding.value = false
-  }
+  const answer = r.data as { builtin?: boolean } | null
+  const fresh = !answer?.builtin && !props.domains.some(x => entryValue(x) === entryValue(entry) && (x.regex != null) === (entry.regex != null))
+  toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t(fresh ? 'watchlist.legitimate.added' : 'watchlist.legitimate.already', { domain: entryValue(entry) }) })
+  domainInput.value = ''
+  patternInput.value = ''
+  note.value = ''
 }
 
 // note and removal
 type Dialog = 'note' | 'remove'
 const dialog = ref<Dialog | null>(null)
 const target = ref<LegitimateDomain | null>(null)
-const busy = ref(false)
-const error = ref<unknown>(null)
+const noteChange = useChange('setLegitimateNote', { form: true })
+const removeChange = useChange('legitimateRemove', { form: true })
+const busy = computed(() => noteChange.busy.value || removeChange.busy.value)
+const failure = computed(() => noteChange.shown.value ?? removeChange.shown.value)
 const noteText = ref('')
 const dialogOpen = (d: Dialog) => computed({
   get: () => dialog.value === d,
@@ -79,41 +74,29 @@ const removeOpen = dialogOpen('remove')
 
 function openDialog(d: Dialog, e: LegitimateDomain) {
   target.value = e
-  error.value = null
+  noteChange.reset()
+  removeChange.reset()
   noteText.value = e.note
   dialog.value = d
 }
 
-async function run(request: () => Promise<unknown>, done: string) {
-  busy.value = true
-  error.value = null
-  try {
-    await request()
-    toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: done })
-    busy.value = false
-    dialog.value = null
-    emit('changed')
-  }
-  catch (e) {
-    error.value = e
-  }
-  finally {
-    busy.value = false
-  }
+async function done(result: Promise<{ ok: boolean }>, text: string) {
+  if (!(await result).ok) return
+  toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: text })
+  dialog.value = null
 }
 
-const path = (e: Target, action = '') => entryPath('/watchlist/legitimate', e, action)
 const targetValue = computed(() => (target.value ? entryValue(target.value) : ''))
 
 function saveNote() {
   const e = target.value!
-  void run(() => api(path(e, 'note'), { method: 'PUT', body: { note: noteText.value.trim() } }),
+  void done(noteChange.run({ target: e, note: noteText.value.trim() }),
     t('watchlist.legitimate.noteSaved', { domain: entryValue(e) }))
 }
 
 function remove() {
   const e = target.value!
-  void run(() => api(path(e), { method: 'DELETE' }), t('watchlist.legitimate.removed', { domain: entryValue(e) }))
+  void done(removeChange.run(e), t('watchlist.legitimate.removed', { domain: entryValue(e) }))
 }
 </script>
 
@@ -147,7 +130,8 @@ function remove() {
     <p v-if="note.length > 200" class="text-sm text-error">
       {{ t('watchlist.legitimate.tooLong') }}
     </p>
-    <UAlert v-if="addError" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(addError)" role="alert" data-testid="legitimate-add-error">
+    <ChangeFailure :error="addChange.shown.value" data-testid="legitimate-add-error" />
+    <UAlert v-if="forced" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(addChange.error.value)" role="alert" data-testid="legitimate-add-error">
       <template v-if="refused" #description>
         {{ t('watchlist.legitimate.onlyCli') }}
         <code class="mt-1 block break-all font-mono text-xs">sudo agentbox legitimate-add {{ refused }} --force</code>
@@ -212,7 +196,7 @@ function remove() {
           <p v-if="noteText.length > 200" class="text-sm text-error">
             {{ t('watchlist.legitimate.tooLong') }}
           </p>
-          <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(error)" role="alert" />
+          <ChangeFailure :error="failure" />
         </form>
       </template>
       <template #footer>
@@ -229,7 +213,7 @@ function remove() {
       :description="t('watchlist.legitimate.removeText')"
       :confirm-label="t('watchlist.legitimate.remove')"
       :busy="busy"
-      :error="error ? errorText(error) : null"
+      :failure="failure"
       @confirm="remove"
     />
   </section>
