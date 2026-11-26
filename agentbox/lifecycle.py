@@ -16,7 +16,7 @@ import sys
 import time
 import xml.etree.ElementTree as ET
 
-from . import activity, footprint, guest, images, paths, programs, registry, responding, settings, ssh_access
+from . import activity, footprint, guest, hostfacts, images, paths, programs, registry, responding, settings, ssh_access
 from . import state_files, states, virsh
 from .commands import declare
 from .registry import check, dom
@@ -381,7 +381,7 @@ def _reset(ctx, start, say, progress=None):
     progress["fresh"] = True
     if os.geteuid() == 0:
         try:
-            shutil.chown(disk, "qemu", "qemu")
+            shutil.chown(disk, hostfacts.QEMU_USER, hostfacts.QEMU_GROUP)
         except (OSError, LookupError):
             pass
     say(f"{ctx}: fresh System disk ({os.path.basename(base)})")

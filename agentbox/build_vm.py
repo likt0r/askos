@@ -50,7 +50,7 @@ import subprocess
 import tempfile
 import time
 
-from . import digests, paths, state_files
+from . import digests, hostfacts, paths, state_files
 from .errors import Fail
 from .sanitize import clean
 
@@ -92,17 +92,18 @@ SIGNED_LINE = re.compile(r"SHA256 \(([^()\s]{1,255})\) = ([0-9a-f]{64})")
 
 def directory(release=RELEASE):
     """Where Fedora keeps the release's signed Cloud images."""
-    return f"{MIRROR}{release}/Cloud/x86_64/images/"
+    return f"{MIRROR}{release}/Cloud/{hostfacts.ARCH}/images/"
 
 
 def image_name(release=RELEASE):
     """The pattern of the release's image's file name; its group is the compose (1.7)."""
-    return re.compile(rf"Fedora-Cloud-Base-Generic-{re.escape(release)}-([0-9]{{1,4}}\.[0-9]{{1,4}})\.x86_64\.qcow2")
+    return re.compile(rf"Fedora-Cloud-Base-Generic-{re.escape(release)}-([0-9]{{1,4}}\.[0-9]{{1,4}})"
+                      rf"\.{re.escape(hostfacts.ARCH)}\.qcow2")
 
 
 def checksum_name(name, release=RELEASE):
     """The CHECKSUM file that signs the image `name` (of the release's pattern)."""
-    return f"Fedora-Cloud-{release}-{image_name(release).fullmatch(name).group(1)}-x86_64-CHECKSUM"
+    return f"Fedora-Cloud-{release}-{image_name(release).fullmatch(name).group(1)}-{hostfacts.ARCH}-CHECKSUM"
 
 
 def key_file(release=RELEASE):
@@ -150,7 +151,7 @@ def listed(listing, release=RELEASE):
     pattern = image_name(release)
     for entry in listing if isinstance(listing, list) else []:
         if not isinstance(entry, dict) or (entry.get("version"), entry.get("arch"), entry.get("variant"),
-                                           entry.get("subvariant")) != (release, "x86_64", "Cloud", "Cloud_Base"):
+                                           entry.get("subvariant")) != (release, hostfacts.ARCH, "Cloud", "Cloud_Base"):
             continue
         link, sha, size = entry.get("link"), entry.get("sha256"), entry.get("size")
         if not isinstance(link, str) or not link.startswith(directory(release)):

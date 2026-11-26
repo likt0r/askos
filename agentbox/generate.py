@@ -29,7 +29,7 @@ import tempfile
 import time
 
 from . import activity, build_vm_run, firewall, footprint, hostsetup, paths, programs, registry, settings, sshkeys
-from . import state_files
+from . import hostfacts, state_files
 from . import states, times, versions, virsh, vmenv
 from .commands import declare
 from .errors import Fail, die
@@ -357,14 +357,14 @@ def virt_install_args(rec, uuid):
         "--connect", "qemu:///system", "--print-xml", "--dry-run", "--check", "all=off",
         "--name", dom(vm), *(["--uuid", uuid] if uuid else []),
         "--osinfo", "linux2024", "--memory", str(rec["memory_mib"]), "--vcpus", str(VCPUS),
-        "--cpu", "host-passthrough", "--machine", "q35", "--boot", "hd", "--import", "--noautoconsole",
+        "--cpu", "host-passthrough", "--machine", hostfacts.MACHINE, "--boot", "hd", "--import", "--noautoconsole",
         "--graphics", "none", "--video", "none", "--sound", "none", "--input", "none",
         "--controller", "usb,model=none",
         # a reboot inside the VM ends QEMU, which reads the fw_cfg files only when it starts:
         # the VM is off, and its next start boots with the current SSH keys, VM variables,
         # secrets and placeholder, never with those its last start read (#160)
         "--events", "on_poweroff=destroy,on_reboot=destroy,on_crash=destroy",
-        "--features", "acpi=on,apic=on",
+        "--features", hostfacts.FEATURES,
         # the VM learns its name, Orca port, Claude placeholder, the address devices pair with, its
         # VM variables, its SSH access and its secrets at boot; values that could hold a comma
         # only as files (virt-install splits --sysinfo at commas)
@@ -432,7 +432,7 @@ def _virsh_define(cmd, xml, what):
 
 def _qemu():
     """(uid, gid) of QEMU's user as root, else (-1, -1)."""
-    return state_files.user_ids("qemu", "is libvirt installed?")
+    return state_files.user_ids(hostfacts.QEMU_USER, "is libvirt installed?")
 
 
 def _network_matches(rec):

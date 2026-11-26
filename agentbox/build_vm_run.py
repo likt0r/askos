@@ -90,7 +90,7 @@ import tarfile
 import tempfile
 import time
 
-from . import build_vm, paths, programs, settings, state_files, states, virsh
+from . import build_vm, hostfacts, paths, programs, settings, state_files, states, virsh
 from .errors import Fail
 from .registry import dom
 from .sanitize import clean
@@ -120,7 +120,6 @@ INPUT_SERIAL = "agentbox-build-input"     # virtio-blk serials: at most 20 chara
 SCRATCH_SERIAL = "agentbox-scratch"
 OUT_TAG = "agentbox-out"
 SEED_LABEL = "cidata"
-VIRTIOFSD = "/usr/libexec/virtiofsd"
 RUN = paths.host("/run/agentbox/build-vm")
 SOURCE = os.path.join("vm", "build-vm")   # the seed's files in the Release
 FEDORA_BOOTC = "localhost/agentbox-input/fedora-bootc:{}"   # its name in a build VM, by Build
@@ -591,7 +590,7 @@ def _prepare(vm, image, job, context, hand_in, src, ids, say):
         os.umask(umask)
     _give_way(vm)
     _out_fs(vm, ids, say)
-    qemu_gid = state_files.group_id("qemu", "is libvirt installed?")
+    qemu_gid = state_files.group_id(hostfacts.QEMU_GROUP, "is libvirt installed?")
     state_files.directory(os.path.dirname(RUN), 0o755)
     state_files.directory(RUN, 0o755)
     state_files.directory(vm["run"], 0o770, qemu_gid)
@@ -681,11 +680,11 @@ def virtiofsd_argv(vm, ids):
     uid, gid = ids
     return ["systemd-run", "--quiet", "--collect", f"--unit={vm['unit']}",
             f"--socket-property=ListenStream={vm['fs_socket']}", "--socket-property=SocketUser=root",
-            "--socket-property=SocketGroup=qemu", "--socket-property=SocketMode=0660",
+            f"--socket-property=SocketGroup={hostfacts.QEMU_GROUP}", "--socket-property=SocketMode=0660",
             f"--property=User={USER}", f"--property=Group={USER}", "--property=NoNewPrivileges=yes",
             "--property=ProtectSystem=strict", f"--property=ReadWritePaths={vm['out']}", "--property=ProtectHome=yes",
             "--property=PrivateTmp=yes", "--property=RestrictAddressFamilies=AF_UNIX", "--property=MemoryMax=2G",
-            "--", VIRTIOFSD, "--fd=3", f"--shared-dir={vm['out']}", "--sandbox=namespace",
+            "--", paths.VIRTIOFSD, "--fd=3", f"--shared-dir={vm['out']}", "--sandbox=namespace",
             f"--uid-map=:0:{uid}:1:", f"--gid-map=:0:{gid}:1:",
             "--translate-uid=squash-guest:0:0:4294967295", "--translate-gid=squash-guest:0:0:4294967295"]
 
@@ -695,11 +694,11 @@ def virt_install_args(vm):
     return [
         "--connect", "qemu:///system", "--print-xml", "--dry-run", "--check", "all=off",
         "--name", vm["domain"], "--osinfo", "linux2024", "--memory", str(MEMORY_MIB), "--vcpus", str(vcpus()),
-        "--cpu", "host-passthrough", "--machine", "q35", "--boot", "hd", "--import", "--noautoconsole",
+        "--cpu", "host-passthrough", "--machine", hostfacts.MACHINE, "--boot", "hd", "--import", "--noautoconsole",
         "--graphics", "none", "--video", "none", "--sound", "none", "--input", "none", "--console", "none",
         "--controller", "usb,model=none",
         "--events", "on_poweroff=destroy,on_reboot=destroy,on_crash=destroy",
-        "--features", "acpi=on,apic=on",
+        "--features", hostfacts.FEATURES,
         "--memorybacking", "source.type=memfd,access.mode=shared",
         "--disk", disk.format(vm["system"], "vda"),
         "--disk", disk.format(vm["scratch"], "vdb") + f",serial={SCRATCH_SERIAL}",

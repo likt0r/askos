@@ -47,7 +47,7 @@ import shutil
 import subprocess
 import time
 
-from . import paths, programs, safeguards, state_files, times
+from . import hostfacts, paths, programs, safeguards, state_files, times
 from .sanitize import clean
 
 REGISTRY = "quay.io"
@@ -247,7 +247,8 @@ def instance(name, digest):
                       if d} | {digest})
     platform = [d for d in sorted(digests, key=lambda d: d != digest) if _is_list(reference(name, d)) is False]
     if not platform and not shutil.which("skopeo"):
-        return None, f"{ref}: skopeo is missing, which tells the platform image from the list (dnf install skopeo)"
+        return None, (f"{ref}: skopeo is missing, which tells the platform image from the list "
+                      f"({hostfacts.INSTALL} skopeo)")
     if not platform:
         return None, (f"{ref}: the Host's container storage holds no platform image of it that skopeo can "
                       f"read; pull it again (sudo podman rmi {ref}, then sudo agentbox check-versions)")

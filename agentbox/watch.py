@@ -50,7 +50,8 @@ import sys
 import threading
 import time
 
-from . import activity, describe, footprint, images, lifecycle, maintenance, paths, registry, responding, times
+from . import activity, describe, footprint, hostfacts, images, lifecycle, maintenance, paths, registry, responding
+from . import times
 from .commands import declare
 from .errors import Fail, die
 from .sanitize import PAIR_ANY, SECRET, entry as journal_entry, field
@@ -395,7 +396,7 @@ def reboot_needed():
     touches the network. (-C failed on titan: root has no metadata cache, and dnf's error
     exit 1 looked like "reboot needed".) Exit 1 counts only with dnf's reboot sentence."""
     try:
-        r = subprocess.run(["dnf", "-q", "--disablerepo=*", "needs-restarting"], stdin=subprocess.DEVNULL,
+        r = subprocess.run(list(hostfacts.REBOOT_CHECK), stdin=subprocess.DEVNULL,
                            capture_output=True, text=True, errors="replace", timeout=300)
     except (OSError, subprocess.TimeoutExpired):
         return {"needed": None, "packages": []}

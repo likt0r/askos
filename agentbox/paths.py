@@ -52,6 +52,8 @@ PROXY = LIBEXEC + "/agentbox-proxy"
 TOKEND = LIBEXEC + "/agentbox-gh-tokend"
 CLAUDE_ROUTE = LIBEXEC + "/agentbox-claude-route"
 FEEDS_PROGRAM = LIBEXEC + "/agentbox-feeds"
+# the Host's virtiofsd (not on PATH), which systemd-run starts for a build VM (build_vm_run.py)
+VIRTIOFSD = LIBEXEC + "/virtiofsd"
 # run or read by agentbox and the Control Room
 SUSPICIOUS = host(LIBEXEC + "/agentbox-suspicious")
 WEB_BACKEND = host(LIBEXEC + "/agentbox-web")
