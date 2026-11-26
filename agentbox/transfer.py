@@ -41,7 +41,7 @@ from . import activity, callers, footprint, guest, lifecycle, paths, programs, r
 from . import states, times, virsh
 from .commands import declare
 from .errors import Fail, die
-from .registry import check, dom
+from .registry import check
 from .sanitize import clean
 
 INBOX = "/usr/libexec/qemu-ga/fsfreeze-hook.d/agentbox-inbox"
@@ -328,7 +328,7 @@ def _ready(ctx):
         return
     ssh_access.before_start(ctx)              # never with a file that holds a removed SSH key
     responding.clear(ctx)                     # the failed wakes of its last start are over
-    lifecycle.must("start", dom(ctx))
+    lifecycle.exit_on_failure(virsh.start(ctx))
     ssh_access.drop_pending(ctx)              # it started anew with the file written from the record
     deadline = time.monotonic() + paths.tunable("AGENTBOX_BOOT_SECONDS", 180)
     while not guest.ping(ctx):
@@ -338,15 +338,14 @@ def _ready(ctx):
 
 
 def _attach(ctx, tar):
-    r = virsh.run("attach-disk", dom(ctx), tar, TARGET_DEV, "--live", "--mode", "readonly", "--targetbus", "virtio",
-                  "--driver", "qemu", "--subdriver", "raw", "--serial", SERIAL)
+    r = virsh.attach_readonly_disk(ctx, tar, TARGET_DEV, SERIAL)
     if r.returncode != 0:
         die(f"{ctx}: the folder cannot be attached to the VM: {programs.summary(r)}", error="import_failed", vm=ctx)
 
 
 def _detach(ctx):
     """Detach the disk; the reason when that fails, else None."""
-    r = virsh.run("detach-disk", dom(ctx), TARGET_DEV, "--live")
+    r = virsh.detach_disk(ctx, TARGET_DEV)
     if r.returncode == 0:
         return None
     return programs.summary(r)
@@ -387,8 +386,7 @@ def _result(ctx, target, code, out, err):
 
 def _clear_leftover(ctx):
     """Detach a disk with the target of the inbox that an interrupted import left behind."""
-    r = virsh.run("domblklist", dom(ctx))
-    if r.returncode == 0 and TARGET_DEV in (line.split()[0] for line in r.stdout.splitlines() if line.split()):
+    if TARGET_DEV in virsh.disk_devices(ctx):
         problem = _detach(ctx)
         if problem:
             die(f"{ctx}: the disk {TARGET_DEV} of an earlier import could not be detached: {problem}",

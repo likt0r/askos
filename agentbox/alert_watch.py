@@ -49,7 +49,6 @@ from . import times, virsh
 from .commands import declare
 from .errors import Fail, die
 from .list_records import STRONG
-from .registry import dom
 from .sanitize import clean, field, redact
 
 ACTOR = "alert-watch"
@@ -153,7 +152,7 @@ def pause(name, host, signals, at=None):
             return "too-old"
         if not states.running(name):
             return "not-running"
-        r = virsh.run("managedsave", dom(name))
+        r = virsh.pause(name)
         if r.returncode == 0:
             responding.clear(name)          # its failed wakes, and the mark of an earlier Pause
             try:
