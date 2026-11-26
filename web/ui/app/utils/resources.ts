@@ -14,6 +14,7 @@ import { notifyManager, QueryClient, useMutation, useQuery } from '@tanstack/vue
 import { computed, type ComputedRef, type MaybeRefOrGetter, type Ref, ref, toValue } from 'vue'
 import { api, ApiError } from './api'
 import { allowlistEntryPath, type AllowlistEntry, entryPath, forbidPath, type ForbidEntry, type Target } from './access'
+import { useChangeToast } from '../composables/useChangeToast'
 import { failurePlace, type FailurePlace, unreachable } from './failures'
 import { applyBuild, type BuildEvent, type ImagesOverview } from './images'
 import type { SettingValue } from './settings'
@@ -44,7 +45,7 @@ const RESOURCES = {
 }
 
 export type ResourceName = keyof typeof RESOURCES
-export type ResourceParams<N extends ResourceName> = NonNullable<(typeof RESOURCES)[N]['params']>
+export type ResourceParams<N extends ResourceName> = (typeof RESOURCES)[N] extends Declaration<unknown, infer P> ? P : never
 export type ResourceData<N extends ResourceName> = NonNullable<(typeof RESOURCES)[N]['answer']>
 
 // ---- what an event does ----------------------------------------------------------------------
@@ -80,15 +81,18 @@ function versionCheckRuns(services: { units?: { unit?: string, state?: string }[
   return unit?.state === 'running' || unit?.state === 'stopping'
 }
 
-/** Activity entries (`code ?? action`) after which resources are read again. The end of a Build
- * needs no row: its `build` event marks `images` stale. */
 /** A resource an Activity entry makes stale: by its name, or for one with parameters, only those
  * of the entry (its VM's). */
 type Stale = ResourceName | { name: ResourceName, params: (entry: { vm?: string | null }) => unknown }
 
-/** A VM's resource, of the entry's VM (every VM's when it names none). */
-const ofEntryVm = (name: ResourceName): Stale => ({ name, params: entry => (entry.vm ? { vm: entry.vm } : undefined) })
+/** The resources a VM has one of (their parameters are `{ vm }`). */
+type VmResourceName = { [N in ResourceName]: ResourceParams<N> extends { vm: string } ? N : never }[ResourceName]
 
+/** A VM's resource, of the entry's VM (every VM's when it names none). */
+const ofEntryVm = (name: VmResourceName): Stale => ({ name, params: entry => (entry.vm ? { vm: entry.vm } : undefined) })
+
+/** Activity entries (`code ?? action`) after which resources are read again. The end of a Build
+ * needs no row: its `build` event marks `images` stale. */
 const ON_ACTIVITY: Record<string, Stale[]> = {
   'maintenance.versions': ['images'],
   'update-now': ['images'],
@@ -411,13 +415,19 @@ export interface Resource<T> {
 }
 
 /** A resource by name, for a view: one shared copy per resource, kept current by the table above. */
-export function useResource<N extends ResourceName>(name: N, options: ResourceOptions<ResourceParams<N>> = {}): Resource<ResourceData<N>> {
+/** The options of a resource: with its parameters when it has them. */
+type OptionsOf<N extends ResourceName> = ResourceParams<N> extends undefined
+  ? [options?: ResourceOptions]
+  : [options: ResourceOptions<ResourceParams<N>> & { params: MaybeRefOrGetter<ResourceParams<N>> }]
+
+export function useResource<N extends ResourceName>(name: N, ...[options = {}]: OptionsOf<N>): Resource<ResourceData<N>> {
   const r = useResources()
   const params = () => toValue(options.params)
   const query = useQuery({
     // one copy per resource, and per set of parameters for one that has them
     queryKey: computed(() => (params() === undefined ? [name] : [name, params()])),
-    queryFn: () => r.read(name, params()),
+    // the parameters of the copy read, from its own key
+    queryFn: ({ queryKey }) => r.read(name, queryKey[1] as ResourceParams<N>),
     enabled: () => toValue(options.enabled ?? true),
   }, r.client)
   return {
