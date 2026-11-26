@@ -183,8 +183,9 @@ section describes, until it moves into the module (#212).
   dropped in that notice alone (otherwise nothing else would say it, so the change's own place
   does). A view names in `own` only the codes it words itself: `build_running` and
   `update_running` beside the Images' buttons, `domain_suspicious` of an Allowlist entry for a
-  domain (`AllowlistRefusal`, with its Signals and how to lift them). The module presents none of
-  them, and the view reads them from `error`.
+  domain (`AllowlistRefusal`, with its Signals and how to lift them), `force_required` and
+  `watchlist_recreate_force_required` of the Watchlist and the Legitimate domains (with the
+  command for the Host). The module presents none of them, and the view reads them from `error`.
 - **Details** of a failure: its code and the Host's `message`, which the backend always words
   itself; never its `detail`, which may pass on another program's output, from inside a VM too
   (docs/control-room-api.md, "Errors").

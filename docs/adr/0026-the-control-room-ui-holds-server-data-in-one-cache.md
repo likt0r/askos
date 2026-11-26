@@ -1,6 +1,6 @@
 # The Control Room UI holds all server data in one cache; an event writes into it or marks it stale
 
-Status: Accepted (#212), by the owner on 2026-11-26. Built so far: the resources module with its first resource, `images`, its rows of the table and the read-failure element (#214, `web/ui/app/utils/resources.ts`, `web/ui/app/components/ReadFailure.vue`); changes through it with their failures placed by kind, for the Images, the GitHub App, a VM (its lifecycle, its dialogs, pairing), the Allowlist, Forbids and Open web (#215, `useChange`, `web/ui/app/utils/failures.ts`). Details show a failure's code and message, not its `detail` (#224). The other steps are the children of #212.
+Status: Accepted (#212), by the owner on 2026-11-26. Built so far: the resources module with its first resource, `images`, its rows of the table and the read-failure element (#214, `web/ui/app/utils/resources.ts`, `web/ui/app/components/ReadFailure.vue`); changes through it with their failures placed by kind, for the Images, the GitHub App, a VM (its lifecycle, its dialogs, pairing), the Allowlist, Forbids, Open web and the Watchlist (#215, `useChange`, `web/ui/app/utils/failures.ts`). Details show a failure's code and message, not its `detail` (#224). The other steps are the children of #212.
 
 ## Context
 

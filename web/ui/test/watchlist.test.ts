@@ -72,6 +72,9 @@ function alertRows() {
   return $$('[data-testid="alert-row"]').map(r => [r.dataset.vm, r.dataset.domain, r.dataset.seen])
 }
 
+/** The Activity entry of a Watchlist change made in this browser. */
+const watchEntry = (code: string) => ({ time: 't', vm: null, actor: 'owner', kind: 'action', action: code, code, outcome: 'ok', description: '' })
+
 describe('Watchlist view', () => {
   it('lists the Alerts of every VM, new ones first, and marks them as seen', async () => {
     let seenAll = false
@@ -206,7 +209,7 @@ describe('Watchlist view', () => {
 
   it('checks a domain: Signals and why, what it means, and marks it harmless', async () => {
     let harmless = [{ domain: 'githbu.com', regex: null as string | null }]
-    const { api } = await openApp('/watchlist', routes({
+    const { api, es } = await openApp('/watchlist', routes({
       'GET /watchlist/check?domain=npm-cache.example': () => ok(harmless.some(m => m.domain === 'npm-cache.example')
         ? { ...CHECK, harmless: 'npm-cache.example', alert: false, signals: CHECK.signals.map(s => ({ ...s, suppressed: true })) }
         : CHECK),
@@ -233,6 +236,8 @@ describe('Watchlist view', () => {
 
     await click('[data-testid="check-mark-harmless"]')
     expect(changes(api.calls)).toEqual([{ method: 'PUT', path: '/watchlist/harmless/npm-cache.example', body: undefined, csrf: '1' }])
+    // the check and the marks are read again through the change's own Activity entry
+    es.emit('activity', watchEntry('mark-harmless'))
     await waitFor(() => expect(must('[data-testid="check-result"]').textContent).toContain('marked harmless (npm-cache.example)'))
     expect(must('[data-testid="check-result"]').textContent).toContain('It raises no Alerts (harmless mark).')
     expect(must('[data-testid="check-result"]').textContent).toContain('It stays blocked, also with an Allowlist entry or in Open web.')
@@ -240,7 +245,7 @@ describe('Watchlist view', () => {
   })
 
   it('adds a Harmless mark and removes one only after confirmation', async () => {
-    const { api } = await openApp('/watchlist', routes({
+    const { api, es } = await openApp('/watchlist', routes({
       'PUT /watchlist/harmless/false-positive.example': ok({}),
       'DELETE /watchlist/harmless/githbu.com': ok({}),
     }))
@@ -254,8 +259,12 @@ describe('Watchlist view', () => {
       { method: 'PUT', path: '/watchlist/harmless/false-positive.example', body: undefined, csrf: '1' },
       { method: 'DELETE', path: '/watchlist/harmless/githbu.com', body: undefined, csrf: '1' },
     ])
-    // the Alerts are read again: harmless destinations raise none
-    expect(api.calls.filter(c => c.path === '/vms/work/alerts').length).toBeGreaterThanOrEqual(3)
+    // the Alerts are read again on the changes' Activity entries, not by the view: harmless
+    // destinations raise none
+    const alertReads = () => api.calls.filter(c => c.path === '/vms/work/alerts').length
+    const before = alertReads()
+    es.emit('activity', watchEntry('unmark-harmless'))
+    await waitFor(() => expect(alertReads()).toBe(before + 1))
   })
 
   it('shows the Feeds\' state and the hand-maintained Watchlist', async () => {
@@ -276,7 +285,7 @@ describe('Watchlist view', () => {
   })
 
   it('adds a Watchlist entry and changes a note', async () => {
-    const { api } = await openApp('/watchlist', routes({
+    const { api, es } = await openApp('/watchlist', routes({
       'POST /watchlist/entries': ok({}),
       'PUT /watchlist/entries/jsonkeeper.com/note': ok({}),
     }))
@@ -290,8 +299,11 @@ describe('Watchlist view', () => {
       { method: 'POST', path: '/watchlist/entries', body: { domain: 'drop.example', category: 'exfil', source: 'incident 11/2026' }, csrf: '1' },
       { method: 'PUT', path: '/watchlist/entries/jsonkeeper.com/note', body: { note: 'seen in work' }, csrf: '1' },
     ])
-    // the list is read again after each change
-    expect(api.calls.filter(c => c.method === 'GET' && c.path === '/watchlist').length).toBeGreaterThanOrEqual(3)
+    // the list is read again through the changes' Activity entries, not by the view
+    const reads = () => api.calls.filter(c => c.method === 'GET' && c.path === '/watchlist').length
+    expect(reads()).toBe(1)
+    es.emit('activity', watchEntry('watch-set-note'))
+    await waitFor(() => expect(reads()).toBe(2))
   })
 
   it('removes a weak Watchlist entry after asking; a strong one only shows the command for the Host', async () => {
@@ -346,6 +358,9 @@ describe('Watchlist view', () => {
     expect(refusal.textContent).toContain('only the CLI on the Host can do it')
     expect(refusal.textContent).toContain('A strong entry can only be removed or weakened on the Host:')
     expect(refusal.textContent).toContain('sudo agentbox watch-add webhook.site --category exfil --force')
+    // the view words it: once, and nothing of the module's own
+    expect($$('[data-testid="watch-add-error"]')).toHaveLength(1)
+    expect($('[data-change="failed"]')).toBeNull()
   })
 
   it('lists the Legitimate domains, the built-in ones without actions', async () => {
@@ -388,6 +403,8 @@ describe('Watchlist view', () => {
     await click('[data-testid="legitimate-add-submit"]')
     const refusal = must('[data-testid="legitimate-add-error"]')
     expect(refusal.textContent).toContain('sudo agentbox legitimate-add npm-mirror.example --force')
+    expect($$('[data-testid="legitimate-add-error"]')).toHaveLength(1)
+    expect($('[data-change="failed"]')).toBeNull()
   })
 
   it('adds a Regex entry to each list, tested first, and marks it as one', async () => {
@@ -495,5 +512,55 @@ describe('Watchlist view', () => {
     await click($$('[data-testid="alert-row"]')[0]!.querySelector('[data-testid="alert-check"]')!)
     expect(api.calls.some(c => c.path === '/watchlist/check?domain=npm-cache.example')).toBe(true)
     await waitFor(() => expect($('[data-testid="check-result"]')).not.toBeNull())
+  })
+})
+
+describe('Watchlist changes and their failures (#215)', () => {
+  beforeEach(async () => {
+    resetSessionForTests()
+    resetLiveForTests()
+    FakeEventSource.reset()
+    vi.stubGlobal('EventSource', FakeEventSource)
+    await useNuxtApp().$i18n.setLocale('en')
+    useState('toasts').value = []
+  })
+  afterEach(() => {
+    unmountAll()
+    resetLiveForTests()
+    resetSessionForTests()
+    useState('toasts').value = []
+  })
+  const toasts = () => useState<{ title?: string, duration?: number }[]>('toasts').value.map(t => [t.title, t.duration])
+
+  it('a failed Alert marked as seen is a toast that stays, with Details', async () => {
+    await openApp('/watchlist', routes({ 'POST /vms/work/alerts/seen': fail(502, 'action_failed', 'agentbox failed') }))
+    await click($$('[data-testid="alert-row"]')[0]!.querySelector('[data-testid="alert-seen"]')!)
+    expect(toasts()).toEqual([['The Alert could not be marked as seen', 0]])
+    await waitFor(() => expect($('[data-testid="fault-message"]')?.textContent).toBe('action_failed: agentbox failed'))
+  })
+
+  it('a failed harmless mark from the check is a toast that stays', async () => {
+    await openApp('/watchlist', routes({
+      'GET /watchlist/check?domain=npm-cache.example': ok(CHECK),
+      'PUT /watchlist/harmless/npm-cache.example': fail(502, 'action_failed', 'agentbox failed'),
+    }))
+    await type('[data-testid="check-input"]', 'npm-cache.example')
+    await click('[data-testid="check-submit"]')
+    await click('[data-testid="check-mark-harmless"]')
+    expect(toasts()).toEqual([['The domain could not be marked as harmless', 0]])
+  })
+
+  it('a refused harmless mark from the list shows at its form, a refused removal in its dialog', async () => {
+    await openApp('/watchlist', routes({
+      'PUT /watchlist/harmless/x.example': fail(400, 'invalid_domain', 'Invalid domain'),
+      'DELETE /watchlist/harmless/githbu.com': fail(502, 'action_failed', 'agentbox failed'),
+    }))
+    await type('[data-testid="harmless-input"]', 'x.example')
+    await click('[data-testid="harmless-add"]')
+    expect(must('[data-testid="harmless-error"] [data-testid="fault-message"]').textContent).toBe('invalid_domain: Invalid domain')
+    await click('[data-testid="harmless-row"][data-domain="githbu.com"] [data-testid="harmless-remove"]')
+    await click('[data-testid="confirm-action"]')
+    expect(must('[data-testid="confirm-body"] [data-testid="fault-message"]').textContent).toBe('action_failed: agentbox failed')
+    expect(toasts()).toEqual([])
   })
 })

@@ -17,7 +17,8 @@ const loaded = ref(false)
 const loading = ref(false)
 const onlyNew = ref(false)
 const busy = ref<string | null>(null)
-const actionError = ref<unknown>(null)
+// a button's change: its failure is a toast; the list is read again on its Activity entry
+const seen = useChange('markSeen', { failed: () => t('watchlist.alerts.markSeenFailed') })
 let request = 0
 
 const vmNames = computed(() => live.state.vms.map(v => v.name))
@@ -49,13 +50,8 @@ async function load() {
 
 async function markSeen(vm: string, domain?: string) {
   busy.value = `${vm}/${domain ?? '*'}`
-  actionError.value = null
   try {
-    await api(`/vms/${vm}/alerts/seen`, { method: 'POST', body: domain ? { domain } : {} })
-    await load()
-  }
-  catch (e) {
-    actionError.value = e
+    return (await seen.run({ vm, domain })).ok
   }
   finally {
     busy.value = null
@@ -63,7 +59,9 @@ async function markSeen(vm: string, domain?: string) {
 }
 
 async function markAllSeen() {
-  for (const vm of vmsWithNew.value) await markSeen(vm)
+  for (const vm of vmsWithNew.value) {
+    if (!await markSeen(vm)) return
+  }
 }
 
 watch(() => `${live.state.loaded}:${vmNames.value.join()}`, () => void load(), { immediate: true })
@@ -97,7 +95,6 @@ defineExpose({ load })
       {{ t('watchlist.alerts.intro') }}
     </p>
     <UAlert v-for="f in failed" :key="f.vm" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="t('watchlist.alerts.failed', { vm: f.vm, error: errorText(f.error) })" />
-    <UAlert v-if="actionError" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(actionError)" />
 
     <p v-if="!loaded" class="text-sm text-muted">
       {{ t('access.common.loading') }}

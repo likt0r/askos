@@ -5,7 +5,6 @@
 import type { HarmlessMark, RegexCheck } from '~/utils/access'
 
 const props = defineProps<{ marks: HarmlessMark[], loaded: boolean, error?: unknown }>()
-const emit = defineEmits<{ changed: [] }>()
 const { t } = useI18n()
 const errorText = useErrorText()
 const toast = useToast()
@@ -14,8 +13,9 @@ const kind = ref<'domain' | 'regex'>('domain')
 const input = ref('')
 const patternInput = ref('')
 const checked = ref<RegexCheck | null>(null)
-const busy = ref(false)
-const error = ref<unknown>(null)
+const mark = useChange('markHarmless', { form: true })
+const unmark = useChange('unmarkHarmless', { form: true })
+const busy = computed(() => mark.busy.value || unmark.busy.value)
 const removing = ref<HarmlessMark | null>(null)
 const removeOpen = computed({
   get: () => removing.value !== null,
@@ -25,48 +25,28 @@ const removeOpen = computed({
 const domain = computed(() => normalizeDomain(input.value))
 const pattern = computed(() => patternInput.value.trim())
 const valid = computed(() => (kind.value === 'regex' ? looksLikePattern(pattern.value) : looksLikeDomain(domain.value)))
-const path = (m: HarmlessMark) => entryPath('/watchlist/harmless', m)
 const key = (m: HarmlessMark) => (m.regex != null ? `regex:${m.regex}` : m.domain ?? '')
 const removingValue = computed(() => (removing.value ? entryValue(removing.value) : ''))
 
 async function add() {
   if (!valid.value) return
-  busy.value = true
-  error.value = null
-  const mark: HarmlessMark = kind.value === 'regex' ? { domain: null, regex: pattern.value } : { domain: domain.value, regex: null }
-  try {
-    await api(path(mark), { method: 'PUT' })
-    toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t('watchlist.harmless.marked', { domain: entryValue(mark) }) })
-    input.value = ''
-    patternInput.value = ''
-    emit('changed')
-  }
-  catch (e) {
-    error.value = e
-  }
-  finally {
-    busy.value = false
-  }
+  const m: HarmlessMark = kind.value === 'regex' ? { domain: null, regex: pattern.value } : { domain: domain.value, regex: null }
+  if (!(await mark.run(m)).ok) return
+  toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t('watchlist.harmless.marked', { domain: entryValue(m) }) })
+  input.value = ''
+  patternInput.value = ''
+}
+
+function askRemove(m: HarmlessMark) {
+  unmark.reset()
+  removing.value = m
 }
 
 async function remove() {
   const m = removing.value
-  if (!m) return
-  busy.value = true
-  error.value = null
-  try {
-    await api(path(m), { method: 'DELETE' })
-    toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t('watchlist.harmless.unmarked', { domain: entryValue(m) }) })
-    busy.value = false
-    removing.value = null
-    emit('changed')
-  }
-  catch (e) {
-    error.value = e
-  }
-  finally {
-    busy.value = false
-  }
+  if (!m || !(await unmark.run(m)).ok) return
+  toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t('watchlist.harmless.unmarked', { domain: entryValue(m) }) })
+  removing.value = null
 }
 </script>
 
@@ -106,7 +86,7 @@ async function remove() {
       <AccessRegexCheck v-if="kind === 'regex'" v-model:checked="checked" list="harmless" :pattern="patternInput" class="w-full" />
     </form>
     <UAlert v-if="props.error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(props.error)" />
-    <UAlert v-if="error && !removing" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(error)" role="alert" data-testid="harmless-error" />
+    <ChangeFailure :error="mark.shown.value" data-testid="harmless-error" />
     <p v-if="props.loaded && !props.marks.length" class="text-sm text-muted" data-testid="harmless-empty">
       {{ t('watchlist.harmless.empty') }}
     </p>
@@ -126,7 +106,7 @@ async function remove() {
           icon="i-lucide-trash-2"
           :aria-label="t('watchlist.harmless.unmarkOne', { domain: entryValue(m) })"
           data-testid="harmless-remove"
-          @click="removing = m"
+          @click="askRemove(m)"
         />
       </li>
     </ul>
@@ -137,7 +117,7 @@ async function remove() {
       :description="t('watchlist.harmless.unmarkText')"
       :confirm-label="t('watchlist.harmless.unmark')"
       :busy="busy"
-      :error="error && removing ? errorText(error) : null"
+      :failure="unmark.shown.value"
       @confirm="remove"
     />
   </section>

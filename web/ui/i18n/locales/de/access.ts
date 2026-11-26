@@ -273,6 +273,7 @@ export default {
       explain: 'Harmlos stoppt Verdachtsmeldungen; es gibt nie etwas frei.',
       unmarkTitle: 'Harmlos-Markierung von {domain} entfernen?',
       unmarkText: 'Zugriffe darauf lösen dann wieder einen Verdacht aus.',
+      markFailed: 'Die Domain konnte nicht als harmlos markiert werden',
       empty: 'Keine Domain ist als harmlos markiert.',
     },
     alerts: {
@@ -290,6 +291,7 @@ export default {
       first: 'zuerst {when}',
       check: 'Prüfen',
       markSeen: 'Gesehen',
+      markSeenFailed: 'Der Alert konnte nicht als gesehen markiert werden',
     },
     feeds: {
       title: 'Feeds',

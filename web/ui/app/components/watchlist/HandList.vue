@@ -10,7 +10,6 @@ import type { RegexCheck, Target, Watchlist, WatchlistEntry } from '~/utils/acce
 import { WATCHLIST_CATEGORIES } from '~/utils/access'
 
 const props = defineProps<{ watchlist: Watchlist | null, error?: unknown }>()
-const emit = defineEmits<{ changed: [] }>()
 const { t, te } = useI18n()
 const errorText = useErrorText()
 const toast = useToast()
@@ -40,54 +39,45 @@ const checked = ref<RegexCheck | null>(null)
 const newCategory = ref<string>('exfil')
 const source = ref('')
 const note = ref('')
-const adding = ref(false)
-const addError = ref<unknown>(null)
+// lowering a strong entry, or creating a missing Watchlist again, only the CLI may do: the view
+// says so with the command
+const FORCE = ['force_required', 'watchlist_recreate_force_required']
+const addChange = useChange('watchAdd', { form: true, own: FORCE })
+const adding = addChange.busy
 const domain = computed(() => normalizeDomain(domainInput.value))
 const pattern = computed(() => patternInput.value.trim())
 const canAdd = computed(() => (kind.value === 'regex' ? looksLikePattern(pattern.value) : looksLikeDomain(domain.value))
   && source.value.length <= 200 && note.value.length <= 200)
-// an existing strong entry lowered to payload, or a missing Watchlist created again: only the CLI may do that
+// the entry of a refusal that only the CLI may lift
 const lowering = ref<Target | null>(null)
 // which of the two: the Watchlist would be created again (its own code, never the wording)
-const recreating = ref(false)
+const recreating = computed(() => addChange.error.value instanceof ApiError && addChange.error.value.code === 'watchlist_recreate_force_required')
+const forced = computed(() => (lowering.value ? addChange.error.value : null))
 
 async function add() {
   if (!canAdd.value) return
-  adding.value = true
-  addError.value = null
   lowering.value = null
-  recreating.value = false
   const entry: Target = kind.value === 'regex' ? { domain: null, regex: pattern.value } : { domain: domain.value, regex: null }
-  try {
-    await api('/watchlist/entries', {
-      method: 'POST',
-      body: { ...(entry.regex != null ? { regex: entry.regex } : { domain: entry.domain }), category: newCategory.value, ...(source.value.trim() ? { source: source.value.trim() } : {}), ...(note.value.trim() ? { note: note.value.trim() } : {}) },
-    })
-    toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t('watchlist.hand.added', { domain: entryValue(entry), category: category(newCategory.value) }) })
-    domainInput.value = ''
-    patternInput.value = ''
-    source.value = ''
-    note.value = ''
-    emit('changed')
+  const r = await addChange.run({ target: entry, category: newCategory.value, source: source.value.trim(), note: note.value.trim() })
+  if (!r.ok) {
+    if (r.error instanceof ApiError && FORCE.includes(r.error.code)) lowering.value = entry
+    return
   }
-  catch (e) {
-    if (e instanceof ApiError && (e.code === 'force_required' || e.code === 'watchlist_recreate_force_required')) {
-      lowering.value = entry
-      recreating.value = e.code === 'watchlist_recreate_force_required'
-    }
-    addError.value = e
-  }
-  finally {
-    adding.value = false
-  }
+  toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t('watchlist.hand.added', { domain: entryValue(entry), category: category(newCategory.value) }) })
+  domainInput.value = ''
+  patternInput.value = ''
+  source.value = ''
+  note.value = ''
 }
 
 // note and removal
 type Dialog = 'note' | 'remove'
 const dialog = ref<Dialog | null>(null)
 const target = ref<WatchlistEntry | null>(null)
-const busy = ref(false)
-const error = ref<unknown>(null)
+const noteChange = useChange('setWatchNote', { form: true })
+const removeChange = useChange('watchRemove', { form: true })
+const busy = computed(() => noteChange.busy.value || removeChange.busy.value)
+const failure = computed(() => noteChange.shown.value ?? removeChange.shown.value)
 const noteText = ref('')
 const dialogOpen = (d: Dialog) => computed({
   get: () => dialog.value === d,
@@ -98,43 +88,31 @@ const removeOpen = dialogOpen('remove')
 
 function openDialog(d: Dialog, e: WatchlistEntry) {
   target.value = e
-  error.value = null
+  noteChange.reset()
+  removeChange.reset()
   noteText.value = e.note
   dialog.value = d
 }
 
-async function run(request: () => Promise<unknown>, done: string) {
-  busy.value = true
-  error.value = null
-  try {
-    await request()
-    toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: done })
-    busy.value = false
-    dialog.value = null
-    emit('changed')
-  }
-  catch (e) {
-    error.value = e
-  }
-  finally {
-    busy.value = false
-  }
+async function done(result: Promise<{ ok: boolean }>, text: string) {
+  if (!(await result).ok) return
+  toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: text })
+  dialog.value = null
 }
 
-const path = (e: Target, action = '') => entryPath('/watchlist/entries', e, action)
 /** what the commands shown for the Host take for an entry */
 const cli = (e: Target | null) => (e ? cliTarget(e) : '')
 const targetValue = computed(() => (target.value ? entryValue(target.value) : ''))
 
 function saveNote() {
   const e = target.value!
-  void run(() => api(path(e, 'note'), { method: 'PUT', body: { note: noteText.value.trim() } }),
+  void done(noteChange.run({ target: e, note: noteText.value.trim() }),
     t('watchlist.hand.noteSaved', { domain: entryValue(e) }))
 }
 
 function remove() {
   const e = target.value!
-  void run(() => api(path(e), { method: 'DELETE' }), t('watchlist.hand.removed', { domain: entryValue(e) }))
+  void done(removeChange.run(e), t('watchlist.hand.removed', { domain: entryValue(e) }))
 }
 </script>
 
@@ -167,8 +145,9 @@ function remove() {
     <p v-if="source.length > 200 || note.length > 200" class="text-sm text-error">
       {{ t('watchlist.hand.tooLong') }}
     </p>
-    <UAlert v-if="addError" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="recreating ? t('watchlist.hand.recreateTitle') : errorText(addError)" role="alert" data-testid="watch-add-error">
-      <template v-if="lowering" #description>
+    <ChangeFailure :error="addChange.shown.value" data-testid="watch-add-error" />
+    <UAlert v-if="forced" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="recreating ? t('watchlist.hand.recreateTitle') : errorText(forced)" role="alert" data-testid="watch-add-error">
+      <template #description>
         {{ recreating ? t('watchlist.hand.onlyCliRecreate') : t('watchlist.hand.onlyCli') }}
         <code class="mt-1 block break-all font-mono text-xs">sudo agentbox watch-add {{ cli(lowering) }} --category {{ newCategory }} --force</code>
       </template>
@@ -239,7 +218,7 @@ function remove() {
           <p v-if="noteText.length > 200" class="text-sm text-error">
             {{ t('watchlist.hand.tooLong') }}
           </p>
-          <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(error)" role="alert" />
+          <ChangeFailure :error="failure" />
         </form>
       </template>
       <template #footer>
@@ -266,7 +245,7 @@ function remove() {
       :description="t('watchlist.hand.removeText')"
       :confirm-label="t('watchlist.hand.remove')"
       :busy="busy"
-      :error="error ? errorText(error) : null"
+      :failure="failure"
       @confirm="remove"
     />
   </section>

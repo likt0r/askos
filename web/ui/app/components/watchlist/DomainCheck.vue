@@ -5,7 +5,6 @@
 import type { DomainCheck, HarmlessMark } from '~/utils/access'
 
 const props = defineProps<{ harmless: HarmlessMark[] }>()
-const emit = defineEmits<{ 'harmless-changed': [] }>()
 const { t } = useI18n()
 const errorText = useErrorText()
 const toast = useToast()
@@ -13,8 +12,11 @@ const toast = useToast()
 const input = ref('')
 const result = ref<DomainCheck | null>(null)
 const busy = ref(false)
-const marking = ref(false)
 const error = ref<unknown>(null)
+// marking is one button, whose failure is a toast; unmarking is asked first, in its dialog
+const mark = useChange('markHarmless', { failed: () => t('watchlist.harmless.markFailed') })
+const unmark = useChange('unmarkHarmless', { form: true })
+const marking = computed(() => mark.busy.value || unmark.busy.value)
 const confirmUnmark = ref(false)
 
 const domain = computed(() => normalizeDomain(input.value))
@@ -58,24 +60,23 @@ async function check(d?: string) {
   }
 }
 
-async function setMark(on: boolean) {
+// the result shows the mark once the page checks again on the change's Activity entry
+async function setMark() {
   const d = result.value?.domain
-  if (!d) return
-  marking.value = true
-  error.value = null
-  try {
-    await api(`/watchlist/harmless/${encodeURIComponent(d)}`, { method: on ? 'PUT' : 'DELETE' })
-    toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t(on ? 'watchlist.harmless.marked' : 'watchlist.harmless.unmarked', { domain: d }) })
-    confirmUnmark.value = false
-    emit('harmless-changed')
-    await check(d)
-  }
-  catch (e) {
-    error.value = e
-  }
-  finally {
-    marking.value = false
-  }
+  if (!d || !(await mark.run({ domain: d, regex: null })).ok) return
+  toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t('watchlist.harmless.marked', { domain: d }) })
+}
+
+function askUnmark() {
+  unmark.reset()
+  confirmUnmark.value = true
+}
+
+async function removeMark() {
+  const d = result.value?.domain
+  if (!d || !(await unmark.run({ domain: d, regex: null })).ok) return
+  toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t('watchlist.harmless.unmarked', { domain: d }) })
+  confirmUnmark.value = false
 }
 
 defineExpose({ check })
@@ -131,7 +132,7 @@ defineExpose({ check })
           :label="t('watchlist.harmless.mark')"
           :loading="marking"
           data-testid="check-mark-harmless"
-          @click="setMark(true)"
+          @click="setMark"
         />
         <UButton
           v-else-if="ownMark"
@@ -141,7 +142,7 @@ defineExpose({ check })
           icon="i-lucide-bell"
           :label="t('watchlist.harmless.unmark')"
           data-testid="check-unmark-harmless"
-          @click="confirmUnmark = true"
+          @click="askUnmark"
         />
         <span class="text-xs text-muted">{{ t('watchlist.harmless.explain') }}</span>
       </div>
@@ -153,7 +154,8 @@ defineExpose({ check })
       :description="t('watchlist.harmless.unmarkText')"
       :confirm-label="t('watchlist.harmless.unmark')"
       :busy="marking"
-      @confirm="setMark(false)"
+      :failure="unmark.shown.value"
+      @confirm="removeMark"
     />
   </section>
 </template>

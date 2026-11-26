@@ -86,11 +86,11 @@ onMounted(() => {
   <div class="space-y-8">
     <WatchlistAlertsPanel ref="alerts" @check="check" />
     <div class="grid items-start gap-4 lg:grid-cols-2">
-      <WatchlistDomainCheck ref="checker" :harmless="harmless" @harmless-changed="harmlessChanged" />
-      <WatchlistHarmlessList :marks="harmless" :loaded="harmlessLoaded" :error="harmlessError" @changed="harmlessChanged" />
+      <WatchlistDomainCheck ref="checker" :harmless="harmless" />
+      <WatchlistHarmlessList :marks="harmless" :loaded="harmlessLoaded" :error="harmlessError" />
     </div>
-    <WatchlistHandList :watchlist="watchlist" :error="watchlistError" @changed="listsChanged(loadWatchlist)" />
-    <WatchlistLegitimateList :domains="legitimate" :loaded="legitimateLoaded" :error="legitimateError" @changed="listsChanged(loadLegitimate)" />
+    <WatchlistHandList :watchlist="watchlist" :error="watchlistError" />
+    <WatchlistLegitimateList :domains="legitimate" :loaded="legitimateLoaded" :error="legitimateError" />
     <WatchlistFeeds :watchlist="watchlist" :error="watchlistError" />
   </div>
 </template>
