@@ -14,7 +14,6 @@ import socket
 import subprocess
 import sys
 import time
-import xml.etree.ElementTree as ET
 
 from . import activity, footprint, guest, hostfacts, images, paths, programs, registry, responding, settings, ssh_access
 from . import state_files, states, virsh
@@ -59,19 +58,6 @@ def _flags(args):
 
 
 # --- what the Host knows about a VM -----------------------------------------
-
-
-def _rss_fields(ctx):
-    """Second fields of the rss lines of `virsh dommemstat` (KiB); empty when that fails."""
-    r = virsh.run("dommemstat", dom(ctx))
-    if r.returncode != 0:
-        return []
-    out = []
-    for line in r.stdout.split("\n"):
-        if line.startswith("rss"):
-            f = line.split()
-            out.append(f[1] if len(f) > 1 else "")
-    return out
 
 
 def _awk_number(s):
@@ -283,35 +269,13 @@ def stop(ctx):
     responding.clear(ctx)
 
 
-def _running_backing(ctx):
-    """The backing file of the System disk as the running VM uses it, or None when
-    libvirt does not say. libvirt fixes the chain when it starts the VM; a header
-    written later does not change it (#52)."""
-    r = virsh.run("dumpxml", dom(ctx))
-    if r.returncode != 0:
-        return None
-    try:
-        root = ET.fromstring(r.stdout)
-    except ET.ParseError:
-        return None
-    want = os.path.realpath(footprint.system_disk(ctx))
-    for disk in root.iter("disk"):
-        source, target = disk.find("source"), disk.find("target")
-        # the System disk: by its file, else by its device (generate: vda)
-        if (source is not None and source.get("file") and os.path.realpath(source.get("file")) == want) \
-                or (target is not None and target.get("dev") == "vda"):
-            backing = disk.find("backingStore/source")
-            return backing.get("file") if backing is not None else None
-    return None
-
-
 def _check_chain(ctx, base):
     """A VM running on another Build than the one its System disk was just created from
     writes that Build's data into the new disk and no longer boots after its next cold
     start (#52): force it off."""
     if not states.running(ctx):
         return
-    running = _running_backing(ctx)
+    running = virsh.running_system_backing(ctx)
     if running is None or os.path.basename(running) == os.path.basename(base):
         return
     virsh.run("destroy", dom(ctx))
@@ -419,7 +383,7 @@ def status(args):
         out = {}
         for ctx in registry.names():
             st = states.status(ctx)
-            rss = _rss_fields(ctx)
+            rss = virsh.memory_rss_kib(ctx)
             try:
                 rss_kb = int(rss[0]) if rss and rss[0] else 0
             except ValueError:
@@ -442,7 +406,7 @@ def status(args):
     print(row.format("VM", "STATE", "RAM", "BASE-DISK", "SYS-AGE", "AGENTS"), flush=True)
     for ctx in vms:
         st = states.status(ctx)
-        mem = "".join("%.1f GB" % (_awk_number(f) / 1048576) for f in _rss_fields(ctx))
+        mem = "".join("%.1f GB" % (_awk_number(f) / 1048576) for f in virsh.memory_rss_kib(ctx))
         base = _backing(ctx, "-")
         now = int(time.time())
         mtime = _disk_mtime(ctx)
