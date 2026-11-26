@@ -168,7 +168,8 @@ section describes, until it moves into the module (#212).
   from the view's arguments and what it makes stale (`rebuild: declareChange((image: string) =>
   ({ method: 'POST', path: '/builds', body: { image } }))`). A view asks for it by name:
   `const start = useChange('rebuild', { form, own, failed })` gives `run(args)` (an `{ ok, data }`
-  or `{ ok: false, error }`), `busy`, `error`, `shown` and `reset()`; it is a TanStack Query
+  or `{ ok: false, error }`; nothing while one runs), `busy`, `error`, `shown`, `text` (`shown`
+  in the UI's words, for a view that puts it at one field) and `reset()`; it is a TanStack Query
   mutation. After it, the resources it changes are read again once: through the change's own
   Activity entry and its row in `ON_ACTIVITY`, or, for a change that records no entry, through
   the `stale` of its declaration (none so far). A view does not read again itself. The

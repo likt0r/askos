@@ -356,7 +356,8 @@ export interface ChangeOptions {
 export type ChangeResult<T> = { ok: true, data: T } | { ok: false, error: unknown }
 
 export interface Change<A, T> {
-  /** run the request; a failure is presented by its kind (utils/failures.ts) */
+  /** run the request; a failure is presented by its kind (utils/failures.ts). While a run is on
+   * the way another does nothing (`{ ok: false, error: null }`) */
   run: (args: A) => Promise<ChangeResult<T>>
   busy: ComputedRef<boolean>
   /** the last failure; null after a success or reset() */
@@ -396,6 +397,8 @@ export function useChange<N extends ChangeName, T = unknown>(name: N, options: C
   }
   return {
     async run(args: ChangeArgs<N>) {
+      // one at a time: a second run while the first is on the way does nothing
+      if (mutation.isPending.value) return { ok: false, error: null }
       reset()
       try {
         return { ok: true, data: await mutation.mutateAsync(declaration.request(args)) }

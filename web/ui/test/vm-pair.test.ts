@@ -138,7 +138,10 @@ describe('Pair tab', () => {
     expect(post.body).toEqual({ confirm: 'work' })
     await flushPromises()
     expect(document.body.textContent).toContain('The Host is the Observer again.')
-    // the list is read again through the change's own Activity entry
+    // the list is read again through the change's own Activity entry, not by the view
+    const reads = () => api.calls.filter(c => c.method === 'GET' && c.path === '/vms/work/pairings').length
+    expect(reads()).toBe(1)
+    expect(byTestId('pair-devices').findAll('[data-testid="pair-device"]')).toHaveLength(2)
     es.emit('activity', { time: 't', vm: 'work', actor: 'owner', kind: 'action', action: 'revoke-pairings', code: 'revoke-pairings', outcome: 'ok', description: '' })
     await vi.waitFor(() => expect(byTestId('pair-devices').findAll('[data-testid="pair-device"]').map(r => r.attributes('data-device'))).toEqual(['dev-titan']))
   })

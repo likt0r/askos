@@ -280,13 +280,33 @@ describe('a VM\'s changes', () => {
     useState('toasts').value = []
   })
 
-  it('a refused lifecycle action without a dialog: a toast that stays, with Details', async () => {
-    fakeApi({ 'GET /session': SIGNED_IN, 'POST /vms/work/pause': refusal(409, 'vm_paused', 'The VM is paused') })
-    await openApp('/vms/work/web', [vm('work', 'running', { reset_due: false })])
-    await click('action-pause')
+  it.each([
+    ['action-pause', 'POST /vms/work/pause', 'running'],
+    ['action-start', 'POST /vms/work/start', 'stopped'],
+    ['action-focus', 'POST /vms/work/focus', 'running'],
+  ])('a refused lifecycle action without a dialog (%s): a toast that stays, with Details', async (button, route, state) => {
+    fakeApi({ 'GET /session': SIGNED_IN, [route]: refusal(409, 'vm_paused', 'The VM is paused') })
+    await openApp('/vms/work/web', [vm('work', state, { reset_due: false })])
+    await click(button)
     expect(toasts().map(t => [t.title, t.duration])).toEqual([['The action failed', 0]])
     await vi.waitFor(() => expect(exists('fault-message')).toBe(true))
     expect(byTestId('fault-message').text()).toBe('vm_paused: The VM is paused')
+  })
+
+  it('a second run while the first is on the way sends nothing', async () => {
+    let answer!: () => void
+    const api = fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': OK(IMAGES),
+      'PUT /vms/work/image': () => new Promise(resolve => { answer = () => resolve(OKAY({})) }) })
+    await openApp('/vms/work/web', [vm('work', 'running', { reset_due: false, image: 'base', build_pin: null })])
+    await click('image-change')
+    await byTestId('image-dialog').find('[role="radio"][value="2"]').trigger('click')
+    await flushPromises()
+    await byTestId('image-dialog').trigger('submit')
+    await byTestId('image-dialog').trigger('submit')
+    await flushPromises()
+    expect(api.calls.filter(c => c.method === 'PUT')).toHaveLength(1)
+    answer()
+    await flushPromises()
   })
 
   it('a refused Restart from its dialog: in the dialog, no toast', async () => {
