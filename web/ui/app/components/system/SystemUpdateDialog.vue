@@ -14,8 +14,8 @@ const props = defineProps<{
   everything?: boolean
   available?: Available | null
   loading?: boolean
-  /** why the last attempt failed (translated) */
-  error?: string | null
+  /** why the last attempt failed (the change's `shown`) */
+  failure?: unknown
 }>()
 const emit = defineEmits<{ confirm: [vms: string[]] }>()
 const open = defineModel<boolean>('open', { default: false })
@@ -78,7 +78,7 @@ function vmNote(c: { image: string, pin: string | null }) {
     :confirm-label="confirmLabel"
     :color="ordered.length ? 'warning' : 'primary'"
     :loading="props.loading"
-    :error="props.error"
+    :failure="props.failure"
     :testid="props.everything ? 'update-now-dialog' : 'update-dialog'"
     @confirm="emit('confirm', ordered)"
   >

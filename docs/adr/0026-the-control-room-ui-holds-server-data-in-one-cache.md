@@ -1,6 +1,6 @@
 # The Control Room UI holds all server data in one cache; an event writes into it or marks it stale
 
-Status: Accepted (#212), by the owner on 2026-11-26. Built so far: the resources module with its first resource, `images`, its rows of the table and the read-failure element (#214, `web/ui/app/utils/resources.ts`, `web/ui/app/components/ReadFailure.vue`). The other steps are the children of #212.
+Status: Accepted (#212), by the owner on 2026-11-26. Built so far: the resources module with its first resource, `images`, its rows of the table and the read-failure element (#214, `web/ui/app/utils/resources.ts`, `web/ui/app/components/ReadFailure.vue`); changes through it with their failures placed by kind, for the Images and the GitHub App (#215, `useChange`, `web/ui/app/utils/failures.ts`). Details show a failure's code and message, not its `detail` (#224). The other steps are the children of #212.
 
 ## Context
 
@@ -43,18 +43,18 @@ One place names the kind of every failure and picks where it appears. The text f
 | What failed | Where it appears |
 |---|---|
 | The session ended | the sign-in page |
-| The Control Room cannot be reached | the connection notice alone; sections keep what they showed |
+| The Control Room cannot be reached | the connection notice alone while it says the live connection dropped; sections keep what they showed. With the stream live, the failure shows in its own place (the owner on #223) |
 | A read failed and nothing was loaded yet | in place of the section, with "Retry" and "Details" |
 | A read failed and the section shows data | the data stays, with a notice that it could not be refreshed and "Retry" |
-| A change was refused | at the form or in the dialog, never a toast |
-| A change without a dialog failed | a toast that stays until it is dismissed, with "Details" |
+| A change from a form or a dialog was refused or failed | at the form or in the dialog, never a toast |
+| A change without a form or dialog failed, a refusal included | a toast that stays until it is dismissed, with "Details" (the owner on #215, 2026-11-26) |
 | An address that does not exist | the error page |
 | A fault in a view | the error page, with "Reload" and the message behind "Details", without a stack trace |
 
 - **The error page replaces the page area only.** The navigation and the host bar stay, so the owner keeps the way out and still sees the VMs. A full-screen error page appears only when the shell itself fails. Both are in English and German.
 - **A view names only the refusals it words itself**, such as `domain_suspicious`, `force_required` or the field of a Setting; everything else takes the default of its kind.
 - **A view may declare a read an extra.** Its failure then shows nothing there: the mark for a missing Installation beside a VM's GitHub owners, the longest duration offered for Open web.
-- **"Details" shows the Host's own English text of a failure**, folded away and copyable, once it is checked that this text cannot carry a secret (#215); `docs/control-room-api.md` says so today only for a failure's `params`.
+- **"Details" shows the Host's own English text of a failure**, folded away and copyable, once it is checked that this text cannot carry a secret (#215). The check found that the backend words `message` itself, while `detail` may pass on another program's output, from inside a VM too; Details shows the code and `message`, not `detail` (#224, `docs/control-room-api.md`, "Errors").
 - **A fault of the UI stays in the browser.** Nothing is reported to the Host.
 
 ### Tests
@@ -78,5 +78,6 @@ The UI's tests keep driving it as the backend would, through the stand-ins for `
 - **Patching fetched lists from Activity entries**: rejected, see "What an event does".
 - **Events that carry whole objects for more resources**: not now, and not rejected. Settings, Forbids, the Watchlist kept by hand, Legitimate domains and Harmless marks look like plain records that `agentbox watch` could compare and send as it does a VM; the GitHub App overview asks GitHub, pairings are read inside the VM, and the blocked list, Alerts, GitHub tokens, Activity and a VM's log are computed from logs or depend on what the view asked for. It would shorten the table by about half and keep both mechanisms. Moving a resource from one column to the other later changes its row and no view.
 - **Reading again by the clock or on window focus**: rejected. The stream already says what changed; a clock would add requests and a second, vaguer rule.
-- **A toast for every failure**: rejected. A refusal belongs beside the field that can put it right.
+- **A toast for every failure**: rejected. A refusal of a form belongs beside the field that can put it right.
+- **A refusal without a form beside the button that sent it**: rejected by the owner on #215. It would need a place of its own in every view; the toast that stays says it with Details.
 - **Reporting faults of the UI to the Host**: rejected. It would be a new endpoint that every signed-in page can write to.

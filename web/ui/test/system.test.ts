@@ -324,8 +324,8 @@ describe('System page: tool versions (#104)', () => {
 describe('System page: rebuild', () => {
   useFreshApp()
 
-  it('posts the Image name with X-Agentbox: 1 and fetches the overview again', async () => {
-    const { wrapper, api } = await openSystem({ 'POST /builds': { status: 202, body: { image: 'ml', unit: 'agentbox-build@ml.service', started: true, message: 'ok' } } })
+  it('posts the Image name with X-Agentbox: 1; the Build\'s event shows it, without a read', async () => {
+    const { wrapper, api, es } = await openSystem({ 'POST /builds': { status: 202, body: { image: 'ml', unit: 'agentbox-build@ml.service', started: true, message: 'ok' } } })
     const before = api.calls.filter(c => c.method === 'GET' && c.path === '/images').length
     await card(wrapper, 'ml').find('[data-testid="image-rebuild"]').trigger('click')
     await flushPromises()
@@ -333,7 +333,10 @@ describe('System page: rebuild', () => {
     expect(post).toHaveLength(1)
     expect(post[0]!.body).toEqual({ image: 'ml' })
     expect(post[0]!.headers['x-agentbox']).toBe('1')
-    expect(api.calls.filter(c => c.method === 'GET' && c.path === '/images')).toHaveLength(before + 1)
+    es.emit('build', { ...build('20261104-0300', { status: 'running', step: 'source', finished: null }), image: 'ml', unit: 'agentbox-build@ml.service' })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="images-rebuild-all"]').attributes('disabled')).toBeDefined()
+    expect(api.calls.filter(c => c.method === 'GET' && c.path === '/images')).toHaveLength(before)
   })
 
   it('"Rebuild all" posts {"image": "all"}', async () => {
@@ -345,16 +348,18 @@ describe('System page: rebuild', () => {
     expect(post[0]!.headers['x-agentbox']).toBe('1')
   })
 
-  it('shows the translated error of a Build that runs already, and reloads to show it', async () => {
+  it('shows the translated error of a Build that runs already beside the buttons, never as a toast', async () => {
     const { wrapper, api } = await openSystem({
       'POST /builds': { status: 409, body: { error: { code: 'build_running', message: 'A build is already running' } } },
     })
+    const toasts = useState<unknown[]>('toasts').value.length
     await wrapper.find('[data-testid="images-rebuild-all"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-testid="images-start-error"]').text()).toContain('A Build is running already.')
     // buttons work again afterwards (nothing was started by this click)
     expect(wrapper.find('[data-testid="images-rebuild-all"]').attributes('disabled')).toBeUndefined()
-    expect(api.calls.filter(c => c.method === 'GET' && c.path === '/images').length).toBeGreaterThan(1)
+    expect(useState<unknown[]>('toasts').value).toHaveLength(toasts)
+    expect(api.calls.filter(c => c.method === 'GET' && c.path === '/images')).toHaveLength(1)
   })
 
   it('disables every rebuild button while a Build runs, and enables them when it ends', async () => {
