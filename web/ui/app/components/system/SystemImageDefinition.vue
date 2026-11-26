@@ -54,6 +54,17 @@ async function load() {
   }
 }
 
+// a Recipe defines the Image's text: an open panel reads it again, a closed one at its next opening
+function refresh() {
+  if (open.value) return void load()
+  file.value = null
+  error.value = null
+}
+useReloadOnActivity(refresh, {
+  codes: ['recipe.set', 'recipe.restore', 'recipe.remove'],
+  match: entry => entry.params?.name === props.image.name,
+})
+
 function toggle() {
   open.value = !open.value
   // read once; after a failure again at the next opening

@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resetSessionForTests } from '~/composables/useSession'
 import { resetLiveForTests } from '~/composables/useLive'
 import { FakeEventSource } from './fakes'
-import { $, $$, changes, click, fail, must, ok, openApp, type, unmountAll, vm, waitFor } from './access-helpers'
+import { $, $$, changes, click, fail, must, ok, openApp, settle, type, unmountAll, vm, waitFor } from './access-helpers'
 
 const TOKEN = 'sk-ant-oat01-' + 'Q'.repeat(90)
 const KEY = '-----BEGIN RSA PRIVATE KEY-----\nMIIEsecretsecretsecret\n-----END RSA PRIVATE KEY-----\n'
@@ -250,5 +250,42 @@ describe('GitHub App section', () => {
     await openApp('/system', { 'GET /github-app': fail(409, 'github_app_missing') })
     expect(must('[data-testid="app-error"]').textContent).toContain('No GitHub App is set up.')
     expect(must('[data-testid="app-add-open"]')).toBeTruthy()
+  })
+})
+
+describe('GitHub App section follows the Activity', () => {
+  const entry = (action: string) => ({ time: '2026-11-03T12:00:00Z', vm: 'work', actor: 'root', kind: 'credentials', action, code: action, outcome: 'ok', description: '' })
+  const loads = (api: { calls: { path: string }[] }) => api.calls.filter(c => c.path === '/github-app').length
+
+  it.each(['set-github-app', 'remove-github-app', 'set-owners', 'create', 'delete'])('%s loads the Apps again; others do not', async (code) => {
+    const { api, es } = await openApp('/system', { 'GET /github-app': ok(APP) })
+    expect(loads(api)).toBe(1)
+    es.emit('activity', entry('start'))
+    await new Promise(r => setTimeout(r, 500))
+    expect(loads(api)).toBe(1)
+    es.emit('activity', entry(code))
+    await waitFor(() => expect(loads(api)).toBe(2))
+  })
+
+  it('loads after a reconnect without resume, not after one that resumed', async () => {
+    const { api, es } = await openApp('/system', { 'GET /github-app': ok(APP) })
+    es.emit('hello', { stream: 'y', resumed: true })
+    await new Promise(r => setTimeout(r, 500))
+    expect(loads(api)).toBe(1)
+    es.emit('hello', { stream: 'z', resumed: false })
+    await waitFor(() => expect(loads(api)).toBe(2))
+  })
+
+  it('keeps an open form and what was typed through a reload', async () => {
+    const { api, es } = await openApp('/system', { 'GET /github-app': ok(APP) })
+    await click('[data-testid="app-add-open"]')
+    await type('[data-testid="app-id"]', '654321')
+    await type('[data-testid="app-key"]', KEY)
+    es.emit('activity', entry('set-owners'))
+    await waitFor(() => expect(loads(api)).toBe(2))
+    await settle()
+    const input = must('[data-testid="app-id"]')
+    expect(((input.matches('input') ? input : input.querySelector('input')) as HTMLInputElement).value).toBe('654321')
+    expect((must('[data-testid="app-key"] textarea, textarea[data-testid="app-key"]') as HTMLTextAreaElement).value).toBe(KEY)
   })
 })

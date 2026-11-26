@@ -3,7 +3,7 @@
 // request the Containerfile's text from the installed Release (read-only, GET
 // /images/<image>/containerfile). No link where the repository or the commit is not known.
 import { flushPromises } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { githubLink } from '~/utils/images'
 import { ok, openPage, useFreshApp } from './system-helpers'
 
@@ -262,5 +262,64 @@ describe('System page: Image definition (#67)', () => {
     expect(part(wrapper, 'rust', 'containerfile-file-link').text()).toBe('Auf GitHub')
     expect(part(wrapper, 'rust', 'containerfile-differs').text()).toBe(
       'Der aktuelle Build kam aus Release 0.1.0; sein Containerfile kann bis zum nächsten Build von diesem abweichen.')
+  })
+})
+
+describe('System page: Image definition follows the Activity', () => {
+  useFreshApp()
+
+  const entry = (code: string, name: string) => ({ time: '2026-11-03T12:00:00Z', vm: null, actor: 'root', kind: 'build', action: code, code, outcome: 'ok', description: '', params: { name } })
+  const wait = (check: () => void) => vi.waitFor(check, { timeout: 3000, interval: 20 })
+  const reads = (api: { calls: { path: string }[] }, name: string) => api.calls.filter(c => c.path === `/images/${name}/containerfile`).length
+  const quiet = () => new Promise(r => setTimeout(r, 500))
+
+  async function open() {
+    let text = BASE_TEXT
+    const opened = await openSystem(overview([image('base'), image('rust')]), {
+      'GET /images/base/containerfile': () => ok(containerfile('base', { text })),
+      'GET /images/rust/containerfile': ok(containerfile('rust')),
+    })
+    return { ...opened, change: (next: string) => { text = next } }
+  }
+
+  it.each(['recipe.set', 'recipe.restore', 'recipe.remove'])('%s of its Image shows the new text in an opened panel, not that of another Image', async (code) => {
+    const { wrapper, api, es, change } = await open()
+    await toggle(wrapper, 'base')
+    await toggle(wrapper, 'rust')
+    expect(part(wrapper, 'base', 'containerfile-text').text()).toContain('dnf -y install git')
+    change('FROM scratch\n')
+    es.emit('activity', entry(code, 'rust'))
+    await wait(() => expect(reads(api, 'rust')).toBe(2))
+    await quiet()
+    expect(reads(api, 'base')).toBe(1)
+    es.emit('activity', entry(code, 'base'))
+    await wait(() => expect(reads(api, 'base')).toBe(2))
+    await flushPromises()
+    expect(part(wrapper, 'base', 'containerfile-text').text()).toContain('FROM scratch')
+  })
+
+  it('a closed panel with a read file reads again at its next opening, and does not read before', async () => {
+    const { wrapper, api, es, change } = await open()
+    await toggle(wrapper, 'base')
+    await toggle(wrapper, 'base')
+    expect(reads(api, 'base')).toBe(1)
+    change('FROM scratch\n')
+    es.emit('activity', entry('recipe.set', 'base'))
+    await quiet()
+    expect(reads(api, 'base')).toBe(1)
+    await toggle(wrapper, 'base')
+    expect(reads(api, 'base')).toBe(2)
+    expect(part(wrapper, 'base', 'containerfile-text').text()).toContain('FROM scratch')
+  })
+
+  it('ignores other codes, and a hello that resumed; a hello that could not resume reads again', async () => {
+    const { wrapper, api, es } = await open()
+    await toggle(wrapper, 'base')
+    es.emit('activity', entry('start', 'base'))
+    es.emit('hello', { stream: 'x', resumed: true })
+    await quiet()
+    expect(reads(api, 'base')).toBe(1)
+    es.emit('hello', { stream: 'y', resumed: false })
+    await wait(() => expect(reads(api, 'base')).toBe(2))
   })
 })

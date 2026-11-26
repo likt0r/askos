@@ -896,3 +896,32 @@ describe('creating a VM', () => {
     expect(exists('create-dialog')).toBe(true)
   })
 })
+
+describe('tool versions follow the Activity', () => {
+  const entry = (action: string, kind = 'action') => ({ time: '2026-11-03T12:00:00Z', vm: null, actor: 'timer', kind, action, code: action, outcome: 'ok', description: '' })
+  const wait = (check: () => void) => vi.waitFor(check, { timeout: 3000, interval: 20 })
+
+  async function open() {
+    const api = fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': OK({ images: [] }) })
+    const opened = await openApp('/vms/work/web', [{ ...WORK, reset_due: false }])
+    return { ...opened, loads: () => api.calls.filter(c => c.path === '/images').length }
+  }
+
+  it.each(['maintenance.versions', 'build.ok', 'update-now'])('%s reads the Images again', async (code) => {
+    const { es, loads } = await open()
+    expect(loads()).toBe(1)
+    es.emit('activity', entry(code))
+    await wait(() => expect(loads()).toBe(2))
+  })
+
+  it('ignores other codes and a hello that resumed; a hello that could not resume reads again', async () => {
+    const { es, loads } = await open()
+    es.emit('activity', entry('start'))
+    es.emit('activity', entry('build.failed', 'build'))
+    es.emit('hello', { stream: 'x', resumed: true })
+    await new Promise(r => setTimeout(r, 500))
+    expect(loads()).toBe(1)
+    es.emit('hello', { stream: 'y', resumed: false })
+    await wait(() => expect(loads()).toBe(2))
+  })
+})

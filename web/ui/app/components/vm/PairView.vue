@@ -165,6 +165,8 @@ watch(() => props.name, () => {
   void load()
 })
 onBeforeUnmount(hideCode)
+// the revealed code and its timer are not touched by a reload
+useReloadOnActivity(load, { codes: ['observe', 'unpair', 'revoke-pairings'], match: entry => entry.vm === props.name })
 </script>
 
 <template>
