@@ -46,8 +46,8 @@ One place names the kind of every failure and picks where it appears. The text f
 | The Control Room cannot be reached | the connection notice alone; sections keep what they showed |
 | A read failed and nothing was loaded yet | in place of the section, with "Retry" and "Details" |
 | A read failed and the section shows data | the data stays, with a notice that it could not be refreshed and "Retry" |
-| A change was refused | at the form or in the dialog, never a toast |
-| A change without a dialog failed | a toast that stays until it is dismissed, with "Details" |
+| A change from a form or a dialog was refused or failed | at the form or in the dialog, never a toast |
+| A change without a form or dialog failed, a refusal included | a toast that stays until it is dismissed, with "Details" (the owner on #215, 2026-11-26) |
 | An address that does not exist | the error page |
 | A fault in a view | the error page, with "Reload" and the message behind "Details", without a stack trace |
 
@@ -78,5 +78,6 @@ The UI's tests keep driving it as the backend would, through the stand-ins for `
 - **Patching fetched lists from Activity entries**: rejected, see "What an event does".
 - **Events that carry whole objects for more resources**: not now, and not rejected. Settings, Forbids, the Watchlist kept by hand, Legitimate domains and Harmless marks look like plain records that `agentbox watch` could compare and send as it does a VM; the GitHub App overview asks GitHub, pairings are read inside the VM, and the blocked list, Alerts, GitHub tokens, Activity and a VM's log are computed from logs or depend on what the view asked for. It would shorten the table by about half and keep both mechanisms. Moving a resource from one column to the other later changes its row and no view.
 - **Reading again by the clock or on window focus**: rejected. The stream already says what changed; a clock would add requests and a second, vaguer rule.
-- **A toast for every failure**: rejected. A refusal belongs beside the field that can put it right.
+- **A toast for every failure**: rejected. A refusal of a form belongs beside the field that can put it right.
+- **A refusal without a form beside the button that sent it**: rejected by the owner on #215. It would need a place of its own in every view; the toast that stays says it with Details.
 - **Reporting faults of the UI to the Host**: rejected. It would be a new endpoint that every signed-in page can write to.

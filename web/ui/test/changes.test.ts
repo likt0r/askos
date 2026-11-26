@@ -101,11 +101,12 @@ describe('a failed change through the app', () => {
   })
 
   it('the Control Room out of reach while the connection is down: only the connection notice', async () => {
-    fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': OK(IMAGES), 'POST /builds': OFFLINE })
+    const api = fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': OK(IMAGES), 'POST /builds': OFFLINE })
     const { es } = await openApp('/system', [WORK])
     es.drop()
     await flushPromises()
     await click('images-rebuild-all')
+    expect(api.calls.filter(c => c.method === 'POST' && c.path === '/builds')).toHaveLength(1)
     expect(toasts()).toEqual([])
     expect(exists('connection-notice')).toBe(true)
   })
@@ -132,7 +133,7 @@ describe('a failed change through the app', () => {
   })
 
   it('a failure keeps the place it got when it failed, also after the connection came back', async () => {
-    fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': OK(IMAGES), 'POST /updates': OFFLINE })
+    const api = fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': OK(IMAGES), 'POST /updates': OFFLINE })
     const { es } = await openApp('/system', [WORK])
     await click('images-update-now')
     await click('confirm-ok')
@@ -147,6 +148,7 @@ describe('a failed change through the app', () => {
     es.drop()
     await flushPromises()
     await click('confirm-ok')
+    expect(api.calls.filter(c => c.method === 'POST' && c.path === '/updates')).toHaveLength(2)
     expect(dialog().querySelector('[data-testid="confirm-error"]')).toBeNull()
     es.emit('hello', { stream: 'ab12cd34', resumed: true })
     await flushPromises()
@@ -197,6 +199,22 @@ describe('the GitHub App\'s changes', () => {
     await click('confirm-action')
     expect(reads()).toBe(1)
     es.emit('activity', { time: 't', vm: null, actor: 'owner', kind: 'credentials', action: 'remove-github-app', code: 'remove-github-app', outcome: 'ok', description: '' })
+    await vi.waitFor(() => expect(reads()).toBe(2), { timeout: 2000 })
+  })
+
+  it('a saved App is read again through its Activity entry, once', async () => {
+    const api = fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': OK(IMAGES), 'GET /github-app': OK(APPS),
+      'PUT /github-app': OK({ id: 777, added: false }) })
+    const { es } = await openApp('/system', [WORK])
+    const reads = () => api.calls.filter(c => c.method === 'GET' && c.path === '/github-app').length
+    await click('app-replace-open')
+    await byTestId('app-key').setValue('-----BEGIN RSA PRIVATE KEY-----\nMIIEsecret\n-----END RSA PRIVATE KEY-----')
+    await flushPromises()
+    await click('app-replace-submit')
+    await click('confirm-action')
+    expect(api.calls.filter(c => c.method === 'PUT')).toHaveLength(1)
+    expect(reads()).toBe(1)
+    es.emit('activity', { time: 't', vm: null, actor: 'owner', kind: 'credentials', action: 'set-github-app', code: 'set-github-app', outcome: 'ok', description: '' })
     await vi.waitFor(() => expect(reads()).toBe(2), { timeout: 2000 })
   })
 

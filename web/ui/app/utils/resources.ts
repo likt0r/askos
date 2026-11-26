@@ -91,6 +91,43 @@ const ON_ACTIVITY: Record<string, ResourceName[]> = {
   'reset.update': ['images'],
 }
 
+// ---- the changes -----------------------------------------------------------------------------
+
+type Method = 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+
+export interface ChangeRequest {
+  method: Method
+  path: string
+  body?: unknown
+}
+
+interface ChangeDeclaration<A> {
+  request: (args: A) => ChangeRequest
+  /** the resources it makes stale without an Activity entry saying so */
+  stale: ResourceName[]
+}
+
+function declareChange<A = void>(request: (args: A) => ChangeRequest, stale: ResourceName[] = []): ChangeDeclaration<A> {
+  return { request, stale }
+}
+
+/** Every change the views make, declared once: its request, and what it makes stale. A change
+ * that records an Activity entry is read again through that entry's row in ON_ACTIVITY, once, so
+ * it names nothing here (the owner on #215). */
+const CHANGES = {
+  // the Images: a Build's `build` events and the Activity entries say what changed
+  rebuild: declareChange((image: string) => ({ method: 'POST', path: '/builds', body: { image } })),
+  updateImage: declareChange((a: { image: string, reset: string[] }) =>
+    ({ method: 'POST', path: '/builds', body: a.reset.length ? { image: a.image, reset: a.reset } : { image: a.image } })),
+  updateNow: declareChange((reset: string[]) => ({ method: 'POST', path: '/updates', body: reset.length ? { reset } : {} })),
+  // the GitHub Apps
+  setGithubApp: declareChange((body: { app_id: number, private_key: string }) => ({ method: 'PUT', path: '/github-app', body })),
+  removeGithubApp: declareChange((id: number) => ({ method: 'DELETE', path: `/github-app/${id}` })),
+}
+
+export type ChangeName = keyof typeof CHANGES
+export type ChangeArgs<N extends ChangeName> = Parameters<(typeof CHANGES)[N]['request']>[0]
+
 // ---- the cache -------------------------------------------------------------------------------
 
 /** The cache and its wiring to one live connection. */
@@ -274,41 +311,6 @@ export function useResource<N extends ResourceName>(name: N, options: ResourceOp
 }
 
 // ---- changes ---------------------------------------------------------------------------------
-
-type Method = 'POST' | 'PUT' | 'PATCH' | 'DELETE'
-
-export interface ChangeRequest {
-  method: Method
-  path: string
-  body?: unknown
-}
-
-interface ChangeDeclaration<A> {
-  request: (args: A) => ChangeRequest
-  /** the resources it makes stale without an Activity entry saying so */
-  stale: ResourceName[]
-}
-
-function declareChange<A = void>(request: (args: A) => ChangeRequest, stale: ResourceName[] = []): ChangeDeclaration<A> {
-  return { request, stale }
-}
-
-/** Every change the views make, declared once: its request, and what it makes stale. A change
- * that records an Activity entry is read again through that entry's row in ON_ACTIVITY, once, so
- * it names nothing here (the owner on #215). */
-const CHANGES = {
-  // the Images: a Build's `build` events and the Activity entries say what changed
-  rebuild: declareChange((image: string) => ({ method: 'POST', path: '/builds', body: { image } })),
-  updateImage: declareChange((a: { image: string, reset: string[] }) =>
-    ({ method: 'POST', path: '/builds', body: a.reset.length ? { image: a.image, reset: a.reset } : { image: a.image } })),
-  updateNow: declareChange((reset: string[]) => ({ method: 'POST', path: '/updates', body: reset.length ? { reset } : {} })),
-  // the GitHub Apps
-  setGithubApp: declareChange((body: { app_id: number, private_key: string }) => ({ method: 'PUT', path: '/github-app', body })),
-  removeGithubApp: declareChange((id: number) => ({ method: 'DELETE', path: `/github-app/${id}` })),
-}
-
-export type ChangeName = keyof typeof CHANGES
-export type ChangeArgs<N extends ChangeName> = Parameters<(typeof CHANGES)[N]['request']>[0]
 
 export interface ChangeOptions {
   /** sent from a form or a dialog: a failure appears there (ChangeFailure), else as a toast */
