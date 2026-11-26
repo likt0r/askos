@@ -86,7 +86,7 @@ async function remove() {
       <AccessRegexCheck v-if="kind === 'regex'" v-model:checked="checked" list="harmless" :pattern="patternInput" class="w-full" />
     </form>
     <UAlert v-if="props.error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(props.error)" />
-    <ChangeFailure :error="mark.shown.value" data-testid="harmless-error" />
+    <ChangeFailure :error="removing ? null : mark.shown.value" data-testid="harmless-error" />
     <p v-if="props.loaded && !props.marks.length" class="text-sm text-muted" data-testid="harmless-empty">
       {{ t('watchlist.harmless.empty') }}
     </p>

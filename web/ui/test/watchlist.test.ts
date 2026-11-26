@@ -101,6 +101,18 @@ describe('Watchlist view', () => {
     ])
   })
 
+  it('reads the Alerts again on a "Seen"\'s Activity entry, once, not by itself', async () => {
+    const { api, es } = await openApp('/watchlist', routes({ 'POST /vms/work/alerts/seen': ok({}) }))
+    const loads = () => api.calls.filter(c => c.path === '/vms/work/alerts').length
+    const before = loads()
+    await click($$('[data-testid="alert-row"]')[0]!.querySelector('[data-testid="alert-seen"]')!)
+    expect(loads()).toBe(before)
+    es.emit('activity', watchEntry('mark-seen'))
+    await waitFor(() => expect(loads()).toBe(before + 1))
+    await new Promise(r => setTimeout(r, 400))
+    expect(loads()).toBe(before + 1)
+  })
+
   it('reloads the Alerts when a new one arrives live', async () => {
     const { api, es } = await openApp('/watchlist', routes())
     const loads = () => api.calls.filter(c => c.path === '/vms/work/alerts').length
@@ -348,6 +360,8 @@ describe('Watchlist view', () => {
     await type('[data-testid="watch-add-domain"]', 'drop.example')
     await click('[data-testid="watch-add-submit"]')
     const refusal = must('[data-testid="watch-add-error"]')
+    expect($$('[data-testid="watch-add-error"]')).toHaveLength(1)
+    expect($('[data-change="failed"]')).toBeNull()
     expect(refusal.textContent).toContain('There is no Watchlist on the Host.')
     expect(refusal.textContent).toContain('Creating it again would let the proxy pass connections again, so only the Host can do it, with --force:')
     expect(refusal.textContent).not.toContain('removed or weakened')
@@ -622,6 +636,27 @@ describe('Watchlist changes: one at a time, every VM, the dialogs (#215)', () =>
     expect((must('[data-testid="check-input"] input, input[data-testid="check-input"]') as HTMLInputElement).value).toBe('npm-cache.example')
   })
 
+  it('removes a mark from the check after asking; the check is read again on its Activity entry', async () => {
+    let marked = true
+    const { api, es } = await openApp('/watchlist', routes({
+      'GET /watchlist/check?domain=githbu.com': () => ok({ ...CHECK, domain: 'githbu.com', harmless: marked ? 'githbu.com' : null, alert: !marked }),
+      'DELETE /watchlist/harmless/githbu.com': () => { marked = false; return ok({}) },
+    }))
+    const checks = () => api.calls.filter(c => c.path === '/watchlist/check?domain=githbu.com').length
+    await type('[data-testid="check-input"]', 'githbu.com')
+    await click('[data-testid="check-submit"]')
+    await type('[data-testid="check-input"]', 'other')
+    await click('[data-testid="check-unmark-harmless"]')
+    await click('[data-testid="confirm-action"]')
+    expect(toasts()).toEqual(['Harmless mark of githbu.com removed.'])
+    expect($('[data-testid="confirm-body"]')).toBeNull()
+    expect((must('[data-testid="check-input"] input, input[data-testid="check-input"]') as HTMLInputElement).value).toBe('githbu.com')
+    expect(checks()).toBe(1)
+    es.emit('activity', watchEntry('unmark-harmless'))
+    await waitFor(() => expect(checks()).toBe(2))
+    await waitFor(() => expect(must('[data-testid="check-mark-harmless"]')).toBeTruthy())
+  })
+
   it('a failed removal of a mark from the check shows in its dialog', async () => {
     await openApp('/watchlist', routes({
       'GET /watchlist/check?domain=githbu.com': ok({ ...CHECK, domain: 'githbu.com', harmless: 'githbu.com', alert: false }),
@@ -635,7 +670,7 @@ describe('Watchlist changes: one at a time, every VM, the dialogs (#215)', () =>
     expect(toasts()).toEqual([])
   })
 
-  it('a refused note of a Watchlist entry and a refused removal of a Legitimate domain show in their dialogs', async () => {
+  it('a refused note of a Watchlist entry and a failed removal of a Legitimate domain show in their dialogs', async () => {
     await openApp('/watchlist', routes({
       'PUT /watchlist/entries/jsonkeeper.com/note': fail(400, 'invalid_note', 'Bad note'),
       'DELETE /watchlist/legitimate/pnpm.io': fail(502, 'action_failed', 'agentbox failed'),

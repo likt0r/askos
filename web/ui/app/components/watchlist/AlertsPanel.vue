@@ -51,7 +51,7 @@ async function load() {
 async function markSeen(vm: string, domain?: string) {
   busy.value = `${vm}/${domain ?? '*'}`
   try {
-    return (await seen.run({ vm, domain })).ok
+    await seen.run({ vm, domain })
   }
   finally {
     busy.value = null
@@ -85,7 +85,6 @@ defineExpose({ load })
         icon="i-lucide-check-check"
         :label="t('watchlist.alerts.allSeen')"
         :loading="busy !== null"
-        :disabled="busy !== null"
         data-testid="alerts-all-seen"
         @click="markAllSeen"
       />
