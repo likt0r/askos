@@ -34,11 +34,15 @@ function refresh() {
   void live.refetchVms()
 }
 
-function starting() {
+function clearFailures() {
   savedError.value = null
   fileError.value = null
-  copyResult.value = null
   for (const c of [switchChange, addChange, copyChange]) c.reset()
+}
+
+function starting() {
+  clearFailures()
+  copyResult.value = null
 }
 
 /** Whether the change failed as saved but not applied: then it is said here. */
@@ -82,7 +86,7 @@ async function chooseFile(event: Event) {
   const file = input.files?.[0]
   input.value = ''
   if (!file) return
-  starting()
+  clearFailures()
   if (file.size > SSH_KEY_MAX_BYTES) {
     fileError.value = new ApiError(400, 'ssh_key_invalid', t('errors.ssh_key_invalid'))
     return

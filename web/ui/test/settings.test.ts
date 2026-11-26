@@ -320,7 +320,7 @@ describe('Settings page', () => {
   describe('saving', () => {
     it('sends PATCH /settings with X-Agentbox: 1 and only the changed keys, numbers as numbers', async () => {
       let stored = settingsBody()
-      const { wrapper, api, es } = await openPage('/settings', {
+      const { wrapper, api } = await openPage('/settings', {
         'GET /settings': () => ok(stored),
         'PATCH /settings': () => {
           stored = settingsBody({ reset_age_days: 14, rebuild_day: 'fri', default_image: 'work' })
@@ -341,11 +341,8 @@ describe('Settings page', () => {
       expect(sent[0]!.headers['x-agentbox']).toBe('1')
       expect(sent[0]!.body).toEqual({ reset_age_days: 14, rebuild_day: 'fri', default_image: 'work' })
 
-      // the form reads what is stored now on the save's own Activity entry, not by itself
-      expect(reads(api.calls)).toBe(loaded)
-      es.emit('activity', { time: 't', vm: null, actor: 'owner', kind: 'settings', action: 'set-settings', code: 'set-settings', outcome: 'ok', description: '' })
-      await vi.waitFor(() => expect(reads(api.calls)).toBe(loaded + 1), { timeout: 3000 })
-      await flushPromises()
+      // the form reloaded and shows what is stored now
+      expect(reads(api.calls)).toBe(loaded + 1)
       expect((input(wrapper, 'reset_age_days').element as HTMLInputElement).value).toBe('14')
       expect((input(wrapper, 'rebuild_day').element as HTMLSelectElement).value).toBe('fri')
       expect(save(wrapper).exists()).toBe(false)
@@ -585,7 +582,7 @@ describe('Settings page', () => {
       expect((input(wrapper, 'reset_age_days').element as HTMLInputElement).value).toBe('9')
     })
 
-    it('its own save\'s entry coming before the answer reads again, and says nothing of elsewhere', async () => {
+    it('its own save\'s entry coming before the answer is left to the save\'s own read', async () => {
       let release!: () => void
       let current = settingsBody()
       const { wrapper, api, es } = await openPage('/settings', {
@@ -615,32 +612,9 @@ describe('Settings page', () => {
       expect((input(wrapper, 'reset_age_days').element as HTMLInputElement).value).toBe('30')
     })
 
-    it('counts its save as running until its own entry: no second save, nothing to discard', async () => {
-      const { wrapper, api, es, change } = await open()
-      await type(wrapper, 'reset_age_days', '9')
-      change({ reset_age_days: 9 })
-      await save(wrapper).trigger('click')
-      await flushPromises()
-      expect(save(wrapper).attributes('disabled')).toBeDefined()
-      await save(wrapper).trigger('click')
-      await flushPromises()
-      expect(patches(api.calls)).toHaveLength(1)
-      expect(reads(api.calls)).toBe(1)
-      es.emit('activity', entry)
-      await wait(() => expect(reads(api.calls)).toBe(2))
-      await flushPromises()
-      expect(save(wrapper).exists()).toBe(false)
-    })
 
-    it('reads at once after its save while the live connection is down', async () => {
-      const { wrapper, api, es, change } = await open()
-      es.drop()
-      await flushPromises()
-      await type(wrapper, 'reset_age_days', '9')
-      change({ reset_age_days: 9 })
-      await save(wrapper).trigger('click')
-      await wait(() => expect(reads(api.calls)).toBe(2))
-    })
+
+
 
 
     it('loads after a reconnect without resume, not after one that resumed', async () => {

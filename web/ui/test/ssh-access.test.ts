@@ -391,6 +391,39 @@ describe('SSH changes and their failures (#215)', () => {
     expect($('[data-testid="ssh-error"]')).toBeNull()
   })
 
+  it('a failed switch\'s toast shows Details', async () => {
+    useState('toasts').value = []
+    await openSsh({}, { 'PUT /vms/work/ssh': fail(502, 'action_failed', 'agentbox failed') })
+    await click(switchButton())
+    await waitFor(() => expect($('[data-testid="fault-message"]')?.textContent).toBe('action_failed: agentbox failed'))
+  })
+
+  it('a failed removal of a key shows in its dialog; one saved anyway closes it and says so in the section', async () => {
+    useState('toasts').value = []
+    let code = 'action_failed'
+    await openSsh({}, { 'POST /vms/work/ssh-keys/remove': () => fail(code === 'action_failed' ? 502 : 409, code, code) })
+    await click(must(`[data-testid="ssh-key"][data-fingerprint="${LAPTOP_FP}"] [data-testid="ssh-key-remove"]`))
+    await click('[data-testid="confirm-action"]')
+    expect(must('[data-testid="confirm-body"] [data-testid="fault-message"]').textContent).toBe('action_failed: action_failed')
+    expect($('[data-testid="ssh-error"]')).toBeNull()
+
+    code = 'ssh_pending'
+    await click('[data-testid="confirm-action"]')
+    await settle()
+    expect($('[data-testid="confirm-body"]')).toBeNull()
+    expect(must('[data-testid="ssh-error"]').dataset.code).toBe('ssh_pending')
+    expect(useState<unknown[]>('toasts').value).toEqual([])
+  })
+
+  it('a refused copy shows Details beside the form', async () => {
+    await openSsh({}, { 'POST /vms/work/ssh-keys': fail(404, 'vm_not_found', 'No such VM') }, 'local', [PRIV])
+    await chooseCopyFrom('priv')
+    await click(copyButton())
+    const error = must('[data-testid="ssh-error"]')
+    expect(error.dataset.code).toBe('vm_not_found')
+    expect(error.querySelector('[data-testid="fault-message"]')!.textContent).toBe('vm_not_found: No such VM')
+  })
+
   it('a refused key shows Details beside the form, never as a toast', async () => {
     useState('toasts').value = []
     await openSsh({ keys: [] }, { 'POST /vms/work/ssh-keys': fail(400, 'ssh_key_too_weak', 'Key too weak') })
