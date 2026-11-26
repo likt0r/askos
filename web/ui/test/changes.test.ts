@@ -21,22 +21,22 @@ describe('where a failed change appears (without a view)', () => {
   const signedOut = new ApiError(401, 'unauthenticated', 'Not signed in')
 
   it('a change sent from a form shows its failure there, a refusal too', () => {
-    expect(failurePlace(refused, { form: true, live: true })).toBe('form')
-    expect(failurePlace(new ApiError(502, 'agentbox_failed', 'x'), { form: true, live: true })).toBe('form')
-    expect(failurePlace(new TypeError('a bug'), { form: true, live: true })).toBe('form')
+    expect(failurePlace(refused, { form: true, dropped: false })).toBe('form')
+    expect(failurePlace(new ApiError(502, 'agentbox_failed', 'x'), { form: true, dropped: false })).toBe('form')
+    expect(failurePlace(new TypeError('a bug'), { form: true, dropped: false })).toBe('form')
   })
 
   it('a change without a form shows its failure as a toast', () => {
-    expect(failurePlace(refused, { form: false, live: true })).toBe('toast')
-    expect(failurePlace(new ApiError(502, 'agentbox_failed', 'x'), { form: false, live: true })).toBe('toast')
+    expect(failurePlace(refused, { form: false, dropped: false })).toBe('toast')
+    expect(failurePlace(new ApiError(502, 'agentbox_failed', 'x'), { form: false, dropped: false })).toBe('toast')
   })
 
   it('an ended session is the sign-in page\'s, an unreachable Control Room the connection notice\'s while it is down', () => {
     for (const form of [true, false]) {
-      expect(failurePlace(signedOut, { form, live: true })).toBe('sign-in')
-      expect(failurePlace(network, { form, live: false })).toBe('connection')
-      // with the stream live the connection notice says nothing: the change's own place does
-      expect(failurePlace(network, { form, live: true })).toBe(form ? 'form' : 'toast')
+      expect(failurePlace(signedOut, { form, dropped: false })).toBe('sign-in')
+      expect(failurePlace(network, { form, dropped: true })).toBe('connection')
+      // without the connection notice (the stream live, or still connecting) the change's own place says it
+      expect(failurePlace(network, { form, dropped: false })).toBe(form ? 'form' : 'toast')
     }
   })
 
@@ -81,12 +81,37 @@ describe('a failed change through the app', () => {
     expect(exists('images-start-error')).toBe(false)
   })
 
-  it('a refusal the view words itself: beside its buttons, no toast', async () => {
-    fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': OK(IMAGES), 'POST /builds': refusal(409, 'build_running') })
-    await openApp('/system', [WORK])
+  it.each([['build_running', 'A Build is running already.'], ['update_running', 'An update of the Images is running already.']])(
+    'a refusal the view words itself (%s): beside its buttons, no toast', async (code, words) => {
+      fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': OK(IMAGES), 'POST /builds': refusal(409, code) })
+      await openApp('/system', [WORK])
+      await click('images-rebuild-all')
+      expect(byTestId('images-start-error').text()).toContain(words)
+      expect(toasts()).toEqual([])
+    })
+
+  it('a refusal that comes back after the Build\'s first event still shows', async () => {
+    let answer!: () => void
+    fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': OK(IMAGES),
+      'POST /builds': () => new Promise(resolve => { answer = () => resolve(refusal(409, 'build_running')) }) })
+    const { es } = await openApp('/system', [WORK])
     await click('images-rebuild-all')
+    es.emit('build', { image: 'base', build: '3', status: 'running', step: 'source', started: 't', finished: null, error: null, problems: [], actor: 'timer', unit: 'u' })
+    await flushPromises()
+    answer()
+    await flushPromises()
     expect(byTestId('images-start-error').text()).toContain('A Build is running already.')
-    expect(toasts()).toEqual([])
+  })
+
+  it('the Control Room out of reach while the stream still connects: the toast says it', async () => {
+    const api = fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': OK(IMAGES), 'POST /builds': OFFLINE })
+    const { es } = await openApp('/system', [WORK])
+    es.fail()                      // gave up: asks the session, then connects anew
+    await flushPromises()
+    useLive().state.connection = 'connecting'
+    await click('images-rebuild-all')
+    expect(api.calls.filter(c => c.method === 'POST' && c.path === '/builds')).toHaveLength(1)
+    expect(toasts()).toHaveLength(1)
   })
 
   it('from a dialog: in the dialog, with Details, never a toast', async () => {
@@ -200,6 +225,8 @@ describe('the GitHub App\'s changes', () => {
     expect(reads()).toBe(1)
     es.emit('activity', { time: 't', vm: null, actor: 'owner', kind: 'credentials', action: 'remove-github-app', code: 'remove-github-app', outcome: 'ok', description: '' })
     await vi.waitFor(() => expect(reads()).toBe(2), { timeout: 2000 })
+    await new Promise(r => setTimeout(r, 400))       // useReloadOnActivity gathers a burst for 300 ms
+    expect(reads()).toBe(2)
   })
 
   it('a saved App is read again through its Activity entry, once', async () => {
@@ -216,6 +243,8 @@ describe('the GitHub App\'s changes', () => {
     expect(reads()).toBe(1)
     es.emit('activity', { time: 't', vm: null, actor: 'owner', kind: 'credentials', action: 'set-github-app', code: 'set-github-app', outcome: 'ok', description: '' })
     await vi.waitFor(() => expect(reads()).toBe(2), { timeout: 2000 })
+    await new Promise(r => setTimeout(r, 400))       // useReloadOnActivity gathers a burst for 300 ms
+    expect(reads()).toBe(2)
   })
 
   it('a key file too large replaces a refusal shown before, never both', async () => {

@@ -4,15 +4,17 @@
 import { ApiError } from './api'
 
 /** sign-in: the session ended (utils/api.ts sends the page to the sign-in page); connection: the
- * Control Room cannot be reached and the live connection is down, which the connection notice
- * says; form: at the form or in the dialog that sent the change; toast: a toast that stays. */
+ * Control Room cannot be reached while the connection notice says the live connection dropped;
+ * form: at the form or in the dialog that sent the change; toast: a toast that stays. */
 export type FailurePlace = 'sign-in' | 'connection' | 'form' | 'toast'
 
 /** Where a failed change appears: one sent from a form or a dialog, a refusal included, at that
- * form; one without, as a toast. */
-export function failurePlace(error: unknown, where: { form: boolean, live: boolean }): FailurePlace {
+ * form; one without, a refusal included, as a toast. `dropped`: the connection notice says the
+ * live connection dropped (otherwise nothing else would say that the Control Room is out of
+ * reach). */
+export function failurePlace(error: unknown, where: { form: boolean, dropped: boolean }): FailurePlace {
   if (error instanceof ApiError && error.status === 401) return 'sign-in'
-  if (unreachable(error) && !where.live) return 'connection'
+  if (unreachable(error) && where.dropped) return 'connection'
   return where.form ? 'form' : 'toast'
 }
 

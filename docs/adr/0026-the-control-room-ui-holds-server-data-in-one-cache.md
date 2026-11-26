@@ -43,7 +43,7 @@ One place names the kind of every failure and picks where it appears. The text f
 | What failed | Where it appears |
 |---|---|
 | The session ended | the sign-in page |
-| The Control Room cannot be reached | the connection notice alone; sections keep what they showed |
+| The Control Room cannot be reached | the connection notice alone while it says the live connection dropped; sections keep what they showed. With the stream live, the failure shows in its own place (the owner on #223) |
 | A read failed and nothing was loaded yet | in place of the section, with "Retry" and "Details" |
 | A read failed and the section shows data | the data stays, with a notice that it could not be refreshed and "Retry" |
 | A change from a form or a dialog was refused or failed | at the form or in the dialog, never a toast |

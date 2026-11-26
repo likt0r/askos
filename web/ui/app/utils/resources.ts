@@ -343,7 +343,9 @@ export function useChange<N extends ChangeName, T = unknown>(name: N, options: C
   const showToast = useChangeToast()
   const declaration = CHANGES[name] as ChangeDeclaration<ChangeArgs<N>>
   const own = new Set(options.own ?? [])
-  // where the last failure appears: decided when it failed, not again as the connection changes
+  // the last failure and where it appears, decided when it failed (not again as the connection
+  // changes); kept here, so a reset() while a request is on the way does not lose its answer
+  const failure = ref<unknown>(null)
   const place = ref<FailurePlace | null>(null)
   const mutation = useMutation({
     mutationFn: (req: ChangeRequest) => api<T>(req.path, { method: req.method, body: req.body }),
@@ -351,27 +353,29 @@ export function useChange<N extends ChangeName, T = unknown>(name: N, options: C
       await Promise.all(declaration.stale.map(stale => r.markStale(stale)))
     },
   }, r.client)
+  function reset() {
+    failure.value = null
+    place.value = null
+  }
   return {
     async run(args: ChangeArgs<N>) {
-      place.value = null
+      reset()
       try {
         return { ok: true, data: await mutation.mutateAsync(declaration.request(args)) }
       }
       catch (error) {
+        failure.value = error
         place.value = error instanceof ApiError && own.has(error.code)
           ? null
-          : failurePlace(error, { form: !!options.form, live: live.state.connection === 'live' })
+          : failurePlace(error, { form: !!options.form, dropped: live.state.connection === 'reconnecting' })
         if (place.value === 'toast') showToast(error, options.failed?.())
         return { ok: false, error }
       }
     },
     busy: computed(() => mutation.isPending.value),
-    error: computed(() => mutation.error.value),
-    shown: computed(() => (place.value === 'form' ? mutation.error.value : null)),
-    reset: () => {
-      place.value = null
-      mutation.reset()
-    },
+    error: computed(() => failure.value),
+    shown: computed(() => (place.value === 'form' ? failure.value : null)),
+    reset,
   }
 }
 
