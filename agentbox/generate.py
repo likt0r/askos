@@ -73,11 +73,10 @@ SAID = {"network": "network created or started", "units": "units written",
 
 def _memory_mib(name):
     """Memory of the existing domain, or None when libvirt has no such domain."""
-    r = virsh.run("dominfo", dom(name))
-    if r.returncode != 0:
+    kib = virsh.max_memory_kib(name)
+    if kib is None:
         return None
-    m = re.search(r"^Max memory:\s+(\d+) KiB", r.stdout, re.MULTILINE)
-    return int(m.group(1)) // 1024 if m else DEFAULT_MEMORY_MIB
+    return kib // 1024 if kib else DEFAULT_MEMORY_MIB
 
 
 def _disk_gib(path):
@@ -755,8 +754,12 @@ def domain(rec):
     paused: its saved memory belongs to the old definition. "domain",
     "domain-postponed" or None (unchanged). Callers hold state_files.locked(paths.REGISTRY)."""
     vm = rec["name"]
-    r = virsh.run("domuuid", dom(vm))
-    uuid = r.stdout.strip() if r.returncode == 0 and UUID.fullmatch(r.stdout.strip()) else None
+    try:
+        uuid = virsh.domain_uuid(vm)
+    except Fail:                # virsh cannot tell: defined as if there were none
+        uuid = None
+    if uuid and not UUID.fullmatch(uuid):
+        uuid = None
     xml = programs.run(["virt-install", *virt_install_args(rec, uuid)], 120, what=f"{vm}: virt-install",
                        c_locale=True).stdout
     saved = footprint.domain_file(vm)

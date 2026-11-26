@@ -18,7 +18,6 @@ import re
 
 from . import programs, virsh
 from .errors import Fail
-from .registry import dom
 
 RUNNING = "running"        # the canonical word for a running domain in `status` and the Control Room
 RUNNING_WORDS = (RUNNING, "idle", "blocked")     # libvirt's words for a domain that is live
@@ -39,7 +38,7 @@ NO_PROCESS = (SHUT_OFF, "crashed", MISSING)
 
 def has_pause(name):
     """Whether the VM has a Pause: libvirt holds a managed save of its memory."""
-    return bool(re.search(r"^Managed save: *yes", virsh.run("dominfo", dom(name)).stdout, re.MULTILINE))
+    return virsh.has_managed_save(name)
 
 
 def running(name):
@@ -72,13 +71,10 @@ def starts_anew(word):
 def off(name):
     """(True, word) when the VM is shut off or libvirt has no domain; (False, word)
     otherwise, also when virsh cannot tell. word: libvirt's, "not defined" or "unknown"."""
-    r = virsh.run("domstate", dom(name))
-    if r.returncode == 0:
-        word = r.stdout.split("\n")[0].strip()
-        return word == SHUT_OFF, word or "unknown"
-    if "failed to get domain" in r.stderr:
+    word = virsh.domain_state(name)
+    if word is None:
         return True, "not defined"
-    return False, "unknown"
+    return word == SHUT_OFF, word
 
 
 def gone(name):
@@ -96,14 +92,7 @@ def has_process(name):
 def network(name):
     """The VM's network as libvirt reports it (virsh net-info): (active, autostart), None when
     libvirt has no such network; raises Fail when virsh cannot tell."""
-    r = virsh.run("net-info", dom(name))
-    if r.returncode != 0:
-        if "failed to get network" in r.stderr:
-            return None
-        programs.fail(r, f"{name}: virsh", program="virsh", vm=name)
-    info = dict(line.split(":", 1) for line in r.stdout.splitlines() if ":" in line)
-    info = {k.strip(): v.strip() for k, v in info.items()}
-    return info.get("Active") == "yes", info.get("Autostart") == "yes"
+    return virsh.network_info(name)
 
 
 # --- units -----------------------------------------------------------------------------------

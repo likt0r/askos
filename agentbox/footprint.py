@@ -337,12 +337,9 @@ def _units_off(rec, say):
 
 
 def _domain_off(name, say):
-    from . import generate, lifecycle, programs, registry, virsh
-    r = virsh.run("domuuid", registry.dom(name))
-    if r.returncode != 0:
-        if "failed to get domain" in r.stderr:      # libvirt has none
-            return
-        programs.fail(r, f"{name}: virsh", program="virsh", vm=name)
+    from . import generate, lifecycle, registry, virsh
+    if virsh.domain_uuid(name) is None:             # libvirt has none
+        return
     # no wake starts it between the stop and the undefine (a running domain would outlive it)
     with state_files.vm_lock(name):
         lifecycle.stop(name)        # discards a Pause, shuts down, forces off after the time limit

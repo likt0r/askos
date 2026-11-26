@@ -163,11 +163,19 @@ def _leftovers(rec):
              ("Observer", footprint.observer_dir(name)),
              *(("units", f) for f in footprint.unit_files(rec))]
     found = list(dict.fromkeys(what for what, path in files if os.path.lexists(path)))
-    if virsh.run("domuuid", dom(name)).returncode == 0:
+    if _known(virsh.domain_uuid, name):
         found.append(f"VM {dom(name)}")
-    if virsh.run("net-info", dom(name)).returncode == 0:
+    if _known(virsh.network_info, name):
         found.append(f"network {dom(name)}")
     return found
+
+
+def _known(lookup, name):
+    """Whether libvirt answers the lookup for the VM; False when it has nothing or cannot tell."""
+    try:
+        return lookup(name) is not None
+    except Fail:
+        return False
 
 
 def create(args):

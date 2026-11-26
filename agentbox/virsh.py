@@ -1,9 +1,11 @@
 """libvirt through virsh, with a time limit on every call."""
 import os
+import re
 import subprocess
 import tempfile
+import xml.etree.ElementTree as ET
 
-from . import paths
+from . import footprint, paths, programs
 from .registry import dom
 
 # Each call has its own limit so a hanging guest agent or libvirtd cannot block
@@ -64,11 +66,102 @@ def run_unseen(*args, timeout=None):
     return subprocess.CompletedProcess(args, 0, lines[-3] + "\n", r.stderr)
 
 
-def state(ctx):
+# --- lookups: what libvirt knows about a VM and its network -----------------------------------
+
+def state(name):
     """First line of `virsh domstate`, e.g. "running" or "shut off"; MISSING when unknown."""
-    r = run("domstate", dom(ctx))
+    r = run("domstate", dom(name))
     first = r.stdout.split("\n")[0].strip() if r.returncode == 0 else ""
     return first or MISSING
+
+
+def domain_state(name):
+    """libvirt's word for the VM's state, "unknown" when virsh says none or cannot tell; None
+    when libvirt has no such domain."""
+    r = run("domstate", dom(name))
+    if r.returncode == 0:
+        return r.stdout.split("\n")[0].strip() or "unknown"
+    if "failed to get domain" in r.stderr:
+        return None
+    return "unknown"
+
+
+def has_managed_save(name):
+    """Whether libvirt holds a managed save of the VM's memory."""
+    return bool(re.search(r"^Managed save: *yes", run("dominfo", dom(name)).stdout, re.MULTILINE))
+
+
+def domain_uuid(name):
+    """The UUID of the VM's domain as virsh gives it, None when libvirt has no such domain;
+    raises Fail when virsh cannot tell."""
+    r = run("domuuid", dom(name))
+    if r.returncode != 0:
+        if "failed to get domain" in r.stderr:
+            return None
+        programs.fail(r, f"{name}: virsh", program="virsh", vm=name)
+    return r.stdout.strip()
+
+
+def max_memory_kib(name):
+    """The VM's memory limit in KiB, None when virsh has no answer (no such domain), 0 when
+    its answer has no number."""
+    r = run("dominfo", dom(name))
+    if r.returncode != 0:
+        return None
+    m = re.search(r"^Max memory:\s+(\d+) KiB", r.stdout, re.MULTILINE)
+    return int(m.group(1)) if m else 0
+
+
+def memory_rss_kib(name):
+    """The resident memory of the VM's QEMU process in KiB, as the text of each rss line of
+    `virsh dommemstat` ("" for a line without a number); empty when virsh has no answer."""
+    r = run("dommemstat", dom(name))
+    if r.returncode != 0:
+        return []
+    out = []
+    for line in r.stdout.split("\n"):
+        if line.startswith("rss"):
+            f = line.split()
+            out.append(f[1] if len(f) > 1 else "")
+    return out
+
+
+def running_system_backing(name):
+    """The backing file of the System disk as the running VM uses it, or None when
+    libvirt does not say. libvirt fixes the chain when it starts the VM; a header
+    written later does not change it (#52)."""
+    r = run("dumpxml", dom(name))
+    if r.returncode != 0:
+        return None
+    try:
+        root = ET.fromstring(r.stdout)
+    except ET.ParseError:
+        return None
+    want = os.path.realpath(footprint.system_disk(name))
+    for disk in root.iter("disk"):
+        source, target = disk.find("source"), disk.find("target")
+        # the System disk: by its file, else by its device (generate: vda)
+        if (source is not None and source.get("file") and os.path.realpath(source.get("file")) == want) \
+                or (target is not None and target.get("dev") == "vda"):
+            backing = disk.find("backingStore/source")
+            return backing.get("file") if backing is not None else None
+    return None
+
+
+def network_info(name):
+    """The VM's network as libvirt reports it (virsh net-info): (active, autostart), None when
+    libvirt has no such network; raises Fail when virsh cannot tell."""
+    r = run("net-info", dom(name))
+    if r.returncode != 0:
+        if "failed to get network" in r.stderr:
+            return None
+        programs.fail(r, f"{name}: virsh", program="virsh", vm=name)
+    info = dict(line.split(":", 1) for line in r.stdout.splitlines() if ":" in line)
+    info = {k.strip(): v.strip() for k, v in info.items()}
+    return info.get("Active") == "yes", info.get("Autostart") == "yes"
+
+
+# --- actions -----------------------------------------------------------------------------------
 
 
 def start(ctx):
