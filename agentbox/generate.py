@@ -29,7 +29,7 @@ import tempfile
 import time
 
 from . import activity, build_vm_run, firewall, footprint, hostsetup, paths, programs, registry, settings, sshkeys
-from . import hostfacts, state_files
+from . import domain_args, hostfacts, state_files
 from . import states, times, versions, virsh, vmenv
 from .commands import declare
 from .errors import Fail, die
@@ -352,19 +352,8 @@ def virt_install_args(rec, uuid):
     """virt-install only prints the domain (--dry-run creates nothing). It insists
     on a size for disks that do not exist yet; size=1 only satisfies that check."""
     vm = rec["name"]
-    disk = "path={},size=1,format=qcow2,bus=virtio,target.dev={},cache=none,io=native,discard=unmap"
     return [
-        "--connect", "qemu:///system", "--print-xml", "--dry-run", "--check", "all=off",
-        "--name", dom(vm), *(["--uuid", uuid] if uuid else []),
-        "--osinfo", "linux2024", "--memory", str(rec["memory_mib"]), "--vcpus", str(VCPUS),
-        "--cpu", "host-passthrough", "--machine", hostfacts.MACHINE, "--boot", "hd", "--import", "--noautoconsole",
-        "--graphics", "none", "--video", "none", "--sound", "none", "--input", "none",
-        "--controller", "usb,model=none",
-        # a reboot inside the VM ends QEMU, which reads the fw_cfg files only when it starts:
-        # the VM is off, and its next start boots with the current SSH keys, VM variables,
-        # secrets and placeholder, never with those its last start read (#160)
-        "--events", "on_poweroff=destroy,on_reboot=destroy,on_crash=destroy",
-        "--features", hostfacts.FEATURES,
+        *domain_args.base(dom(vm), rec["memory_mib"], VCPUS, uuid=uuid),
         # the VM learns its name, Orca port, Claude placeholder, the address devices pair with, its
         # VM variables, its SSH access and its secrets at boot; values that could hold a comma
         # only as files (virt-install splits --sysinfo at commas)
@@ -377,8 +366,8 @@ def virt_install_args(rec, uuid):
                      f"entry4.name=opt/agentbox/env,entry4.file={footprint.vm_env_file(vm)},"
                      f"entry5.name=opt/agentbox/ssh,entry5.file={footprint.vm_ssh_file(vm)},"
                      f"entry6.name=opt/agentbox/secrets,entry6.file={footprint.vm_secrets_file(vm)}",
-        "--disk", disk.format(footprint.system_disk(vm), "vda"),
-        "--disk", disk.format(footprint.data_disk(vm), "vdb") + ",serial=agentbox-data",
+        "--disk", domain_args.disk(footprint.system_disk(vm), "vda", size=1),
+        "--disk", domain_args.disk(footprint.data_disk(vm), "vdb", size=1) + ",serial=agentbox-data",
         "--network", f"network={dom(vm)},mac={mac(rec)},model=virtio",
         "--serial", "pty", "--console", "pty",
         "--channel", "unix,target.type=virtio,target.name=org.qemu.guest_agent.0",
