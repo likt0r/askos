@@ -1,6 +1,7 @@
 // German texts of the UI. Same keys as en.ts (test/i18n.test.ts checks it).
 import access from './de/access'
 import activity from './de/activity'
+import fault from './de/fault'
 import notifications from './de/notifications'
 import settings from './de/settings'
 import system from './de/system'
@@ -9,6 +10,7 @@ import vm from './de/vm'
 export default {
   ...access,
   ...activity,
+  ...fault,
   ...notifications,
   ...settings,
   ...system,
