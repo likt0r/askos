@@ -9,7 +9,7 @@ orca_rules, ORCA_RULES); main does not run then, and loading must do nothing els
       chooses a release of Orca on GitHub (stablyai/orca): with --version exactly that one
       (orca_version of the settings), otherwise the newest, that is the one with the highest
       version that is no draft and no prerelease and was published at least N days ago
-      (package_min_age_days). Downloads its orca-ide-<v>.x86_64.rpm
+      (package_min_age_days). Downloads its orca-ide-<v>.<arch>.rpm
       to DEST over HTTPS only and checks it against the SHA-256 GitHub gives for the file.
       Prints the version.
   orca-release runtime ORCA DEST
@@ -17,8 +17,14 @@ orca_rules, ORCA_RULES); main does not run then, and loading must do nothing els
       the same way: the archive from nodejs.org that the installed Orca specifies under ORCA
       (resources/app.asar.unpacked/out/shared/node-runtime/node-runtime-pin.js),
       checked against the SHA-256 there, from it bin/node, checked against the SHA-256 there and in
-      Orca's template (orcad-template/targets/linux-x64-glibc/.runtime-node). Puts it at
+      Orca's template (orcad-template/targets/linux-<arch>-glibc/.runtime-node). Puts it at
       DEST/node-<SHA-256>/bin/node, where guest-setup picks it up for the agent.
+  orca-release arch rpm|node|temurin
+      prints the name Orca's RPM, Node (and Orca's targets) or the Temurin JDK give the
+      architecture; vm/Containerfile downloads the JDK by it.
+
+<arch> is the architecture of the system it runs on (platform.machine()), the Host's: a build VM
+has the Host's CPU. One without names in ARCHES fails with an error that says so.
 
 Every error ends with exit 1 and a line on stderr, and so the Build.
 """
@@ -26,6 +32,7 @@ import datetime
 import hashlib
 import json
 import os
+import platform
 import re
 import stat
 import subprocess
@@ -44,22 +51,49 @@ PAGES, PER_PAGE = 3, 100              # the list is sorted by creation, newest f
 MAX_API = 64 << 20                    # one page of 100 releases: about 6 MiB
 MAX_RPM = 1 << 30                     # orca-ide 1.4: 160 MB
 MAX_NODE_ARCHIVE = 200 << 20          # as in Orca (maxArchiveBytes)
-TARGET = "linux-x64-glibc"
+# an architecture as platform.machine() and rpm's %_arch name it: {what: its name there} for
+# Orca's RPM (rpm), Node's archives and Orca's targets (node), the Temurin JDK (temurin)
+ARCHES = {"x86_64": {"rpm": "x86_64", "node": "x64", "temurin": "x64"}}
 # tsc's output of Orca's src/shared/node-runtime/node-runtime-pin.ts, beside app.asar
 PIN_FILE = "resources/app.asar.unpacked/out/shared/node-runtime/node-runtime-pin.js"
-MARKER = f"resources/orcad-template/targets/{TARGET}/.runtime-node"
 MAX_PIN_FILE = 1 << 20
 PIN_VERSION = re.compile(r"\bNODE_RUNTIME_PIN\s*=\s*\{\s*version:\s*['\"]([0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4})['\"]")
-PIN_ASSET = re.compile(
-    r"['\"]" + TARGET + r"['\"]\s*:\s*\{\s*source:\s*['\"]([a-z]+)['\"],\s*archive:\s*['\"]([^'\"\s]{1,100})['\"],\s*"
-    r"archiveSha256:\s*['\"]([0-9a-f]{64})['\"],\s*executableSha256:\s*['\"]([0-9a-f]{64})['\"],\s*"
-    r"executableSize:\s*([0-9]{1,12})\s*\}")
+# what follows the quoted target in PIN_FILE (pin_of)
+PIN_ASSET = (r"\s*:\s*\{\s*source:\s*['\"]([a-z]+)['\"],\s*archive:\s*['\"]([^'\"\s]{1,100})['\"],\s*"
+             r"archiveSha256:\s*['\"]([0-9a-f]{64})['\"],\s*executableSha256:\s*['\"]([0-9a-f]{64})['\"],\s*"
+             r"executableSize:\s*([0-9]{1,12})\s*\}")
 CURL = ["curl", "-q", "-sS", "--connect-timeout", "30", "--proto", "=https", "--proto-redir", "=https",
         "-H", "User-Agent: agentbox-build"]
 
 
 class Failed(Exception):
     pass
+
+
+# --- the architecture it runs on ---------------------------------------------------------------------
+
+def names():
+    """The names of the architecture this runs on (its entry in ARCHES); Failed for one without."""
+    machine = platform.machine()
+    if machine not in ARCHES:
+        raise Failed(f"no names for the architecture {_printable(machine)[:40]!r} "
+                     f"(orca-release knows {', '.join(sorted(ARCHES))})")
+    return ARCHES[machine]
+
+
+def arch(what):
+    """The name `what` (rpm, node or temurin) gives the architecture this runs on."""
+    return names()[what]
+
+
+def rpm_name(version):
+    """The file name of Orca's RPM of the version for the architecture this runs on."""
+    return f"orca-ide-{version}.{arch('rpm')}.rpm"
+
+
+def target():
+    """Orca's target of its server on the architecture this runs on (Linux with glibc)."""
+    return f"linux-{arch('node')}-glibc"
 
 
 # --- which release (agentbox fetch-versions chooses with these too) ------------------------------------
@@ -101,7 +135,7 @@ def asset_ok(release, version, cutoff, pinned=False):
     the release even if it is younger) at most one hour after publication,
     if that is later. A release without this asset counts as ok (rpm_asset reports it);
     a timestamp that is missing or unreadable counts as too young."""
-    name = f"orca-ide-{version}.x86_64.rpm"
+    name = rpm_name(version)
     assets = release.get("assets")
     found = [a for a in assets if isinstance(a, dict) and a.get("name") == name] if isinstance(assets, list) else []
     if len(found) != 1:
@@ -136,9 +170,9 @@ def choose(releases, cutoff, pin=None):
 
 
 def rpm_asset(release, version):
-    """(Name, SHA-256, size) of the RPM for x86_64 in the release; Failed if it is missing, has no
-    SHA-256 or is too large."""
-    name = f"orca-ide-{version}.x86_64.rpm"
+    """(Name, SHA-256, size) of the RPM for the architecture this runs on in the release; Failed if
+    it is missing, has no SHA-256 or is too large."""
+    name = rpm_name(version)
     assets = release.get("assets")
     found = [a for a in assets if isinstance(a, dict) and a.get("name") == name] if isinstance(assets, list) else []
     if len(found) != 1 or found[0].get("state") != "uploaded":
@@ -325,15 +359,18 @@ def pin_of(orca):
     if not os.path.lexists(os.path.join(orca, PIN_FILE)):
         raise Failed(f"{orca}: no {PIN_FILE}, where Orca keeps its Node runtime pin (moved in a new Orca?)")
     text = _read(os.path.join(orca, PIN_FILE), MAX_PIN_FILE)
-    versions, assets = PIN_VERSION.findall(text), PIN_ASSET.findall(text)
+    name = target()
+    marker_file = f"resources/orcad-template/targets/{name}/.runtime-node"
+    versions = PIN_VERSION.findall(text)
+    assets = re.findall(r"['\"]" + re.escape(name) + r"['\"]" + PIN_ASSET, text)
     if len(versions) != 1 or len(assets) != 1:
-        raise Failed(f"{PIN_FILE}: Node version or archive for {TARGET} not found (or not unique)")
+        raise Failed(f"{PIN_FILE}: Node version or archive for {name} not found (or not unique)")
     version, (source, archive, archive_sha, executable_sha, size) = versions[0], assets[0]
-    if source != "official" or archive != f"node-v{version}-linux-x64.tar.gz":
+    if source != "official" or archive != f"node-v{version}-linux-{arch('node')}.tar.gz":
         raise Failed(f"{PIN_FILE}: unexpected source {source} or archive {archive} for Node {version}")
-    marker = _read(os.path.join(orca, MARKER), 1024).strip()
+    marker = _read(os.path.join(orca, marker_file), 1024).strip()
     if marker != executable_sha:
-        raise Failed(f"{MARKER} names {marker[:64]!r}, {PIN_FILE} {executable_sha}")
+        raise Failed(f"{marker_file} names {marker[:64]!r}, {PIN_FILE} {executable_sha}")
     return version, archive, archive_sha, executable_sha, int(size)
 
 
@@ -377,10 +414,15 @@ def runtime(orca, dest):
 
 # --- Invocation ----------------------------------------------------------------------------------------
 
-USAGE = "orca-release rpm DEST --min-age-days N [--version X.Y.Z] | orca-release runtime ORCA DEST"
+USAGE = ("orca-release rpm DEST --min-age-days N [--version X.Y.Z] | orca-release runtime ORCA DEST"
+         " | orca-release arch rpm|node|temurin")
 
 
 def main(argv):
+    names()         # an architecture without names fails first, whatever the command
+    if len(argv) == 2 and argv[0] == "arch" and argv[1] in ("rpm", "node", "temurin"):
+        print(arch(argv[1]))
+        return 0
     if len(argv) == 3 and argv[0] == "runtime":
         runtime(argv[1], argv[2])
         return 0

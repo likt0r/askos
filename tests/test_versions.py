@@ -22,6 +22,7 @@ import subprocess
 import sys
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vm_records  # noqa: E402
@@ -1268,7 +1269,8 @@ class ContainerfileTest(unittest.TestCase):
         commands = [c.strip() for c in line[len("RUN"):].split("&&")]
         self.assertEqual(commands[0], 'python3 -I /tmp/orca-release rpm /tmp/orca --min-age-days "$PACKAGE_MIN_AGE_DAYS" '
                                       '--version "$ORCA_VERSION"')
-        self.assertIn("dnf -y install --setopt=install_weak_deps=False /tmp/orca/orca-ide-*.x86_64.rpm", commands)
+        self.assertIn("dnf -y install --setopt=install_weak_deps=False /tmp/orca/orca-ide-*.$(rpm -E %_arch).rpm",
+                      commands)
         self.assertIn("mv /opt/Orca /usr/lib/orca", commands)
         self.assertIn("python3 -I /tmp/orca-release runtime /usr/lib/orca /usr/lib/agentbox/orca-runtimes", commands)
         self.assertEqual(commands[-1], "rm -rf /tmp/orca /tmp/orca-release")
@@ -1281,6 +1283,36 @@ class ContainerfileTest(unittest.TestCase):
         sys.path.insert(0, REPO)
         from agentbox import versions
         self.assertEqual(versions.IMAGE_ORCA, "/usr/lib/orca")
+
+    def test_the_build_and_the_check_name_the_same_rpm_of_the_hosts_architecture(self):
+        """The Build asks the system it runs on for its architecture (rpm -E %_arch in the
+        Containerfile, platform.machine() in orca-release); the check names the Host's
+        (hostfacts.ARCH). On x86_64 all three name orca-ide-<v>.x86_64.rpm."""
+        sys.path.insert(0, REPO)
+        from agentbox import hostfacts
+        from test_orca_release import script
+        self.assertEqual(hostfacts.ARCH, "x86_64")
+        rules = script()
+        with mock.patch.object(rules.platform, "machine", return_value=hostfacts.ARCH):
+            self.assertEqual(rules.rpm_name("1.4.251"), "orca-ide-1.4.251.x86_64.rpm")
+            self.assertEqual(rules.rpm_asset(release("1.4.251", 3), "1.4.251")[0], "orca-ide-1.4.251.x86_64.rpm")
+            with self.assertRaises(rules.Failed) as e:
+                rules.rpm_asset(release("1.4.251", 3, rpm=False), "1.4.251")
+            self.assertEqual(str(e.exception), "release v1.4.251 has no orca-ide-1.4.251.x86_64.rpm")
+        # what dnf installs: the file orca-release downloaded, by rpm's name of the architecture
+        [run] = [line for line in self.lines if line.startswith("RUN") and ORCA_RUN in line]
+        self.assertIn("/tmp/orca/orca-ide-*.$(rpm -E %_arch).rpm", run)
+        self.assertEqual(rules.ARCHES[hostfacts.ARCH]["rpm"], hostfacts.ARCH)
+        # the Temurin JDK by orca-release's name of the architecture, of the archive its SHA-256 pins
+        [jdk] = [line for line in self.lines if line.startswith("RUN") and "/tmp/jdk.tar.gz" in line]
+        commands = [c.strip() for c in jdk[len("RUN"):].split("&&")]
+        self.assertEqual(commands[0], "jdk=$(python3 -I /tmp/orca-release arch temurin)")
+        self.assertEqual(commands[1], 'curl -fsSL -o /tmp/jdk.tar.gz "https://github.com/adoptium/temurin21-binaries/'
+                                      'releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_${jdk}_linux_hotspot_21.0.13_9'
+                                      '.tar.gz"')
+        self.assertEqual(rules.ARCHES[hostfacts.ARCH]["temurin"], "x64")
+        [copy] = [i for i, line in enumerate(self.lines) if line.startswith("COPY vm/build/orca-release ")]
+        self.assertLess(copy, self.lines.index(jdk))
 
     def test_every_npm_install_takes_versions_from_before_that_age(self):
         installs = [line for line in self.lines if line.startswith("RUN") and "npm install" in line]

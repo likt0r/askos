@@ -79,7 +79,8 @@ import subprocess
 import sys
 import time
 
-from . import build_vm, build_vm_run, digests, paths, programs, safeguards, scripts, settings, state_files, times
+from . import build_vm, build_vm_run, digests, hostfacts, paths, programs, safeguards, scripts, settings, state_files
+from . import times
 from .commands import declare
 from .errors import Fail, die
 from .sanitize import clean
@@ -109,7 +110,7 @@ PLAYWRIGHT_PIN = os.environ.get("AGENTBOX_VERSIONS_PLAYWRIGHT_VERSION")     # li
 FETCH_ERROR = re.compile(r"npm registry not reachable|npm registry answered [1-5][0-9][0-9]|"
                          r"no matching version found|GitHub not reachable|GitHub answered "
                          r"[1-5][0-9][0-9]|no release of the version in orca_version|"
-                         r"no x86_64 RPM with a SHA-256 in the release|"
+                         rf"no {re.escape(hostfacts.ARCH)} RPM with a SHA-256 in the release|"
                          r"RPM of the version in orca_version replaced only recently|"
                          r"no release of the version in playwright_version|"
                          r"version in playwright_version younger than package_min_age_days|"
@@ -373,7 +374,7 @@ def orca_newest(cutoff, pin=None):
     try:
         rules.rpm_asset(release, version)
     except rules.Failed:
-        return None, "no x86_64 RPM with a SHA-256 in the release"
+        return None, f"no {hostfacts.ARCH} RPM with a SHA-256 in the release"
     return version, None
 
 

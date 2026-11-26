@@ -406,7 +406,7 @@ class RegenerateTest(RegistryTest):
         argv = self.virt_install("priv")
         for opt, val in [("--name", "agentbox-priv"), ("--uuid", PRIV_UUID), ("--memory", "26624"),
                          ("--vcpus", "24"), ("--cpu", "host-passthrough"), ("--machine", "q35"),
-                         ("--osinfo", "linux2024"), ("--boot", "hd"),
+                         ("--features", "acpi=on,apic=on"), ("--osinfo", "linux2024"), ("--boot", "hd"),
                          ("--sysinfo", "type=fwcfg,entry0.name=opt/agentbox/context,entry0=priv,"
                                        "entry1.name=opt/agentbox/orca_port,entry1=6802,"
                                        "entry2.name=opt/agentbox/claude_placeholder,"

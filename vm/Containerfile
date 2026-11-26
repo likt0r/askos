@@ -84,8 +84,11 @@ RUN export RUSTUP_HOME=/usr/lib/rustup CARGO_HOME=/usr/lib/cargo \
 
 # JDK 21 for Android builds (AGP 8 does not run with Fedora's JDK 25).
 # SDK, NDK and emulator the agent downloads itself onto the Data disk
-# (tosk: scripts/android-setup.sh).
-RUN curl -fsSL -o /tmp/jdk.tar.gz https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz \
+# (tosk: scripts/android-setup.sh). Temurin's name of the architecture the Build runs on
+# from orca-release (below), which knows the names of each architecture.
+COPY vm/build/orca-release /tmp/orca-release
+RUN jdk=$(python3 -I /tmp/orca-release arch temurin) \
+    && curl -fsSL -o /tmp/jdk.tar.gz "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jdk_${jdk}_linux_hotspot_21.0.13_9.tar.gz" \
     && echo "d7f5d5cf865a2902b70ff549b97586a7d3f234e016f041ab447ea740c7d66d1c  /tmp/jdk.tar.gz" | sha256sum -c - \
     && mkdir -p /usr/lib/jvm/temurin-21 \
     && tar -xzf /tmp/jdk.tar.gz -C /usr/lib/jvm/temurin-21 --strip-components=1 \
@@ -95,18 +98,17 @@ RUN curl -fsSL -o /tmp/jdk.tar.gz https://github.com/adoptium/temurin21-binaries
 # Orca from its GitHub release (stablyai/orca, #113): orca-release takes the newest
 # release (no draft, no prerelease) at least PACKAGE_MIN_AGE_DAYS old,
 # or exactly ORCA_VERSION (orca_version of the settings, empty: automatic; agentbox
-# check-versions works it out the same way), downloads its RPM for x86_64 only over HTTPS and checks
-# it against the SHA-256 GitHub gives for it. dnf installs it with its
+# check-versions works it out the same way), downloads its RPM for the architecture the Build runs on
+# (rpm's %_arch) only over HTTPS and checks it against the SHA-256 GitHub gives for it. dnf installs it with its
 # dependencies to /opt/Orca, with bootc /var/opt and so not part of the Image; hence
 # to /usr/lib/orca (agentbox-orca.service starts it there, agentbox reads its
 # version there). Then the Node runtime of its server, which Orca otherwise downloads at first start:
 # from nodejs.org, checked against the SHA-256 this Orca specifies; guest-setup puts
 # it into the agent's home.
 ARG ORCA_VERSION=
-COPY vm/build/orca-release /tmp/orca-release
 RUN python3 -I /tmp/orca-release rpm /tmp/orca --min-age-days "$PACKAGE_MIN_AGE_DAYS" --version "$ORCA_VERSION" \
     && mkdir -p /var/opt \
-    && dnf -y install --setopt=install_weak_deps=False /tmp/orca/orca-ide-*.x86_64.rpm \
+    && dnf -y install --setopt=install_weak_deps=False /tmp/orca/orca-ide-*.$(rpm -E %_arch).rpm \
     && dnf clean all \
     && mv /opt/Orca /usr/lib/orca \
     && ln -sfn /usr/lib/orca/resources/bin/orca-ide /usr/bin/orca-ide \

@@ -543,6 +543,50 @@ class RuntimeTest(ScriptTest):
         self.failed(self.runtime(), "download failed")
 
 
+class ArchTest(ScriptTest):
+    """The architecture is the one the script runs on (platform.machine(), in a Build the Host's),
+    by the names Orca's RPM, Node and Temurin give it; one it has no names for fails, not a guess."""
+
+    def on(self, machine, *args):
+        """The script as the Containerfile runs it, on a machine of the architecture `machine`."""
+        code = ("import platform, runpy, sys; machine = sys.argv[1]; platform.machine = lambda: machine; "
+                "sys.argv = [sys.argv[2], *sys.argv[3:]]; runpy.run_path(sys.argv[0], run_name='__main__')")
+        env = {"PATH": os.path.join(self.dir, "bin") + ":" + os.environ["PATH"], "FAKE_DIR": self.dir,
+               "LANG": "C.UTF-8"}
+        return subprocess.run([sys.executable, "-I", "-c", code, machine, SCRIPT, *args], env=env,
+                              capture_output=True, text=True, timeout=60)
+
+    def test_the_names_of_x86_64(self):
+        self.assertEqual(script().ARCHES, {"x86_64": {"rpm": "x86_64", "node": "x64", "temurin": "x64"}})
+        for what, name in (("rpm", "x86_64"), ("node", "x64"), ("temurin", "x64")):
+            with self.subTest(what=what):
+                r = self.on("x86_64", "arch", what)
+                self.assertEqual((r.returncode, r.stdout, r.stderr), (0, f"{name}\n", ""))
+        rules = script()
+        with mock.patch.object(rules.platform, "machine", return_value="x86_64"):
+            self.assertEqual(rules.rpm_name("1.4.251"), "orca-ide-1.4.251.x86_64.rpm")
+            self.assertEqual(rules.target(), "linux-x64-glibc")
+
+    def test_an_architecture_without_names_fails_every_command(self):
+        for machine in ("aarch64", "riscv64"):
+            for args in (("arch", "rpm"), ("rpm", self.out, "--min-age-days", "2", "--version", ""),
+                         ("runtime", self.dir, self.out)):
+                with self.subTest(machine=machine, args=args[0]):
+                    self.failed(self.on(machine, *args),
+                                f"no names for the architecture '{machine}' (orca-release knows x86_64)")
+        self.assertEqual(self.calls(), [])
+        self.assertEqual(self.downloaded(), [])
+        rules = script()
+        with mock.patch.object(rules.platform, "machine", return_value="aarch64"):
+            for call in (lambda: rules.rpm_name("1.4.251"), rules.target,
+                         lambda: rules.rpm_asset(release("1.4.251", 3), "1.4.251")):
+                with self.assertRaises(rules.Failed):
+                    call()
+
+    def test_an_unknown_name_is_a_usage_error(self):
+        self.failed(self.run_script("arch", "deb"), "orca-release arch rpm|node|temurin")
+
+
 class ChooseTest(unittest.TestCase):
     """agentbox fetch-versions says which Orca the next Build takes: with this script's own
     functions, loaded from the installed Release (versions.orca_rules)."""
