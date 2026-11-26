@@ -8,18 +8,38 @@ import { defineComponent, h } from 'vue'
 import App from '~/app.vue'
 import ErrorPage from '~/error.vue'
 import { ApiError } from '~/utils/api'
-import { fakeApi, SIGNED_IN, SIGNED_OUT, vm } from './fakes'
-import { byTestId, click, exists, openApp, setUp, tearDown } from './vm-helpers'
+import { faultMessage, inEventHandler } from '~/utils/faults'
+import { fakeApi, FakeEventSource, SIGNED_IN, SIGNED_OUT, vm } from './fakes'
+import { byTestId, click, exists, setUp, tearDown } from './vm-helpers'
+
+let mounted: { unmount(): void } | null = null
 
 beforeEach(async () => {
   await setUp()
   vi.spyOn(console, 'error').mockImplementation(() => {})
 })
 afterEach(() => {
+  mounted?.unmount()
+  mounted = null
   tearDown()
   clearError()
   useState('toasts').value = []
 })
+
+/** The app at `route`, with the stream live. Mounted with the app's own error handler
+ * (plugins/faults.client.ts), as the real app is; test-utils mounts a separate Vue app. */
+async function open(route: string) {
+  const root = document.createElement('div')
+  document.body.appendChild(root)
+  const errorHandler = useNuxtApp().vueApp.config.errorHandler
+  const wrapper = await mountSuspended(App, { route, attachTo: root, global: { config: { errorHandler } } })
+  mounted = wrapper
+  await flushPromises()
+  FakeEventSource.last.emit('hello', { stream: 'ab12cd34', resumed: false })
+  FakeEventSource.last.emit('state', { vms: [vm('work')], problems: [] })
+  await flushPromises()
+  return wrapper
+}
 
 const STACK_FRAME = 'at renderBoom (secret-file.ts:12:3)'
 
@@ -40,6 +60,17 @@ function addFaultyRoutes() {
       },
     }),
   })
+  // a list whose every row fails the same way
+  const Row = defineComponent({
+    props: { n: { type: Number, required: true } },
+    render() {
+      throw boom(`row ${this.n} went wrong`)
+    },
+  })
+  router.addRoute({
+    path: '/test-rows-throw',
+    component: defineComponent({ render: () => h('div', [h(Row, { n: 1 }), h(Row, { n: 2 }), h(Row, { n: 3 })]) }),
+  })
   router.addRoute({
     path: '/test-throws-on-click',
     component: defineComponent({
@@ -47,6 +78,7 @@ function addFaultyRoutes() {
         return () => h('div', { 'data-testid': 'clicky-page' }, [
           h('button', { 'data-testid': 'throw', onClick: () => { throw boom('click went wrong') } }),
           h('button', { 'data-testid': 'reject', onClick: async () => { throw boom('async click went wrong') } }),
+          h('button', { 'data-testid': 'offline', onClick: async () => { throw new ApiError(0, 'network', 'The Control Room cannot be reached') } }),
         ])
       },
     }),
@@ -66,7 +98,7 @@ function toasts() {
 describe('an address no page matches', () => {
   it('shows the error page inside the layout, with the way back to the VMs', async () => {
     const api = fakeApi({ 'GET /session': SIGNED_IN })
-    const { wrapper } = await openApp('/nope', [vm('work')])
+    const wrapper = await open('/nope')
     expect(useRouter().currentRoute.value.path).toBe('/nope')
     expect(byTestId('fault').attributes('data-kind')).toBe('notFound')
     expect(byTestId('fault-title').text()).toBe('This page does not exist')
@@ -83,20 +115,22 @@ describe('an address no page matches', () => {
   })
 
   it('speaks German', async () => {
-    fakeApi({ 'GET /session': SIGNED_IN })
+    const api = fakeApi({ 'GET /session': SIGNED_IN })
     await useNuxtApp().$i18n.setLocale('de')
-    await openApp('/vms/work/nope/deeper', [vm('work')])
+    await open('/vms/work/nope/deeper')
     expect(byTestId('fault-title').text()).toBe('Diese Seite gibt es nicht')
     expect(byTestId('fault-back').text()).toBe('Zurück zu den VMs')
+    expect(sent(api)).toEqual([])
   })
 
   it('signed out, leads to the sign-in page like any other address', async () => {
-    fakeApi({ 'GET /session': SIGNED_OUT })
-    await mountSuspended(App, { route: '/nope' })
+    const api = fakeApi({ 'GET /session': SIGNED_OUT })
+    mounted = await mountSuspended(App, { route: '/nope' })
     await flushPromises()
     const route = useRouter().currentRoute.value
     expect(route.path).toBe('/sign-in')
     expect(route.query.redirect).toBe('/nope')
+    expect(sent(api)).toEqual([])
   })
 })
 
@@ -104,7 +138,7 @@ describe('a fault in a view', () => {
   it('shows the error page in the page area; navigating away clears it', async () => {
     const api = fakeApi({ 'GET /session': SIGNED_IN })
     addFaultyRoutes()
-    await openApp('/test-throws-in-render', [vm('work')])
+    await open('/test-throws-in-render')
     expect(byTestId('fault').attributes('data-kind')).toBe('view')
     expect(byTestId('fault-title').text()).toBe('Something went wrong in this view')
     expect(exists('fault-reload')).toBe(true)
@@ -117,28 +151,50 @@ describe('a fault in a view', () => {
     expect(document.body.textContent).not.toContain(STACK_FRAME)
     expect(document.body.textContent).not.toContain('secret-file')
 
-    await click('nav-vms')
-    await vi.waitFor(() => expect(useRouter().currentRoute.value.path).toBe('/vms'))
-    await flushPromises()
-    expect(exists('fault')).toBe(false)
-    expect(exists('vm-row')).toBe(true)
+    // as in a browser, the layout's route follows only pages that finished loading (test-utils
+    // brings it up to date after every navigation while no page is shown)
+    const route = useNuxtApp()._route as { sync?: () => void }
+    const sync = route.sync
+    route.sync = () => {}
+    try {
+      await click('nav-vms')
+      await vi.waitFor(() => expect(useRouter().currentRoute.value.path).toBe('/vms'))
+      await flushPromises()
+      expect(exists('fault')).toBe(false)
+      expect(exists('vm-row')).toBe(true)
+    }
+    finally {
+      route.sync = sync
+    }
     expect(useError().value).toBeFalsy()          // not the full-screen error page
     expect(sent(api)).toEqual([])
   })
 
+  it('shows the first of several faults of the page in the page area, not the full-screen page', async () => {
+    const api = fakeApi({ 'GET /session': SIGNED_IN })
+    addFaultyRoutes()
+    await open('/test-rows-throw')
+    expect(byTestId('fault').attributes('data-kind')).toBe('view')
+    expect(byTestId('fault-message').text()).toBe('row 1 went wrong')
+    expect(useError().value).toBeFalsy()
+    expect(exists('nav-vms')).toBe(true)
+    expect(sent(api)).toEqual([])
+  })
+
   it('in German', async () => {
-    fakeApi({ 'GET /session': SIGNED_IN })
+    const api = fakeApi({ 'GET /session': SIGNED_IN })
     addFaultyRoutes()
     await useNuxtApp().$i18n.setLocale('de')
-    await openApp('/test-throws-in-render', [vm('work')])
+    await open('/test-throws-in-render')
     expect(byTestId('fault-title').text()).toBe('In dieser Ansicht ist etwas schiefgegangen')
     expect(byTestId('fault-reload').text()).toBe('Neu laden')
+    expect(sent(api)).toEqual([])
   })
 
   it('in an event handler, keeps the view and shows a toast that stays, with Details', async () => {
     const api = fakeApi({ 'GET /session': SIGNED_IN })
     addFaultyRoutes()
-    await openApp('/test-throws-on-click', [vm('work')])
+    await open('/test-throws-on-click')
     await click('throw')
     expect(exists('clicky-page')).toBe(true)
     expect(exists('fault')).toBe(false)
@@ -151,6 +207,11 @@ describe('a fault in a view', () => {
     await click('reject')
     await vi.waitFor(() => expect(document.body.textContent).toContain('async click went wrong'))
     expect(exists('clicky-page')).toBe(true)
+    expect(useError().value).toBeFalsy()
+
+    // a Control Room that cannot be reached is the connection notice's to say
+    await click('offline')
+    expect(toasts()).toHaveLength(2)
     expect(sent(api)).toEqual([])
   })
 })
@@ -164,7 +225,7 @@ describe('an unhandled promise rejection', () => {
 
   it('is shown as a toast with its message', async () => {
     const api = fakeApi({ 'GET /session': SIGNED_IN })
-    await openApp('/vms', [vm('work')])
+    await open('/vms')
     reject(boom('lost promise'))
     await vi.waitFor(() => expect(exists('fault-message')).toBe(true))
     expect(byTestId('fault-message').text()).toBe('lost promise')
@@ -174,42 +235,56 @@ describe('an unhandled promise rejection', () => {
   })
 
   it('in German', async () => {
-    fakeApi({ 'GET /session': SIGNED_IN })
+    const api = fakeApi({ 'GET /session': SIGNED_IN })
     await useNuxtApp().$i18n.setLocale('de')
-    await openApp('/vms', [vm('work')])
+    await open('/vms')
     reject('just a string')
     await vi.waitFor(() => expect(exists('fault-message')).toBe(true))
     expect(byTestId('fault-message').text()).toBe('just a string')
     expect(toasts()).toEqual([{ title: 'In der Oberfläche des Control Room ist etwas schiefgegangen', duration: 0 }])
+    expect(sent(api)).toEqual([])
   })
 
   it('of a request shows its code, not the Host\'s text; an ended session or a lost connection is shown elsewhere', async () => {
-    fakeApi({ 'GET /session': SIGNED_IN })
-    await openApp('/vms', [vm('work')])
+    const api = fakeApi({ 'GET /session': SIGNED_IN })
+    await open('/vms')
     reject(new ApiError(0, 'network', 'The Control Room cannot be reached'))
     reject(new ApiError(401, 'unauthenticated', 'Sign in first'))
     await flushPromises()
-    expect(exists('fault-message')).toBe(false)
+    expect(toasts()).toEqual([])
 
     reject(new ApiError(500, 'internal', 'Text from the Host'))
     await vi.waitFor(() => expect(exists('fault-message')).toBe(true))
     expect(byTestId('fault-message').text()).toBe('ApiError 500 internal')
+    expect(sent(api)).toEqual([])
   })
 })
 
-describe('a failing shell', () => {
-  it('shows app/error.vue in place of the whole app', async () => {
+describe('outside the page area', () => {
+  it('a fault in an event handler of the shell shows the toast (production names it by code)', async () => {
     const api = fakeApi({ 'GET /session': SIGNED_IN })
-    await openApp('/vms', [vm('work')])
+    await open('/vms')
     const handler = useNuxtApp().vueApp.config.errorHandler!
-    handler(boom('the layout broke'), null, 'render function')
+    handler(boom('a button of the shell'), null, 'https://vuejs.org/error-reference/#runtime-6')
+    await vi.waitFor(() => expect(exists('fault-message')).toBe(true))
+    expect(byTestId('fault-message').text()).toBe('a button of the shell')
+    expect(useError().value).toBeFalsy()
+    expect(sent(api)).toEqual([])
+  })
+
+  it('any other fault of the shell shows app/error.vue in place of the whole app', async () => {
+    const api = fakeApi({ 'GET /session': SIGNED_IN })
+    await open('/vms')
+    const handler = useNuxtApp().vueApp.config.errorHandler!
+    handler(boom('the layout broke'), null, 'https://vuejs.org/error-reference/#runtime-1')
     await flushPromises()
     expect(useError().value?.message).toBe('the layout broke')
+    expect(toasts()).toEqual([])
     expect(sent(api)).toEqual([])
   })
 
   it('app/error.vue renders without the layout, with Reload and the message, in both languages', async () => {
-    fakeApi({ 'GET /session': SIGNED_IN })
+    const api = fakeApi({ 'GET /session': SIGNED_IN })
     const error = createError({ message: 'the layout broke', cause: boom('the layout broke') })
     const page = await mountSuspended(ErrorPage, { props: { error } })
     expect(page.find('[data-testid="error-page"]').exists()).toBe(true)
@@ -225,5 +300,29 @@ describe('a failing shell', () => {
     const de = await mountSuspended(ErrorPage, { props: { error } })
     expect(de.find('[data-testid="fault-title"]').text()).toBe('Im Control Room ist etwas schiefgegangen')
     de.unmount()
+    expect(sent(api)).toEqual([])
+  })
+})
+
+describe('faults (units)', () => {
+  it('knows a fault in an event handler by Vue\'s wording in development and its code in production', () => {
+    expect(inEventHandler('native event handler')).toBe(true)
+    expect(inEventHandler('component event handler')).toBe(true)
+    expect(inEventHandler('https://vuejs.org/error-reference/#runtime-5')).toBe(true)
+    expect(inEventHandler('https://vuejs.org/error-reference/#runtime-6')).toBe(true)
+    for (const other of ['render function', 'setup function', 'watcher callback', 'mounted hook',
+      'https://vuejs.org/error-reference/#runtime-0', 'https://vuejs.org/error-reference/#runtime-1',
+      'https://vuejs.org/error-reference/#runtime-56', 'https://vuejs.org/error-reference/#runtime-m']) {
+      expect(inEventHandler(other)).toBe(false)
+    }
+  })
+
+  it('shows a fault\'s message, never its stack', () => {
+    expect(faultMessage(boom('broken'))).toBe('broken')
+    expect(faultMessage(new TypeError(''))).toBe('TypeError')
+    expect(faultMessage('text')).toBe('text')
+    expect(faultMessage({ code: 1 })).toBe('{"code":1}')
+    expect(faultMessage(undefined)).toBe('undefined')
+    expect(faultMessage(new ApiError(409, 'build_running', 'Host text with details'))).toBe('ApiError 409 build_running')
   })
 })

@@ -16,7 +16,6 @@ export default defineNuxtPlugin({
     }
 
     window.addEventListener('unhandledrejection', (event) => {
-      if (shownElsewhere(event.reason)) return
       console.error(event.reason)
       showToast(event.reason)
     })
