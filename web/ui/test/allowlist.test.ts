@@ -34,6 +34,9 @@ function row(domain: string) {
   return must(`[data-testid="allowlist-entry"][data-domain="${domain}"]`)
 }
 
+/** The Activity entry of an Allowlist change made in this browser. */
+const allowEntry = (code: string) => ({ time: 't', vm: null, actor: 'owner', kind: 'allowlist', action: code, code, outcome: 'ok', description: '' })
+
 describe('Allowlist view', () => {
   it('lists every entry with scope, remaining time, uses and note', async () => {
     await openApp('/allowlist', { 'GET /allowlist': ok(entries()) })
@@ -69,7 +72,7 @@ describe('Allowlist view', () => {
 
   it('adds an entry with scope, duration and note', async () => {
     let list = entries().slice(0, 1)
-    const { api } = await openApp('/allowlist?vm=work', {
+    const { api, es } = await openApp('/allowlist?vm=work', {
       'GET /allowlist?vm=work': () => ok(list),
       'POST /allowlist': (call) => {
         const b = call.body as Record<string, string>
@@ -86,6 +89,8 @@ describe('Allowlist view', () => {
 
     expect(changes(api.calls)).toEqual([{ method: 'POST', path: '/allowlist', csrf: '1',
       body: { scope: 'work', domain: 'docs.rs', duration: '8h', note: 'Rust docs' } }])
+    // the list is read again through the change's own Activity entry
+    es.emit('activity', allowEntry('allow'))
     await waitFor(() => expect($$('[data-testid="allowlist-entry"]').map(r => r.dataset.domain)).toEqual(['crates.io', 'docs.rs']))
     expect($('[data-testid="allowlist-add"]')).toBeNull()
   })
@@ -291,7 +296,7 @@ describe('Allowlist view', () => {
   })
 
   it('extends, makes permanent, edits the note and removes only after confirmation', async () => {
-    const { api } = await openApp('/allowlist', {
+    const { api, es } = await openApp('/allowlist', {
       'GET /allowlist': ok(entries()),
       'POST /allowlist/work/docs.rs/extend': ok({}),
       'POST /allowlist/work/docs.rs/make-permanent': ok({}),
@@ -318,8 +323,10 @@ describe('Allowlist view', () => {
       { method: 'PUT', path: '/allowlist/all/crates.io/note', body: { note: 'Rust crates and sparse index' }, csrf: '1' },
       { method: 'DELETE', path: '/allowlist/all/crates.io', body: undefined, csrf: '1' },
     ])
-    // each change reloads the list
-    expect(api.calls.filter(c => c.method === 'GET' && c.path === '/allowlist')).toHaveLength(5)
+    // the view reads no list itself after its changes; their Activity entries do
+    expect(api.calls.filter(c => c.method === 'GET' && c.path === '/allowlist')).toHaveLength(1)
+    es.emit('activity', allowEntry('disallow'))
+    await waitFor(() => expect(api.calls.filter(c => c.method === 'GET' && c.path === '/allowlist')).toHaveLength(2))
   })
 
   it('cancelling the removal sends nothing', async () => {
@@ -367,5 +374,42 @@ describe('Allowlist view', () => {
     await openApp('/allowlist', { 'GET /allowlist': fail(502, 'journal_failed') })
     expect(must('[data-testid="allowlist-error"]').textContent).toContain('Reading the Host\'s journal failed.')
     await settle()
+  })
+})
+
+describe('Allowlist changes and their failures (#215)', () => {
+  it('a refused note shows in its dialog with Details, never as a toast', async () => {
+    useState('toasts').value = []
+    await openApp('/allowlist', {
+      'GET /allowlist': ok(entries()),
+      'PUT /allowlist/all/crates.io/note': fail(400, 'invalid_note', 'The note is too long', 'detail text'),
+    })
+    await click(row('crates.io').querySelector('[data-testid="entry-note-edit"]')!)
+    await type('[data-testid="note-input"]', 'x')
+    await click('[data-testid="note-save"]')
+    const failure = must('[data-change="failed"]')
+    expect(failure.querySelector('[data-testid="fault-message"]')!.textContent).toBe('invalid_note: The note is too long')
+    expect(failure.textContent).not.toContain('detail text')
+    expect(useState<unknown[]>('toasts').value).toEqual([])
+  })
+
+  it('a pattern refused for strong Signals says so in the dialog', async () => {
+    const pattern = '^mirror[0-9]+\\.vendor\\.example$'
+    const check = `GET /regex/check?list=allowlist&regex=${encodeURIComponent(pattern)}&scope=work`
+    await openApp('/allowlist?vm=work', {
+      'GET /allowlist?vm=work': ok([]),
+      [check]: ok({ list: 'allowlist', regex: pattern, scope: 'work', matches: {},
+        preview: { hosts: [], more: 0, watchlist_unreadable: null, truncated: false, reaches_back: null, log_unreadable: null } }),
+      'POST /allowlist': fail(409, 'domain_suspicious', 'A destination has strong Signals'),
+    })
+    await click('[data-testid="allowlist-add-open"]')
+    await click('[data-testid="allowlist-add"] [data-testid="entry-kind"] [data-kind="regex"]')
+    await type('[data-testid="add-regex"]', pattern)
+    await click('[data-testid="allowlist-add"] [data-testid="regex-test"]')
+    await click('[data-testid="add-confirm"]')
+    await click('[data-testid="add-submit"]')
+    expect(must('[data-testid="add-error"]').querySelector('[data-testid="fault-message"]')!.textContent)
+      .toBe('domain_suspicious: A destination has strong Signals')
+    expect($('[data-testid="refusal"]')).toBeNull()
   })
 })

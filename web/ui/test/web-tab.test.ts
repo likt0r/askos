@@ -56,6 +56,9 @@ const ROUTES = {
   'GET /vms': ok({ vms: [vm('work')], problems: [] }),
 }
 
+/** The Activity entry of an Allowlist or Forbid change made in this browser. */
+const allowEntry = (code: string) => ({ time: 't', vm: 'work', actor: 'owner', kind: 'allowlist', action: code, code, outcome: 'ok', description: '' })
+
 describe('Web tab', () => {
   it('lists blocked destinations with Signals, marks those allowed by now, and the VM\'s entries', async () => {
     await openApp('/vms/work/web', ROUTES)
@@ -81,7 +84,7 @@ describe('Web tab', () => {
 
   it('allows a blocked destination for the VM for a chosen time', async () => {
     let entries = vmEntries()
-    const { api } = await openApp('/vms/work/web', {
+    const { api, es } = await openApp('/vms/work/web', {
       ...ROUTES,
       'GET /vms/work/allowlist': () => ok(entries),
       'POST /allowlist': (call) => {
@@ -98,12 +101,14 @@ describe('Web tab', () => {
     await click('[data-testid="add-duration"] [data-duration="15min"]')
     await click('[data-testid="add-submit"]')
     expect(changes(api.calls)).toEqual([{ method: 'POST', path: '/allowlist', csrf: '1', body: { scope: 'work', domain: 'pypi.org', duration: '15min' } }])
+    // both lists are read again through the change's own Activity entry
+    es.emit('activity', allowEntry('allow'))
     await waitFor(() => expect(blockedRow('pypi.org').querySelector('[data-testid="blocked-allowed"]')).not.toBeNull())
   })
 
   it('forbids a blocked destination for the VM for a chosen time', async () => {
     let forbids: ReturnType<typeof vmForbids> = []
-    const { api } = await openApp('/vms/work/web', {
+    const { api, es } = await openApp('/vms/work/web', {
       ...ROUTES,
       'GET /vms/work/forbids': () => ok(forbids),
       'POST /vms/work/forbids': (call) => {
@@ -125,6 +130,7 @@ describe('Web tab', () => {
     await click('[data-testid="forbid-duration"] [data-duration="8h"]')
     await click('[data-testid="forbid-submit"]')
     expect(changes(api.calls)).toEqual([{ method: 'POST', path: '/vms/work/forbids', csrf: '1', body: { domain: 'pypi.org', duration: '8h' } }])
+    es.emit('activity', allowEntry('forbid'))
     await waitFor(() => expect(blockedRow('pypi.org').querySelector('[data-testid="blocked-forbidden"]')).not.toBeNull())
     expect(blockedRow('pypi.org').querySelector('[data-testid="blocked-forbid"]')).toBeNull()
     // still Allow…: an entry of the domain for the VM takes the Forbid's place

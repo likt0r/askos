@@ -181,9 +181,10 @@ section describes, until it moves into the module (#212).
   included, as a toast that stays until dismissed (title from `failed`); an ended session on the
   sign-in page; a Control Room out of reach while the connection notice says the live connection
   dropped in that notice alone (otherwise nothing else would say it, so the change's own place
-  does). A view names in `own` only the codes it words itself (`build_running` and
-  `update_running` beside the Images' buttons); the module presents none of them, and the view
-  reads them from `error`.
+  does). A view names in `own` only the codes it words itself: `build_running` and
+  `update_running` beside the Images' buttons, `domain_suspicious` of an Allowlist entry for a
+  domain (`AllowlistRefusal`, with its Signals and how to lift them). The module presents none of
+  them, and the view reads them from `error`.
 - **Details** of a failure: its code and the Host's `message`, which the backend always words
   itself; never its `detail`, which may pass on another program's output, from inside a VM too
   (docs/control-room-api.md, "Errors").
