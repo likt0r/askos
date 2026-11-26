@@ -337,6 +337,7 @@ describe('Allowlist view', () => {
   })
 
   it('shows an extension refused for strong Signals with how to find where they come from', async () => {
+    useState('toasts').value = []
     await openApp('/allowlist', {
       'GET /allowlist': ok(entries()),
       'POST /allowlist/work/docs.rs/extend': fail(409, 'domain_suspicious'),
@@ -346,6 +347,23 @@ describe('Allowlist view', () => {
     await click('[data-testid="extend-choices"] [data-duration="7d"]')
     expect(must('[data-testid="refusal"]').textContent).toContain('Only lifting the Signal on the Host lets it through')
     expect(must('[data-testid="refusal-cli"]').textContent).toBe('sudo agentbox check-domain docs.rs')
+    // the view words it itself: no other failure, no toast
+    expect($('[data-change="failed"]')).toBeNull()
+    expect(useState<unknown[]>('toasts').value).toEqual([])
+  })
+
+  it('shows a permanent entry refused for strong Signals the same way', async () => {
+    useState('toasts').value = []
+    await openApp('/allowlist', {
+      'GET /allowlist': ok(entries()),
+      'POST /allowlist/work/docs.rs/make-permanent': fail(409, 'domain_suspicious'),
+      'GET /watchlist/check?domain=docs.rs': ok({ domain: 'docs.rs', alert: true, strong: true, harmless: null, legitimate: null, feeds: {}, signals: [] }),
+    })
+    await click(row('docs.rs').querySelector('[data-testid="entry-permanent"]')!)
+    await click('[data-testid="confirm-action"]')
+    expect(must('[data-testid="refusal"]').textContent).toContain('Only lifting the Signal on the Host lets it through')
+    expect($('[data-change="failed"]')).toBeNull()
+    expect(useState<unknown[]>('toasts').value).toEqual([])
   })
 
   it('reloads when an Allowlist change arrives live (CLI, expiry timer)', async () => {
@@ -395,7 +413,7 @@ describe('Allowlist changes and their failures (#215)', () => {
 
   it('a Control Room out of reach while the connection dropped is said by the connection notice alone', async () => {
     useState('toasts').value = []
-    const { es } = await openApp('/allowlist?vm=work', {
+    const { api, es } = await openApp('/allowlist?vm=work', {
       'GET /allowlist?vm=work': ok([]),
       'POST /allowlist': () => { throw new TypeError('Failed to fetch') },
     })
@@ -404,6 +422,7 @@ describe('Allowlist changes and their failures (#215)', () => {
     await click('[data-testid="allowlist-add-open"]')
     await type('[data-testid="add-domain"]', 'docs.rs')
     await click('[data-testid="add-submit"]')
+    expect(changes(api.calls).map(c => c.path)).toEqual(['/allowlist'])
     expect($('[data-testid="add-error"]')).toBeNull()
     expect($('[data-testid="connection-notice"]')).not.toBeNull()
     expect(useState<unknown[]>('toasts').value).toEqual([])

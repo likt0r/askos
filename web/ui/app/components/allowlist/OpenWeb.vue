@@ -6,7 +6,6 @@ import type { Vm } from '~/utils/live'
 
 const props = defineProps<{ vm: Vm }>()
 const { t } = useI18n()
-const live = useLive()
 const toast = useToast()
 const when = useWhen()
 const now = useNow(5000)
@@ -58,7 +57,6 @@ async function openWeb() {
   const until = (r.data as { open_until?: number } | null)?.open_until
   override.value = typeof until === 'number' ? until * 1000 : Date.now() + minutes.value * 60000
   toast.add({ color: 'success', icon: 'i-lucide-globe', title: t('webTab.openWeb.opened', { vm: props.vm.name, until: when.at(override.value / 1000) }) })
-  void live.refetchVms()
 }
 
 async function closeWeb() {
@@ -66,7 +64,6 @@ async function closeWeb() {
   if (!(await closing.run(props.vm.name)).ok) return
   override.value = 0
   toast.add({ color: 'success', icon: 'i-lucide-globe-lock', title: t('webTab.openWeb.closed', { vm: props.vm.name }) })
-  void live.refetchVms()
 }
 </script>
 
