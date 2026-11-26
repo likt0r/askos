@@ -238,6 +238,16 @@ describe('SSH access', () => {
     expect(textarea().value).toBe('')
   })
 
+  it('a switch saved but not applied is said in the section, not as a toast', async () => {
+    useState('toasts').value = []
+    await openSsh({}, {
+      'PUT /vms/work/ssh': { status: 500, body: { error: { code: 'ssh_not_applied', message: 'x', params: { finish: 'agentbox set-ssh work off' } } } },
+    })
+    await click(switchButton())
+    expect(must('[data-testid="ssh-error"]').dataset.code).toBe('ssh_not_applied')
+    expect(useState<unknown[]>('toasts').value).toEqual([])
+  })
+
   it('names the command that finishes a change saved but not applied', async () => {
     await openSsh({}, {
       'PUT /vms/work/ssh': {
