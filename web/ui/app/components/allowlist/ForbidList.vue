@@ -5,10 +5,8 @@
 import type { ForbidEntry } from '~/utils/access'
 
 const props = defineProps<{ entries: ForbidEntry[] }>()
-const emit = defineEmits<{ changed: [] }>()
 
 const { t } = useI18n()
-const errorText = useErrorText()
 const toast = useToast()
 const when = useWhen()
 const now = useNow(15000)
@@ -16,8 +14,16 @@ const now = useNow(15000)
 type Dialog = 'extend' | 'note' | 'remove' | 'permanent'
 const dialog = ref<Dialog | null>(null)
 const target = ref<ForbidEntry | null>(null)
-const busy = ref(false)
-const error = ref<unknown>(null)
+const changes = {
+  extend: useChange('extendForbid', { form: true }),
+  permanent: useChange('makeForbidPermanent', { form: true }),
+  note: useChange('setForbidNote', { form: true }),
+  remove: useChange('removeForbid', { form: true }),
+}
+const all = Object.values(changes)
+const busy = computed(() => all.some(c => c.busy.value))
+// one dialog is open at a time: its change's failure
+const failure = computed(() => all.map(c => c.shown.value).find(Boolean) ?? null)
 const noteText = ref('')
 
 const dialogOpen = (d: Dialog) => computed({
@@ -42,46 +48,34 @@ function refused(e: ForbidEntry) {
 
 function openDialog(d: Dialog, e: ForbidEntry) {
   target.value = e
-  error.value = null
+  for (const c of all) c.reset()
   noteText.value = e.note
   dialog.value = d
 }
 
-async function run(request: () => Promise<unknown>, done: string) {
-  busy.value = true
-  error.value = null
-  try {
-    await request()
-    toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: done })
-    busy.value = false
-    dialog.value = null
-    emit('changed')
-  }
-  catch (e) {
-    error.value = e
-  }
-  finally {
-    busy.value = false
-  }
+async function done(result: Promise<{ ok: boolean }>, text: string) {
+  if (!(await result).ok) return
+  toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: text })
+  dialog.value = null
 }
 
 function extend(duration: string) {
   const e = target.value!
-  void run(() => api(forbidPath(e, 'extend'), { method: 'POST', body: { duration } }),
+  void done(changes.extend.run({ forbid: e, duration }),
     t('forbid.entry.extended', { domain: e.domain, duration: t(`allowlist.durations.${duration}`) }))
 }
 function makePermanent() {
   const e = target.value!
-  void run(() => api(forbidPath(e, 'make-permanent'), { method: 'POST' }), t('forbid.entry.madePermanent', { domain: e.domain }))
+  void done(changes.permanent.run(e), t('forbid.entry.madePermanent', { domain: e.domain }))
 }
 function saveNote() {
   const e = target.value!
-  void run(() => api(forbidPath(e, 'note'), { method: 'PUT', body: { note: noteText.value.trim() } }),
+  void done(changes.note.run({ forbid: e, note: noteText.value.trim() }),
     t('allowlist.entry.noteSaved', { domain: e.domain }))
 }
 function remove() {
   const e = target.value!
-  void run(() => api(forbidPath(e), { method: 'DELETE' }), t('forbid.entry.removed', { domain: e.domain }))
+  void done(changes.remove.run(e), t('forbid.entry.removed', { domain: e.domain }))
 }
 
 const extendDurations = EXTEND_DURATIONS
@@ -153,7 +147,7 @@ const targetVm = computed(() => target.value ? t('allowlist.scope.vm', { vm: tar
             @click="extend(d)"
           />
         </div>
-        <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(error)" role="alert" />
+        <ChangeFailure :error="failure" />
       </div>
     </template>
   </UModal>
@@ -165,7 +159,7 @@ const targetVm = computed(() => target.value ? t('allowlist.scope.vm', { vm: tar
     :confirm-label="t('allowlist.entry.makePermanent')"
     color="primary"
     :busy="busy"
-    :error="error ? errorText(error) : null"
+    :failure="failure"
     @confirm="makePermanent"
   />
 
@@ -176,7 +170,7 @@ const targetVm = computed(() => target.value ? t('allowlist.scope.vm', { vm: tar
         <p v-if="noteText.length > 200" class="text-sm text-error">
           {{ t('allowlist.add.noteTooLong') }}
         </p>
-        <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(error)" role="alert" />
+        <ChangeFailure :error="failure" />
       </form>
     </template>
     <template #footer>
@@ -193,7 +187,7 @@ const targetVm = computed(() => target.value ? t('allowlist.scope.vm', { vm: tar
     :description="t('forbid.entry.removeText', { vm: target?.scope ?? '' })"
     :confirm-label="t('forbid.entry.remove')"
     :busy="busy"
-    :error="error ? errorText(error) : null"
+    :failure="failure"
     @confirm="remove"
   />
 </template>

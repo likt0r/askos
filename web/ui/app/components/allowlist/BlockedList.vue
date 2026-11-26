@@ -8,7 +8,6 @@
 import type { AllowlistEntry, BlockedDestination, ForbidEntry } from '~/utils/access'
 
 const props = withDefaults(defineProps<{ vm: string, entries: AllowlistEntry[], forbids?: ForbidEntry[] }>(), { forbids: () => [] })
-const emit = defineEmits<{ allowed: [], forbidden: [] }>()
 const { t } = useI18n()
 const tr = useTranslator()
 const errorText = useErrorText()
@@ -153,13 +152,11 @@ useLiveEvent('held', (h) => {
       :domain="allowing ?? ''"
       :scope="props.vm"
       :vms="[props.vm]"
-      @added="emit('allowed')"
     />
     <AllowlistForbidDialog
       v-model:open="forbidOpen"
       :domain="forbidding ?? ''"
       :vm="props.vm"
-      @forbidden="emit('forbidden')"
     />
   </section>
 </template>

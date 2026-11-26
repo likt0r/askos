@@ -92,13 +92,12 @@ useReloadOnActivity(load, { kinds: ['allowlist'], codes: ['delete'] })
     <p v-else-if="loaded && !entries.length" class="rounded-lg border border-dashed border-default p-6 text-center text-sm text-muted" data-testid="allowlist-empty">
       {{ filter === '*' ? t('allowlist.empty') : t('allowlist.emptyFiltered') }}
     </p>
-    <AllowlistEntryList v-else-if="entries.length" :entries="entries" @changed="load" />
+    <AllowlistEntryList v-else-if="entries.length" :entries="entries" />
 
     <AllowlistAddDialog
       v-model:open="adding"
       :vms="vmNames"
       :scope="filter === '*' ? 'all' : filter"
-      @added="load"
     />
   </div>
 </template>

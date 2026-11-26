@@ -34,6 +34,9 @@ function row(domain: string) {
   return must(`[data-testid="allowlist-entry"][data-domain="${domain}"]`)
 }
 
+/** The Activity entry of an Allowlist change made in this browser. */
+const allowEntry = (code: string) => ({ time: 't', vm: null, actor: 'owner', kind: 'allowlist', action: code, code, outcome: 'ok', description: '' })
+
 describe('Allowlist view', () => {
   it('lists every entry with scope, remaining time, uses and note', async () => {
     await openApp('/allowlist', { 'GET /allowlist': ok(entries()) })
@@ -69,7 +72,7 @@ describe('Allowlist view', () => {
 
   it('adds an entry with scope, duration and note', async () => {
     let list = entries().slice(0, 1)
-    const { api } = await openApp('/allowlist?vm=work', {
+    const { api, es } = await openApp('/allowlist?vm=work', {
       'GET /allowlist?vm=work': () => ok(list),
       'POST /allowlist': (call) => {
         const b = call.body as Record<string, string>
@@ -86,6 +89,8 @@ describe('Allowlist view', () => {
 
     expect(changes(api.calls)).toEqual([{ method: 'POST', path: '/allowlist', csrf: '1',
       body: { scope: 'work', domain: 'docs.rs', duration: '8h', note: 'Rust docs' } }])
+    // the list is read again through the change's own Activity entry
+    es.emit('activity', allowEntry('allow'))
     await waitFor(() => expect($$('[data-testid="allowlist-entry"]').map(r => r.dataset.domain)).toEqual(['crates.io', 'docs.rs']))
     expect($('[data-testid="allowlist-add"]')).toBeNull()
   })
@@ -291,7 +296,7 @@ describe('Allowlist view', () => {
   })
 
   it('extends, makes permanent, edits the note and removes only after confirmation', async () => {
-    const { api } = await openApp('/allowlist', {
+    const { api, es } = await openApp('/allowlist', {
       'GET /allowlist': ok(entries()),
       'POST /allowlist/work/docs.rs/extend': ok({}),
       'POST /allowlist/work/docs.rs/make-permanent': ok({}),
@@ -318,8 +323,10 @@ describe('Allowlist view', () => {
       { method: 'PUT', path: '/allowlist/all/crates.io/note', body: { note: 'Rust crates and sparse index' }, csrf: '1' },
       { method: 'DELETE', path: '/allowlist/all/crates.io', body: undefined, csrf: '1' },
     ])
-    // each change reloads the list
-    expect(api.calls.filter(c => c.method === 'GET' && c.path === '/allowlist')).toHaveLength(5)
+    // the view reads no list itself after its changes; their Activity entries do
+    expect(api.calls.filter(c => c.method === 'GET' && c.path === '/allowlist')).toHaveLength(1)
+    es.emit('activity', allowEntry('disallow'))
+    await waitFor(() => expect(api.calls.filter(c => c.method === 'GET' && c.path === '/allowlist')).toHaveLength(2))
   })
 
   it('cancelling the removal sends nothing', async () => {
@@ -330,6 +337,7 @@ describe('Allowlist view', () => {
   })
 
   it('shows an extension refused for strong Signals with how to find where they come from', async () => {
+    useState('toasts').value = []
     await openApp('/allowlist', {
       'GET /allowlist': ok(entries()),
       'POST /allowlist/work/docs.rs/extend': fail(409, 'domain_suspicious'),
@@ -339,6 +347,23 @@ describe('Allowlist view', () => {
     await click('[data-testid="extend-choices"] [data-duration="7d"]')
     expect(must('[data-testid="refusal"]').textContent).toContain('Only lifting the Signal on the Host lets it through')
     expect(must('[data-testid="refusal-cli"]').textContent).toBe('sudo agentbox check-domain docs.rs')
+    // the view words it itself: no other failure, no toast
+    expect($('[data-change="failed"]')).toBeNull()
+    expect(useState<unknown[]>('toasts').value).toEqual([])
+  })
+
+  it('shows a permanent entry refused for strong Signals the same way', async () => {
+    useState('toasts').value = []
+    await openApp('/allowlist', {
+      'GET /allowlist': ok(entries()),
+      'POST /allowlist/work/docs.rs/make-permanent': fail(409, 'domain_suspicious'),
+      'GET /watchlist/check?domain=docs.rs': ok({ domain: 'docs.rs', alert: true, strong: true, harmless: null, legitimate: null, feeds: {}, signals: [] }),
+    })
+    await click(row('docs.rs').querySelector('[data-testid="entry-permanent"]')!)
+    await click('[data-testid="confirm-action"]')
+    expect(must('[data-testid="refusal"]').textContent).toContain('Only lifting the Signal on the Host lets it through')
+    expect($('[data-change="failed"]')).toBeNull()
+    expect(useState<unknown[]>('toasts').value).toEqual([])
   })
 
   it('reloads when an Allowlist change arrives live (CLI, expiry timer)', async () => {
@@ -368,4 +393,39 @@ describe('Allowlist view', () => {
     expect(must('[data-testid="allowlist-error"]').textContent).toContain('Reading the Host\'s journal failed.')
     await settle()
   })
+})
+
+describe('Allowlist changes and their failures (#215)', () => {
+  it('a refused note shows in its dialog with Details, never as a toast', async () => {
+    useState('toasts').value = []
+    await openApp('/allowlist', {
+      'GET /allowlist': ok(entries()),
+      'PUT /allowlist/all/crates.io/note': fail(400, 'invalid_note', 'The note is too long', 'detail text'),
+    })
+    await click(row('crates.io').querySelector('[data-testid="entry-note-edit"]')!)
+    await type('[data-testid="note-input"]', 'x')
+    await click('[data-testid="note-save"]')
+    const failure = must('[data-change="failed"]')
+    expect(failure.querySelector('[data-testid="fault-message"]')!.textContent).toBe('invalid_note: The note is too long')
+    expect(failure.textContent).not.toContain('detail text')
+    expect(useState<unknown[]>('toasts').value).toEqual([])
+  })
+
+  it('a Control Room out of reach while the connection dropped is said by the connection notice alone', async () => {
+    useState('toasts').value = []
+    const { api, es } = await openApp('/allowlist?vm=work', {
+      'GET /allowlist?vm=work': ok([]),
+      'POST /allowlist': () => { throw new TypeError('Failed to fetch') },
+    })
+    es.drop()
+    await settle()
+    await click('[data-testid="allowlist-add-open"]')
+    await type('[data-testid="add-domain"]', 'docs.rs')
+    await click('[data-testid="add-submit"]')
+    expect(changes(api.calls).map(c => c.path)).toEqual(['/allowlist'])
+    expect($('[data-testid="add-error"]')).toBeNull()
+    expect($('[data-testid="connection-notice"]')).not.toBeNull()
+    expect(useState<unknown[]>('toasts').value).toEqual([])
+  })
+
 })

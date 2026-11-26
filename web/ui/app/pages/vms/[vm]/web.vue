@@ -57,7 +57,7 @@ useReloadOnActivity(loadBoth, { kinds: ['allowlist'] })
   <div v-if="vm" class="space-y-6" data-testid="web-tab">
     <AllowlistOpenWeb :vm="vm" />
 
-    <AllowlistBlockedList :vm="vm.name" :entries="entries" :forbids="forbids" @allowed="loadBoth" @forbidden="loadBoth" />
+    <AllowlistBlockedList :vm="vm.name" :entries="entries" :forbids="forbids" />
 
     <section class="space-y-2" data-testid="vm-entries">
       <div class="flex flex-wrap items-center gap-2">
@@ -71,7 +71,7 @@ useReloadOnActivity(loadBoth, { kinds: ['allowlist'] })
       <p v-else-if="entriesLoaded && !entries.length" class="text-sm text-muted">
         {{ t('webTab.entries.empty') }}
       </p>
-      <AllowlistEntryList v-else-if="entries.length" :entries="entries" @changed="loadBoth" />
+      <AllowlistEntryList v-else-if="entries.length" :entries="entries" />
     </section>
 
     <section class="space-y-2" data-testid="vm-forbids">
@@ -85,7 +85,7 @@ useReloadOnActivity(loadBoth, { kinds: ['allowlist'] })
       <p v-else-if="forbidsLoaded && !forbids.length" class="text-sm text-muted" data-testid="forbids-empty">
         {{ t('webTab.forbids.empty') }}
       </p>
-      <AllowlistForbidList v-else-if="forbids.length" :entries="forbids" @changed="loadBoth" />
+      <AllowlistForbidList v-else-if="forbids.length" :entries="forbids" />
     </section>
   </div>
 </template>

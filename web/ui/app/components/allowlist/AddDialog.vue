@@ -16,11 +16,9 @@ const props = withDefaults(defineProps<{
   /** VM names to choose from (the scope is fixed when empty) */
   vms?: string[]
 }>(), { domain: undefined, scope: 'all', vms: () => [] })
-const emit = defineEmits<{ added: [entry: AllowlistEntry] }>()
 const open = defineModel<boolean>('open', { default: false })
 
 const { t } = useI18n()
-const errorText = useErrorText()
 const toast = useToast()
 
 const kind = ref<'domain' | 'regex'>('domain')
@@ -29,8 +27,9 @@ const pattern = ref('')
 const scope = ref('all')
 const duration = ref<EntryDuration>('1h')
 const note = ref('')
-const busy = ref(false)
-const error = ref<unknown>(null)
+// a domain with strong Signals is refused: the dialog shows them and how to lift them
+const add = useChange('allow', { form: true, own: ['domain_suspicious'] })
+const busy = add.busy
 const refused = ref<string | null>(null)
 const checked = ref<RegexCheck | null>(null)
 const confirmed = ref(false)
@@ -64,7 +63,7 @@ watch(open, (isOpen) => {
   scope.value = props.scope
   duration.value = '1h'
   note.value = ''
-  error.value = null
+  add.reset()
   refused.value = null
   checked.value = null
   confirmed.value = false
@@ -75,34 +74,24 @@ watch(open, (isOpen) => {
 watch([pattern, scope, kind], () => {
   checked.value = null
   confirmed.value = false
-  error.value = null
+  add.reset()
 })
 
 async function submit() {
   if (!canSubmit.value) return
-  busy.value = true
-  error.value = null
   refused.value = null
   const what = isRegex.value ? pattern.value.trim() : normalized.value
-  const body: Record<string, string | boolean> = isRegex.value
-    ? { scope: scope.value, regex: what, duration: duration.value, confirm: true }
-    : { scope: scope.value, domain: what, duration: duration.value }
-  if (note.value.trim()) body.note = note.value.trim()
-  try {
-    const entry = await api<AllowlistEntry>('/allowlist', { method: 'POST', body })
-    toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t(isRegex.value ? 'allowlist.add.doneRegex' : 'allowlist.add.done', { domain: what }) })
-    emit('added', entry)
-    const winning = Array.isArray(entry?.forbidden_for) ? entry.forbidden_for : []
-    if (winning.length) stillForbidden.value = winning
-    else open.value = false
+  const r = await add.run({ scope: scope.value, ...(isRegex.value ? { regex: what } : { domain: what }), duration: duration.value, note: note.value.trim() })
+  if (!r.ok) {
+    // a pattern is never refused for it (no single destination to check)
+    if (r.error instanceof ApiError && r.error.code === 'domain_suspicious') refused.value = what
+    return
   }
-  catch (e) {
-    if (e instanceof ApiError && e.code === 'domain_suspicious' && !isRegex.value) refused.value = what
-    else error.value = e
-  }
-  finally {
-    busy.value = false
-  }
+  const entry = r.data as AllowlistEntry | null
+  toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t(isRegex.value ? 'allowlist.add.doneRegex' : 'allowlist.add.done', { domain: what }) })
+  const winning = Array.isArray(entry?.forbidden_for) ? entry.forbidden_for : []
+  if (winning.length) stillForbidden.value = winning
+  else open.value = false
 }
 </script>
 
@@ -177,7 +166,7 @@ async function submit() {
           :title="t('allowlist.add.stillForbidden', { forbids: stillForbidden.map(f => `${f.vm} (${f.domain})`).join(', ') })"
           data-testid="add-still-forbidden"
         />
-        <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(error)" role="alert" data-testid="add-error" />
+        <ChangeFailure :error="add.shown.value" data-testid="add-error" />
         <button type="submit" class="hidden" />
       </form>
     </template>

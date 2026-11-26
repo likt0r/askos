@@ -13,6 +13,7 @@
 import { notifyManager, QueryClient, useMutation, useQuery } from '@tanstack/vue-query'
 import { computed, type ComputedRef, type MaybeRefOrGetter, type Ref, ref, toValue } from 'vue'
 import { api, ApiError } from './api'
+import { allowlistEntryPath, type AllowlistEntry, forbidPath, type ForbidEntry } from './access'
 import { failurePlace, type FailurePlace, unreachable } from './failures'
 import { applyBuild, type BuildEvent, type ImagesOverview } from './images'
 import type { Live } from './live'
@@ -150,6 +151,33 @@ const CHANGES = {
   revealPairingCode: declareChange((vm: string) => ({ method: 'POST', path: `/vms/${vm}/pairing-code`, body: { confirm: true } })),
   revokePairings: declareChange((vm: string) => ({ method: 'POST', path: `/vms/${vm}/pairings/revoke`, body: { confirm: vm } })),
   removePairing: declareChange((a: { vm: string, device: string }) => ({ method: 'POST', path: `/vms/${a.vm}/pairings/remove`, body: { device: a.device } })),
+  // Allowlist entries and Forbids (Activity kind `allowlist`; an allow and a Forbid change both lists)
+  allow: declareChange((a: { scope: string, domain?: string, regex?: string, duration: string, note: string }) => ({
+    method: 'POST',
+    path: '/allowlist',
+    // a pattern is sent with its confirmation (its preview was shown and confirmed)
+    body: { scope: a.scope, ...(a.regex ? { regex: a.regex, confirm: true } : { domain: a.domain }), duration: a.duration, ...(a.note ? { note: a.note } : {}) },
+  })),
+  extendEntry: declareChange((a: { entry: AllowlistEntry, duration: string }) =>
+    ({ method: 'POST', path: allowlistEntryPath(a.entry, 'extend'), body: { duration: a.duration } })),
+  makeEntryPermanent: declareChange((entry: AllowlistEntry) => ({ method: 'POST', path: allowlistEntryPath(entry, 'make-permanent') })),
+  setEntryNote: declareChange((a: { entry: AllowlistEntry, note: string }) =>
+    ({ method: 'PUT', path: allowlistEntryPath(a.entry, 'note'), body: { note: a.note } })),
+  removeEntry: declareChange((entry: AllowlistEntry) => ({ method: 'DELETE', path: allowlistEntryPath(entry) })),
+  forbid: declareChange((a: { vm: string, domain: string, duration: string, note: string }) => ({
+    method: 'POST',
+    path: `/vms/${encodeURIComponent(a.vm)}/forbids`,
+    body: { domain: a.domain, duration: a.duration, ...(a.note ? { note: a.note } : {}) },
+  })),
+  extendForbid: declareChange((a: { forbid: ForbidEntry, duration: string }) =>
+    ({ method: 'POST', path: forbidPath(a.forbid, 'extend'), body: { duration: a.duration } })),
+  makeForbidPermanent: declareChange((forbid: ForbidEntry) => ({ method: 'POST', path: forbidPath(forbid, 'make-permanent') })),
+  setForbidNote: declareChange((a: { forbid: ForbidEntry, note: string }) =>
+    ({ method: 'PUT', path: forbidPath(a.forbid, 'note'), body: { note: a.note } })),
+  removeForbid: declareChange((forbid: ForbidEntry) => ({ method: 'DELETE', path: forbidPath(forbid) })),
+  // Open web: its time comes with the VM (`open_web_until`)
+  openWeb: declareChange((a: { vm: string, minutes: number }) => ({ method: 'POST', path: `/vms/${a.vm}/open-web`, body: { minutes: a.minutes } })),
+  closeWeb: declareChange((vm: string) => ({ method: 'DELETE', path: `/vms/${vm}/open-web` })),
 }
 
 export type ChangeName = keyof typeof CHANGES

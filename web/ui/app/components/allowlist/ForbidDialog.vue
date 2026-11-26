@@ -5,20 +5,18 @@
 // Allowlist entry the more specific wins (ADR 0024): it beats an entry of a parent domain or one
 // for all VMs, an entry of a subdomain beats it, and the VM's own entry of the same domain gives way
 // to it.
-import type { EntryDuration, ForbidEntry } from '~/utils/access'
+import type { EntryDuration } from '~/utils/access'
 
 const props = defineProps<{ domain: string, vm: string }>()
-const emit = defineEmits<{ forbidden: [entry: ForbidEntry] }>()
 const open = defineModel<boolean>('open', { default: false })
 
 const { t } = useI18n()
-const errorText = useErrorText()
 const toast = useToast()
 
 const duration = ref<EntryDuration>('1h')
 const note = ref('')
-const busy = ref(false)
-const error = ref<unknown>(null)
+const forbid = useChange('forbid', { form: true })
+const busy = forbid.busy
 
 const durations = computed(() => ENTRY_DURATIONS.map(d => ({ value: d, label: t(`allowlist.durations.${d}`) })))
 const canSubmit = computed(() => !busy.value && note.value.length <= 200 && !!props.domain)
@@ -27,27 +25,14 @@ watch(open, (isOpen) => {
   if (!isOpen) return
   duration.value = '1h'
   note.value = ''
-  error.value = null
+  forbid.reset()
 }, { immediate: true })
 
 async function submit() {
   if (!canSubmit.value) return
-  busy.value = true
-  error.value = null
-  const body: Record<string, string> = { domain: props.domain, duration: duration.value }
-  if (note.value.trim()) body.note = note.value.trim()
-  try {
-    const entry = await api<ForbidEntry>(`/vms/${encodeURIComponent(props.vm)}/forbids`, { method: 'POST', body })
-    toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t('forbid.add.done', { domain: props.domain, vm: props.vm }) })
-    emit('forbidden', entry)
-    open.value = false
-  }
-  catch (e) {
-    error.value = e
-  }
-  finally {
-    busy.value = false
-  }
+  if (!(await forbid.run({ vm: props.vm, domain: props.domain, duration: duration.value, note: note.value.trim() })).ok) return
+  toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t('forbid.add.done', { domain: props.domain, vm: props.vm }) })
+  open.value = false
 }
 </script>
 
@@ -80,7 +65,7 @@ async function submit() {
         <UFormField :label="t('allowlist.add.note')" name="note" :hint="t('allowlist.add.optional')" :error="note.length > 200 ? t('allowlist.add.noteTooLong') : undefined">
           <UInput v-model="note" :placeholder="t('forbid.add.notePlaceholder')" class="w-full" data-testid="forbid-note" />
         </UFormField>
-        <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(error)" role="alert" data-testid="forbid-error" />
+        <ChangeFailure :error="forbid.shown.value" data-testid="forbid-error" />
         <button type="submit" class="hidden" />
       </form>
     </template>

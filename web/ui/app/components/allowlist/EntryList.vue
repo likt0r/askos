@@ -5,10 +5,8 @@
 import type { AllowlistEntry } from '~/utils/access'
 
 const props = withDefaults(defineProps<{ entries: AllowlistEntry[], showScope?: boolean }>(), { showScope: true })
-const emit = defineEmits<{ changed: [] }>()
 
 const { t } = useI18n()
-const errorText = useErrorText()
 const toast = useToast()
 const when = useWhen()
 const now = useNow(15000)
@@ -16,9 +14,21 @@ const now = useNow(15000)
 type Dialog = 'extend' | 'note' | 'remove' | 'permanent'
 const dialog = ref<Dialog | null>(null)
 const target = ref<AllowlistEntry | null>(null)
-const busy = ref(false)
-const error = ref<unknown>(null)
-const refused = ref<'extend' | 'make-permanent' | null>(null)
+// a destination with strong Signals refused to extend or make permanent: the dialog shows them
+// and how to lift them (AllowlistRefusal)
+const SUSPICIOUS = ['domain_suspicious']
+const changes = {
+  extend: useChange('extendEntry', { form: true, own: SUSPICIOUS }),
+  permanent: useChange('makeEntryPermanent', { form: true, own: SUSPICIOUS }),
+  note: useChange('setEntryNote', { form: true }),
+  remove: useChange('removeEntry', { form: true }),
+}
+const all = Object.values(changes)
+const busy = computed(() => all.some(c => c.busy.value))
+// one dialog is open at a time: its change's failure
+const failure = computed(() => all.map(c => c.shown.value).find(Boolean) ?? null)
+const refused = computed(() => [changes.extend, changes.permanent]
+  .some(c => c.error.value instanceof ApiError && SUSPICIOUS.includes(c.error.value.code)))
 const noteText = ref('')
 
 const dialogOpen = (d: Dialog) => computed({
@@ -47,50 +57,35 @@ function uses(e: AllowlistEntry) {
 
 function openDialog(d: Dialog, e: AllowlistEntry) {
   target.value = e
-  error.value = null
-  refused.value = null
+  for (const c of all) c.reset()
   noteText.value = e.note
   dialog.value = d
 }
 
-async function run(what: 'extend' | 'make-permanent' | 'note' | 'remove', request: () => Promise<unknown>, done: string) {
-  busy.value = true
-  error.value = null
-  refused.value = null
-  try {
-    await request()
-    toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: done })
-    busy.value = false
-    dialog.value = null
-    emit('changed')
-  }
-  catch (e) {
-    if (e instanceof ApiError && e.code === 'domain_suspicious' && (what === 'extend' || what === 'make-permanent')) refused.value = what
-    else error.value = e
-  }
-  finally {
-    busy.value = false
-  }
+async function done(result: Promise<{ ok: boolean }>, text: string) {
+  if (!(await result).ok) return
+  toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: text })
+  dialog.value = null
 }
 
 function extend(duration: string) {
   const e = target.value!
-  void run('extend', () => api(allowlistEntryPath(e, 'extend'), { method: 'POST', body: { duration } }),
+  void done(changes.extend.run({ entry: e, duration }),
     t('allowlist.entry.extended', { domain: entryValue(e), duration: t(`allowlist.durations.${duration}`) }))
 }
 function makePermanent() {
   const e = target.value!
-  void run('make-permanent', () => api(allowlistEntryPath(e, 'make-permanent'), { method: 'POST' }),
+  void done(changes.permanent.run(e),
     t('allowlist.entry.madePermanent', { domain: entryValue(e) }))
 }
 function saveNote() {
   const e = target.value!
-  void run('note', () => api(allowlistEntryPath(e, 'note'), { method: 'PUT', body: { note: noteText.value.trim() } }),
+  void done(changes.note.run({ entry: e, note: noteText.value.trim() }),
     t('allowlist.entry.noteSaved', { domain: entryValue(e) }))
 }
 function remove() {
   const e = target.value!
-  void run('remove', () => api(allowlistEntryPath(e), { method: 'DELETE' }), t('allowlist.entry.removed', { domain: entryValue(e) }))
+  void done(changes.remove.run(e), t('allowlist.entry.removed', { domain: entryValue(e) }))
 }
 
 const extendDurations = EXTEND_DURATIONS
@@ -173,7 +168,7 @@ const targetValue = computed(() => (target.value ? entryValue(target.value) : ''
           />
         </div>
         <AllowlistRefusal v-if="refused && target?.domain" :domain="target.domain" />
-        <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(error)" role="alert" />
+        <ChangeFailure :error="failure" />
       </div>
     </template>
   </UModal>
@@ -185,7 +180,7 @@ const targetValue = computed(() => (target.value ? entryValue(target.value) : ''
     :confirm-label="t('allowlist.entry.makePermanent')"
     color="primary"
     :busy="busy"
-    :error="error ? errorText(error) : null"
+    :failure="failure"
     @confirm="makePermanent"
   >
     <AllowlistRefusal v-if="refused && target?.domain" :domain="target.domain" />
@@ -198,7 +193,7 @@ const targetValue = computed(() => (target.value ? entryValue(target.value) : ''
         <p v-if="noteText.length > 200" class="text-sm text-error">
           {{ t('allowlist.add.noteTooLong') }}
         </p>
-        <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(error)" role="alert" />
+        <ChangeFailure :error="failure" />
       </form>
     </template>
     <template #footer>
@@ -215,7 +210,7 @@ const targetValue = computed(() => (target.value ? entryValue(target.value) : ''
     :description="t('allowlist.entry.removeText', { scope: targetScope })"
     :confirm-label="t('allowlist.entry.remove')"
     :busy="busy"
-    :error="error ? errorText(error) : null"
+    :failure="failure"
     @confirm="remove"
   />
 </template>
