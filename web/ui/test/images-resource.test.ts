@@ -102,7 +102,7 @@ describe('a failed read of the Images', () => {
     expect(failure(section)).toBeNull()
   })
 
-  it('in the Image dialog and the Create dialog, with Retry', async () => {
+  it('in the Image dialog, with Retry', async () => {
     let fail = true
     fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': () => (fail ? FAILED : OK(IMAGES)), 'GET /settings': OK({ settings: {} }) })
     await openApp('/vms/work/web', [WORK])
@@ -139,25 +139,71 @@ describe('a failed read of the Images', () => {
     expect(byTestId('overview-versions').text()).toContain('unknown')
   })
 
-  it('with the Control Room out of reach only the connection notice speaks; the read happens again when it is back', async () => {
+  it('a page that loads while the Control Room is out of reach reads again with the first hello', async () => {
+    let answers = 0
+    const api = fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': () => (++answers === 1 ? OFFLINE() : OK(IMAGES)) })
+    await openApp('/system', [WORK])
+    expect(reads(api)).toBe(2)
+    expect(failure()).toBeNull()
+    expect(byTestId('system-images').element.querySelectorAll('[data-testid="image-card"]')).toHaveLength(1)
+  })
+
+  it('with the connection down only the connection notice speaks; the read happens again when it is back', async () => {
+    let offline = false
+    const api = fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': () => (offline ? OFFLINE() : OK(IMAGES)) })
+    const { es } = await openApp('/system', [WORK])
+    const section = byTestId('system-images').element
+    offline = true
+    es.emit('activity', { time: 't', vm: null, actor: 'timer', kind: 'action', action: 'build.ok', code: 'build.ok', outcome: 'ok', description: '' })
+    es.drop()
+    await flushPromises()
+    expect(reads(api)).toBe(2)
+    expect(exists('connection-notice')).toBe(true)
+    expect(failure()).toBeNull()
+    expect(section.querySelectorAll('[data-testid="image-card"]')).toHaveLength(1)     // what it showed stays
+
+    offline = false
+    es.emit('hello', { stream: 'ab12cd34', resumed: true })
+    await flushPromises()
+    expect(reads(api)).toBe(3)
+    expect(failure()).toBeNull()
+  })
+
+  it('a read that cannot reach the Control Room while the stream is live shows Retry', async () => {
     let offline = true
     const api = fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': () => (offline ? OFFLINE() : OK(IMAGES)) })
     await openApp('/system', [WORK])
     const section = byTestId('system-images').element
-    expect(reads(api)).toBe(1)
-    expect(failure()).toBeNull()
-    expect(section.querySelector('[data-testid="image-card"]')).toBeNull()
-
-    FakeEventSource.last.drop()
-    await flushPromises()
-    expect(exists('connection-notice')).toBe(true)
-    expect(failure()).toBeNull()
-
+    expect(exists('connection-notice')).toBe(false)
+    expect(failure(section)).toBe('failed')
+    expect(section.textContent).toContain('Could not read the Images.')
     offline = false
-    FakeEventSource.last.emit('hello', { stream: 'ab12cd34', resumed: true })
+    await byTestId('images-error').find('button').trigger('click')
+    await flushPromises()
+    expect(failure(section)).toBeNull()
+    expect(section.querySelectorAll('[data-testid="image-card"]')).toHaveLength(1)
+    expect(reads(api)).toBe(3)
+  })
+
+  it('signing out forgets the Images', async () => {
+    const api = fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': OK(IMAGES) })
+    await openApp('/vms', [WORK])
+    const Reader = defineComponent({
+      setup() {
+        const images = useResource('images')
+        return () => h('p', { 'data-testid': 'reader' }, images.data.value ? 'data' : 'none')
+      },
+    })
+    let reader = mount(Reader, { attachTo: document.body })
+    await flushPromises()
+    expect(byTestId('reader').text()).toBe('data')
+    reader.unmount()
+    useSession().markSignedOut()
+    reader = mount(Reader, { attachTo: document.body })
+    expect(byTestId('reader').text()).toBe('none')
     await flushPromises()
     expect(reads(api)).toBe(2)
-    expect(section.querySelectorAll('[data-testid="image-card"]')).toHaveLength(1)
+    reader.unmount()
   })
 
   it('in German', async () => {

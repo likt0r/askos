@@ -6,7 +6,7 @@
 // Data is read again only for a reason the stream or the owner gives: a row of the table below, a
 // change made in this browser (`change`), a `hello` with `resumed: false` that is not the first,
 // or "Retry". Never by the clock, never on window focus, never as an automatic retry; a read that
-// failed is read again when the connection is back (every `hello` after the first).
+// failed because the Control Room could not be reached is read again with the next `hello`.
 import { notifyManager, QueryClient, useQuery } from '@tanstack/vue-query'
 import { computed, type ComputedRef, type MaybeRefOrGetter, type Ref, toValue } from 'vue'
 import { api, ApiError } from './api'
@@ -64,6 +64,10 @@ export const ON_ACTIVITY: Record<string, ResourceName[]> = {
   'maintenance.versions': ['images'],
   'build.ok': ['images'],
   'update-now': ['images'],
+  // a Recipe defines an Image: it comes, changes or goes without a Build
+  'recipe.set': ['images'],
+  'recipe.restore': ['images'],
+  'recipe.remove': ['images'],
 }
 
 // ---- the cache -------------------------------------------------------------------------------
@@ -158,17 +162,16 @@ export function createResources(live: Pick<Live, 'on' | 'state'>) {
   // a stream id: a `hello` came before the cache was made
   let helloSeen = live.state.stream !== null
   offs.push(live.on('hello', (data: { resumed?: boolean } | null) => {
-    // the first `hello` of the page is no reconnect
-    if (!helloSeen) {
-      helloSeen = true
-      return
-    }
-    const missed = data?.resumed === false
+    // a reconnect that could not resume missed events: everything is stale (the first `hello`
+    // of the page is no reconnect)
+    const missed = helloSeen && data?.resumed === false
+    helloSeen = true
     for (const query of client.getQueryCache().getAll()) {
-      const name = query.queryKey[0] as ResourceName
-      // a reconnect that could not resume missed events: everything is stale; otherwise only
-      // what failed (perhaps while the Control Room could not be reached) is read again
-      if (missed || query.state.status === 'error') void markStale(name)
+      // the connection is there: a read that failed because the Control Room could not be
+      // reached is read again
+      if (missed || (query.state.status === 'error' && unreachable(query.state.error))) {
+        void markStale(query.queryKey[0] as ResourceName)
+      }
     }
     if (missed) for (const fn of [...missedListeners]) fn()
   }))
@@ -261,8 +264,7 @@ export function onMissedEvents(fn: () => void) {
   return useResources().onMissedEvents(fn)
 }
 
-/** Whether a read failed only because the Control Room cannot be reached; the connection notice
- * says that. */
+/** Whether a read failed only because the Control Room could not be reached. */
 export function unreachable(error: unknown) {
   return error instanceof ApiError && error.code === 'network'
 }

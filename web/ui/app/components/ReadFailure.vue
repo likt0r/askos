@@ -1,9 +1,10 @@
 <script setup lang="ts">
 // Where a failed read of a resource shows (ADR 0026), the same in every view: nothing read yet,
 // in place of the section, with Retry; data shown already, a small notice that it could not be
-// refreshed, with Retry, and the data stays. Nothing of its own while the Control Room cannot be
-// reached (the connection notice says it, and the read happens again when it is back), and
-// nothing for a read the view declared an extra.
+// refreshed, with Retry, and the data stays. Nothing of its own while the live connection is
+// down, and for a read that could not reach the Control Room before the stream is live: the
+// connection notice says it, and the next `hello` reads again. Nothing for a read the view
+// declared an extra.
 import type { Resource } from '~/utils/resources'
 
 const props = defineProps<{ resource: Resource<unknown> }>()
@@ -14,7 +15,8 @@ const live = useLive()
 const shown = computed(() => {
   const r = props.resource
   if (r.extra || !r.error.value) return null
-  if (unreachable(r.error.value) || live.state.connection === 'reconnecting') return null
+  if (live.state.connection === 'reconnecting') return null
+  if (unreachable(r.error.value) && live.state.connection !== 'live') return null
   return r.data.value === undefined ? 'failed' : 'stale'
 })
 const retrying = ref(false)

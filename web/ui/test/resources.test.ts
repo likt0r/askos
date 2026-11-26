@@ -1,14 +1,12 @@
-// The resources module (ADR 0026, #214): the stale table's rows for `images` without a view, an
-// event during a read, `hello`, no reading by clock or focus; then through the app: one shared
-// copy for every reader, and where a failed read shows.
+// The resources module (ADR 0026, #214) without a view: the stale table's rows for `images`, an
+// event during a read, `hello`, no reading by clock or focus. Through the app:
+// images-resource.test.ts.
 import { QueryObserver } from '@tanstack/vue-query'
-import { flushPromises, mount } from '@vue/test-utils'
+import { flushPromises } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { defineComponent, h, ref } from 'vue'
-import { createResources, type Resources, useResource } from '~/utils/resources'
+import { createResources, type Resources } from '~/utils/resources'
 import type { ImagesOverview } from '~/utils/images'
-import { fakeApi, SIGNED_IN, vm } from './fakes'
-import { byTestId, click, exists, openApp, setUp, tearDown } from './vm-helpers'
+import { fakeApi } from './fakes'
 
 const OK = (body: unknown) => ({ status: 200, body })
 
@@ -93,7 +91,7 @@ describe('the stale table for images (without a view)', () => {
     expect(stale()).toBe(true)
   })
 
-  it.each(['maintenance.versions', 'build.ok', 'update-now'])('marks it stale on the Activity code %s', (code) => {
+  it.each(['maintenance.versions', 'build.ok', 'update-now', 'recipe.set', 'recipe.restore', 'recipe.remove'])('marks it stale on the Activity code %s', (code) => {
     live.emit('activity', entry(code))
     expect(stale()).toBe(true)
   })
@@ -174,6 +172,29 @@ describe('reading a resource', () => {
     await flushPromises()
     expect(api.calls).toHaveLength(2)
     expect(r.client.getQueryData<ImagesOverview>(['images'])!.images[0]!.builds.map(b => b.build)).toEqual(['2', '1'])
+    off()
+  })
+
+  it('reads again with every hello, the first too, what could not reach the Control Room, and nothing else that failed', async () => {
+    let answer: () => unknown = () => { throw new TypeError('Failed to fetch') }
+    const api = fakeApi({ 'GET /images': () => answer() as never })
+    const observer = new QueryObserver(r.client, { queryKey: ['images'], queryFn: () => r.read('images') })
+    const off = observer.subscribe(() => {})
+    await flushPromises()
+    expect(r.client.getQueryState(['images'])!.status).toBe('error')
+    answer = () => OK(overview())
+    live.emit('hello', { stream: 'a', resumed: false })      // the first
+    await flushPromises()
+    expect(api.calls).toHaveLength(2)
+    expect(r.client.getQueryState(['images'])!.status).toBe('success')
+
+    // a failure of the Host: shown with Retry, not read again by a hello that resumed
+    answer = () => ({ status: 502, body: { error: { code: 'agentbox_failed', message: 'x' } } })
+    await observer.refetch()
+    expect(api.calls).toHaveLength(3)
+    live.emit('hello', { stream: 'a', resumed: true })
+    await flushPromises()
+    expect(api.calls).toHaveLength(3)
     off()
   })
 

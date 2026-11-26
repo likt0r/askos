@@ -123,15 +123,17 @@ section describes, until it moves into the module (#212).
 - **Showing a failed read**: `<ReadFailure :resource="images" />`, in place of the section.
   When nothing was read yet, it says what could not be read and why (`useErrorText`), with Retry.
   When data is shown, the data stays and a small notice says it could not be refreshed, with
-  Retry. While the Control Room cannot be reached (`ApiError` code `network`, or the live
-  connection is reconnecting) it shows nothing: the connection notice says that, and the read
-  happens again with the next `hello`. For an extra it shows nothing. It offers no "Details"
+  Retry. While the live connection is down it shows nothing: the connection notice says that.
+  It also shows nothing for a read that could not reach the Control Room (`ApiError` code
+  `network`) before the stream is live, which the next `hello` reads again. Once the stream is
+  live, such a read shows like any other. For an extra it shows nothing. It offers no "Details"
   yet: the Host's text is shown only once #215 has checked that it cannot carry a secret.
 - **What an event does** (`ON_EVENT`, `ON_ACTIVITY`): an event that carries the whole object
   is written into the cache (`build`, through `applyBuild`). An event that only says something
   changed marks the resource stale: `images` after a `build` event whose status is not `running`
   or that `applyBuild` cannot place, after `updating` of the `services` event goes from true to
-  false, and after the Activity codes `maintenance.versions`, `build.ok` and `update-now`. A
+  false, and after the Activity codes `maintenance.versions`, `build.ok`, `update-now` and
+  `recipe.set`, `recipe.restore`, `recipe.remove` (a Recipe's Image comes or goes). A
   stale resource that a view shows is read again; one that nothing shows is read when a view
   next asks for it. A new Activity code that changes a resource needs a row here; without one,
   the view shows old data until the next reconnect or reload.
@@ -141,8 +143,8 @@ section describes, until it moves into the module (#212).
 - **When data is read again**: only for a reason the stream or the owner gives: a row of the
   table, a change made in this browser, a `hello` with `resumed: false` that is not the first
   (everything is stale, and `onMissedEvents` listeners run for what lives outside the cache,
-  such as a Build's log), any later `hello` for the reads that failed, or Retry. Never by the
-  clock, never on window focus, never as an automatic retry.
+  such as a Build's log), any `hello` for the reads that could not reach the Control Room, or
+  Retry. Never by the clock, never on window focus, never as an automatic retry.
 - **A change made in this browser**: `change(path, { method, body }, ['images'])` runs the
   request and then marks the named resources stale, whether it succeeded or was refused (a
   refusal such as `build_running` means something else runs, which the next read shows).
