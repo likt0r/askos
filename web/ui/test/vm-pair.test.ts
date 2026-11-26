@@ -147,3 +147,48 @@ describe('Pair tab', () => {
     expect(text('pair-error')).toBe('The VM is not running.')
   })
 })
+
+describe('Pair tab follows the Activity', () => {
+  const entry = (action: string, vmName = 'work') => ({ time: '2026-11-03T12:00:00Z', vm: vmName, actor: 'root', kind: 'pairing', action, code: action, outcome: 'ok', description: '' })
+  const wait = (check: () => void) => vi.waitFor(check, { timeout: 3000, interval: 20 })
+  const quiet = () => new Promise(r => setTimeout(r, 500))
+
+  async function open() {
+    const api = fakeApi({
+      'GET /session': SIGNED_IN,
+      'GET /vms/work/pairings': { status: 200, body: DEVICES },
+      'POST /vms/work/pairing-code': { status: 200, body: { code: CODE } },
+    })
+    const opened = await openApp('/vms/work/pair', [vm('work')])
+    return { ...opened, loads: () => api.calls.filter(c => c.path === '/vms/work/pairings').length }
+  }
+
+  it.each(['observe', 'unpair', 'revoke-pairings'])('%s of this VM loads the devices again', async (code) => {
+    const { es, loads } = await open()
+    expect(loads()).toBe(1)
+    es.emit('activity', entry(code))
+    await wait(() => expect(loads()).toBe(2))
+  })
+
+  it('ignores other codes and another VM\'s entry', async () => {
+    const { es, loads } = await open()
+    es.emit('activity', entry('start'))
+    es.emit('activity', entry('observe', 'priv'))
+    await quiet()
+    expect(loads()).toBe(1)
+  })
+
+  it('loads after a reconnect without resume, not after one that resumed, and keeps the revealed code', async () => {
+    const { es, loads } = await open()
+    await click('pair-reveal')
+    await submit('reveal-dialog')
+    expect(text('pair-code')).toBe(CODE)
+    es.emit('hello', { stream: 'x', resumed: true })
+    await quiet()
+    expect(loads()).toBe(1)
+    es.emit('hello', { stream: 'y', resumed: false })
+    await wait(() => expect(loads()).toBe(2))
+    await flushPromises()
+    expect(text('pair-code')).toBe(CODE)
+  })
+})

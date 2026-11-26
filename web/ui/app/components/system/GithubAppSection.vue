@@ -149,6 +149,8 @@ async function remove() {
 }
 
 onMounted(load)
+// only `overview` is replaced: an open form keeps what was typed
+useReloadOnActivity(load, { codes: ['set-github-app', 'remove-github-app', 'set-owners', 'create', 'delete'] })
 </script>
 
 <template>

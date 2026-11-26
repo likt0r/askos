@@ -40,19 +40,38 @@ const differsText = computed(() => {
   return t('system.definition.differsUnknown')
 })
 
+// only the newest read counts: one that refresh() dropped meanwhile changes nothing
+let reading = 0
+
 async function load() {
+  const mine = ++reading
   loading.value = true
   try {
-    file.value = await api<ContainerfileText>(`/images/${encodeURIComponent(props.image.name)}/containerfile`)
+    const text = await api<ContainerfileText>(`/images/${encodeURIComponent(props.image.name)}/containerfile`)
+    if (mine !== reading) return
+    file.value = text
     error.value = null
   }
   catch (e) {
-    error.value = e
+    if (mine === reading) error.value = e
   }
   finally {
-    loading.value = false
+    if (mine === reading) loading.value = false
   }
 }
+
+// a Recipe defines the Image's text: an open panel reads it again, a closed one at its next opening
+function refresh() {
+  if (open.value) return void load()
+  reading += 1
+  file.value = null
+  error.value = null
+  loading.value = false
+}
+useReloadOnActivity(refresh, {
+  codes: ['recipe.set', 'recipe.restore', 'recipe.remove'],
+  match: entry => entry.params?.name === props.image.name,
+})
 
 function toggle() {
   open.value = !open.value

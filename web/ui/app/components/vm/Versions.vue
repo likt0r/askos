@@ -21,6 +21,7 @@ async function load() {
     if (mine === token) overview.value = null
   }
 }
+useReloadOnActivity(load, { codes: ['maintenance.versions', 'build.ok', 'update-now'] })
 watch(() => [props.vm.name, props.vm.system_disk?.build, props.vm.image_build], load, { immediate: true })
 
 const diskBuild = computed(() => props.vm.system_disk?.build ?? null)
