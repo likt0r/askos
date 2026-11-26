@@ -168,10 +168,13 @@ section describes, until it moves into the module (#212).
   from the view's arguments and what it makes stale (`rebuild: declareChange((image: string) =>
   ({ method: 'POST', path: '/builds', body: { image } }))`). A view asks for it by name:
   `const start = useChange('rebuild', { form, own, failed })` gives `run(args)` (an `{ ok, data }`
-  or `{ ok: false, error }`), `busy`, `error`, `shown` and `reset()`; it is a TanStack Query
+  or `{ ok: false, error }`; nothing while one runs), `busy`, `error`, `shown`, `text` (`shown`
+  in the UI's words, for a view that puts it at one field) and `reset()`; it is a TanStack Query
   mutation. After it, the resources it changes are read again once: through the change's own
   Activity entry and its row in `ON_ACTIVITY`, or, for a change that records no entry, through
-  the `stale` of its declaration (none so far). A view does not read again itself.
+  the `stale` of its declaration (none so far). A view does not read again itself. The
+  request (a secret's value, a key) is not kept once the change is done: the mutation is reset
+  and dropped from the cache at once.
 - **Where a failed change appears** (`utils/failures.ts`, decided once by its kind, when the
   change fails): one sent from a form or a dialog (`form: true`), a refusal included, at that
   form, with `<ChangeFailure :error="start.shown.value" />`; one without a form, a refusal

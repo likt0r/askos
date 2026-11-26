@@ -9,8 +9,6 @@ const props = defineProps<{
   /** the word to type before confirming */
   typed?: string
   loading?: boolean
-  /** an error from the last attempt (already translated) */
-  error?: string | null
   /** the failure of the change it confirms (its `shown`) */
   failure?: unknown
   testid?: string
@@ -51,7 +49,6 @@ function confirm() {
             data-testid="confirm-typed"
           />
         </UFormField>
-        <UAlert v-if="props.error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="props.error" data-testid="confirm-error" />
         <ChangeFailure :error="props.failure" data-testid="confirm-error" />
         <div class="flex flex-wrap justify-end gap-2">
           <UButton color="neutral" variant="ghost" :label="t('vm.confirm.cancel')" :disabled="props.loading" data-testid="confirm-cancel" @click="open = false" />

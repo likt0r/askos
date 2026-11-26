@@ -114,7 +114,7 @@ describe('Pair tab', () => {
     await openApp('/vms/work/pair', [vm('work')])
     await click('pair-reveal')
     await submit('reveal-dialog')
-    expect(text('confirm-error')).toBe('Orca has no Pairing code yet. Try again shortly.')
+    expect(byTestId('confirm-error').find('[data-testid="failure-text"] p').text()).toBe('Orca has no Pairing code yet. Try again shortly.')
     expect(exists('pair-code')).toBe(false)
   })
 
@@ -128,7 +128,7 @@ describe('Pair tab', () => {
         return { status: 200, body: { vm: 'work', observer_repaired: true, message: 'x' } }
       },
     })
-    await openApp('/vms/work/pair', [vm('work')])
+    const { es } = await openApp('/vms/work/pair', [vm('work')])
     await click('pair-revoke')
     await submit('revoke-dialog')
     expect(api.calls.some(c => c.path.endsWith('/revoke'))).toBe(false)
@@ -138,7 +138,12 @@ describe('Pair tab', () => {
     expect(post.body).toEqual({ confirm: 'work' })
     await flushPromises()
     expect(document.body.textContent).toContain('The Host is the Observer again.')
-    expect(byTestId('pair-devices').findAll('[data-testid="pair-device"]').map(r => r.attributes('data-device'))).toEqual(['dev-titan'])
+    // the list is read again through the change's own Activity entry, not by the view
+    const reads = () => api.calls.filter(c => c.method === 'GET' && c.path === '/vms/work/pairings').length
+    expect(reads()).toBe(1)
+    expect(byTestId('pair-devices').findAll('[data-testid="pair-device"]')).toHaveLength(2)
+    es.emit('activity', { time: 't', vm: 'work', actor: 'owner', kind: 'action', action: 'revoke-pairings', code: 'revoke-pairings', outcome: 'ok', description: '' })
+    await vi.waitFor(() => expect(byTestId('pair-devices').findAll('[data-testid="pair-device"]').map(r => r.attributes('data-device'))).toEqual(['dev-titan']))
   })
 
   it('shows when the VM cannot be asked', async () => {

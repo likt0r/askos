@@ -123,6 +123,33 @@ const CHANGES = {
   // the GitHub Apps
   setGithubApp: declareChange((body: { app_id: number, private_key: string }) => ({ method: 'PUT', path: '/github-app', body })),
   removeGithubApp: declareChange((id: number) => ({ method: 'DELETE', path: `/github-app/${id}` })),
+  // a VM's lifecycle: its new state comes as a `vm` event
+  startVm: declareChange((vm: string) => ({ method: 'POST', path: `/vms/${vm}/start` })),
+  pauseVm: declareChange((vm: string) => ({ method: 'POST', path: `/vms/${vm}/pause` })),
+  restartVm: declareChange((vm: string) => ({ method: 'POST', path: `/vms/${vm}/restart` })),
+  resetVm: declareChange((a: { vm: string, start: boolean }) => ({ method: 'POST', path: `/vms/${a.vm}/reset`, body: { start: a.start } })),
+  focus: declareChange((vm: string) => ({ method: 'POST', path: `/vms/${vm}/focus` })),
+  focusOff: declareChange(() => ({ method: 'DELETE', path: '/focus' })),
+  // a VM's record
+  createVm: declareChange((body: {
+    name: string, image: string | null, memory_mib: number | null, data_disk_gib: number | null, github_owners: string[],
+    copy_allowlist_from: string | null, copy_ssh_keys_from: string | null,
+  }) => ({ method: 'POST', path: '/vms', body })),
+  deleteVm: declareChange((a: { vm: string, deleteDataDisk: boolean }) =>
+    ({ method: 'DELETE', path: `/vms/${a.vm}`, body: { confirm: a.vm, delete_data_disk: a.deleteDataDisk } })),
+  setImage: declareChange((a: { vm: string, image: string, build: string | null }) =>
+    ({ method: 'PUT', path: `/vms/${a.vm}/image`, body: { image: a.image, build: a.build } })),
+  setMemory: declareChange((a: { vm: string, mib: number }) => ({ method: 'PUT', path: `/vms/${a.vm}/memory`, body: { memory_mib: a.mib } })),
+  setEnv: declareChange((a: { vm: string, env: Record<string, string> }) => ({ method: 'PUT', path: `/vms/${a.vm}/env`, body: { env: a.env } })),
+  setSecret: declareChange((a: { vm: string, name: string, value: string }) =>
+    ({ method: 'PUT', path: `/vms/${a.vm}/secrets/${a.name}`, body: { value: a.value } })),
+  removeSecret: declareChange((a: { vm: string, name: string }) => ({ method: 'DELETE', path: `/vms/${a.vm}/secrets/${a.name}` })),
+  setContainerImageCleanup: declareChange((a: { vm: string, enabled?: boolean, days?: number }) =>
+    ({ method: 'PUT', path: `/vms/${a.vm}/container-image-cleanup`, body: { enabled: a.enabled, days: a.days } })),
+  // pairing a device with a VM's Orca
+  revealPairingCode: declareChange((vm: string) => ({ method: 'POST', path: `/vms/${vm}/pairing-code`, body: { confirm: true } })),
+  revokePairings: declareChange((vm: string) => ({ method: 'POST', path: `/vms/${vm}/pairings/revoke`, body: { confirm: vm } })),
+  removePairing: declareChange((a: { vm: string, device: string }) => ({ method: 'POST', path: `/vms/${a.vm}/pairings/remove`, body: { device: a.device } })),
 }
 
 export type ChangeName = keyof typeof CHANGES
@@ -261,6 +288,11 @@ function useResources(): Resources {
   return resources
 }
 
+/** Tests only: the cache and its wiring. */
+export function resourcesForTests(): Resources {
+  return useResources()
+}
+
 /** Forget every resource (signing out). */
 export function clearResources() {
   resources?.stop()
@@ -324,13 +356,16 @@ export interface ChangeOptions {
 export type ChangeResult<T> = { ok: true, data: T } | { ok: false, error: unknown }
 
 export interface Change<A, T> {
-  /** run the request; a failure is presented by its kind (utils/failures.ts) */
+  /** run the request; a failure is presented by its kind (utils/failures.ts). While a run is on
+   * the way another does nothing (`{ ok: false, error: null }`) */
   run: (args: A) => Promise<ChangeResult<T>>
   busy: ComputedRef<boolean>
   /** the last failure; null after a success or reset() */
   error: Readonly<Ref<unknown>>
   /** the failure the form shows (ChangeFailure): none for an own code or one shown elsewhere */
   shown: ComputedRef<unknown>
+  /** `shown` in the UI's words, for a view that puts it at one field (`field` of the failure) */
+  text: ComputedRef<string | null>
   reset: () => void
 }
 
@@ -341,6 +376,7 @@ export function useChange<N extends ChangeName, T = unknown>(name: N, options: C
   const r = useResources()
   const live = useLive()
   const showToast = useChangeToast()
+  const errorText = useErrorText()
   const declaration = CHANGES[name] as ChangeDeclaration<ChangeArgs<N>>
   const own = new Set(options.own ?? [])
   // the last failure and where it appears, decided when it failed (not again as the connection
@@ -352,6 +388,8 @@ export function useChange<N extends ChangeName, T = unknown>(name: N, options: C
     onSettled: async () => {
       await Promise.all(declaration.stale.map(stale => r.markStale(stale)))
     },
+    // the request (a secret's value, a key) is not kept once the change is done
+    gcTime: 0,
   }, r.client)
   function reset() {
     failure.value = null
@@ -359,6 +397,8 @@ export function useChange<N extends ChangeName, T = unknown>(name: N, options: C
   }
   return {
     async run(args: ChangeArgs<N>) {
+      // one at a time: a second run while the first is on the way does nothing
+      if (mutation.isPending.value) return { ok: false, error: null }
       reset()
       try {
         return { ok: true, data: await mutation.mutateAsync(declaration.request(args)) }
@@ -371,10 +411,14 @@ export function useChange<N extends ChangeName, T = unknown>(name: N, options: C
         if (place.value === 'toast') showToast(error, options.failed?.())
         return { ok: false, error }
       }
+      finally {
+        mutation.reset()
+      }
     },
     busy: computed(() => mutation.isPending.value),
     error: computed(() => failure.value),
     shown: computed(() => (place.value === 'form' ? failure.value : null)),
+    text: computed(() => (place.value === 'form' ? errorText(failure.value) : null)),
     reset,
   }
 }

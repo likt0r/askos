@@ -7,6 +7,7 @@ import { flushPromises } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '~/utils/api'
 import { failureDetails, failurePlace } from '~/utils/failures'
+import { resourcesForTests } from '~/utils/resources'
 import { fakeApi, SIGNED_IN, vm } from './fakes'
 import { byTestId, click, exists, openApp, setUp, tearDown } from './vm-helpers'
 
@@ -265,5 +266,84 @@ describe('the GitHub App\'s changes', () => {
     expect(errors).toHaveLength(1)
     expect(errors[0]!.textContent).toContain('That is not the App\'s private key')
     expect(errors[0]!.textContent).not.toContain('GitHub rejected')
+  })
+})
+
+describe('a VM\'s changes', () => {
+  const OKAY = (body: unknown = {}) => ({ status: 200, body })
+  beforeEach(async () => {
+    await setUp()
+    useState('toasts').value = []
+  })
+  afterEach(() => {
+    tearDown()
+    useState('toasts').value = []
+  })
+
+  it.each([
+    ['action-pause', 'POST /vms/work/pause', 'running'],
+    ['action-start', 'POST /vms/work/start', 'stopped'],
+    ['action-focus', 'POST /vms/work/focus', 'running'],
+  ])('a refused lifecycle action without a dialog (%s): a toast that stays, with Details', async (button, route, state) => {
+    fakeApi({ 'GET /session': SIGNED_IN, [route]: refusal(409, 'vm_paused', 'The VM is paused') })
+    await openApp('/vms/work/web', [vm('work', state, { reset_due: false })])
+    await click(button)
+    expect(toasts().map(t => [t.title, t.duration])).toEqual([['The action failed', 0]])
+    await vi.waitFor(() => expect(exists('fault-message')).toBe(true))
+    expect(byTestId('fault-message').text()).toBe('vm_paused: The VM is paused')
+  })
+
+  it('a second run while the first is on the way sends nothing', async () => {
+    let answer!: () => void
+    const api = fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': OK(IMAGES),
+      'PUT /vms/work/image': () => new Promise(resolve => { answer = () => resolve(OKAY({})) }) })
+    await openApp('/vms/work/web', [vm('work', 'running', { reset_due: false, image: 'base', build_pin: null })])
+    await click('image-change')
+    await byTestId('image-dialog').find('[role="radio"][value="2"]').trigger('click')
+    await flushPromises()
+    await byTestId('image-dialog').trigger('submit')
+    await byTestId('image-dialog').trigger('submit')
+    await flushPromises()
+    expect(api.calls.filter(c => c.method === 'PUT')).toHaveLength(1)
+    answer()
+    await flushPromises()
+  })
+
+  it('a refused Restart from its dialog: in the dialog, no toast', async () => {
+    fakeApi({ 'GET /session': SIGNED_IN, 'POST /vms/work/restart': refusal(409, 'vm_not_running', 'x') })
+    await openApp('/vms/work/web', [vm('work', 'running', { reset_due: false })])
+    await click('action-restart')
+    await click('confirm-ok')
+    expect(byTestId('restart-dialog').element.querySelector('[data-change="failed"]')).not.toBeNull()
+    expect(toasts()).toEqual([])
+  })
+
+  it('a refused name of a new VM shows at the name field, nowhere else', async () => {
+    fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': OK(IMAGES), 'GET /settings': OKAY({ settings: {} }),
+      'POST /vms': { status: 400, body: { error: { code: 'invalid_name', message: 'x', field: 'name' } } } })
+    await openApp('/vms', [WORK])
+    await click('vm-create')
+    await byTestId('create-name').setValue('lab')
+    await flushPromises()
+    await byTestId('create-dialog').trigger('submit')
+    await flushPromises()
+    expect(exists('create-error')).toBe(false)
+    expect(byTestId('create-dialog').text()).toContain('VM names have 2 to 16 lowercase letters')
+    expect(toasts()).toEqual([])
+  })
+
+  it('a secret\'s value is not kept once the change is done', async () => {
+    const VALUE = 'sk-very-secret-value-1234'
+    fakeApi({ 'GET /session': SIGNED_IN, 'PUT /vms/work/secrets/API_KEY': OKAY({ applies: 'next_start' }) })
+    await openApp('/vms/work/web', [vm('work', 'stopped', { reset_due: false, libvirt_state: null, secrets: [] })])
+    await click('secret-add')
+    await byTestId('secret-name').setValue('API_KEY')
+    await byTestId('secret-value').setValue(VALUE)
+    await flushPromises()
+    await byTestId('secret-dialog').trigger('submit')
+    await flushPromises()
+    await new Promise(r => setTimeout(r, 10))
+    const kept = JSON.stringify(resourcesForTests().client.getMutationCache().getAll().map(m => m.state))
+    expect(kept).not.toContain(VALUE)
   })
 })

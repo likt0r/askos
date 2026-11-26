@@ -8,14 +8,13 @@ import type { Vm } from '~/utils/live'
 const props = defineProps<{ vm: Pick<Vm, 'name' | 'image' | 'build_pin'> }>()
 const open = defineModel<boolean>('open', { default: false })
 const { t, locale } = useI18n()
-const errorText = useErrorText()
 const toast = useToast()
 
 const CURRENT = '__current__'      // a radio value cannot be empty
 const overview = useResource('images', { enabled: open })
 const images = computed<Image[] | null>(() => (overview.data.value ? overview.data.value.images ?? [] : null))
-const error = ref<string | null>(null)
-const saving = ref(false)
+const setImage = useChange('setImage', { form: true })
+const saving = setImage.busy
 const image = ref('')
 const build = ref(CURRENT)
 
@@ -23,7 +22,7 @@ watch(open, (value) => {
   if (!value) return
   image.value = props.vm.image ?? ''
   build.value = props.vm.build_pin ?? CURRENT
-  error.value = null
+  setImage.reset()
 })
 
 const selected = computed(() => images.value?.find(i => i.name === image.value))
@@ -72,22 +71,10 @@ const unchanged = computed(() => image.value === (props.vm.image ?? '') && (buil
 
 async function save() {
   if (!image.value || unchanged.value) return
-  saving.value = true
-  error.value = null
-  try {
-    await api(`/vms/${props.vm.name}/image`, {
-      method: 'PUT',
-      body: { image: image.value, build: build.value === CURRENT ? null : build.value },
-    })
-    open.value = false
-    toast.add({ title: t('vm.image.saved', { name: props.vm.name }), description: t('vm.image.atNextReset'), color: 'success', icon: 'i-lucide-check' })
-  }
-  catch (e) {
-    error.value = errorText(e)
-  }
-  finally {
-    saving.value = false
-  }
+  const r = await setImage.run({ vm: props.vm.name, image: image.value, build: build.value === CURRENT ? null : build.value })
+  if (!r.ok) return
+  open.value = false
+  toast.add({ title: t('vm.image.saved', { name: props.vm.name }), description: t('vm.image.atNextReset'), color: 'success', icon: 'i-lucide-check' })
 }
 </script>
 
@@ -116,7 +103,7 @@ async function save() {
           />
           <UAlert color="info" variant="subtle" icon="i-lucide-info" :title="t('vm.image.atNextReset')" />
         </template>
-        <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="error" data-testid="image-error" />
+        <ChangeFailure :error="setImage.shown.value" data-testid="image-error" />
         <div class="flex flex-wrap justify-end gap-2">
           <UButton color="neutral" variant="ghost" :label="t('vm.confirm.cancel')" @click="open = false" />
           <UButton type="submit" :label="t('vm.image.save')" :loading="saving" :disabled="!images || unchanged" data-testid="image-save" />

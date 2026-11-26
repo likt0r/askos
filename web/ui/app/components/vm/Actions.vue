@@ -6,69 +6,67 @@ import type { Vm } from '~/utils/live'
 
 const props = defineProps<{ vm: Vm }>()
 const { t } = useI18n()
-const errorText = useErrorText()
 const toast = useToast()
 const live = useLive()
 
 type Action = 'start' | 'pause' | 'restart' | 'reset' | 'focus' | 'focus-off'
-const busy = ref<Action | null>(null)
 const can = computed(() => lifecycleActions(props.vm))
+
+// a button's change fails as a toast; Restart and Reset, asked first, in their dialog
+const failed = () => t('vm.actions.failed')
+const changes = {
+  'start': useChange('startVm', { failed }),
+  'pause': useChange('pauseVm', { failed }),
+  'restart': useChange('restartVm', { form: true }),
+  'reset': useChange('resetVm', { form: true }),
+  'focus': useChange('focus', { failed }),
+  'focus-off': useChange('focusOff', { failed }),
+}
+const busy = computed(() => (Object.keys(changes) as Action[]).find(a => changes[a].busy.value) ?? null)
 
 const restartOpen = ref(false)
 const resetOpen = ref(false)
 const deleteOpen = ref(false)
 const resetStart = ref(true)
-const dialogError = ref<string | null>(null)
 
 // other VMs paused (by a Focus or by hand): Focus off is worth offering
 const othersPaused = computed(() => live.state.vms.some(v => v.name !== props.vm.name && v.state === 'paused'))
 
 async function run(action: Action) {
   if (busy.value) return
-  busy.value = action
-  dialogError.value = null
   const name = props.vm.name
-  try {
-    if (action === 'focus-off') {
-      await api('/focus', { method: 'DELETE' })
-      toast.add({ title: t('vm.actions.done.focus-off'), color: 'success', icon: 'i-lucide-check' })
-    }
-    else if (action === 'focus') {
-      const r = await api<{ others?: { vm: string }[] }>(`/vms/${name}/focus`, { method: 'POST' })
-      const others = (r?.others ?? []).map(o => o.vm)
-      toast.add({
-        title: t('vm.actions.done.focus', { name }),
-        description: others.length ? t('vm.actions.pausedOthers', { names: others.join(', ') }) : undefined,
-        color: 'success',
-        icon: 'i-lucide-check',
-      })
-    }
-    else {
-      const body = action === 'reset' ? { start: resetStart.value } : undefined
-      await api(`/vms/${name}/${action}`, { method: 'POST', body })
-      toast.add({ title: t(`vm.actions.done.${action}`, { name }), color: 'success', icon: 'i-lucide-check' })
-    }
-    restartOpen.value = false
-    resetOpen.value = false
+  if (action === 'focus-off') {
+    if (!(await changes['focus-off'].run()).ok) return
+    toast.add({ title: t('vm.actions.done.focus-off'), color: 'success', icon: 'i-lucide-check' })
   }
-  catch (e) {
-    const text = errorText(e)
-    if (restartOpen.value || resetOpen.value) dialogError.value = text
-    else toast.add({ title: t('vm.actions.failed'), description: text, color: 'error', icon: 'i-lucide-circle-alert' })
+  else if (action === 'focus') {
+    const r = await changes.focus.run(name)
+    if (!r.ok) return
+    const others = ((r.data as { others?: { vm: string }[] } | null)?.others ?? []).map(o => o.vm)
+    toast.add({
+      title: t('vm.actions.done.focus', { name }),
+      description: others.length ? t('vm.actions.pausedOthers', { names: others.join(', ') }) : undefined,
+      color: 'success',
+      icon: 'i-lucide-check',
+    })
   }
-  finally {
-    busy.value = null
+  else {
+    const r = action === 'reset' ? await changes.reset.run({ vm: name, start: resetStart.value }) : await changes[action].run(name)
+    if (!r.ok) return
+    toast.add({ title: t(`vm.actions.done.${action}`, { name }), color: 'success', icon: 'i-lucide-check' })
   }
+  restartOpen.value = false
+  resetOpen.value = false
 }
 
 function openReset() {
   resetStart.value = ['running', 'starting', 'not_responding', 'paused'].includes(props.vm.state)
-  dialogError.value = null
+  changes.reset.reset()
   resetOpen.value = true
 }
 
 function openRestart() {
-  dialogError.value = null
+  changes.restart.reset()
   restartOpen.value = true
 }
 
@@ -165,7 +163,7 @@ const diskBuild = computed(() => props.vm.system_disk?.build ?? null)
       :confirm-label="t('vm.actions.restart')"
       color="warning"
       :loading="busy === 'restart'"
-      :error="dialogError"
+      :failure="changes.restart.shown.value"
       testid="restart-dialog"
       @confirm="run('restart')"
     />
@@ -177,7 +175,7 @@ const diskBuild = computed(() => props.vm.system_disk?.build ?? null)
       :confirm-label="t('vm.actions.reset')"
       color="warning"
       :loading="busy === 'reset'"
-      :error="dialogError"
+      :failure="changes.reset.shown.value"
       testid="reset-dialog"
       @confirm="run('reset')"
     >

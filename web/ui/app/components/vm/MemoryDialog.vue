@@ -8,20 +8,22 @@ import type { Vm } from '~/utils/live'
 const props = defineProps<{ vm: Pick<Vm, 'name' | 'state' | 'libvirt_state' | 'memory_mib' | 'agents'> }>()
 const open = defineModel<boolean>('open', { default: false })
 const { t } = useI18n()
-const errorText = useErrorText()
 const toast = useToast()
 
 const value = ref<string | number>('')
-const saving = ref(false)
-const restarting = ref(false)
-const error = ref<string | null>(null)
+const set = useChange('setMemory', { form: true })
+const restartVm = useChange('restartVm', { form: true })
+const saving = set.busy
+const restarting = restartVm.busy
+const failure = computed(() => set.shown.value ?? restartVm.shown.value)
 // the limit just saved for a running VM: the dialog then offers the Restart
 const saved = ref<number | null>(null)
 
 watch(open, (v) => {
   if (!v) return
   value.value = typeof props.vm.memory_mib === 'number' ? props.vm.memory_mib : ''
-  error.value = null
+  set.reset()
+  restartVm.reset()
   saved.value = null
 })
 
@@ -41,46 +43,28 @@ async function save() {
   if (!ready.value || busy.value) return
   const name = props.vm.name
   const mib = memory.value as number
-  saving.value = true
-  error.value = null
-  try {
-    const r = await api<{ applies?: string | null }>(`/vms/${name}/memory`, { method: 'PUT', body: { memory_mib: mib } })
-    if (r?.applies === 'next_restart') {
-      saved.value = mib
-      return
-    }
-    open.value = false
-    toast.add({
-      title: t('vm.memory.saved', { name, gib: mibAsGib(mib) }),
-      description: r?.applies === 'next_start' ? t('vm.memory.atNextStart') : undefined,
-      color: 'success',
-      icon: 'i-lucide-check',
-    })
+  const r = await set.run({ vm: name, mib })
+  if (!r.ok) return
+  const applies = (r.data as { applies?: string | null } | null)?.applies
+  if (applies === 'next_restart') {
+    saved.value = mib
+    return
   }
-  catch (e) {
-    error.value = errorText(e)
-  }
-  finally {
-    saving.value = false
-  }
+  open.value = false
+  toast.add({
+    title: t('vm.memory.saved', { name, gib: mibAsGib(mib) }),
+    description: applies === 'next_start' ? t('vm.memory.atNextStart') : undefined,
+    color: 'success',
+    icon: 'i-lucide-check',
+  })
 }
 
 async function restart() {
   if (busy.value) return
   const name = props.vm.name
-  restarting.value = true
-  error.value = null
-  try {
-    await api(`/vms/${name}/restart`, { method: 'POST' })
-    open.value = false
-    toast.add({ title: t('vm.actions.done.restart', { name }), color: 'success', icon: 'i-lucide-check' })
-  }
-  catch (e) {
-    error.value = errorText(e)
-  }
-  finally {
-    restarting.value = false
-  }
+  if (!(await restartVm.run(name)).ok) return
+  open.value = false
+  toast.add({ title: t('vm.actions.done.restart', { name }), color: 'success', icon: 'i-lucide-check' })
 }
 </script>
 
@@ -121,7 +105,7 @@ async function restart() {
           :title="off ? t('vm.memory.atNextStart') : t('vm.memory.atNextRestart')"
           data-testid="memory-applies"
         />
-        <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="error" data-testid="memory-error" />
+        <ChangeFailure :error="failure" data-testid="memory-error" />
         <div class="flex flex-wrap justify-end gap-2">
           <UButton color="neutral" variant="ghost" :label="t('vm.confirm.cancel')" :disabled="saving" @click="open = false" />
           <UButton type="submit" :label="t('vm.memory.save')" :loading="saving" :disabled="!ready" data-testid="memory-save" />
@@ -142,7 +126,7 @@ async function restart() {
         <p v-if="canRestart && working > 0" class="text-sm text-warning" data-testid="memory-agents">
           {{ t('vm.reset.agentsWorking', working) }}
         </p>
-        <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="error" data-testid="memory-error" />
+        <ChangeFailure :error="failure" data-testid="memory-error" />
         <div class="flex flex-wrap justify-end gap-2">
           <UButton
             color="neutral"
