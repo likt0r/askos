@@ -337,24 +337,24 @@ def _units_off(rec, say):
 
 
 def _domain_off(name, say):
-    from . import generate, lifecycle, registry, virsh
+    from . import lifecycle, virsh
     if virsh.domain_uuid(name) is None:             # libvirt has none
         return
     # no wake starts it between the stop and the undefine (a running domain would outlive it)
     with state_files.vm_lock(name):
         lifecycle.stop(name)        # discards a Pause, shuts down, forces off after the time limit
-        generate.virsh_checked(f"{name}: removing the VM", "undefine", registry.dom(name), "--managed-save")
+        virsh.undefine_domain(name, f"{name}: removing the VM")
     say(f"{name}: VM stopped and removed")
 
 
 def _network_off(name, say):
-    from . import generate, registry, states
+    from . import registry, states, virsh
     found = states.network(name)
     if found is None:
         return
     if found[0]:                                    # active
-        generate.virsh_checked(f"{name}: stopping the network", "net-destroy", registry.dom(name))
-    generate.virsh_checked(f"{name}: removing the network", "net-undefine", registry.dom(name))
+        virsh.stop_network(name, f"{name}: stopping the network")
+    virsh.undefine_network(name, f"{name}: removing the network")
     say(f"{name}: network {registry.dom(name)} removed")
 
 

@@ -214,3 +214,90 @@ def agent_command(name, command, carries_data, seconds, timeout=None):
     carries data for the VM reaches virsh on its standard input (run_unseen), never as an argument."""
     return (run_unseen if carries_data else run)("qemu-agent-command", dom(name), command,
                                                   "--timeout", str(seconds), timeout=timeout)
+
+
+# --- definitions: a VM's domain, its network and the storage pool of the disk directory --------
+# A definition virsh refuses raises Fail with `what` (the call in the caller's words) in its message.
+
+def _checked(what, *args):
+    r = run(*args)
+    if r.returncode != 0:
+        programs.fail(r, what, program="virsh")
+
+
+def _define(verb, xml, what):
+    """virsh reads a definition from a file: the XML goes to a temporary one."""
+    with tempfile.NamedTemporaryFile("w", suffix=".xml") as f:
+        f.write(xml)
+        f.flush()
+        _checked(what, verb, f.name)
+
+
+def define_domain(xml, what):
+    """Define the VM's domain from its XML, anew when it exists."""
+    _define("define", xml, what)
+
+
+def undefine_domain(name, what):
+    """Remove the VM's domain together with its Pause (managed save)."""
+    _checked(what, "undefine", dom(name), "--managed-save")
+
+
+def network_definition(name):
+    """The VM's network as libvirt defines it (virsh net-dumpxml), None when virsh has none: its
+    "bridge", "address" and "mac" (each None when the definition has none), its "uuid" (or None),
+    whether DNS is switched off ("dns_off"), whether it sends anything on ("forwarding": a
+    <forward> of packets or a DNS <forwarder>) and the values of its "dnsmasq_options"."""
+    r = run("net-dumpxml", dom(name))
+    if r.returncode != 0:
+        return None
+    xml = r.stdout
+    found = {k: re.search(rf"<{tag}\b[^>]*\b{attr}=['\"]([^'\"]+)", xml)
+             for k, (tag, attr) in {"bridge": ("bridge", "name"), "address": ("ip", "address"),
+                                    "mac": ("host", "mac")}.items()}
+    found = {k: m.group(1) if m else None for k, m in found.items()}
+    uuid = re.search(r"<uuid>([^<]+)</uuid>", xml)
+    return {**found, "uuid": uuid.group(1) if uuid else None,
+            "dns_off": bool(re.search(r"<dns\b[^>]*\benable=['\"]no['\"]", xml)),
+            "forwarding": bool(re.search(r"<forwarder\b|<forward\b", xml)),
+            "dnsmasq_options": re.findall(r"<dnsmasq:option\s+value=['\"]([^'\"]*)['\"]", xml)}
+
+
+def define_network(xml, what):
+    """Define the VM's network from its XML, anew when it exists."""
+    _define("net-define", xml, what)
+
+
+def start_network(name, what):
+    _checked(what, "net-start", dom(name))
+
+
+def stop_network(name, what):
+    _checked(what, "net-destroy", dom(name))
+
+
+def autostart_network(name, what):
+    """Have libvirt start the VM's network whenever libvirt starts."""
+    _checked(what, "net-autostart", dom(name))
+
+
+def undefine_network(name, what):
+    _checked(what, "net-undefine", dom(name))
+
+
+def pool_on(directory):
+    """Whether any storage pool, active or not, has this directory as its target."""
+    r = run("pool-list", "--all", "--name")
+    for name in r.stdout.split() if r.returncode == 0 else []:
+        m = re.search(r"<path>([^<]+)</path>", run("pool-dumpxml", name).stdout)
+        if m and m.group(1) == directory:
+            return True
+    return False
+
+
+def define_pool(name, directory):
+    """Define a directory storage pool of this name on the directory, autostarted and started."""
+    xml = f"<pool type='dir'>\n  <name>{name}</name>\n  <target>\n    <path>{directory}</path>\n  </target>\n</pool>\n"
+    _define("pool-define", xml, "create storage pool")
+    _checked("autostart storage pool", "pool-autostart", name)
+    _checked("start storage pool", "pool-start", name)

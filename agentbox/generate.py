@@ -25,7 +25,6 @@ import os
 import re
 import stat
 import sys
-import tempfile
 import time
 
 from . import activity, build_vm_run, firewall, footprint, hostsetup, paths, programs, registry, settings, sshkeys
@@ -405,19 +404,6 @@ def apply_pending(what, *systemctl, timeout=120):
     return True
 
 
-def virsh_checked(what, *args):
-    r = virsh.run(*args)
-    if r.returncode != 0:
-        programs.fail(r, what, program="virsh")
-
-
-def _virsh_define(cmd, xml, what):
-    with tempfile.NamedTemporaryFile("w", suffix=".xml") as f:
-        f.write(xml)
-        f.flush()
-        virsh_checked(what, cmd, f.name)
-
-
 def _qemu():
     """(uid, gid) of QEMU's user as root, else (-1, -1)."""
     return state_files.user_ids(hostfacts.QEMU_USER, "is libvirt installed?")
@@ -425,29 +411,25 @@ def _qemu():
 
 def _network_matches(rec):
     """An existing network must be the one the record describes: network numbers are fixed
-    once a VM exists. Its XML as libvirt dumps it."""
-    net = dom(rec["name"])
-    r = virsh.run("net-dumpxml", net)
-    found = {k: re.search(rf"<{tag}\b[^>]*\b{attr}=['\"]([^'\"]+)", r.stdout)
-             for k, (tag, attr) in {"bridge": ("bridge", "name"), "address": ("ip", "address"),
-                                    "mac": ("host", "mac")}.items()}
-    found = {k: m.group(1) if m else None for k, m in found.items()}
+    once a VM exists. Its definition as libvirt gives it (virsh.network_definition)."""
+    definition = virsh.network_definition(rec["name"])
+    found = {k: (definition or {}).get(k) for k in ("bridge", "address", "mac")}
     wanted = {"bridge": bridge(rec), "address": host_ip(rec), "mac": mac(rec)}
-    if r.returncode != 0 or found != wanted:
-        die(f"{rec['name']}: network {net} does not match the record "
+    if definition is None or found != wanted:
+        die(f"{rec['name']}: network {dom(rec['name'])} does not match the record "
             f"({', '.join(f'{k} {found[k]} instead of {wanted[k]}' for k in wanted if found[k] != wanted[k])})",
             error="action_failed", vm=rec["name"])
-    return r.stdout
+    return definition
 
 
-def _resolver_current(rec, xml):
-    """Whether a network's dumped XML has the resolver network_xml() gives it: every dnsmasq
+def _resolver_current(rec, definition):
+    """Whether a network's definition has the resolver network_xml() gives it: every dnsmasq
     option, DNS not switched off, and nothing that sends names or packets on (a `server=`
     option, a `<forwarder>`, a `<forward>`)."""
-    return (not re.search(r"<dns\b[^>]*\benable=['\"]no['\"]", xml)
-            and not re.search(r"<dnsmasq:option\s+value=['\"]server=|<forwarder\b|<forward\b", xml)
-            and all(re.search(rf"<dnsmasq:option\s+value=['\"]{re.escape(o)}['\"]", xml)
-                    for o in _dnsmasq_options(rec)))
+    options = definition["dnsmasq_options"]
+    return (not definition["dns_off"] and not definition["forwarding"]
+            and not any(o.startswith("server=") for o in options)
+            and all(o in options for o in _dnsmasq_options(rec)))
 
 
 def _network(rec):
@@ -455,34 +437,32 @@ def _network(rec):
     True or the key of what it said, else False. libvirt's dnsmasq reads its options only when
     the network starts, so an active network whose resolver is not the current one is
     stopped and started again."""
-    net = dom(rec["name"])
+    name = rec["name"]
     try:
-        found = states.network(rec["name"])
+        found = states.network(name)
     except Fail:                # virsh cannot tell: defined as if there were none
         found = None
     changed = False
     if found is not None:
         active, autostart = found
-        xml = _network_matches(rec)
-        if not _resolver_current(rec, xml):
-            current = re.search(r"<uuid>([^<]+)</uuid>", xml)
-            _virsh_define("net-define", network_xml(rec, current.group(1) if current else None),
-                          f"{rec['name']}: define network")
+        definition = _network_matches(rec)
+        if not _resolver_current(rec, definition):
+            virsh.define_network(network_xml(rec, definition["uuid"]), f"{name}: define network")
             changed = "network-redefined"
             if active:
-                live = states.has_process(rec["name"])
-                virsh_checked(f"{rec['name']}: stop network", "net-destroy", net)
-                virsh_checked(f"{rec['name']}: start network", "net-start", net)
+                live = states.has_process(name)
+                virsh.stop_network(name, f"{name}: stop network")
+                virsh.start_network(name, f"{name}: start network")
                 changed = "network-redefined-running" if live else changed
     else:
-        _virsh_define("net-define", network_xml(rec), f"{rec['name']}: create network")
+        virsh.define_network(network_xml(rec), f"{name}: create network")
         active = autostart = False
         changed = True
     if not autostart:
-        virsh_checked(f"{rec['name']}: autostart network", "net-autostart", net)
+        virsh.autostart_network(name, f"{name}: autostart network")
         changed = changed or True
     if not active:
-        virsh_checked(f"{rec['name']}: start network", "net-start", net)
+        virsh.start_network(name, f"{name}: start network")
         changed = changed or True
     return changed
 
@@ -537,15 +517,9 @@ def _rebind(rec):
 def _storage_pool():
     """virt-install makes up a storage pool for any disk directory without one;
     agentbox defines it instead, once. Any pool on that directory will do."""
-    r = virsh.run("pool-list", "--all", "--name")
-    for name in r.stdout.split() if r.returncode == 0 else []:
-        m = re.search(r"<path>([^<]+)</path>", virsh.run("pool-dumpxml", name).stdout)
-        if m and m.group(1) == paths.VMS:
-            return False
-    xml = f"<pool type='dir'>\n  <name>{POOL}</name>\n  <target>\n    <path>{paths.VMS}</path>\n  </target>\n</pool>\n"
-    _virsh_define("pool-define", xml, "create storage pool")
-    virsh_checked("autostart storage pool", "pool-autostart", POOL)
-    virsh_checked("start storage pool", "pool-start", POOL)
+    if virsh.pool_on(paths.VMS):
+        return False
+    virsh.define_pool(POOL, paths.VMS)
     return True
 
 
@@ -771,7 +745,7 @@ def domain(rec):
         pass
     if uuid and states.has_pause(vm):
         return "domain-postponed"
-    _virsh_define("define", xml, f"{vm}: define VM")
+    virsh.define_domain(xml, f"{vm}: define VM")
     state_files.directory(os.path.dirname(saved), 0o700, only_new=True)
     state_files.write_atomic(saved, xml.encode(), 0o600)
     return "domain"
