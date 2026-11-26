@@ -90,7 +90,7 @@ import tarfile
 import tempfile
 import time
 
-from . import build_vm, hostfacts, paths, programs, settings, state_files, states, virsh
+from . import build_vm, domain_args, hostfacts, paths, programs, settings, state_files, states, virsh
 from .errors import Fail
 from .registry import dom
 from .sanitize import clean
@@ -690,18 +690,11 @@ def virtiofsd_argv(vm, ids):
 
 
 def virt_install_args(vm):
-    disk = "path={},format=qcow2,bus=virtio,target.dev={},cache=none,io=native,discard=unmap"
     return [
-        "--connect", "qemu:///system", "--print-xml", "--dry-run", "--check", "all=off",
-        "--name", vm["domain"], "--osinfo", "linux2024", "--memory", str(MEMORY_MIB), "--vcpus", str(vcpus()),
-        "--cpu", "host-passthrough", "--machine", hostfacts.MACHINE, "--boot", "hd", "--import", "--noautoconsole",
-        "--graphics", "none", "--video", "none", "--sound", "none", "--input", "none", "--console", "none",
-        "--controller", "usb,model=none",
-        "--events", "on_poweroff=destroy,on_reboot=destroy,on_crash=destroy",
-        "--features", hostfacts.FEATURES,
+        *domain_args.base(vm["domain"], MEMORY_MIB, vcpus(), console_none=True),
         "--memorybacking", "source.type=memfd,access.mode=shared",
-        "--disk", disk.format(vm["system"], "vda"),
-        "--disk", disk.format(vm["scratch"], "vdb") + f",serial={SCRATCH_SERIAL}",
+        "--disk", domain_args.disk(vm["system"], "vda"),
+        "--disk", domain_args.disk(vm["scratch"], "vdb") + f",serial={SCRATCH_SERIAL}",
         "--disk", f"path={vm['input']},format=raw,bus=virtio,target.dev=vdc,readonly=on,serial={INPUT_SERIAL}",
         "--disk", f"path={vm['seed']},format=raw,bus=virtio,target.dev=vdd,readonly=on",
         "--filesystem", f"type=mount,driver.type=virtiofs,source.socket={vm['fs_socket']},target.dir={OUT_TAG}",
