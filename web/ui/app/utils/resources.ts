@@ -68,6 +68,13 @@ export const ON_ACTIVITY: Record<string, ResourceName[]> = {
   'recipe.set': ['images'],
   'recipe.restore': ['images'],
   'recipe.remove': ['images'],
+  // which VMs use and pin each Image and Build (`vms`, `used_by`, `pinned_by`)
+  'create': ['images'],
+  'delete': ['images'],
+  'set-image': ['images'],
+  'reset': ['images'],
+  'reset.automatic': ['images'],
+  'reset.update': ['images'],
 }
 
 // ---- the cache -------------------------------------------------------------------------------
@@ -130,11 +137,13 @@ export function createResources(live: Pick<Live, 'on' | 'state'>) {
   function write<N extends ResourceName>(name: N, apply: (data: ResourceData<N>) => ResourceData<N> | null) {
     const pendings = replays.get(name)
     if (pendings?.size) for (const p of pendings) p.push(apply)
-    const data = client.getQueryData<ResourceData<N>>([name])
-    if (data === undefined) return
+    const query = client.getQueryCache().find<ResourceData<N>>({ queryKey: [name], exact: true })
+    const data = query?.state.data
+    if (!query || data === undefined) return
     const next = apply(data)
     if (next === null) void markStale(name)
-    else client.setQueryData([name], next)
+    // only the data: a stale mark and a failed read's error stay (setQueryData would clear both)
+    else query.setState({ data: next, dataUpdatedAt: Date.now() })
   }
 
   client.getQueryCache().subscribe((event) => {

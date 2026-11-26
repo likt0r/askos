@@ -144,5 +144,5 @@ export function useImages() {
     offMissed()
   })
 
-  return { resource, overview, startError, starting, updating, logs, logErrors, logLoading, start, startUpdate, fetchLog }
+  return { resource, startError, starting, updating, logs, logErrors, logLoading, start, startUpdate, fetchLog }
 }

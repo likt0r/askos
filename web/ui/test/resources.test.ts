@@ -66,6 +66,13 @@ describe('the stale table for images (without a view)', () => {
     expect(stale()).toBe(true)
   })
 
+  it('keeps a stale mark through a later write', () => {
+    live.emit('build', buildEvent('2', 'ok'))
+    live.emit('build', buildEvent('3', 'running'))
+    expect(data().images[0]!.builds.map(b => b.build)).toEqual(['3', '2', '1'])
+    expect(stale()).toBe(true)
+  })
+
   it('marks it stale when a Build of an Image it does not know starts', () => {
     live.emit('build', buildEvent('1', 'running', 'new'))
     expect(data().images.map(i => i.name)).toEqual(['base'])
@@ -91,7 +98,8 @@ describe('the stale table for images (without a view)', () => {
     expect(stale()).toBe(true)
   })
 
-  it.each(['maintenance.versions', 'build.ok', 'update-now', 'recipe.set', 'recipe.restore', 'recipe.remove'])('marks it stale on the Activity code %s', (code) => {
+  it.each(['maintenance.versions', 'build.ok', 'update-now', 'recipe.set', 'recipe.restore', 'recipe.remove',
+    'create', 'delete', 'set-image', 'reset', 'reset.automatic', 'reset.update'])('marks it stale on the Activity code %s', (code) => {
     live.emit('activity', entry(code))
     expect(stale()).toBe(true)
   })
@@ -193,6 +201,33 @@ describe('reading a resource', () => {
     await observer.refetch()
     expect(api.calls).toHaveLength(3)
     live.emit('hello', { stream: 'a', resumed: true })
+    await flushPromises()
+    expect(api.calls).toHaveLength(3)
+    off()
+  })
+
+  it('keeps a failed read\'s error through a later write, and reads it again when shown next', async () => {
+    let answer: () => unknown = () => OK(overview([{ build: '1', status: 'ok' }]))
+    const api = fakeApi({ 'GET /images': () => answer() as never })
+    const observer = new QueryObserver(r.client, { queryKey: ['images'], queryFn: () => r.read('images') })
+    let off = observer.subscribe(() => {})
+    await flushPromises()
+    answer = () => ({ status: 502, body: { error: { code: 'agentbox_failed', message: 'x' } } })
+    await observer.refetch()
+    live.emit('build', buildEvent('2', 'running'))
+    const state = r.client.getQueryState<ImagesOverview>(['images'])!
+    expect(state.status).toBe('error')
+    expect(state.error).not.toBeNull()
+    expect(state.data!.images[0]!.builds.map(b => b.build)).toEqual(['2', '1'])
+    expect(observer.getCurrentResult().data!.images[0]!.builds.map(b => b.build)).toEqual(['2', '1'])
+
+    // nobody shows it while it turns stale and an event is written: shown again, it is read
+    off()
+    answer = () => OK(overview([{ build: '3', status: 'ok' }]))
+    live.emit('build', buildEvent('3', 'ok'))
+    live.emit('build', buildEvent('4', 'running'))
+    expect(api.calls).toHaveLength(2)
+    off = observer.subscribe(() => {})
     await flushPromises()
     expect(api.calls).toHaveLength(3)
     off()

@@ -7,7 +7,8 @@ const { t, locale } = useI18n()
 const errorText = useErrorText()
 const toast = useToast()
 const images = useImages()
-const { overview, startError, starting, logs, logLoading, logErrors } = images
+const { startError, starting, logs, logLoading, logErrors } = images
+const overview = images.resource.data
 const loading = images.resource.loading
 // an update of every Image runs (Update now, or the automatic one)
 const updatingAll = images.updating

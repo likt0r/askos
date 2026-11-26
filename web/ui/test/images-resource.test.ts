@@ -49,6 +49,35 @@ describe('one copy of the Images', () => {
     expect(byTestId('overview-versions').text()).toContain('1.5.0')     // what is available now
   })
 
+  it('the System page shows a VM created meanwhile when it is opened again', async () => {
+    let host = IMAGES
+    const api = fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': () => OK(host) })
+    const { es } = await openApp('/system', [WORK])
+    expect(reads(api)).toBe(1)
+    await useRouter().push('/vms')
+    await flushPromises()
+    host = { ...IMAGES, images: [{ ...IMAGES.images[0]!, vms: ['work', 'new'] }] }
+    es.emit('activity', { time: 't', vm: 'new', actor: 'owner', kind: 'action', action: 'create', code: 'create', outcome: 'ok', description: '' })
+    await flushPromises()
+    await useRouter().push('/system')
+    await flushPromises()
+    expect(reads(api)).toBe(2)
+    expect(byTestId('system-images').text()).toContain('new')
+  })
+
+  it('a failed re-read\'s notice stays through a later Build event', async () => {
+    let answers = 0
+    fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': () => (++answers === 2 ? FAILED : OK(IMAGES)) })
+    const { es } = await openApp('/system', [WORK])
+    es.emit('activity', { time: 't', vm: null, actor: 'timer', kind: 'action', action: 'build.ok', code: 'build.ok', outcome: 'ok', description: '' })
+    await flushPromises()
+    expect(failure()).toBe('stale')
+    es.emit('build', { image: 'base', build: '3', status: 'running', step: 'build', started: 't', finished: null, error: null, problems: [], actor: null, unit: 'u' })
+    await flushPromises()
+    expect(failure()).toBe('stale')
+    expect(answers).toBe(2)
+  })
+
   it('two views of it on screen show the same data and follow the same event', async () => {
     fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': OK(IMAGES) })
     const { es } = await openApp('/vms', [WORK])
