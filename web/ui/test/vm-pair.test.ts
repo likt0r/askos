@@ -149,7 +149,9 @@ describe('Pair tab', () => {
   it('shows when the VM cannot be asked', async () => {
     fakeApi({ 'GET /session': SIGNED_IN, 'GET /vms/work/pairings': { status: 409, body: { error: { code: 'vm_not_running', message: 'x' } } } })
     await openApp('/vms/work/pair', [vm('work', 'stopped')])
-    expect(text('pair-error')).toBe('The VM is not running.')
+    // the read-failure element: what could not be read, and why
+    expect(text('pair-error')).toContain('Could not read the Paired devices.')
+    expect(text('pair-error')).toContain('The VM is not running.')
   })
 })
 

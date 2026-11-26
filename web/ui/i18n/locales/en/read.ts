@@ -6,6 +6,7 @@ export default {
     retry: 'Retry',
     resources: {
       images: 'the Images',
+      pairings: 'the Paired devices',
     },
   },
 }

@@ -6,42 +6,15 @@
 // component's memory, and hidden again after a while or when leaving.
 const props = defineProps<{ name: string, hideCodeAfterMs?: number }>()
 const { t, locale } = useI18n()
-const errorText = useErrorText()
 const toast = useToast()
 
-interface Device {
-  id: string
-  name: string
-  scope: 'mobile' | 'runtime' | string
-  paired_at: string | null
-  last_seen_at: string | null
-  observer: boolean
-  removable: boolean
-}
-interface Pairings { vm: string, devices: Device[], observer_known: boolean, single_removal: boolean }
-
-const data = ref<Pairings | null>(null)
-const loading = ref(false)
-const loadError = ref<string | null>(null)
-
-async function load() {
-  loading.value = true
-  loadError.value = null
-  const name = props.name
-  try {
-    const r = await api<Pairings>(`/vms/${name}/pairings`)
-    if (name === props.name) data.value = { ...r, devices: Array.isArray(r?.devices) ? r.devices : [] }
-  }
-  catch (e) {
-    if (name === props.name) {
-      data.value = null
-      loadError.value = errorText(e)
-    }
-  }
-  finally {
-    loading.value = false
-  }
-}
+// the devices, read again on the Activity entries that change them (resources module)
+const pairings = useResource('pairings', { params: () => ({ vm: props.name }) })
+const data = computed(() => {
+  const r = pairings.data.value
+  return r ? { ...r, devices: Array.isArray(r.devices) ? r.devices : [] } : null
+})
+const loading = pairings.fetching
 
 // --- the Pairing code ----------------------------------------------------------
 
@@ -141,15 +114,9 @@ const canRemove = (d: Device) => data.value?.single_removal === true && d.remova
 
 const time = (iso: string | null) => formatTime(iso, locale.value)
 
-onMounted(load)
-watch(() => props.name, () => {
-  hideCode()
-  data.value = null
-  void load()
-})
+// another VM: no code of this one
+watch(() => props.name, hideCode)
 onBeforeUnmount(hideCode)
-// the revealed code and its timer are not touched by a reload
-useReloadOnActivity(load, { codes: ['observe', 'unpair', 'revoke-pairings'], match: entry => entry.vm === props.name })
 </script>
 
 <template>
@@ -191,13 +158,13 @@ useReloadOnActivity(load, { codes: ['observe', 'unpair', 'revoke-pairings'], mat
         <h3 class="font-medium text-highlighted">
           {{ t('vm.pair.devicesTitle') }}
         </h3>
-        <UButton icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" :label="t('vm.pair.refresh')" :loading="loading" data-testid="pair-refresh" @click="load" />
+        <UButton icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" :label="t('vm.pair.refresh')" :loading="loading" data-testid="pair-refresh" @click="pairings.retry()" />
       </div>
       <div class="p-4 space-y-3">
-        <p v-if="loading && !data" class="text-sm text-muted">
+        <p v-if="pairings.loading.value" class="text-sm text-muted">
           {{ t('vm.pair.loading') }}
         </p>
-        <UAlert v-if="loadError" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="loadError" data-testid="pair-error" />
+        <ReadFailure :resource="pairings" data-testid="pair-error" />
         <p v-if="data && !data.devices.length" class="text-sm text-muted" data-testid="pair-empty">
           {{ t('vm.pair.none') }}
         </p>

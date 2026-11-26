@@ -126,16 +126,21 @@ test/                      Vitest
 
 Server data lives in one cache, in `app/utils/resources.ts` ([ADR
 0026](../../docs/adr/0026-the-control-room-ui-holds-server-data-in-one-cache.md)). The resources
-it holds so far: `images` (`GET /images`). Every other view still reads on its own, as the next
-section describes, until it moves into the module (#212).
+it holds so far: `images` (`GET /images`) and `pairings` (`GET /vms/<vm>/pairings`). Every
+other view still reads on its own, as the next section describes, until it moves into the
+module (#216).
 
 - **Declaring a resource**: one line in `RESOURCES`, its name, its path and the type of its
-  answer (`images: declare<ImagesOverview>('/images')`). The key in the cache is `[name]`.
+  answer (`images: declare<ImagesOverview>('/images')`); one with parameters takes its path from
+  them (`pairings: declare<Pairings, { vm: string }>(p => `/vms/${p.vm}/pairings`)`). The key in
+  the cache is `[name]`, or `[name, params]`: one copy per set of parameters.
 - **Asking for one**: `const images = useResource('images')` gives `data` (undefined until an
   answer came), `loading` (nothing yet and a read on the way), `fetching` (a read on the way,
-  the first or a read again), `error` (why the last read failed) and `retry()`. Every view that asks shares one copy and one read. `{ enabled: open }` reads
-  only while a dialog is open; `{ extra: true }` declares a read whose failure the view does not
-  show. A view does not know the path, when to read, or how to drop a late answer.
+  the first or a read again), `error` (why the last read failed) and `retry()`. Every view that
+  asks shares one copy and one read. `{ params: () => ({ vm }) }` names the parameters of a
+  resource that has them; when they change, the view reads the new ones. `{ enabled: open }`
+  reads only while a dialog is open; `{ extra: true }` declares a read whose failure the view does
+  not show. A view does not know the path, when to read, or how to drop a late answer.
 - **Showing a failed read**: `<ReadFailure :resource="images" />`, in place of the section.
   When nothing was read yet, it says what could not be read and why (`useErrorText`), with Retry.
   When data is shown, the data stays and a small notice says it could not be refreshed, with
@@ -150,9 +155,11 @@ section describes, until it moves into the module (#212).
   or that `applyBuild` cannot place, after `updating` of the `services` event goes from true to
   false, when the version check (`agentbox-versions.service` in the `services` event) stops
   running (started by hand, it records no Activity entry), and after the Activity codes
-  `maintenance.versions`, `update-now`, `recipe.set`, `recipe.restore`, `recipe.remove` (a Recipe's Image comes or goes) and
-  `create`, `delete`, `set-image`, `reset`, `reset.automatic`, `reset.update` (which VMs use
-  and pin each Build). A write keeps a stale mark and a failed read's error. A
+  `maintenance.versions`, `update-now`, `recipe.set`, `recipe.restore`, `recipe.remove` (a
+  Recipe's Image comes or goes) and `create`, `delete`, `set-image`, `reset`, `reset.automatic`,
+  `reset.update` (which VMs use and pin each Build); `pairings` of the entry's VM after `observe`,
+  `unpair` and `revoke-pairings` (a row `ofEntryVm(name)` marks only that VM's copy). A write
+  keeps a stale mark and a failed read's error. A
   stale resource that a view shows is read again; one that nothing shows is read when a view
   next asks for it. A new Activity code that changes a resource needs a row here; without one,
   the view shows old data until the next reconnect or reload.

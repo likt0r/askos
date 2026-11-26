@@ -266,3 +266,32 @@ describe('reading a resource', () => {
     }
   })
 })
+
+describe('a resource with parameters (a VM\'s)', () => {
+  let live: ReturnType<typeof fakeLive>
+  let r: Resources
+  beforeEach(() => {
+    live = fakeLive()
+    r = createResources(live as never)
+    for (const vm of ['work', 'priv']) r.client.setQueryData(['pairings', { vm }], { vm, devices: [], observer_known: true, single_removal: false })
+  })
+  afterEach(() => r.stop())
+
+  const stale = (vm: string) => r.client.getQueryState(['pairings', { vm }])!.isInvalidated
+
+  it.each(['observe', 'unpair', 'revoke-pairings'])('%s marks only the entry\'s VM\'s pairings stale', (code) => {
+    live.emit('activity', { ...entry(code), vm: 'work' })
+    expect([stale('work'), stale('priv')]).toEqual([true, false])
+  })
+
+  it('an entry without a VM marks every VM\'s', () => {
+    live.emit('activity', { ...entry('observe'), vm: null })
+    expect([stale('work'), stale('priv')]).toEqual([true, true])
+  })
+
+  it('reads its own path from its parameters', async () => {
+    const api = fakeApi({ 'GET /vms/priv/pairings': OK({ vm: 'priv', devices: [] }) })
+    await r.read('pairings', { vm: 'priv' })
+    expect(api.calls.map(c => c.path)).toEqual(['/vms/priv/pairings'])
+  })
+})
