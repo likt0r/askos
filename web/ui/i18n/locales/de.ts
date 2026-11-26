@@ -3,6 +3,7 @@ import access from './de/access'
 import activity from './de/activity'
 import fault from './de/fault'
 import notifications from './de/notifications'
+import read from './de/read'
 import settings from './de/settings'
 import system from './de/system'
 import vm from './de/vm'
@@ -12,6 +13,7 @@ export default {
   ...activity,
   ...fault,
   ...notifications,
+  ...read,
   ...settings,
   ...system,
   vm,

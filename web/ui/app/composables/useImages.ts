@@ -1,40 +1,22 @@
-// Images and Builds of the System page: the overview from GET /images kept current by `build`
-// events, rebuilds, Update now (#114), and the log of a Build (live from `build-log` events; the
-// log endpoint fills the gaps: after a reconnect that could not resume, or when lines were
-// skipped). Whether an update of every Image runs comes from the `services` event (`updating`),
-// before that from the overview.
-import { computed, onScopeDispose, reactive, ref, watch } from 'vue'
-import type { BuildEvent, BuildLog, BuildLogEvent, ImagesOverview, LogLine } from '~/utils/images'
+// Images and Builds of the System page: the resource `images` (utils/resources.ts), rebuilds,
+// Update now (#114), and the log of a Build (live from `build-log` events; the log endpoint fills
+// the gaps: after a reconnect that could not resume, or when lines were skipped). Whether an
+// update of every Image runs comes from the `services` event (`updating`), before that from the
+// overview.
+import { computed, onScopeDispose, reactive, ref } from 'vue'
+import type { BuildEvent, BuildLog, BuildLogEvent, LogLine } from '~/utils/images'
 
 export function useImages() {
   const live = useLive()
-  const overview = ref<ImagesOverview | null>(null)
-  const loading = ref(true)
-  const error = ref<unknown>(null)
+  const resource = useResource('images')
+  const overview = resource.data
   const startError = ref<unknown>(null)
   const starting = ref<string | null>(null)
   const logs = reactive<Record<string, BuildLog>>({})
   const logErrors = reactive<Record<string, unknown>>({})
   const logLoading = reactive<Record<string, boolean>>({})
-  let token = 0
   // lines of `build-log` events that arrived while the log was being fetched
   const buffered = new Map<string, { lines: LogLine[], truncated: boolean }>()
-
-  async function load() {
-    const mine = ++token
-    try {
-      const data = await api<ImagesOverview>('/images')
-      if (mine !== token) return
-      overview.value = data
-      error.value = null
-    }
-    catch (e) {
-      if (mine === token) error.value = e
-    }
-    finally {
-      if (mine === token) loading.value = false
-    }
-  }
 
   /** The log of a Build: all of it the first time, only what is newer after that. Lines that
    * `build-log` events delivered while the request was out come after the fetched ones. */
@@ -82,10 +64,6 @@ export function useImages() {
     return typeof updating === 'boolean' ? updating : null
   })
   const updating = computed(() => updateUnit.value ?? overview.value?.updating ?? false)
-  // an update that ended may have built nothing, so no `build` event tells
-  watch(updateUnit, (now, before) => {
-    if (before && !now) void load()
-  })
 
   /** Update now: the version check, a Build of every Image with an update, then a Reset of
    * these VMs onto the newest Build of their Image. Whether it started. */
@@ -93,13 +71,11 @@ export function useImages() {
     starting.value = 'update'
     startError.value = null
     try {
-      await api('/updates', { method: 'POST', body: reset.length ? { reset } : {} })
-      await load()
+      await change('/updates', { method: 'POST', body: reset.length ? { reset } : {} }, ['images'])
       return true
     }
     catch (e) {
       startError.value = e
-      if (e instanceof ApiError && (e.code === 'update_running' || e.code === 'build_running')) await load()
       return false
     }
     finally {
@@ -113,14 +89,12 @@ export function useImages() {
     starting.value = target
     startError.value = null
     try {
-      await api('/builds', { method: 'POST', body: reset.length ? { image: target, reset } : { image: target } })
-      await load()
+      // refused because another Build runs, the overview read again shows it, and the buttons say so
+      await change('/builds', { method: 'POST', body: reset.length ? { image: target, reset } : { image: target } }, ['images'])
       return true
     }
     catch (e) {
       startError.value = e
-      // another Build is running: show it, so that the buttons say so
-      if (e instanceof ApiError && e.code === 'build_running') await load()
       return false
     }
     finally {
@@ -128,13 +102,10 @@ export function useImages() {
     }
   }
 
+  // the overview follows `build` events in the resources module; here the start error and the log
   const offBuild = live.on('build', (event: BuildEvent) => {
-    if (!overview.value || !event?.image || !event.build) return
+    if (!event?.image || !event.build) return
     startError.value = null     // what it said (a Build running already) is out of date
-    const next = applyBuild(overview.value, event)
-    if (next) overview.value = next
-    // what a finished Build changes (the current Build, who uses what, older Builds removed)
-    if (!next || event.status !== 'running') void load()
     if (event.status !== 'running') {
       const key = logKey(event.image, event.build)
       if (logs[key]) void fetchLog(event.image, event.build)
@@ -159,26 +130,19 @@ export function useImages() {
     logs[key] = { ...held, lines: appendLines(held.lines, event.entries), cursor: event.cursor ?? held.cursor }
   })
 
-  // a connection that could not resume missed events
-  let helloSeen = live.state.connection === 'live'
-  const offHello = live.on('hello', (data: { resumed?: boolean }) => {
-    if (helloSeen && data?.resumed === false) {
-      void load()
-      for (const key of Object.keys(logs)) {
-        const [image, build] = key.split('/')
-        if (image && build) void fetchLog(image, build)
-      }
+  // a connection that could not resume missed lines of the open logs
+  const offMissed = onMissedEvents(() => {
+    for (const key of Object.keys(logs)) {
+      const [image, build] = key.split('/')
+      if (image && build) void fetchLog(image, build)
     }
-    helloSeen = true
   })
 
   onScopeDispose(() => {
     offBuild()
     offLog()
-    offHello()
-    token++
+    offMissed()
   })
 
-  void load()
-  return { overview, loading, error, startError, starting, updating, logs, logErrors, logLoading, load, start, startUpdate, fetchLog }
+  return { resource, startError, starting, updating, logs, logErrors, logLoading, start, startUpdate, fetchLog }
 }

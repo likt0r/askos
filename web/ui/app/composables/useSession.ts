@@ -79,6 +79,7 @@ export function useSession() {
     state.defaultLanguage = null
     state.known = true
     useLive().reset()
+    clearResources()
   }
 
   /** The session ended on its own (expired, signed out elsewhere, backend restarted). */

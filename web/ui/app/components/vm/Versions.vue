@@ -1,28 +1,13 @@
 <script setup lang="ts">
 // The versions of the tools in a VM (#104): those of the Build its System disk was made from,
-// next to what is available, from GET /images. Fetched again when the System disk or the
-// Image's current Build changes; unknown when GET /images fails.
-import type { ImagesOverview } from '~/utils/images'
+// next to what is available, from the resource `images`. An extra read: unknown while it fails.
 import type { Vm } from '~/utils/live'
 
 const props = defineProps<{ vm: Vm }>()
 const { t } = useI18n()
 
-const overview = ref<ImagesOverview | null>(null)
-let token = 0
-async function load() {
-  const mine = ++token
-  try {
-    const data = await api<ImagesOverview>('/images')
-    if (mine === token) overview.value = data
-  }
-  catch {
-    // not readable now: every version shows as unknown
-    if (mine === token) overview.value = null
-  }
-}
-useReloadOnActivity(load, { codes: ['maintenance.versions', 'build.ok', 'update-now'] })
-watch(() => [props.vm.name, props.vm.system_disk?.build, props.vm.image_build], load, { immediate: true })
+const images = useResource('images', { extra: true })
+const overview = images.data
 
 const diskBuild = computed(() => props.vm.system_disk?.build ?? null)
 const diskImage = computed(() => props.vm.system_disk?.image ?? props.vm.image ?? null)
@@ -42,6 +27,7 @@ const changes = computed(() => (build.value?.updates?.length ?? 0) > 0 || !!pack
     <h4 class="text-xs font-medium uppercase tracking-wide text-dimmed">
       {{ t('vm.overview.versions') }}
     </h4>
+    <ReadFailure :resource="images" />
     <p v-if="!diskBuild" class="text-sm text-muted">
       {{ t('vm.overview.versionsNoDisk') }}
     </p>

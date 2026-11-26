@@ -49,7 +49,6 @@ export default {
     historyNote: 'The lines show the last {minutes} minutes.',
   },
   system: {
-    retry: 'Try again',
     host: { title: 'Host' },
     reboot: {
       title: 'Host reboot',

@@ -7,7 +7,9 @@ const { t, locale } = useI18n()
 const errorText = useErrorText()
 const toast = useToast()
 const images = useImages()
-const { overview, loading, error, startError, starting, logs, logLoading, logErrors } = images
+const { startError, starting, logs, logLoading, logErrors } = images
+const overview = images.resource.data
+const loading = images.resource.loading
 // an update of every Image runs (Update now, or the automatic one)
 const updatingAll = images.updating
 const repositoryLink = computed(() => githubLink(overview.value?.repository_url))
@@ -131,16 +133,8 @@ async function update(vms: string[]) {
       :title="errorText(startError)"
       data-testid="images-start-error"
     />
-    <UAlert
-      v-if="error"
-      color="error"
-      variant="subtle"
-      icon="i-lucide-circle-alert"
-      :title="errorText(error)"
-      :actions="[{ label: t('system.retry'), color: 'error', variant: 'outline', onClick: () => images.load() }]"
-      data-testid="images-error"
-    />
-    <p v-else-if="loading && !overview" class="text-sm text-muted">
+    <ReadFailure :resource="images.resource" data-testid="images-error" />
+    <p v-if="loading" class="text-sm text-muted">
       {{ t('system.images.loading') }}
     </p>
     <template v-else-if="overview">

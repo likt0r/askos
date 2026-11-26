@@ -15,29 +15,38 @@ const live = useLive()
 const NONE = '__none__'
 const form = reactive({ name: '', image: '', memory: '' as string | number, disk: '' as string | number, owners: '', copyFrom: NONE, copySshFrom: NONE })
 const touched = ref(false)
-const images = ref<Image[] | null>(null)
-const loading = ref(false)
+const overview = useResource('images', { enabled: open })
+const images = computed<Image[] | null>(() => (overview.data.value ? overview.data.value.images ?? [] : null))
+// the Settings' defaults; null while they are read
+const defaults = ref<Record<string, Setting> | null>(null)
+const loading = computed(() => overview.loading.value || defaults.value === null)
 const saving = ref(false)
 const error = ref<string | null>(null)
 const errorField = ref<string | null>(null)
 
 interface Setting { value: unknown }
 
-async function load() {
-  loading.value = true
-  const [imgs, settings] = await Promise.allSettled([
-    api<{ images?: Image[] }>('/images'),
-    api<{ settings?: Record<string, Setting> }>('/settings'),
-  ])
-  images.value = imgs.status === 'fulfilled' && Array.isArray(imgs.value?.images) ? imgs.value.images : []
-  const s = settings.status === 'fulfilled' ? settings.value?.settings ?? {} : {}
-  const usable = images.value.filter(i => i.current).map(i => i.name)
-  const wanted = typeof s.default_image?.value === 'string' ? s.default_image.value : 'base'
-  form.image = usable.includes(wanted) ? wanted : usable[0] ?? ''
+async function loadDefaults() {
+  defaults.value = null
+  try {
+    defaults.value = (await api<{ settings?: Record<string, Setting> }>('/settings'))?.settings ?? {}
+  }
+  catch {
+    defaults.value = {}
+  }
+  const s = defaults.value
   if (typeof s.default_memory_mib?.value === 'number') form.memory = s.default_memory_mib.value
   if (typeof s.default_data_disk_gib?.value === 'number') form.disk = s.default_data_disk_gib.value
-  loading.value = false
 }
+
+// the Image the Settings name, else the first with a Build, once both are known (not from a
+// copy that is being read again)
+watch([images, defaults, overview.fetching], ([list, s, fetching]) => {
+  if (!open.value || form.image || !list || !s || fetching) return
+  const usable = list.filter(i => i.current).map(i => i.name)
+  const wanted = typeof s.default_image?.value === 'string' ? s.default_image.value : 'base'
+  form.image = usable.includes(wanted) ? wanted : usable[0] ?? ''
+})
 
 watch(open, (value) => {
   if (!value) return
@@ -45,7 +54,7 @@ watch(open, (value) => {
   touched.value = false
   error.value = null
   errorField.value = null
-  void load()
+  void loadDefaults()
 })
 
 const existing = computed(() => live.state.vms.map(v => v.name))
@@ -135,6 +144,7 @@ async function create() {
           />
         </UFormField>
 
+        <ReadFailure :resource="overview" />
         <UFormField :label="t('vm.create.image')" :error="noImage ? t('vm.create.noImage') : undefined">
           <USelect
             v-model="form.image"
