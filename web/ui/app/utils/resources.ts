@@ -59,10 +59,10 @@ export const ON_EVENT: Record<string, EventRow> = {
   },
 }
 
-/** Activity entries (`code ?? action`) after which resources are read again. */
+/** Activity entries (`code ?? action`) after which resources are read again. The end of a Build
+ * needs no row: its `build` event marks `images` stale. */
 export const ON_ACTIVITY: Record<string, ResourceName[]> = {
   'maintenance.versions': ['images'],
-  'build.ok': ['images'],
   'update-now': ['images'],
   // a Recipe defines an Image: it comes, changes or goes without a Build
   'recipe.set': ['images'],

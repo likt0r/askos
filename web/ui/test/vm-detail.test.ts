@@ -907,11 +907,20 @@ describe('tool versions follow the Activity', () => {
     return { ...opened, loads: () => api.calls.filter(c => c.path === '/images').length }
   }
 
-  it.each(['maintenance.versions', 'build.ok', 'update-now'])('%s reads the Images again', async (code) => {
+  it.each(['maintenance.versions', 'update-now'])('%s reads the Images again', async (code) => {
     const { es, loads } = await open()
     expect(loads()).toBe(1)
     es.emit('activity', entry(code))
     await wait(() => expect(loads()).toBe(2))
+  })
+
+  it('a Build\'s end reads the Images again, once with its build.ok entry', async () => {
+    const { es, loads } = await open()
+    es.emit('build', { image: 'base', build: '20261103-1200', status: 'ok', step: 'done', started: 't', finished: 't', error: null, problems: [], actor: 'timer', unit: 'u' })
+    await wait(() => expect(loads()).toBe(2))
+    es.emit('activity', entry('build.ok', 'build'))
+    await new Promise(r => setTimeout(r, 300))
+    expect(loads()).toBe(2)
   })
 
   it('ignores other codes and a hello that resumed; a hello that could not resume reads again', async () => {

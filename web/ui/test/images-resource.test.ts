@@ -69,7 +69,7 @@ describe('one copy of the Images', () => {
     let answers = 0
     fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': () => (++answers === 2 ? FAILED : OK(IMAGES)) })
     const { es } = await openApp('/system', [WORK])
-    es.emit('activity', { time: 't', vm: null, actor: 'timer', kind: 'action', action: 'build.ok', code: 'build.ok', outcome: 'ok', description: '' })
+    es.emit('activity', { time: 't', vm: null, actor: 'timer', kind: 'action', action: 'maintenance.versions', code: 'maintenance.versions', outcome: 'ok', description: '' })
     await flushPromises()
     expect(failure()).toBe('stale')
     es.emit('build', { image: 'base', build: '3', status: 'running', step: 'build', started: 't', finished: null, error: null, problems: [], actor: null, unit: 'u' })
@@ -120,7 +120,7 @@ describe('a failed read of the Images', () => {
     fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': () => (++answers === 2 ? FAILED : OK(IMAGES)) })
     const { es } = await openApp('/system', [WORK])
     const section = byTestId('system-images').element
-    es.emit('activity', { time: 't', vm: null, actor: 'timer', kind: 'action', action: 'build.ok', code: 'build.ok', outcome: 'ok', description: '' })
+    es.emit('activity', { time: 't', vm: null, actor: 'timer', kind: 'action', action: 'maintenance.versions', code: 'maintenance.versions', outcome: 'ok', description: '' })
     await flushPromises()
     expect(answers).toBe(2)
     expect(failure(section)).toBe('stale')
@@ -206,7 +206,7 @@ describe('a failed read of the Images', () => {
     const { es } = await openApp('/system', [WORK])
     const section = byTestId('system-images').element
     offline = true
-    es.emit('activity', { time: 't', vm: null, actor: 'timer', kind: 'action', action: 'build.ok', code: 'build.ok', outcome: 'ok', description: '' })
+    es.emit('activity', { time: 't', vm: null, actor: 'timer', kind: 'action', action: 'maintenance.versions', code: 'maintenance.versions', outcome: 'ok', description: '' })
     es.drop()
     await flushPromises()
     expect(reads(api)).toBe(2)
@@ -227,7 +227,7 @@ describe('a failed read of the Images', () => {
     fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': () => answer() as never })
     const { es } = await openApp('/system', [WORK])
     answer = OFFLINE
-    es.emit('activity', { time: 't', vm: null, actor: 'timer', kind: 'action', action: 'build.ok', code: 'build.ok', outcome: 'ok', description: '' })
+    es.emit('activity', { time: 't', vm: null, actor: 'timer', kind: 'action', action: 'maintenance.versions', code: 'maintenance.versions', outcome: 'ok', description: '' })
     es.drop()
     await flushPromises()
     answer = () => new Promise(resolve => { release = () => resolve(OK(IMAGES)) })

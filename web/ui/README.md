@@ -145,7 +145,7 @@ section describes, until it moves into the module (#212).
   is written into the cache (`build`, through `applyBuild`). An event that only says something
   changed marks the resource stale: `images` after a `build` event whose status is not `running`
   or that `applyBuild` cannot place, after `updating` of the `services` event goes from true to
-  false, and after the Activity codes `maintenance.versions`, `build.ok`, `update-now`,
+  false, and after the Activity codes `maintenance.versions`, `update-now`,
   `recipe.set`, `recipe.restore`, `recipe.remove` (a Recipe's Image comes or goes) and
   `create`, `delete`, `set-image`, `reset`, `reset.automatic`, `reset.update` (which VMs use
   and pin each Build). A write keeps a stale mark and a failed read's error. A

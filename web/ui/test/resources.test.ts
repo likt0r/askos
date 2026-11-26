@@ -98,14 +98,15 @@ describe('the stale table for images (without a view)', () => {
     expect(stale()).toBe(true)
   })
 
-  it.each(['maintenance.versions', 'build.ok', 'update-now', 'recipe.set', 'recipe.restore', 'recipe.remove',
+  it.each(['maintenance.versions', 'update-now', 'recipe.set', 'recipe.restore', 'recipe.remove',
     'create', 'delete', 'set-image', 'reset', 'reset.automatic', 'reset.update'])('marks it stale on the Activity code %s', (code) => {
     live.emit('activity', entry(code))
     expect(stale()).toBe(true)
   })
 
   it('ignores other Activity codes', () => {
-    for (const code of ['start', 'build.failed', 'allowlist.add']) live.emit('activity', entry(code))
+    // a Build's end comes as its `build` event
+    for (const code of ['start', 'build.ok', 'build.failed', 'allowlist.add']) live.emit('activity', entry(code))
     live.emit('activity', null)
     expect(stale()).toBe(false)
   })
@@ -168,7 +169,7 @@ describe('reading a resource', () => {
     const off = observer.subscribe(() => {})        // a view shows it
     await flushPromises()
     expect(api.calls).toHaveLength(1)
-    live.emit('activity', entry('build.ok'))
+    live.emit('activity', entry('maintenance.versions'))
     live.emit('activity', entry('update-now'))
     live.emit('build', buildEvent('2', 'ok'))
     await flushPromises()
