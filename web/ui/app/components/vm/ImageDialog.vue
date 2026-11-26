@@ -12,31 +12,18 @@ const errorText = useErrorText()
 const toast = useToast()
 
 const CURRENT = '__current__'      // a radio value cannot be empty
-const images = ref<Image[] | null>(null)
-const loadError = ref<string | null>(null)
+const overview = useResource('images', { enabled: open })
+const images = computed<Image[] | null>(() => (overview.data.value ? overview.data.value.images ?? [] : null))
 const error = ref<string | null>(null)
 const saving = ref(false)
 const image = ref('')
 const build = ref(CURRENT)
-
-async function load() {
-  images.value = null
-  loadError.value = null
-  try {
-    const r = await api<{ images?: Image[] }>('/images')
-    images.value = Array.isArray(r?.images) ? r.images : []
-  }
-  catch (e) {
-    loadError.value = errorText(e)
-  }
-}
 
 watch(open, (value) => {
   if (!value) return
   image.value = props.vm.image ?? ''
   build.value = props.vm.build_pin ?? CURRENT
   error.value = null
-  void load()
 })
 
 const selected = computed(() => images.value?.find(i => i.name === image.value))
@@ -108,10 +95,10 @@ async function save() {
   <UModal v-model:open="open" :title="t('vm.image.title', { name: props.vm.name })" :description="t('vm.image.text')">
     <template #body>
       <form class="space-y-5" data-testid="image-dialog" @submit.prevent="save">
-        <p v-if="!images && !loadError" class="text-sm text-muted">
+        <p v-if="overview.loading.value" class="text-sm text-muted">
           {{ t('vm.image.loading') }}
         </p>
-        <UAlert v-if="loadError" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="loadError" />
+        <ReadFailure :resource="overview" />
         <template v-if="images">
           <URadioGroup
             :model-value="image"

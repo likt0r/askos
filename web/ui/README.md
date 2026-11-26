@@ -58,7 +58,8 @@ app/
   pages/                   /sign-in, /vms, /vms/<vm>/{web,access,log,pair}, /allowlist,
                            /watchlist, /activity, /system, /settings
   components/              ConnectionStatus, ConnectionNotice, HostBar, LanguageSwitch,
-                           SignOutButton, VmList, VmStateBadge, PlaceholderView
+                           SignOutButton, VmList, VmStateBadge, PlaceholderView, ReadFailure
+                           (where a failed read of a resource shows)
   components/activity/     ActivityFilters, ActivityList
   components/host/         HostTiles, Sparkline (host bar details and the System page)
   components/system/       SystemHostReboot, SystemImages, SystemImageCard, SystemImageDefinition
@@ -78,13 +79,16 @@ app/
                            (the one live connection), useLanguage (the switch with Automatic;
                            the sign-in page's order and `default_language`, both applied by the
                            auth middleware), useErrorText (API error code -> translated text),
-                           useNow, useActivity, useHost, useImages, useSettings,
+                           useNow, useActivity, useHost, useImages (the resource `images`,
+                           rebuilds, Update now, the log of a Build), useSettings,
                            useNotifications (this browser's preference, the `notification`
                            listener), useReloadPrompt (own version vs. `version` event),
                            useLiveEvent (live.on() for a component, bursts gathered),
                            useReloadOnActivity (a view's load on the Activity entries that change its data),
                            useWhen (times in the UI language)
   utils/api.ts             fetch for /api/v1: X-Agentbox: 1 on changes, ApiError with the code
+  utils/resources.ts       the resources module: every resource declared once, the cache
+                           (TanStack Query), the table of what an event does, useResource, change
   utils/live.ts            EventSource state: snapshot + vm events, reconnect, dead stream;
                            `live.on(name, fn)` for the other events
   utils/language.ts        the choice in this browser (localStorage; none: Automatic), else
@@ -97,10 +101,56 @@ app/
 public/notification-sw.js  service worker that only shows notifications (Android's Chrome
                            has no `new Notification`); served by the backend as a file
 i18n/locales/{en,de}.ts    UI strings of the shell; every API error code has a translation
-i18n/locales/{en,de}/<area>.ts   strings per area (access, activity, notifications, settings,
-                           system, vm), spread into en.ts and de.ts (vm.ts sits under `vm`)
+i18n/locales/{en,de}/<area>.ts   strings per area (access, activity, notifications, read,
+                           settings, system, vm), spread into en.ts and de.ts (vm.ts sits under `vm`)
 test/                      Vitest
 ```
+
+### Server data: the resources module
+
+Server data lives in one cache, in `app/utils/resources.ts` ([ADR
+0026](../../docs/adr/0026-the-control-room-ui-holds-server-data-in-one-cache.md)). The resources
+it holds so far: `images` (`GET /images`). Every other view still reads on its own, as the next
+section describes, until it moves into the module (#212).
+
+- **Declaring a resource**: one line in `RESOURCES`, its name, its path and the type of its
+  answer (`images: declare<ImagesOverview>('/images')`). The key in the cache is `[name]`.
+- **Asking for one**: `const images = useResource('images')` gives `data` (undefined until an
+  answer came), `loading` (nothing yet and a read on the way), `error` (why the last read failed)
+  and `retry()`. Every view that asks shares one copy and one read. `{ enabled: open }` reads
+  only while a dialog is open; `{ extra: true }` declares a read whose failure the view does not
+  show. A view does not know the path, when to read, or how to drop a late answer.
+- **Showing a failed read**: `<ReadFailure :resource="images" />`, in place of the section.
+  When nothing was read yet, it says what could not be read and why (`useErrorText`), with Retry.
+  When data is shown, the data stays and a small notice says it could not be refreshed, with
+  Retry. While the Control Room cannot be reached (`ApiError` code `network`, or the live
+  connection is reconnecting) it shows nothing: the connection notice says that, and the read
+  happens again with the next `hello`. For an extra it shows nothing. It offers no "Details"
+  yet: the Host's text is shown only once #215 has checked that it cannot carry a secret.
+- **What an event does** (`ON_EVENT`, `ON_ACTIVITY`): an event that carries the whole object
+  is written into the cache (`build`, through `applyBuild`). An event that only says something
+  changed marks the resource stale: `images` after a `build` event whose status is not `running`
+  or that `applyBuild` cannot place, after `updating` of the `services` event goes from true to
+  false, and after the Activity codes `maintenance.versions`, `build.ok` and `update-now`. A
+  stale resource that a view shows is read again; one that nothing shows is read when a view
+  next asks for it. A new Activity code that changes a resource needs a row here; without one,
+  the view shows old data until the next reconnect or reload.
+- **An event during a read**: an event written while a read of its resource is on the way is
+  applied to that read's answer as well, and a resource that turns stale during a read is read
+  once more right after it (once for a whole burst). The older answer never undoes an event.
+- **When data is read again**: only for a reason the stream or the owner gives: a row of the
+  table, a change made in this browser, a `hello` with `resumed: false` that is not the first
+  (everything is stale, and `onMissedEvents` listeners run for what lives outside the cache,
+  such as a Build's log), any later `hello` for the reads that failed, or Retry. Never by the
+  clock, never on window focus, never as an automatic retry.
+- **A change made in this browser**: `change(path, { method, body }, ['images'])` runs the
+  request and then marks the named resources stale, whether it succeeded or was refused (a
+  refusal such as `build_running` means something else runs, which the next read shows).
+- **Timing**: `notifyManager.setScheduler(queueMicrotask)` at the top of the module. Answers
+  reach the views in a microtask, not in the `setTimeout(0)` of query-core's default. The app
+  and the tests take the same path, and a test waits with `flushPromises()`.
+- **Tests**: `resetLiveForTests()` also clears the cache. Signing out clears it as well
+  (`clearResources`).
 
 ### Subscribing to the live stream
 

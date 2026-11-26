@@ -1,6 +1,6 @@
 # The Control Room UI holds all server data in one cache; an event writes into it or marks it stale
 
-Status: Accepted (#212), by the owner on 2026-11-26. Not built yet: the steps are the children of #212.
+Status: Accepted (#212), by the owner on 2026-11-26. Built so far: the resources module with its first resource, `images`, its rows of the table and the read-failure element (#214, `web/ui/app/utils/resources.ts`, `web/ui/app/components/ReadFailure.vue`). The other steps are the children of #212.
 
 ## Context
 

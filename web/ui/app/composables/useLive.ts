@@ -12,8 +12,9 @@ export function useLive(): Live {
   return live
 }
 
-/** Tests only: drop the instance (and its EventSource). */
+/** Tests only: drop the instance (and its EventSource) and the cache of the resources. */
 export function resetLiveForTests() {
   live?.stop()
   live = null
+  clearResources()
 }
