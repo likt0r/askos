@@ -54,7 +54,7 @@ One place names the kind of every failure and picks where it appears. The text f
 - **The error page replaces the page area only.** The navigation and the host bar stay, so the owner keeps the way out and still sees the VMs. A full-screen error page appears only when the shell itself fails. Both are in English and German.
 - **A view names only the refusals it words itself**, such as `domain_suspicious`, `force_required` or the field of a Setting; everything else takes the default of its kind.
 - **A view may declare a read an extra.** Its failure then shows nothing there: the mark for a missing Installation beside a VM's GitHub owners, the longest duration offered for Open web.
-- **"Details" shows the Host's own English text of a failure**, folded away and copyable, once it is checked that this text cannot carry a secret; `docs/control-room-api.md` says so today only for a failure's `params`.
+- **"Details" shows the Host's own English text of a failure**, folded away and copyable, once it is checked that this text cannot carry a secret (#215); `docs/control-room-api.md` says so today only for a failure's `params`.
 - **A fault of the UI stays in the browser.** Nothing is reported to the Host.
 
 ### Tests
@@ -67,7 +67,7 @@ The UI's tests keep driving it as the backend would, through the stand-ins for `
 - A new Activity code that changes a resource needs a row in the module's table, entered by hand. A row that is missing shows old data until the next reconnect or reload. Whether the Host should name what an entry makes stale is open (#219).
 - A change on the Host costs one `GET` per stale resource that a view shows. The backend's events stay as they are.
 - `@tanstack/vue-query` and the packages it brings enter `web/ui/package-lock.json`. They run where the UI is built and tested, in CI and in a VM ([ADR 0011](0011-the-control-room-ui-is-built-in-ci.md)); the Host still has no Node ([ADR 0003](0003-no-node-on-the-host.md)).
-- The Content-Security-Policy stays `'self'`: nothing in this adds a `<style>` or `<script>` element at runtime.
+- The Content-Security-Policy stays as it is, `'self'` plus the hashes of the inline `<script>` and `<style>` of `index.html`: nothing in this adds a `<style>` or `<script>` element at runtime.
 - The views lose their own load functions, request counters, code lists and the events that tell a page to load again; `useReloadOnActivity` and `useLiveEvent` go when their last callers do.
 
 ## Considered Options
