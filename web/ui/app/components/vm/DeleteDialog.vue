@@ -6,46 +6,33 @@ import type { Vm } from '~/utils/live'
 const props = defineProps<{ vm: Pick<Vm, 'name' | 'data_disk_gib'> }>()
 const open = defineModel<boolean>('open', { default: false })
 const { t } = useI18n()
-const errorText = useErrorText()
 const toast = useToast()
 
 const deleteData = ref(false)
-const loading = ref(false)
-const error = ref<string | null>(null)
+const del = useChange('deleteVm', { form: true })
 
 watch(open, (value) => {
   if (value) {
     deleteData.value = false
-    error.value = null
+    del.reset()
   }
 })
 
 async function remove() {
-  loading.value = true
-  error.value = null
   const name = props.vm.name
-  try {
-    const r = await api<{ data_disk?: string, archive?: string | null }>(`/vms/${name}`, {
-      method: 'DELETE',
-      body: { confirm: name, delete_data_disk: deleteData.value },
-    })
-    open.value = false
-    toast.add({
-      title: t('vm.delete.done', { name }),
-      description: r?.data_disk === 'archived' && r.archive
-        ? t('vm.delete.archivedAt', { path: r.archive })
-        : r?.data_disk === 'deleted' ? t('vm.delete.dataDeleted') : undefined,
-      color: 'success',
-      icon: 'i-lucide-check',
-    })
-    await navigateTo('/vms')
-  }
-  catch (e) {
-    error.value = errorText(e)
-  }
-  finally {
-    loading.value = false
-  }
+  const r = await del.run({ vm: name, deleteDataDisk: deleteData.value })
+  if (!r.ok) return
+  const done = r.data as { data_disk?: string, archive?: string | null } | null
+  open.value = false
+  toast.add({
+    title: t('vm.delete.done', { name }),
+    description: done?.data_disk === 'archived' && done.archive
+      ? t('vm.delete.archivedAt', { path: done.archive })
+      : done?.data_disk === 'deleted' ? t('vm.delete.dataDeleted') : undefined,
+    color: 'success',
+    icon: 'i-lucide-check',
+  })
+  await navigateTo('/vms')
 }
 </script>
 
@@ -56,8 +43,8 @@ async function remove() {
     :description="t('vm.delete.text')"
     :confirm-label="t('vm.delete.confirm')"
     :typed="props.vm.name"
-    :loading="loading"
-    :error="error"
+    :loading="del.busy.value"
+    :failure="del.shown.value"
     testid="delete-dialog"
     @confirm="remove"
   >

@@ -8,20 +8,19 @@ const props = defineProps<{
 }>()
 const open = defineModel<boolean>('open', { default: false })
 const { t } = useI18n()
-const errorText = useErrorText()
 const toast = useToast()
 
 const enabled = ref(true)
 const days = ref<string | number>('7')
-const saving = ref(false)
-const error = ref<string | null>(null)
+const set = useChange('setContainerImageCleanup', { form: true })
+const saving = set.busy
 const current = computed(() => containerImageCleanup(props.vm))
 
 watch(open, (v) => {
   if (!v) return
   enabled.value = current.value.enabled
   days.value = current.value.days
-  error.value = null
+  set.reset()
 })
 
 const wholeDays = computed(() => wholeNumber(days.value, 1, 365))
@@ -37,19 +36,9 @@ const ready = computed(() => !saving.value && typeof wholeDays.value === 'number
 async function save() {
   if (!ready.value) return
   const name = props.vm.name
-  saving.value = true
-  error.value = null
-  try {
-    await api(`/vms/${name}/container-image-cleanup`, { method: 'PUT', body: changes.value })
-    open.value = false
-    toast.add({ title: t('vm.containerImageCleanup.saved', { name }), color: 'success', icon: 'i-lucide-check' })
-  }
-  catch (e) {
-    error.value = errorText(e)
-  }
-  finally {
-    saving.value = false
-  }
+  if (!(await set.run({ vm: name, ...changes.value })).ok) return
+  open.value = false
+  toast.add({ title: t('vm.containerImageCleanup.saved', { name }), color: 'success', icon: 'i-lucide-check' })
 }
 </script>
 
@@ -78,14 +67,7 @@ async function save() {
           :title="t('vm.containerImageCleanup.nextRun')"
           data-testid="container-image-cleanup-next-run"
         />
-        <UAlert
-          v-if="error"
-          color="error"
-          variant="subtle"
-          icon="i-lucide-circle-alert"
-          :title="error"
-          data-testid="container-image-cleanup-error"
-        />
+        <ChangeFailure :error="set.shown.value" data-testid="container-image-cleanup-error" />
         <div class="flex flex-wrap justify-end gap-2">
           <UButton color="neutral" variant="ghost" :label="t('vm.confirm.cancel')" :disabled="saving" @click="open = false" />
           <UButton

@@ -46,8 +46,11 @@ async function load() {
 // --- the Pairing code ----------------------------------------------------------
 
 const revealOpen = ref(false)
-const revealing = ref(false)
-const revealError = ref<string | null>(null)
+const revealChange = useChange('revealPairingCode', { form: true })
+const revealing = revealChange.busy
+// an answer without a code: Orca gave none
+const noCode = ref<Error | null>(null)
+const revealFailure = computed(() => revealChange.shown.value ?? noCode.value)
 const code = ref<string | null>(null)
 let hideTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -58,22 +61,18 @@ function hideCode() {
 }
 
 async function reveal() {
-  revealing.value = true
-  revealError.value = null
-  try {
-    const r = await api<{ code?: string }>(`/vms/${props.name}/pairing-code`, { method: 'POST', body: { confirm: true } })
-    if (typeof r?.code !== 'string' || !r.code) throw new Error('no code')
-    revealOpen.value = false
-    code.value = r.code
-    if (hideTimer) clearTimeout(hideTimer)
-    hideTimer = setTimeout(hideCode, props.hideCodeAfterMs ?? 120000)
+  noCode.value = null
+  const r = await revealChange.run(props.name)
+  if (!r.ok) return
+  const answer = (r.data as { code?: string } | null)?.code
+  if (typeof answer !== 'string' || !answer) {
+    noCode.value = new Error('no code')
+    return
   }
-  catch (e) {
-    revealError.value = errorText(e)
-  }
-  finally {
-    revealing.value = false
-  }
+  revealOpen.value = false
+  code.value = answer
+  if (hideTimer) clearTimeout(hideTimer)
+  hideTimer = setTimeout(hideCode, props.hideCodeAfterMs ?? 120000)
 }
 
 async function copyCode() {
@@ -88,40 +87,32 @@ async function copyCode() {
 }
 
 function openReveal() {
-  revealError.value = null
+  revealChange.reset()
+  noCode.value = null
   revealOpen.value = true
 }
 
 // --- revoking ------------------------------------------------------------------
 
 const revokeOpen = ref(false)
-const revoking = ref(false)
-const revokeError = ref<string | null>(null)
+const revokeChange = useChange('revokePairings', { form: true })
+
+function openRevoke() {
+  revokeChange.reset()
+  revokeOpen.value = true
+}
 
 async function revoke() {
-  revoking.value = true
-  revokeError.value = null
-  try {
-    const r = await api<{ observer_repaired?: boolean | null }>(`/vms/${props.name}/pairings/revoke`, {
-      method: 'POST',
-      body: { confirm: props.name },
-    })
-    revokeOpen.value = false
-    hideCode()           // a code of the old identity is no use any more
-    toast.add({
-      title: t('vm.pair.revoked', { name: props.name }),
-      description: r?.observer_repaired === true ? t('vm.pair.observerRepaired') : undefined,
-      color: 'success',
-      icon: 'i-lucide-check',
-    })
-    void load()
-  }
-  catch (e) {
-    revokeError.value = errorText(e)
-  }
-  finally {
-    revoking.value = false
-  }
+  const r = await revokeChange.run(props.name)
+  if (!r.ok) return
+  revokeOpen.value = false
+  hideCode()           // a code of the old identity is no use any more
+  toast.add({
+    title: t('vm.pair.revoked', { name: props.name }),
+    description: (r.data as { observer_repaired?: boolean | null } | null)?.observer_repaired === true ? t('vm.pair.observerRepaired') : undefined,
+    color: 'success',
+    icon: 'i-lucide-check',
+  })
 }
 
 // --- removing one device (only if Orca ever supports it) -------------------------
@@ -133,25 +124,17 @@ const removeOpen = computed({
     if (!v) removeTarget.value = null
   },
 })
-const removing = ref(false)
-const removeError = ref<string | null>(null)
+const removeChange = useChange('removePairing', { form: true })
+
+function openRemove(d: Device) {
+  removeChange.reset()
+  removeTarget.value = d
+}
 
 async function removeDevice() {
   const d = removeTarget.value
-  if (!d) return
-  removing.value = true
-  removeError.value = null
-  try {
-    await api(`/vms/${props.name}/pairings/remove`, { method: 'POST', body: { device: d.id } })
-    removeTarget.value = null
-    void load()
-  }
-  catch (e) {
-    removeError.value = errorText(e)
-  }
-  finally {
-    removing.value = false
-  }
+  if (!d || !(await removeChange.run({ vm: props.name, device: d.id })).ok) return
+  removeTarget.value = null
 }
 
 const canRemove = (d: Device) => data.value?.single_removal === true && d.removable && !d.observer
@@ -251,7 +234,7 @@ useReloadOnActivity(load, { codes: ['observe', 'unpair', 'revoke-pairings'], mat
               variant="ghost"
               :label="t('vm.pair.remove')"
               data-testid="pair-remove"
-              @click="removeError = null; removeTarget = d"
+              @click="openRemove(d)"
             />
           </li>
         </ul>
@@ -281,7 +264,7 @@ useReloadOnActivity(load, { codes: ['observe', 'unpair', 'revoke-pairings'], mat
             {{ t('vm.pair.revokeText') }}
           </p>
         </div>
-        <UButton icon="i-lucide-shield-off" color="error" variant="outline" :label="t('vm.pair.revoke')" data-testid="pair-revoke" @click="revokeError = null; revokeOpen = true" />
+        <UButton icon="i-lucide-shield-off" color="error" variant="outline" :label="t('vm.pair.revoke')" data-testid="pair-revoke" @click="openRevoke" />
       </div>
     </section>
 
@@ -292,7 +275,7 @@ useReloadOnActivity(load, { codes: ['observe', 'unpair', 'revoke-pairings'], mat
       :confirm-label="t('vm.pair.revealConfirm')"
       color="warning"
       :loading="revealing"
-      :error="revealError"
+      :failure="revealFailure"
       testid="reveal-dialog"
       @confirm="reveal"
     >
@@ -307,8 +290,8 @@ useReloadOnActivity(load, { codes: ['observe', 'unpair', 'revoke-pairings'], mat
       :description="t('vm.pair.revokeDialogText')"
       :confirm-label="t('vm.pair.revoke')"
       :typed="props.name"
-      :loading="revoking"
-      :error="revokeError"
+      :loading="revokeChange.busy.value"
+      :failure="revokeChange.shown.value"
       testid="revoke-dialog"
       @confirm="revoke"
     />
@@ -318,8 +301,8 @@ useReloadOnActivity(load, { codes: ['observe', 'unpair', 'revoke-pairings'], mat
       :title="t('vm.pair.removeTitle', { device: removeTarget?.name || removeTarget?.id || '' })"
       :description="t('vm.pair.removeText')"
       :confirm-label="t('vm.pair.remove')"
-      :loading="removing"
-      :error="removeError"
+      :loading="removeChange.busy.value"
+      :failure="removeChange.shown.value"
       testid="remove-dialog"
       @confirm="removeDevice"
     />

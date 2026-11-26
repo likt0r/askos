@@ -12,14 +12,15 @@ import type { EnvRow } from '~/utils/vmRules'
 const props = defineProps<{ vm: Pick<Vm, 'name' | 'state' | 'libvirt_state' | 'agents' | 'env' | 'env_refused'> }>()
 const open = defineModel<boolean>('open', { default: false })
 const { t } = useI18n()
-const errorText = useErrorText()
 const toast = useToast()
 
 const maxVariables = MAX_ENV_VARIABLES
 const rows = ref<EnvRow[]>([])
-const saving = ref(false)
-const restarting = ref(false)
-const error = ref<string | null>(null)
+const set = useChange('setEnv', { form: true })
+const restartVm = useChange('restartVm', { form: true })
+const saving = set.busy
+const restarting = restartVm.busy
+const failure = computed(() => set.shown.value ?? restartVm.shown.value)
 // the variables just saved for a VM that runs or is paused: the dialog then offers the Restart
 const saved = ref(false)
 
@@ -33,7 +34,8 @@ watch(open, (v) => {
   if (!v) return
   rows.value = Object.entries(current()).map(([name, value]) => ({ name, value }))
   if (!rows.value.length) rows.value.push({ name: '', value: '' })
-  error.value = null
+  set.reset()
+  restartVm.reset()
   saved.value = false
 })
 
@@ -61,57 +63,31 @@ function remove(i: number) {
   rows.value.splice(i, 1)
 }
 
-/** agentbox's refusal, naming the variable where it gives one. */
-function refusal(e: unknown): string {
-  const name = e instanceof ApiError ? e.params?.name : undefined
-  if (e instanceof ApiError && typeof name === 'string' && ['env_name_reserved', 'env_name_is_secret', 'invalid_env_value', 'env_too_large'].includes(e.code))
-    return t(`vm.env.named.${e.code}`, { name, max: MAX_ENV_VALUE_BYTES })
-  return errorText(e)
-}
-
 async function save() {
   if (!ready.value || busy.value) return
   const name = props.vm.name
-  saving.value = true
-  error.value = null
-  try {
-    const r = await api<{ applies?: string | null }>(`/vms/${name}/env`, { method: 'PUT', body: { env: checked.value.env } })
-    if (r?.applies === 'next_restart') {
-      saved.value = true
-      return
-    }
-    open.value = false
-    toast.add({
-      title: t('vm.env.saved', { name }),
-      description: r?.applies === 'next_start' ? t('vm.env.atNextStart') : undefined,
-      color: 'success',
-      icon: 'i-lucide-check',
-    })
+  const r = await set.run({ vm: name, env: checked.value.env })
+  if (!r.ok) return
+  const applies = (r.data as { applies?: string | null } | null)?.applies
+  if (applies === 'next_restart') {
+    saved.value = true
+    return
   }
-  catch (e) {
-    error.value = refusal(e)
-  }
-  finally {
-    saving.value = false
-  }
+  open.value = false
+  toast.add({
+    title: t('vm.env.saved', { name }),
+    description: applies === 'next_start' ? t('vm.env.atNextStart') : undefined,
+    color: 'success',
+    icon: 'i-lucide-check',
+  })
 }
 
 async function restart() {
   if (busy.value) return
   const name = props.vm.name
-  restarting.value = true
-  error.value = null
-  try {
-    await api(`/vms/${name}/restart`, { method: 'POST' })
-    open.value = false
-    toast.add({ title: t('vm.actions.done.restart', { name }), color: 'success', icon: 'i-lucide-check' })
-  }
-  catch (e) {
-    error.value = errorText(e)
-  }
-  finally {
-    restarting.value = false
-  }
+  if (!(await restartVm.run(name)).ok) return
+  open.value = false
+  toast.add({ title: t('vm.actions.done.restart', { name }), color: 'success', icon: 'i-lucide-check' })
 }
 </script>
 
@@ -205,7 +181,7 @@ async function restart() {
           :title="off ? t('vm.env.atNextStart') : t('vm.env.atNextRestart')"
           data-testid="env-applies"
         />
-        <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="error" data-testid="env-error" />
+        <ChangeFailure :error="failure" data-testid="env-error" />
         <div class="flex flex-wrap justify-end gap-2">
           <UButton color="neutral" variant="ghost" :label="t('vm.confirm.cancel')" :disabled="saving" @click="open = false" />
           <UButton type="submit" :label="t('vm.env.save')" :loading="saving" :disabled="!ready" data-testid="env-save" />
@@ -226,7 +202,7 @@ async function restart() {
         <p v-if="canRestart && working > 0" class="text-sm text-warning" data-testid="env-agents">
           {{ t('vm.reset.agentsWorking', working) }}
         </p>
-        <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="error" data-testid="env-error" />
+        <ChangeFailure :error="failure" data-testid="env-error" />
         <div class="flex flex-wrap justify-end gap-2">
           <UButton
             color="neutral"

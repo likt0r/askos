@@ -15,14 +15,16 @@ const props = defineProps<{
 }>()
 const open = defineModel<boolean>('open', { default: false })
 const { t } = useI18n()
-const errorText = useErrorText()
 const toast = useToast()
 
 const name = ref('')
 const value = ref('')
-const saving = ref(false)
-const restarting = ref(false)
-const error = ref<string | null>(null)
+const set = useChange('setSecret', { form: true })
+const unset = useChange('removeSecret', { form: true })
+const restartVm = useChange('restartVm', { form: true })
+const saving = computed(() => set.busy.value || unset.busy.value)
+const restarting = restartVm.busy
+const failure = computed(() => set.shown.value ?? unset.shown.value ?? restartVm.shown.value)
 // changed for a VM that runs or is paused: the dialog then offers the Restart
 const saved = ref(false)
 
@@ -32,7 +34,9 @@ const maxBytes = MAX_ENV_VALUE_BYTES
 watch(open, () => {
   name.value = props.secret ?? ''
   value.value = ''
-  error.value = null
+  set.reset()
+  unset.reset()
+  restartVm.reset()
   saved.value = false
 })
 
@@ -50,62 +54,35 @@ const title = computed(() => (adding.value
   ? t('vm.secrets.titleAdd', { name: props.vm.name })
   : t(removing.value ? 'vm.secrets.titleRemove' : 'vm.secrets.titleReplace', { name: props.vm.name, secret: props.secret })))
 
-/** agentbox's refusal, naming the secret where it gives one (never its value). */
-function refusal(e: unknown): string {
-  const named = e instanceof ApiError ? e.params?.name : undefined
-  if (e instanceof ApiError && typeof named === 'string'
-    && ['secret_name_reserved', 'secret_name_is_env', 'invalid_secret_value', 'secret_too_large'].includes(e.code))
-    return t(`vm.secrets.named.${e.code}`, { name: named, max: MAX_ENV_VALUE_BYTES })
-  return errorText(e)
-}
-
 async function send() {
   if (!ready.value || busy.value) return
   const vm = props.vm.name
   const secret = name.value.trim()
-  saving.value = true
-  error.value = null
-  try {
-    const r = removing.value
-      ? await api<{ applies?: string | null }>(`/vms/${vm}/secrets/${secret}`, { method: 'DELETE' })
-      : await api<{ applies?: string | null }>(`/vms/${vm}/secrets/${secret}`, { method: 'PUT', body: { value: value.value } })
-    value.value = ''
-    if (r?.applies === 'next_restart') {
-      saved.value = true
-      return
-    }
-    open.value = false
-    toast.add({
-      title: t(removing.value ? 'vm.secrets.removed' : 'vm.secrets.saved', { name: vm, secret }),
-      description: r?.applies === 'next_start' ? t('vm.secrets.atNextStart') : undefined,
-      color: 'success',
-      icon: 'i-lucide-check',
-    })
+  const r = removing.value
+    ? await unset.run({ vm, name: secret })
+    : await set.run({ vm, name: secret, value: value.value })
+  if (!r.ok) return
+  value.value = ''
+  const applies = (r.data as { applies?: string | null } | null)?.applies
+  if (applies === 'next_restart') {
+    saved.value = true
+    return
   }
-  catch (e) {
-    error.value = refusal(e)
-  }
-  finally {
-    saving.value = false
-  }
+  open.value = false
+  toast.add({
+    title: t(removing.value ? 'vm.secrets.removed' : 'vm.secrets.saved', { name: vm, secret }),
+    description: applies === 'next_start' ? t('vm.secrets.atNextStart') : undefined,
+    color: 'success',
+    icon: 'i-lucide-check',
+  })
 }
 
 async function restart() {
   if (busy.value) return
   const vm = props.vm.name
-  restarting.value = true
-  error.value = null
-  try {
-    await api(`/vms/${vm}/restart`, { method: 'POST' })
-    open.value = false
-    toast.add({ title: t('vm.actions.done.restart', { name: vm }), color: 'success', icon: 'i-lucide-check' })
-  }
-  catch (e) {
-    error.value = errorText(e)
-  }
-  finally {
-    restarting.value = false
-  }
+  if (!(await restartVm.run(vm)).ok) return
+  open.value = false
+  toast.add({ title: t('vm.actions.done.restart', { name: vm }), color: 'success', icon: 'i-lucide-check' })
 }
 </script>
 
@@ -154,7 +131,7 @@ async function restart() {
           :title="off ? t('vm.secrets.atNextStart') : t('vm.secrets.atNextRestart')"
           data-testid="secret-applies"
         />
-        <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="error" data-testid="secret-error" />
+        <ChangeFailure :error="failure" data-testid="secret-error" />
         <div class="flex flex-wrap justify-end gap-2">
           <UButton color="neutral" variant="ghost" :label="t('vm.confirm.cancel')" :disabled="saving" @click="open = false" />
           <UButton
@@ -182,7 +159,7 @@ async function restart() {
         <p v-if="canRestart && working > 0" class="text-sm text-warning" data-testid="secret-agents">
           {{ t('vm.reset.agentsWorking', working) }}
         </p>
-        <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="error" data-testid="secret-error" />
+        <ChangeFailure :error="failure" data-testid="secret-error" />
         <div class="flex flex-wrap justify-end gap-2">
           <UButton
             color="neutral"

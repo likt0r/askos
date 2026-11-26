@@ -8,7 +8,6 @@ import type { Image } from '~/utils/images'
 
 const open = defineModel<boolean>('open', { default: false })
 const { t } = useI18n()
-const errorText = useErrorText()
 const toast = useToast()
 const live = useLive()
 
@@ -20,9 +19,13 @@ const images = computed<Image[] | null>(() => (overview.data.value ? overview.da
 // the Settings' defaults; null while they are read
 const defaults = ref<Record<string, Setting> | null>(null)
 const loading = computed(() => overview.loading.value || defaults.value === null)
-const saving = ref(false)
-const error = ref<string | null>(null)
-const errorField = ref<string | null>(null)
+const create = useChange('createVm', { form: true })
+const saving = create.busy
+// a refusal of the name shows at the name; any other in the dialog
+const nameRefused = computed(() => {
+  const e = create.shown.value
+  return e instanceof ApiError && e.field === 'name'
+})
 
 interface Setting { value: unknown }
 
@@ -52,8 +55,7 @@ watch(open, (value) => {
   if (!value) return
   Object.assign(form, { name: '', image: '', memory: '', disk: '', owners: '', copyFrom: NONE, copySshFrom: NONE })
   touched.value = false
-  error.value = null
-  errorField.value = null
+  create.reset()
   void loadDefaults()
 })
 
@@ -62,7 +64,7 @@ const name = computed(() => form.name.trim())
 const nameError = computed(() => {
   const p = nameProblem(name.value, existing.value)
   if (p && (touched.value || (p !== 'required' && name.value))) return t(`vm.create.nameProblem.${p}`)
-  return errorField.value === 'name' ? error.value : null
+  return nameRefused.value ? create.text.value : null
 })
 const memory = computed(() => wholeNumber(form.memory, MIN_MEMORY_MIB, Number.MAX_SAFE_INTEGER))
 const memoryError = computed(() => (memory.value === 'invalid' ? t('vm.create.memoryInvalid', { min: MIN_MEMORY_MIB }) : null))
@@ -85,52 +87,39 @@ const noImage = computed(() => images.value !== null && !imageItems.value.length
 const valid = computed(() => !nameProblem(name.value, existing.value) && !!form.image
   && memory.value !== 'invalid' && disk.value !== 'invalid' && !owners.value.invalid.length)
 
-async function create() {
+async function submit() {
   touched.value = true
   if (!valid.value || saving.value) return
-  saving.value = true
-  error.value = null
-  errorField.value = null
-  try {
-    const r = await api<{ vm: string, network?: number, orca_port?: number, ssh_keys?: unknown[] }>('/vms', {
-      method: 'POST',
-      body: {
-        name: name.value,
-        image: form.image || null,
-        memory_mib: typeof memory.value === 'number' ? memory.value : null,
-        data_disk_gib: typeof disk.value === 'number' ? disk.value : null,
-        github_owners: owners.value.owners,
-        copy_allowlist_from: form.copyFrom === NONE ? null : form.copyFrom,
-        copy_ssh_keys_from: form.copySshFrom === NONE ? null : form.copySshFrom,
-      },
-    })
-    open.value = false
-    toast.add({
-      title: t('vm.create.done', { name: r?.vm ?? name.value }),
-      description: [
-        t('vm.create.doneText', { network: r?.network ?? '?', port: r?.orca_port ?? '?' }),
-        ...(form.copySshFrom === NONE ? [] : [t('vm.create.doneSsh', { from: form.copySshFrom }, Array.isArray(r?.ssh_keys) ? r.ssh_keys.length : 0)]),
-      ].join(' '),
-      color: 'success',
-      icon: 'i-lucide-check',
-    })
-    void live.refetchVms()
-    await navigateTo(`/vms/${r?.vm ?? name.value}`)
-  }
-  catch (e) {
-    error.value = errorText(e)
-    errorField.value = e instanceof ApiError ? e.field ?? null : null
-  }
-  finally {
-    saving.value = false
-  }
+  const r = await create.run({
+    name: name.value,
+    image: form.image || null,
+    memory_mib: typeof memory.value === 'number' ? memory.value : null,
+    data_disk_gib: typeof disk.value === 'number' ? disk.value : null,
+    github_owners: owners.value.owners,
+    copy_allowlist_from: form.copyFrom === NONE ? null : form.copyFrom,
+    copy_ssh_keys_from: form.copySshFrom === NONE ? null : form.copySshFrom,
+  })
+  if (!r.ok) return
+  const made = r.data as { vm?: string, network?: number, orca_port?: number, ssh_keys?: unknown[] } | null
+  open.value = false
+  toast.add({
+    title: t('vm.create.done', { name: made?.vm ?? name.value }),
+    description: [
+      t('vm.create.doneText', { network: made?.network ?? '?', port: made?.orca_port ?? '?' }),
+      ...(form.copySshFrom === NONE ? [] : [t('vm.create.doneSsh', { from: form.copySshFrom }, Array.isArray(made?.ssh_keys) ? made.ssh_keys.length : 0)]),
+    ].join(' '),
+    color: 'success',
+    icon: 'i-lucide-check',
+  })
+  void live.refetchVms()
+  await navigateTo(`/vms/${made?.vm ?? name.value}`)
 }
 </script>
 
 <template>
   <UModal v-model:open="open" :title="t('vm.create.title')" :description="t('vm.create.text')" :dismissible="!saving" :close="!saving">
     <template #body>
-      <form class="space-y-4" data-testid="create-dialog" novalidate @submit.prevent="create">
+      <form class="space-y-4" data-testid="create-dialog" novalidate @submit.prevent="submit">
         <UFormField :label="t('vm.create.name')" :help="t('vm.create.nameHelp')" :error="nameError ?? undefined" required>
           <UInput
             v-model="form.name"
@@ -197,7 +186,7 @@ async function create() {
           {{ t('vm.create.assigned') }}
         </p>
 
-        <UAlert v-if="error && errorField !== 'name'" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="error" data-testid="create-error" />
+        <ChangeFailure :error="nameRefused ? null : create.shown.value" data-testid="create-error" />
 
         <div class="flex flex-wrap justify-end gap-2">
           <UButton color="neutral" variant="ghost" :label="t('vm.confirm.cancel')" :disabled="saving" @click="open = false" />
