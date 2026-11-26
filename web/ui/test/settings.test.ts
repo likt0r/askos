@@ -606,14 +606,42 @@ describe('Settings page', () => {
       expect((input(wrapper, 'reset_age_days').element as HTMLInputElement).value).toBe('9')
     })
 
-    it('a failed change of the Settings changed nothing: no read, nothing said', async () => {
-      const { wrapper, api, es } = await open()
-      await type(wrapper, 'reset_age_days', '9')
+    it('a failed change of the Settings may have saved (applied or not): it is followed like any other', async () => {
+      const { wrapper, api, es, change } = await open()
+      change({ reset_age_days: 30 })
       es.emit('activity', { ...entry, outcome: 'failed' })
-      await new Promise(r => setTimeout(r, 500))
-      expect(reads(api.calls)).toBe(1)
-      expect(wrapper.find('[data-testid="settings-changed-elsewhere"]').exists()).toBe(false)
+      await wait(() => expect(reads(api.calls)).toBe(2))
+      await flushPromises()
+      expect((input(wrapper, 'reset_age_days').element as HTMLInputElement).value).toBe('30')
     })
+
+    it('counts its save as running until its own entry: no second save, nothing to discard', async () => {
+      const { wrapper, api, es, change } = await open()
+      await type(wrapper, 'reset_age_days', '9')
+      change({ reset_age_days: 9 })
+      await save(wrapper).trigger('click')
+      await flushPromises()
+      expect(save(wrapper).attributes('disabled')).toBeDefined()
+      await save(wrapper).trigger('click')
+      await flushPromises()
+      expect(patches(api.calls)).toHaveLength(1)
+      expect(reads(api.calls)).toBe(1)
+      es.emit('activity', entry)
+      await wait(() => expect(reads(api.calls)).toBe(2))
+      await flushPromises()
+      expect(save(wrapper).exists()).toBe(false)
+    })
+
+    it('reads at once after its save while the live connection is down', async () => {
+      const { wrapper, api, es, change } = await open()
+      es.drop()
+      await flushPromises()
+      await type(wrapper, 'reset_age_days', '9')
+      change({ reset_age_days: 9 })
+      await save(wrapper).trigger('click')
+      await wait(() => expect(reads(api.calls)).toBe(2))
+    })
+
 
     it('loads after a reconnect without resume, not after one that resumed', async () => {
       const { api, es } = await open()
@@ -626,6 +654,22 @@ describe('Settings page', () => {
   })
 
   describe('problems from the backend', () => {
+    it('words a refusal at its field in the language shown, also after switching', async () => {
+      const { wrapper } = await openPage('/settings', {
+        'GET /settings': ok(settingsBody()),
+        'PATCH /settings': { status: 400, body: { error: { code: 'invalid_setting', message: 'Invalid setting', field: 'maintenance_time' } } },
+      })
+      await type(wrapper, 'maintenance_time', '05:30')
+      await save(wrapper).trigger('click')
+      await flushPromises()
+      const err = () => field(wrapper, 'maintenance_time').find('[data-testid="setting-error"]').text()
+      expect(err()).toContain('A setting has a value that is not allowed.')
+      await useNuxtApp().$i18n.setLocale('de')
+      await flushPromises()
+      expect(err()).toContain('Eine Einstellung hat einen unzulässigen Wert.')
+      await useNuxtApp().$i18n.setLocale('en')
+    })
+
     it('shows invalid_setting with a field next to that field, translated, and marks nothing as saved', async () => {
       const { wrapper, api } = await openPage('/settings', {
         'GET /settings': ok(settingsBody()),

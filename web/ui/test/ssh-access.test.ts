@@ -382,7 +382,7 @@ describe('SSH access', () => {
 })
 
 describe('SSH changes and their failures (#215)', () => {
-  it('a failed switch is a toast that stays; one saved anyway is said in the section', async () => {
+  it('a failed switch is a toast that stays', async () => {
     useState('toasts').value = []
     await openSsh({}, { 'PUT /vms/work/ssh': fail(502, 'action_failed', 'agentbox failed') })
     await click(switchButton())

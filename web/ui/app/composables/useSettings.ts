@@ -11,11 +11,12 @@ export interface Saved {
 export function useSettings() {
   const info = ref<Record<string, SettingInfo>>({})
   const draft = reactive<Record<string, string>>({})
+  // a refusal of one Setting holds the module's words (a ref: it follows the language)
   const errors = reactive<Record<string, Problem | { code: 'server', text: string }>>({})
   const loading = ref(true)
   const loadError = ref<unknown>(null)
+  const live = useLive()
   const patch = useChange('setSettings', { form: true })
-  const saving = patch.busy
   // a refusal of one Setting shows at its field (errors); any other failure below the form
   const saveError = computed(() => {
     const e = patch.shown.value
@@ -23,8 +24,10 @@ export function useSettings() {
   })
   const saved = ref<Saved | null>(null)
   // this browser's own save: its Activity entry reads the Settings again, never "changed
-  // elsewhere" (it may come before the answer: `arrived`)
-  let own: 'saving' | 'arrived' | 'saved' | null = null
+  // elsewhere" (it may come before the answer: `arrived`). The save counts as running until then,
+  // so the form does not offer to save what it saved
+  const own = ref<'saving' | 'arrived' | 'saved' | null>(null)
+  const saving = computed(() => patch.busy.value || own.value === 'saved')
   /** the Settings changed elsewhere while fields were being edited: loaded after save or discard */
   const changedElsewhere = ref(false)
 
@@ -54,17 +57,17 @@ export function useSettings() {
     }
   }
 
-  // a change from elsewhere never throws away what is typed: it waits until nothing is edited; a
-  // failed change changed nothing
+  // a change from elsewhere never throws away what is typed: it waits until nothing is edited (a
+  // failed change counts too: agentbox may have saved before it failed)
   useReloadOnActivity(() => {
-    if (own === 'saving') own = 'arrived'
-    else if (own === 'saved') {
-      own = null
+    if (own.value === 'saving') own.value = 'arrived'
+    else if (own.value === 'saved') {
+      own.value = null
       void load()
     }
     else if (dirty.value.length) changedElsewhere.value = true
     else void load()
-  }, { kinds: ['settings'], match: entry => entry?.outcome !== 'failed' })
+  }, { kinds: ['settings'] })
   watch(() => dirty.value.length, (n) => {
     if (n === 0 && changedElsewhere.value) void load()
   })
@@ -96,20 +99,21 @@ export function useSettings() {
       else body[key] = toSend(key, draft[key] ?? '', info.value[key]!)
     }
     if (Object.keys(errors).length || !Object.keys(body).length) return false
-    own = 'saving'
+    own.value = 'saving'
     const r = await patch.run(body)
-    const arrived = own === 'arrived'
-    own = null
+    const arrived = own.value === 'arrived'
+    own.value = null
     if (!r.ok) {
       const e = r.error
-      if (e instanceof ApiError && e.field && e.field in info.value) errors[e.field] = { code: 'server', text: patch.text.value ?? '' }
+      if (e instanceof ApiError && e.field && e.field in info.value) errors[e.field] = { code: 'server', text: patch.text as unknown as string }
       // an entry that came meanwhile was another's change
       if (arrived) changedElsewhere.value = true
       return false
     }
     saved.value = r.data as Saved
-    if (arrived) void load()
-    else own = 'saved'
+    // without the live stream no entry comes soon: read now
+    if (arrived || live.state.connection !== 'live') void load()
+    else own.value = 'saved'
     return true
   }
 

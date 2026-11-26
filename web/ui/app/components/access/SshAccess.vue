@@ -150,7 +150,7 @@ async function copyKeys() {
 }
 
 /** a form's failure that is not "saved anyway": below the forms */
-const formFailure = computed(() => fileError.value ?? addChange.shown.value ?? copyChange.shown.value)
+const formFailure = computed(() => addChange.shown.value ?? copyChange.shown.value)
 const formCode = computed(() => (formFailure.value instanceof ApiError ? formFailure.value.code : undefined))
 
 function copiedLabel(k: SshCopiedKey) {
@@ -280,6 +280,7 @@ async function copy(what: string, text: string) {
       data-testid="ssh-error"
       :data-code="savedCode"
     />
+    <UAlert v-else-if="fileError" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(fileError)" role="alert" data-testid="ssh-error" :data-code="fileError.code" />
     <ChangeFailure v-else :error="formFailure" data-testid="ssh-error" :data-code="formCode" />
 
     <!-- the keys -->
