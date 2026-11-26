@@ -6,11 +6,10 @@ const props = defineProps<{
   name: string
   info: SettingInfo
   modelValue: string
-  error?: Problem | { code: 'server', error: unknown }
+  error?: Problem | { code: 'server', text: () => string }
 }>()
 const emit = defineEmits<{ 'update:modelValue': [string], 'restore': [] }>()
 const { t, te } = useI18n()
-const errorText = useErrorText()
 
 const spec = computed(() => SETTING_SPECS[props.name])
 const id = computed(() => `setting-${props.name}`)
@@ -42,7 +41,7 @@ function show(v: string | number | boolean) {
 const message = computed(() => {
   const e = props.error
   if (!e) return ''
-  if (e.code === 'server') return `${errorText(e.error)} ${hint.value}`.trim()
+  if (e.code === 'server') return `${e.text()} ${hint.value}`.trim()
   if (e.code === 'empty') return t('settings.problem.empty')
   // the options by their labels (Monday, 1 hour), not by their codes
   if (e.code === 'choice') return hint.value

@@ -456,6 +456,7 @@ export default {
       hostKey: 'Host-Schlüssel',
       turnedOn: 'SSH-Zugang für {vm} ist an.',
       turnedOff: 'SSH-Zugang für {vm} ist aus: Der SSH-Port ist geschlossen und jede SSH-Sitzung beendet.',
+      switchFailed: 'SSH-Zugang konnte nicht umgeschaltet werden',
       pending: 'Die VM hat die letzte Änderung noch nicht übernommen. Die nächste Verbindung zu ihrem SSH-Port übergibt sie zuerst und wird abgewiesen, solange das fehlschlägt.',
       missingHint: 'Die VM behält die SSH-Schlüssel, mit denen sie gestartet ist, bis zu einem Reset auf einen neueren Build: Starte auf der Seite System einen Build ihres Images und setze die VM zurück.',
       keys: {

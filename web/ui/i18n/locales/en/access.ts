@@ -461,6 +461,7 @@ export default {
       hostKey: 'Host key',
       turnedOn: 'SSH access for {vm} is on.',
       turnedOff: 'SSH access for {vm} is off: its SSH port is closed and every SSH session ended.',
+      switchFailed: 'SSH access could not be switched',
       pending: 'The VM has not taken the last change yet. The next connection to its SSH port hands it over first and is refused while that fails.',
       missingHint: 'The VM keeps the SSH keys it started with until a Reset onto a newer Build: start a Build of its Image on the System page and reset the VM.',
       keys: {

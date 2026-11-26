@@ -11,11 +11,19 @@ export interface Saved {
 export function useSettings() {
   const info = ref<Record<string, SettingInfo>>({})
   const draft = reactive<Record<string, string>>({})
-  const errors = reactive<Record<string, Problem | { code: 'server', error: unknown }>>({})
+  // a refusal of one Setting: the module's words for it (asked when shown: they follow the language)
+  const errors = reactive<Record<string, Problem | { code: 'server', text: () => string }>>({})
   const loading = ref(true)
   const loadError = ref<unknown>(null)
-  const saving = ref(false)
-  const saveError = ref<unknown>(null)
+  const patch = useChange('setSettings', { form: true })
+  // a save runs until the read after it is done
+  const reading = ref(false)
+  const saving = computed(() => patch.busy.value || reading.value)
+  // a refusal of one Setting shows at its field (errors); any other failure below the form
+  const saveError = computed(() => {
+    const e = patch.shown.value
+    return e instanceof ApiError && e.field && e.field in info.value ? null : e
+  })
   const saved = ref<Saved | null>(null)
   /** the Settings changed elsewhere while fields were being edited: loaded after save or discard */
   const changedElsewhere = ref(false)
@@ -30,11 +38,22 @@ export function useSettings() {
     for (const key of Object.keys(errors)) delete errors[key]
   }
 
-  async function load() {
+  /** The Settings as stored now, keeping what is typed: a field not edited takes the stored
+   * value, an edited one keeps its text (and is no change any more once it was stored). */
+  function update(settings: Record<string, SettingInfo>) {
+    const before = info.value
+    info.value = settings
+    for (const [key, i] of Object.entries(settings)) {
+      if (!(key in draft) || !before[key] || !settingChanged(key, draft[key] ?? '', before[key]!)) draft[key] = String(i.value)
+    }
+  }
+
+  async function load(keepTyped = false) {
     loading.value = true
     try {
       const data = await api<{ settings: Record<string, SettingInfo> }>('/settings')
-      adopt(data.settings ?? {})
+      if (keepTyped) update(data.settings ?? {})
+      else adopt(data.settings ?? {})
       changedElsewhere.value = false
       loadError.value = null
     }
@@ -46,11 +65,18 @@ export function useSettings() {
     }
   }
 
-  // a change from elsewhere never throws away what is typed: it waits until nothing is edited
-  useReloadOnActivity(() => {
-    if (saving.value) return          // saving loads the new values itself
+  // a change from elsewhere never throws away what is typed: it waits until nothing is edited (a
+  // failed change counts too: agentbox may have saved before it failed). An entry that comes
+  // while this browser saves waits for the save's end: a save that succeeded or failed with a 5xx
+  // reads what is stored then, a refused one follows the entry as below.
+  let missed = false
+  function followEntry() {
     if (dirty.value.length) changedElsewhere.value = true
     else void load()
+  }
+  useReloadOnActivity(() => {
+    if (saving.value) missed = true
+    else followEntry()
   }, { kinds: ['settings'] })
   watch(() => dirty.value.length, (n) => {
     if (n === 0 && changedElsewhere.value) void load()
@@ -68,13 +94,13 @@ export function useSettings() {
 
   function discard() {
     adopt(info.value)
-    saveError.value = null
+    patch.reset()
   }
 
   async function save(): Promise<boolean> {
     if (saving.value) return false
     saved.value = null
-    saveError.value = null
+    patch.reset()
     for (const key of Object.keys(errors)) delete errors[key]
     const body: Record<string, SettingValue> = {}
     for (const key of dirty.value) {
@@ -83,19 +109,34 @@ export function useSettings() {
       else body[key] = toSend(key, draft[key] ?? '', info.value[key]!)
     }
     if (Object.keys(errors).length || !Object.keys(body).length) return false
-    saving.value = true
+    reading.value = true
+    missed = false
+    let read = false
     try {
-      saved.value = await api<Saved>('/settings', { method: 'PATCH', body })
+      const r = await patch.run(body)
+      if (!r.ok) {
+        const e = r.error
+        if (e instanceof ApiError && e.field && e.field in info.value) errors[e.field] = { code: 'server', text: () => patch.text.value ?? '' }
+        // a refusal stored nothing; a failure of agentbox may have come after it saved ("saved, but
+        // not applied"): what is stored now, without throwing away what is typed
+        if (e instanceof ApiError && e.status >= 500) {
+          await load(true)
+          read = true
+        }
+        return false
+      }
+      saved.value = r.data as Saved
+      // the form holds a draft, so it reads at once what is stored now, and its own Activity entry
+      // reads once more (an exception the owner settled on #215: waiting for the entry could leave
+      // the form saving for good)
       await load()
+      read = true
       return true
     }
-    catch (e) {
-      if (e instanceof ApiError && e.field && e.field in info.value) errors[e.field] = { code: 'server', error: e }
-      else saveError.value = e
-      return false
-    }
     finally {
-      saving.value = false
+      reading.value = false
+      if (missed && !read) followEntry()
+      missed = false
     }
   }
 

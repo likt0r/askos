@@ -21,45 +21,61 @@ const keys = computed<SshKey[]>(() => {
 })
 const port = computed(() => ssh.value?.port ?? '—')
 
-// the last change that failed; agentbox may have saved it all the same (SSH_SAVED_CODES)
-const error = ref<unknown>(null)
-const saved = computed(() => error.value instanceof ApiError && SSH_SAVED_CODES.includes(error.value.code))
-const errorCode = computed(() => (error.value instanceof ApiError ? error.value.code : undefined))
-const missing = computed(() => errorCode.value === 'ssh_missing')
+// a change agentbox saved all the same, only not (yet) in the VM (SSH_SAVED_CODES): said here, in
+// the view's words, whichever change it was
+const SAVED = SSH_SAVED_CODES
+const savedError = ref<ApiError | null>(null)
+const savedCode = computed(() => savedError.value?.code)
+const missing = computed(() => savedCode.value === 'ssh_missing')
+// a key file too large to be one, refused before anything is sent
+const fileError = ref<ApiError | null>(null)
 
 function refresh() {
   void live.refetchVms()
 }
 
-// --- the switch ---
-const switching = ref(false)
+function clearFailures() {
+  savedError.value = null
+  fileError.value = null
+  for (const c of [switchChange, addChange, copyChange]) c.reset()
+}
+
+function starting() {
+  clearFailures()
+  copyResult.value = null
+}
+
+/** Whether the change failed as saved but not applied: then it is said here. */
+function savedAnyway(r: { ok: boolean, error?: unknown }) {
+  if (!r.ok && r.error instanceof ApiError && SAVED.includes(r.error.code)) {
+    savedError.value = r.error
+    return true
+  }
+  return false
+}
+
+// --- the switch: one control without a form, whose failure is a toast ---
+const switchChange = useChange('setSsh', { own: SAVED, failed: () => t('access.ssh.switchFailed') })
+const switching = switchChange.busy
 const wanted = ref(false)
 const switchValue = computed(() => (switching.value ? wanted.value : enabled.value))
 
 async function setEnabled(on: boolean) {
   if (switching.value || on === enabled.value) return
   wanted.value = on
-  switching.value = true
-  error.value = null
-  copyResult.value = null
-  try {
-    await api(`/vms/${props.vm.name}/ssh`, { method: 'PUT', body: { enabled: on } })
-    toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t(on ? 'access.ssh.turnedOn' : 'access.ssh.turnedOff', { vm: props.vm.name }) })
-  }
-  catch (e) {
-    error.value = e
-  }
-  finally {
-    switching.value = false
-    refresh()
-  }
+  starting()
+  const r = await switchChange.run({ vm: props.vm.name, enabled: on })
+  if (r.ok) toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t(on ? 'access.ssh.turnedOn' : 'access.ssh.turnedOff', { vm: props.vm.name }) })
+  else savedAnyway(r)
+  refresh()
 }
 
 // --- adding a key: its text, from a .pub file or pasted, goes in the request body only ---
 const keyText = ref('')
 const keyName = ref('')
 const keyFile = ref<string | null>(null)
-const adding = ref(false)
+const addChange = useChange('addSshKey', { form: true, own: SAVED })
+const adding = addChange.busy
 const isPrivate = computed(() => /PRIVATE KEY/.test(keyText.value))
 const nameValid = computed(() => looksLikeSshKeyName(keyName.value.trim()))
 const full = computed(() => keys.value.length >= SSH_MAX_KEYS)
@@ -70,9 +86,9 @@ async function chooseFile(event: Event) {
   const file = input.files?.[0]
   input.value = ''
   if (!file) return
-  error.value = null
+  clearFailures()
   if (file.size > SSH_KEY_MAX_BYTES) {
-    error.value = new ApiError(400, 'ssh_key_invalid', t('errors.ssh_key_invalid'))
+    fileError.value = new ApiError(400, 'ssh_key_invalid', t('errors.ssh_key_invalid'))
     return
   }
   keyText.value = (await file.text()).trim()
@@ -87,37 +103,27 @@ function clearForm() {
 
 async function addKey() {
   if (!canAdd.value) return
-  const name = keyName.value.trim()
-  adding.value = true
-  error.value = null
-  copyResult.value = null
-  try {
-    const r = await api<{ name?: string | null, fingerprint?: string, enabled?: boolean }>(`/vms/${props.vm.name}/ssh-keys`, {
-      method: 'POST',
-      body: { key: keyText.value, ...(name ? { name } : {}) },
-    })
+  starting()
+  const r = await addChange.run({ vm: props.vm.name, key: keyText.value, name: keyName.value.trim() })
+  if (r.ok) {
+    const added = r.data as { name?: string | null, fingerprint?: string, enabled?: boolean } | null
     toast.add({
       color: 'success',
       icon: 'i-lucide-circle-check',
-      title: t(r?.enabled ? 'access.ssh.add.done' : 'access.ssh.add.doneOff', { name: r?.name || r?.fingerprint || '', vm: props.vm.name }),
+      title: t(added?.enabled ? 'access.ssh.add.done' : 'access.ssh.add.doneOff', { name: added?.name || added?.fingerprint || '', vm: props.vm.name }),
     })
     clearForm()
   }
-  catch (e) {
-    error.value = e
-    // saved, only not (yet) in the VM: the key is entered
-    if (saved.value) clearForm()
-  }
-  finally {
-    adding.value = false
-    refresh()
-  }
+  // saved, only not (yet) in the VM: the key is entered
+  else if (savedAnyway(r)) clearForm()
+  refresh()
 }
 
 // --- copying the keys of another VM, once (ADR 0001): agentbox adds each by the rules of one
 // key and names those it leaves out (entered already, beyond 16 keys) with why ---
 const copyFrom = ref<string | undefined>(undefined)
-const copying = ref(false)
+const copyChange = useChange('copySshKeys', { form: true, own: SAVED })
+const copying = copyChange.busy
 const copyResult = ref<SshCopy | null>(null)
 const others = computed(() => live.state.vms.map(v => v.name).filter(n => n !== props.vm.name))
 const copyItems = computed(() => others.value.map(n => ({ value: n, label: n })))
@@ -131,27 +137,25 @@ watch(() => props.vm.name, () => {
 async function copyKeys() {
   if (!canCopy.value) return
   const from = copyFrom.value!
-  copying.value = true
-  error.value = null
-  copyResult.value = null
-  try {
-    const r = await api<SshCopy>(`/vms/${props.vm.name}/ssh-keys`, { method: 'POST', body: { from } })
+  starting()
+  const r = await copyChange.run({ vm: props.vm.name, from })
+  if (r.ok) {
+    const copy = r.data as SshCopy | null
     copyResult.value = {
-      ...r,
-      from: r?.from ?? from,
-      added: Array.isArray(r?.added) ? r.added : [],
-      skipped: Array.isArray(r?.skipped) ? r.skipped : [],
-    }
+      ...copy,
+      from: copy?.from ?? from,
+      added: Array.isArray(copy?.added) ? copy.added : [],
+      skipped: Array.isArray(copy?.skipped) ? copy.skipped : [],
+    } as SshCopy
     copyFrom.value = undefined
   }
-  catch (e) {
-    error.value = e
-  }
-  finally {
-    copying.value = false
-    refresh()
-  }
+  else savedAnyway(r)
+  refresh()
 }
+
+/** a form's failure that is not "saved anyway": below the forms */
+const formFailure = computed(() => addChange.shown.value ?? copyChange.shown.value)
+const formCode = computed(() => (formFailure.value instanceof ApiError ? formFailure.value.code : undefined))
 
 function copiedLabel(k: SshCopiedKey) {
   return k.name || k.fingerprint || t('access.ssh.copy.unreadable')
@@ -165,8 +169,8 @@ function skippedReason(k: { error: string, message: string }) {
 // --- removing a key: every open SSH session of the VM ends ---
 const removing = ref<SshKey | null>(null)
 const removeOpen = ref(false)
-const removeBusy = ref(false)
-const removeError = ref<string | null>(null)
+const removeChange = useChange('removeSshKey', { form: true, own: SAVED })
+const removeBusy = removeChange.busy
 
 function keyLabel(k: SshKey) {
   return k.name || k.fingerprint
@@ -174,35 +178,22 @@ function keyLabel(k: SshKey) {
 
 function askRemove(k: SshKey) {
   removing.value = k
-  removeError.value = null
+  removeChange.reset()
   removeOpen.value = true
 }
 
 async function removeKey() {
   const k = removing.value
   if (!k || removeBusy.value) return
-  removeBusy.value = true
-  removeError.value = null
-  error.value = null
-  copyResult.value = null
-  try {
-    await api(`/vms/${props.vm.name}/ssh-keys/remove`, { method: 'POST', body: { fingerprint: k.fingerprint } })
+  starting()
+  const r = await removeChange.run({ vm: props.vm.name, fingerprint: k.fingerprint })
+  if (r.ok) {
     toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t('access.ssh.remove.done', { name: keyLabel(k), vm: props.vm.name }) })
     removeOpen.value = false
   }
-  catch (e) {
-    if (e instanceof ApiError && SSH_SAVED_CODES.includes(e.code)) {
-      error.value = e
-      removeOpen.value = false
-    }
-    else {
-      removeError.value = errorText(e)
-    }
-  }
-  finally {
-    removeBusy.value = false
-    refresh()
-  }
+  // saved, only not (yet) in the VM: said in the section, the dialog closes
+  else if (savedAnyway(r)) removeOpen.value = false
+  refresh()
 }
 
 // --- the connection help: agentbox ssh-config for this VM ---
@@ -283,16 +274,18 @@ async function copy(what: string, text: string) {
       data-testid="ssh-pending"
     />
     <UAlert
-      v-if="error"
-      :color="saved ? 'warning' : 'error'"
+      v-if="savedError"
+      color="warning"
       variant="subtle"
-      :icon="saved ? 'i-lucide-triangle-alert' : 'i-lucide-circle-alert'"
-      :title="errorText(error)"
+      icon="i-lucide-triangle-alert"
+      :title="errorText(savedError)"
       :description="missing ? t('access.ssh.missingHint') : undefined"
       role="alert"
       data-testid="ssh-error"
-      :data-code="errorCode"
+      :data-code="savedCode"
     />
+    <UAlert v-else-if="fileError" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(fileError)" role="alert" data-testid="ssh-error" :data-code="fileError.code" />
+    <ChangeFailure v-else :error="formFailure" data-testid="ssh-error" :data-code="formCode" />
 
     <!-- the keys -->
     <div class="space-y-2">
@@ -560,7 +553,7 @@ async function copy(what: string, text: string) {
       :description="t('access.ssh.remove.text', { vm: props.vm.name })"
       :confirm-label="t('access.ssh.remove.confirm')"
       :busy="removeBusy"
-      :error="removeError"
+      :failure="removeChange.shown.value"
       @confirm="removeKey"
     />
   </section>

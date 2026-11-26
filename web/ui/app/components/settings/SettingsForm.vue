@@ -44,7 +44,7 @@ function label(key: string) {
       variant="subtle"
       icon="i-lucide-circle-alert"
       :title="errorText(loadError)"
-      :actions="[{ label: t('settings.retry'), color: 'error', variant: 'outline', onClick: () => s.load() }]"
+      :actions="[{ label: t('settings.retry'), color: 'error', variant: 'outline', onClick: () => s.load(true) }]"
       data-testid="settings-load-error"
     />
 
@@ -72,14 +72,7 @@ function label(key: string) {
         </ul>
       </template>
     </UAlert>
-    <UAlert
-      v-if="saveError"
-      color="error"
-      variant="subtle"
-      icon="i-lucide-circle-alert"
-      :title="errorText(saveError)"
-      data-testid="settings-save-error"
-    />
+    <ChangeFailure :error="saveError" data-testid="settings-save-error" />
     <UAlert
       v-if="problems"
       color="error"

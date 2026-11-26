@@ -16,6 +16,7 @@ import { api, ApiError } from './api'
 import { allowlistEntryPath, type AllowlistEntry, entryPath, forbidPath, type ForbidEntry, type Target } from './access'
 import { failurePlace, type FailurePlace, unreachable } from './failures'
 import { applyBuild, type BuildEvent, type ImagesOverview } from './images'
+import type { SettingValue } from './settings'
 import type { Live } from './live'
 
 // query-core hands results to the views through setTimeout(0) by default; a microtask gives them
@@ -121,6 +122,8 @@ const CHANGES = {
   updateImage: declareChange((a: { image: string, reset: string[] }) =>
     ({ method: 'POST', path: '/builds', body: a.reset.length ? { image: a.image, reset: a.reset } : { image: a.image } })),
   updateNow: declareChange((reset: string[]) => ({ method: 'POST', path: '/updates', body: reset.length ? { reset } : {} })),
+  // the Settings (Activity kind `settings`)
+  setSettings: declareChange((body: Record<string, SettingValue>) => ({ method: 'PATCH', path: '/settings', body })),
   // the GitHub Apps
   setGithubApp: declareChange((body: { app_id: number, private_key: string }) => ({ method: 'PUT', path: '/github-app', body })),
   removeGithubApp: declareChange((id: number) => ({ method: 'DELETE', path: `/github-app/${id}` })),
@@ -147,6 +150,16 @@ const CHANGES = {
   removeSecret: declareChange((a: { vm: string, name: string }) => ({ method: 'DELETE', path: `/vms/${a.vm}/secrets/${a.name}` })),
   setContainerImageCleanup: declareChange((a: { vm: string, enabled?: boolean, days?: number }) =>
     ({ method: 'PUT', path: `/vms/${a.vm}/container-image-cleanup`, body: { enabled: a.enabled, days: a.days } })),
+  // a VM's access: GitHub owners, its Claude token (it stays on the Host), SSH access and keys
+  setOwners: declareChange((a: { vm: string, owners: string[] }) => ({ method: 'PUT', path: `/vms/${a.vm}/github-owners`, body: { owners: a.owners } })),
+  setClaudeToken: declareChange((a: { vm: string, token: string }) => ({ method: 'PUT', path: `/vms/${a.vm}/claude-token`, body: { token: a.token } })),
+  removeClaudeToken: declareChange((vm: string) => ({ method: 'DELETE', path: `/vms/${vm}/claude-token` })),
+  setSsh: declareChange((a: { vm: string, enabled: boolean }) => ({ method: 'PUT', path: `/vms/${a.vm}/ssh`, body: { enabled: a.enabled } })),
+  addSshKey: declareChange((a: { vm: string, key: string, name: string }) =>
+    ({ method: 'POST', path: `/vms/${a.vm}/ssh-keys`, body: { key: a.key, ...(a.name ? { name: a.name } : {}) } })),
+  copySshKeys: declareChange((a: { vm: string, from: string }) => ({ method: 'POST', path: `/vms/${a.vm}/ssh-keys`, body: { from: a.from } })),
+  removeSshKey: declareChange((a: { vm: string, fingerprint: string }) =>
+    ({ method: 'POST', path: `/vms/${a.vm}/ssh-keys/remove`, body: { fingerprint: a.fingerprint } })),
   // pairing a device with a VM's Orca
   revealPairingCode: declareChange((vm: string) => ({ method: 'POST', path: `/vms/${vm}/pairing-code`, body: { confirm: true } })),
   revokePairings: declareChange((vm: string) => ({ method: 'POST', path: `/vms/${vm}/pairings/revoke`, body: { confirm: vm } })),
