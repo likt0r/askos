@@ -2,7 +2,7 @@
 // The Allowlist: every entry (or those that apply to one VM, or those for all VMs), with
 // scope, remaining time, uses in the last 24 hours, note and who added it; add, extend,
 // make permanent, change the note, remove. Changes from elsewhere (CLI, the expiry timer)
-// arrive as `activity` events of kind `allowlist`.
+// arrive as `activity` entries of kind `allowlist`, and deleting a VM drops its entries.
 import type { AllowlistEntry } from '~/utils/access'
 
 definePageMeta({ titleKey: 'nav.allowlist' })
@@ -58,9 +58,8 @@ const counts = computed(() => ({
 
 watch(filter, load)
 onMounted(load)
-useLiveEvent('activity', (entry) => {
-  if (entry?.kind === 'allowlist') void load()
-})
+// deleting a VM drops its entries
+useReloadOnActivity(load, { kinds: ['allowlist'], codes: ['delete'] })
 </script>
 
 <template>

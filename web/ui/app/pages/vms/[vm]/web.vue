@@ -50,9 +50,7 @@ function loadBoth() {
 
 watch(name, loadBoth)
 onMounted(loadBoth)
-useLiveEvent('activity', (entry) => {
-  if (entry?.kind === 'allowlist') loadBoth()
-})
+useReloadOnActivity(loadBoth, { kinds: ['allowlist'] })
 </script>
 
 <template>

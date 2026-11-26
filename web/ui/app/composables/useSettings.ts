@@ -1,6 +1,6 @@
 // The Settings form: values from GET /settings, edits as text, per-field problems (checked
 // here first, then the backend's `invalid_setting` with its `field`), one all-or-nothing PATCH.
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import type { SettingInfo, Problem } from '~/utils/settings'
 
 export interface Saved {
@@ -17,6 +17,8 @@ export function useSettings() {
   const saving = ref(false)
   const saveError = ref<unknown>(null)
   const saved = ref<Saved | null>(null)
+  /** the Settings changed elsewhere while fields were being edited: loaded after save or discard */
+  const changedElsewhere = ref(false)
 
   const keys = computed(() => Object.keys(info.value))
   const dirty = computed(() => keys.value.filter(k => settingChanged(k, draft[k] ?? '', info.value[k]!)))
@@ -33,6 +35,7 @@ export function useSettings() {
     try {
       const data = await api<{ settings: Record<string, SettingInfo> }>('/settings')
       adopt(data.settings ?? {})
+      changedElsewhere.value = false
       loadError.value = null
     }
     catch (e) {
@@ -42,6 +45,16 @@ export function useSettings() {
       loading.value = false
     }
   }
+
+  // a change from elsewhere never throws away what is typed: it waits until nothing is edited
+  useReloadOnActivity(() => {
+    if (saving.value) return          // saving loads the new values itself
+    if (dirty.value.length) changedElsewhere.value = true
+    else void load()
+  }, { kinds: ['settings'] })
+  watch(() => dirty.value.length, (n) => {
+    if (n === 0 && changedElsewhere.value) void load()
+  })
 
   function setDraft(key: string, text: string) {
     draft[key] = text
@@ -86,5 +99,5 @@ export function useSettings() {
     }
   }
 
-  return { info, draft, errors, keys, dirty, loading, loadError, saving, saveError, saved, load, setDraft, restoreDefault, discard, save }
+  return { info, draft, errors, keys, dirty, loading, loadError, saving, saveError, saved, changedElsewhere, load, setDraft, restoreDefault, discard, save }
 }

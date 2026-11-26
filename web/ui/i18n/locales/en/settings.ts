@@ -7,6 +7,7 @@ export default {
     restore: 'Use default',
     save: 'Save {n} change | Save {n} changes',
     discard: 'Discard changes',
+    changedElsewhere: 'The settings were changed elsewhere. Save or discard your changes to see them.',
     saved: 'Saved {n} setting. | Saved {n} settings.',
     unchanged: 'Nothing changed.',
     savedLater: 'applies later',

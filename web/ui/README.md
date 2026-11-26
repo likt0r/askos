@@ -82,6 +82,7 @@ app/
                            useNotifications (this browser's preference, the `notification`
                            listener), useReloadPrompt (own version vs. `version` event),
                            useLiveEvent (live.on() for a component, bursts gathered),
+                           useReloadOnActivity (a view's load on the Activity entries that change its data),
                            useWhen (times in the UI language)
   utils/api.ts             fetch for /api/v1: X-Agentbox: 1 on changes, ApiError with the code
   utils/live.ts            EventSource state: snapshot + vm events, reconnect, dead stream;
@@ -111,7 +112,10 @@ repeat does no harm. Subscribe in a composable and call `off()` in `onScopeDispo
 on `hello` with `resumed: false`, because events may have been missed. A throwing listener
 does not stop the others. In a component that only reloads a list on an event,
 `useLiveEvent(name, fn, delayMs)` does the subscribing and unsubscribing and runs `fn` once
-per burst.
+per burst. A view that shows data an Activity entry can change uses
+`useReloadOnActivity(load, { codes, kinds, match })`: it calls `load` once per burst when an
+`activity` entry's `code ?? action` is in `codes` (or its `kind` in `kinds`, and `match(entry)` agrees),
+and after a `hello` with `resumed: false` that is not the view's first.
 
 ### Adding an i18n area
 
