@@ -36,7 +36,7 @@ from test_recipes import RecipeTest, archive, file  # noqa: E402
 from test_registry import AGENTBOX, REPO, fake  # noqa: E402
 
 sys.path.insert(0, REPO)
-from agentbox import build_vm, build_vm_run, generate, images  # noqa: E402
+from agentbox import build_vm, build_vm_run, generate, images, virsh  # noqa: E402
 
 BUILD_VM = "var/lib/agentbox/build-vm"
 IMAGE_44 = "Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2"
@@ -964,12 +964,10 @@ class InterruptionTest(BuildVmTest):
         """systemctl stop sends SIGTERM; the run then destroys the VM, stops virtiofsd and unmounts
         the output before it marks the Build failed. systemd's SIGKILL after TimeoutStopSec would
         leave the transient domain running, so the timeout covers every wait of the teardown."""
-        worst = (4 * 15                         # virsh: state, destroy, state after the wait, state again
+        worst = (4 * virsh.TIMEOUT              # virsh: state, destroy, state after the wait, state again
                  + build_vm_run.DESTROY_WAIT + build_vm_run.STOP_SECONDS + 2 * build_vm_run.CHECK_SECONDS
                  + build_vm_run.UMOUNT_SECONDS)
         self.assertEqual(build_vm_run.TEARDOWN_SECONDS, worst)
-        from agentbox import virsh
-        self.assertEqual(virsh.TIMEOUT, build_vm_run.VIRSH_SECONDS)
         stop = re.search(r"^TimeoutStopSec=(\d+)s$", generate.BUILD_SERVICE, re.MULTILINE)
         self.assertGreaterEqual(int(stop.group(1)), worst + 60)
 

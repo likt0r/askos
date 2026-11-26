@@ -144,9 +144,8 @@ DESTROY_SECONDS = paths.tunable("AGENTBOX_BUILD_VM_DESTROY_SECONDS", DESTROY_WAI
 STOP_SECONDS = 60                   # systemctl stop of virtiofsd's units
 CHECK_SECONDS = 15                  # systemctl is-active of each of them
 UMOUNT_SECONDS = 30
-VIRSH_SECONDS = 15                  # virsh.TIMEOUT
 VIRSH_CALLS = 4                     # in the teardown: state, destroy, state after the wait, state again
-TEARDOWN_SECONDS = VIRSH_CALLS * VIRSH_SECONDS + DESTROY_WAIT + STOP_SECONDS + 2 * CHECK_SECONDS + UMOUNT_SECONDS
+TEARDOWN_SECONDS = VIRSH_CALLS * virsh.TIMEOUT + DESTROY_WAIT + STOP_SECONDS + 2 * CHECK_SECONDS + UMOUNT_SECONDS
 MAX_OUT_ENTRIES = paths.tunable("AGENTBOX_BUILD_VM_OUT_ENTRIES", 10000)   # files and directories in it
 MAX_OUT_DEPTH = 32                  # directories within directories in it
 MAX_LOG = paths.tunable("AGENTBOX_BUILD_VM_LOG_BYTES", 64 << 20)          # of its log, kept in the journal
@@ -335,26 +334,29 @@ def _network():
     except Fail as f:
         raise Failed(f.message)
     if found is None:
-        _virsh_file("net-define", network_xml(), f"define the network {NETWORK}")
+        r = virsh.define_network(network_xml())
+        if r.returncode != 0:
+            raise Failed(f"cannot define the network {NETWORK}: {programs.summary(r)}")
         active = False
     else:
-        xml = virsh.run("net-dumpxml", NETWORK).stdout
-        tags = {tag: re.findall(rf"<{tag}\b[^>]*>", xml) for tag in ("bridge", "ip", "forward")}
-
-        def attr(tag, name):
-            m = re.search(rf"\b{name}=['\"]([^'\"]*)", tags[tag][0])
-            return m.group(1) if m else None
-        if any(len(found) != 1 for found in tags.values()) or (attr("bridge", "name"), attr("ip", "address"),
-                                                                 attr("forward", "mode")) != (BRIDGE, ADDRESS, "nat") \
-                or attr("ip", "family") not in (None, "ipv4") \
-                or (attr("ip", "netmask"), attr("ip", "prefix")) not in (("255.255.255.0", None), (None, "24")):
+        if not _is_build_network(virsh.network_definition(NETWORK_NAME)):
             raise Failed(f"the network {NETWORK} is not the build network (bridge {BRIDGE}, one address, "
                          f"{ADDRESS}/24, NAT, IPv4 only): remove it (virsh net-destroy, net-undefine)")
         active = found[0]
     if not active:
-        r = virsh.run("net-start", NETWORK)
+        r = virsh.start_network(NETWORK_NAME)
         if r.returncode != 0:
             raise Failed(f"cannot start the network {NETWORK}: {programs.summary(r)}")
+
+
+def _is_build_network(definition):
+    """Whether a network's definition (virsh.network_definition, None for none) is the build
+    network's: one bridge, BRIDGE; one address, ADDRESS/24, IPv4; NAT."""
+    if definition is None or any(n != 1 for n in definition["elements"].values()):
+        return False
+    return (definition["bridge"], definition["address"], definition["forward_mode"]) == (BRIDGE, ADDRESS, "nat") \
+        and definition["family"] in (None, "ipv4") \
+        and (definition["netmask"], definition["prefix"]) in (("255.255.255.0", None), (None, "24"))
 
 
 def remove_network():
@@ -365,24 +367,14 @@ def remove_network():
     with state_files.locked_unless_held(RUN_LOCK) as free:
         if not free or states.network(NETWORK_NAME) is None:
             return False
-        xml = virsh.run("net-dumpxml", NETWORK).stdout
-        if not re.search(rf"<bridge\b[^>]*\bname=['\"]{BRIDGE}['\"]", xml):
+        definition = virsh.network_definition(NETWORK_NAME)
+        if definition is None or definition["bridge"] != BRIDGE:
             return False
-        virsh.run("net-destroy", NETWORK)       # an inactive one says so, which changes nothing
-        r = virsh.run("net-undefine", NETWORK)
+        virsh.stop_network(NETWORK_NAME)        # an inactive one says so, which changes nothing
+        r = virsh.undefine_network(NETWORK_NAME)
         if r.returncode != 0:
             raise Fail(f"cannot remove the network {NETWORK}: {programs.summary(r)}", error="action_failed")
         return True
-
-
-def _virsh_file(cmd, xml, what):
-    """virsh <cmd> <file> with xml in a temporary file."""
-    with tempfile.NamedTemporaryFile("w", suffix=".xml") as f:
-        f.write(xml)
-        f.flush()
-        r = virsh.run(cmd, f.name)
-    if r.returncode != 0:
-        raise Failed(f"cannot {what}: {programs.summary(r)}")
 
 
 # --- before it starts ----------------------------------------------------------------------------
@@ -713,7 +705,10 @@ def _start(vm, ids, say):
     path = os.path.join(vm["work"], "domain.xml")
     with open(path, "w") as f:
         f.write(xml)
-    _run(["virsh", "-q", "-c", "qemu:///system", "create", path], 120, f"virsh create {vm['domain']}")
+    try:
+        virsh.create_transient(vm["name"], path)
+    except Fail as f:
+        raise Failed(f.message)
     say(f"== Build VM {vm['domain']} started ({MEMORY_MIB >> 10} GiB, {vcpus()} vCPUs, "
         + (f"network {NETWORK})" if vm["online"] else "no network device)"))
 
@@ -886,7 +881,7 @@ def _end(vm):
     domain, whose QEMU libvirt reports gone only once it ended, or virtiofsd's units, as systemd
     says, or cannot say): [what], for the caller to fail the Build on."""
     if not _gone(vm):
-        virsh.run("destroy", vm["domain"])
+        virsh.force_off(vm["name"])
         deadline = time.monotonic() + DESTROY_SECONDS
         while not _gone(vm) and time.monotonic() < deadline:
             time.sleep(0.5)
@@ -1105,7 +1100,7 @@ def leftovers(say):
         there = [p for p in (vm["work"], vm["out"], vm["out_image"], vm["run"]) if os.path.lexists(p)]
         if not _gone(vm):
             there.append(vm["domain"])
-            virsh.run("destroy", vm["domain"])
+            virsh.force_off(vm["name"])
         if not there:
             continue
         _stop(vm["unit"])     # what still runs is removed by the run after it
