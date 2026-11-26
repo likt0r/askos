@@ -24,12 +24,12 @@ const confirming = ref(false)
 // a key file too large to be one, refused before anything is sent
 const fileError = ref<unknown>(null)
 const saved = ref<{ id: number, added: boolean } | null>(null)
-const put = useChange((body: { app_id: number, private_key: string }) => ({ method: 'PUT', path: '/github-app', body }), { form: true })
+const put = useChange('setGithubApp', { form: true })
 const saving = put.busy
 
 const removing = ref<GithubApp | null>(null)
 const removeOpen = ref(false)
-const del = useChange((id: number) => ({ method: 'DELETE', path: `/github-app/${id}` }), { form: true })
+const del = useChange('removeGithubApp', { form: true })
 
 const appIdValid = computed(() => /^[1-9]\d{0,11}$/.test(appId.value.trim()))
 const keyLooksRight = computed(() => /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(key.value))
@@ -90,6 +90,7 @@ async function chooseFile(event: Event) {
   input.value = ''
   if (!file) return
   if (file.size > 8000) {
+    put.reset()
     fileError.value = new ApiError(400, 'invalid_private_key', t('errors.invalid_private_key'))
     return
   }

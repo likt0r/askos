@@ -164,19 +164,21 @@ section describes, until it moves into the module (#212).
   (everything is stale, and `onMissedEvents` listeners run for what lives outside the cache,
   such as a Build's log), any `hello` for the reads that could not reach the Control Room, or
   Retry. Never by the clock, never on window focus, never as an automatic retry.
-- **A change made in this browser**: `const start = useChange((image: string) => ({ method:
-  'POST', path: '/builds', body: { image } }), { form, own, failed })` gives `run(args)` (an
-  `{ ok, data }` or `{ ok: false, error }`), `busy`, `error`, `shown` and `reset()`; it is a
-  TanStack Query mutation. After it, the resources it changes are read again once: through the
-  change's own Activity entry and its row in `ON_ACTIVITY`, or, for a change that records no
-  entry, through its row in `ON_CHANGE` (request to resources; empty so far). A view does not
-  read again itself.
+- **A change made in this browser**: every change is declared once in `CHANGES`, its request
+  from the view's arguments and what it makes stale (`rebuild: declareChange((image: string) =>
+  ({ method: 'POST', path: '/builds', body: { image } }))`). A view asks for it by name:
+  `const start = useChange('rebuild', { form, own, failed })` gives `run(args)` (an `{ ok, data }`
+  or `{ ok: false, error }`), `busy`, `error`, `shown` and `reset()`; it is a TanStack Query
+  mutation. After it, the resources it changes are read again once: through the change's own
+  Activity entry and its row in `ON_ACTIVITY`, or, for a change that records no entry, through
+  the `stale` of its declaration (none so far). A view does not read again itself.
 - **Where a failed change appears** (`utils/failures.ts`, decided once by its kind): one sent
   from a form or a dialog (`form: true`), a refusal included, at that form, with
-  `<ChangeFailure :error="start.shown.value" />`; one without a form as a toast that stays until
-  dismissed (title from `failed`); an ended session on the sign-in page; a Control Room out of
+  `<ChangeFailure :error="start.shown.value" />`; one without a form, a refusal included, as a
+  toast that stays until dismissed (title from `failed`); an ended session on the sign-in page; a Control Room out of
   reach while the live connection is down in the connection notice alone (with the stream live,
-  nothing else would say it, so the change's own place does). A view names in `own` only the
+  nothing else would say it, so the change's own place does). The place is decided when the
+  change fails. A view names in `own` only the
   codes it words itself (`build_running` and `update_running` beside the Images' buttons); the
   module presents none of them, and the view reads them from `error`.
 - **Details** of a failure: its code and the Host's `message`, which the backend always words

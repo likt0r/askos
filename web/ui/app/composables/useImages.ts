@@ -68,13 +68,10 @@ export function useImages() {
   // a rebuild from its button: a failure is a toast, except a Build or an update that runs
   // already, which the page says beside its buttons
   const RUNNING = ['build_running', 'update_running']
-  const rebuild = useChange((target: string) => ({ method: 'POST', path: '/builds', body: { image: target } }),
-    { own: RUNNING, failed: () => t('system.images.rebuildFailed') })
+  const rebuild = useChange('rebuild', { own: RUNNING, failed: () => t('system.images.rebuildFailed') })
   // an Update of one Image and Update now, from their dialogs: a failure shows there
-  const update = useChange((a: { image: string, reset: string[] }) =>
-    ({ method: 'POST', path: '/builds', body: a.reset.length ? { image: a.image, reset: a.reset } : { image: a.image } }), { form: true })
-  const updateNow = useChange((reset: string[]) =>
-    ({ method: 'POST', path: '/updates', body: reset.length ? { reset } : {} }), { form: true })
+  const update = useChange('updateImage', { form: true })
+  const updateNow = useChange('updateNow', { form: true })
   /** a rebuild refused because a Build or an update runs already */
   const startError = computed(() => {
     const error = rebuild.error.value

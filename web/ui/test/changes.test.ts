@@ -131,11 +131,92 @@ describe('a failed change through the app', () => {
     expect(reads()).toBe(2)
   })
 
+  it('a failure keeps the place it got when it failed, also after the connection came back', async () => {
+    fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': OK(IMAGES), 'POST /updates': OFFLINE })
+    const { es } = await openApp('/system', [WORK])
+    await click('images-update-now')
+    await click('confirm-ok')
+    const dialog = () => byTestId('update-now-dialog').element
+    expect(dialog().querySelector('[data-testid="confirm-error"]')!.textContent).toContain('cannot be reached')
+    es.drop()
+    es.emit('hello', { stream: 'ab12cd34', resumed: true })
+    await flushPromises()
+    expect(dialog().querySelector('[data-testid="confirm-error"]')!.textContent).toContain('cannot be reached')
+
+    // failed while the connection was down: the connection notice said it, and it stays unsaid
+    es.drop()
+    await flushPromises()
+    await click('confirm-ok')
+    expect(dialog().querySelector('[data-testid="confirm-error"]')).toBeNull()
+    es.emit('hello', { stream: 'ab12cd34', resumed: true })
+    await flushPromises()
+    expect(dialog().querySelector('[data-testid="confirm-error"]')).toBeNull()
+  })
+
   it('in German', async () => {
     fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': OK(IMAGES), 'POST /builds': refusal(502, 'action_failed', 'agentbox failed') })
     await useNuxtApp().$i18n.setLocale('de')
     await openApp('/system', [WORK])
     await click('images-rebuild-all')
     expect(toasts().map(t => t.title)).toEqual(['Der Build konnte nicht gestartet werden'])
+  })
+})
+
+describe('the GitHub App\'s changes', () => {
+  const APPS = { apps: [{ id: 777, slug: 'askos', name: 'Askos', owner: 'likt0r', html_url: null, install_url: null, installations: [], error: null }], missing: [] }
+  beforeEach(async () => {
+    await setUp()
+    useState('toasts').value = []
+  })
+  afterEach(() => {
+    tearDown()
+    useState('toasts').value = []
+  })
+
+  it('a refused remove shows in its confirm dialog with Details, no toast; the list is not read again by the view', async () => {
+    const api = fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': OK(IMAGES), 'GET /github-app': OK(APPS),
+      'DELETE /github-app/777': refusal(409, 'github_app_in_use', 'The App is in use') })
+    await openApp('/system', [WORK])
+    const reads = () => api.calls.filter(c => c.method === 'GET' && c.path === '/github-app').length
+    expect(reads()).toBe(1)
+    await click('app-remove-open')
+    await click('confirm-action')
+    const body = byTestId('confirm-body').element
+    expect(body.querySelector('[data-change="failed"]')).not.toBeNull()
+    expect(body.querySelector('[data-testid="fault-message"]')!.textContent).toBe('github_app_in_use: The App is in use')
+    expect(toasts()).toEqual([])
+    expect(reads()).toBe(1)
+  })
+
+  it('a removed App is read again through its Activity entry, once', async () => {
+    const api = fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': OK(IMAGES), 'GET /github-app': OK(APPS),
+      'DELETE /github-app/777': OK({ id: 777, removed: true }) })
+    const { es } = await openApp('/system', [WORK])
+    const reads = () => api.calls.filter(c => c.method === 'GET' && c.path === '/github-app').length
+    await click('app-remove-open')
+    await click('confirm-action')
+    expect(reads()).toBe(1)
+    es.emit('activity', { time: 't', vm: null, actor: 'owner', kind: 'credentials', action: 'remove-github-app', code: 'remove-github-app', outcome: 'ok', description: '' })
+    await vi.waitFor(() => expect(reads()).toBe(2), { timeout: 2000 })
+  })
+
+  it('a key file too large replaces a refusal shown before, never both', async () => {
+    fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': OK(IMAGES), 'GET /github-app': OK(APPS),
+      'PUT /github-app': refusal(422, 'github_app_rejected') })
+    await openApp('/system', [WORK])
+    await click('app-replace-open')
+    await byTestId('app-key').setValue('-----BEGIN RSA PRIVATE KEY-----\nMIIEsecret\n-----END RSA PRIVATE KEY-----')
+    await flushPromises()
+    await click('app-replace-submit')
+    await click('confirm-action')
+    expect(document.body.querySelectorAll('[data-testid="app-replace-error"]')).toHaveLength(1)
+    const input = byTestId('app-key-file').element as HTMLInputElement
+    Object.defineProperty(input, 'files', { value: [new File(['x'.repeat(9000)], 'big.pem')], configurable: true })
+    input.dispatchEvent(new Event('change'))
+    await flushPromises()
+    const errors = document.body.querySelectorAll('[data-testid="app-replace-error"]')
+    expect(errors).toHaveLength(1)
+    expect(errors[0]!.textContent).toContain('That is not the App\'s private key')
+    expect(errors[0]!.textContent).not.toContain('GitHub rejected')
   })
 })

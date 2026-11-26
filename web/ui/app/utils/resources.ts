@@ -3,17 +3,17 @@
 // for a resource by name (`useResource('images')`) and gets its data, whether it is loading and
 // its failure; it knows neither the path nor when the data is read again.
 //
-// Changes run through it too (`useChange`): it runs the request, marks what the change makes stale
-// and presents a failure where utils/failures.ts says.
+// Changes are declared here too (CHANGES) and run through it (`useChange('rebuild')`): it runs the
+// request, marks what the change makes stale and presents a failure where utils/failures.ts says.
 //
 // Data is read again only for a reason the stream or the owner gives: a row of the tables below
 // (an event, an Activity entry, a change made in this browser), a `hello` with `resumed: false`
 // that is not the first, or "Retry". Never by the clock, never on window focus, never as an automatic retry; a read that
 // failed because the Control Room could not be reached is read again with the next `hello`.
 import { notifyManager, QueryClient, useMutation, useQuery } from '@tanstack/vue-query'
-import { computed, type ComputedRef, type MaybeRefOrGetter, type Ref, toValue } from 'vue'
+import { computed, type ComputedRef, type MaybeRefOrGetter, type Ref, ref, toValue } from 'vue'
 import { api, ApiError } from './api'
-import { failurePlace, unreachable } from './failures'
+import { failurePlace, type FailurePlace, unreachable } from './failures'
 import { applyBuild, type BuildEvent, type ImagesOverview } from './images'
 import type { Live } from './live'
 
@@ -283,14 +283,32 @@ export interface ChangeRequest {
   body?: unknown
 }
 
-/** The changes that make resources stale without an Activity entry saying so: one that records
- * an entry is read again through its row in ON_ACTIVITY, once (the owner on #215). */
-const ON_CHANGE: { method: Method, path: RegExp, stale: ResourceName[] }[] = []
-
-function staleAfter(request: ChangeRequest): ResourceName[] {
-  const path = request.path.split('?')[0]!
-  return ON_CHANGE.filter(row => row.method === request.method && row.path.test(path)).flatMap(row => row.stale)
+interface ChangeDeclaration<A> {
+  request: (args: A) => ChangeRequest
+  /** the resources it makes stale without an Activity entry saying so */
+  stale: ResourceName[]
 }
+
+function declareChange<A = void>(request: (args: A) => ChangeRequest, stale: ResourceName[] = []): ChangeDeclaration<A> {
+  return { request, stale }
+}
+
+/** Every change the views make, declared once: its request, and what it makes stale. A change
+ * that records an Activity entry is read again through that entry's row in ON_ACTIVITY, once, so
+ * it names nothing here (the owner on #215). */
+const CHANGES = {
+  // the Images: a Build's `build` events and the Activity entries say what changed
+  rebuild: declareChange((image: string) => ({ method: 'POST', path: '/builds', body: { image } })),
+  updateImage: declareChange((a: { image: string, reset: string[] }) =>
+    ({ method: 'POST', path: '/builds', body: a.reset.length ? { image: a.image, reset: a.reset } : { image: a.image } })),
+  updateNow: declareChange((reset: string[]) => ({ method: 'POST', path: '/updates', body: reset.length ? { reset } : {} })),
+  // the GitHub Apps
+  setGithubApp: declareChange((body: { app_id: number, private_key: string }) => ({ method: 'PUT', path: '/github-app', body })),
+  removeGithubApp: declareChange((id: number) => ({ method: 'DELETE', path: `/github-app/${id}` })),
+}
+
+export type ChangeName = keyof typeof CHANGES
+export type ChangeArgs<N extends ChangeName> = Parameters<(typeof CHANGES)[N]['request']>[0]
 
 export interface ChangeOptions {
   /** sent from a form or a dialog: a failure appears there (ChangeFailure), else as a toast */
@@ -314,39 +332,44 @@ export interface Change<A, T> {
   reset: () => void
 }
 
-/** A change for a view: `request` turns the view's arguments into the request. It runs through
- * the module (a TanStack Query mutation), marks what the change makes stale (ON_CHANGE), and
- * presents its failure: at the form for one sent from a form, else as a toast that stays. */
-export function useChange<A = void, T = unknown>(request: (args: A) => ChangeRequest, options: ChangeOptions = {}): Change<A, T> {
+/** A change by name, for a view, with the arguments its declaration takes. It runs through the
+ * module (a TanStack Query mutation), marks what its declaration names stale, and presents its
+ * failure where utils/failures.ts says, decided when it fails. */
+export function useChange<N extends ChangeName, T = unknown>(name: N, options: ChangeOptions = {}): Change<ChangeArgs<N>, T> {
   const r = useResources()
   const live = useLive()
   const showToast = useChangeToast()
+  const declaration = CHANGES[name] as ChangeDeclaration<ChangeArgs<N>>
   const own = new Set(options.own ?? [])
-  const place = (error: unknown) => failurePlace(error, { form: !!options.form, live: live.state.connection === 'live' })
+  // where the last failure appears: decided when it failed, not again as the connection changes
+  const place = ref<FailurePlace | null>(null)
   const mutation = useMutation({
     mutationFn: (req: ChangeRequest) => api<T>(req.path, { method: req.method, body: req.body }),
-    onSettled: async (_data, _error, req) => {
-      await Promise.all(staleAfter(req).map(name => r.markStale(name)))
+    onSettled: async () => {
+      await Promise.all(declaration.stale.map(stale => r.markStale(stale)))
     },
   }, r.client)
   return {
-    async run(args: A) {
+    async run(args: ChangeArgs<N>) {
+      place.value = null
       try {
-        return { ok: true, data: await mutation.mutateAsync(request(args)) }
+        return { ok: true, data: await mutation.mutateAsync(declaration.request(args)) }
       }
       catch (error) {
-        if (!(error instanceof ApiError && own.has(error.code)) && place(error) === 'toast') showToast(error, options.failed?.())
+        place.value = error instanceof ApiError && own.has(error.code)
+          ? null
+          : failurePlace(error, { form: !!options.form, live: live.state.connection === 'live' })
+        if (place.value === 'toast') showToast(error, options.failed?.())
         return { ok: false, error }
       }
     },
     busy: computed(() => mutation.isPending.value),
     error: computed(() => mutation.error.value),
-    shown: computed(() => {
-      const error = mutation.error.value
-      if (!error || (error instanceof ApiError && own.has(error.code))) return null
-      return place(error) === 'form' ? error : null
-    }),
-    reset: () => mutation.reset(),
+    shown: computed(() => (place.value === 'form' ? mutation.error.value : null)),
+    reset: () => {
+      place.value = null
+      mutation.reset()
+    },
   }
 }
 
