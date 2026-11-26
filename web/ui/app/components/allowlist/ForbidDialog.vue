@@ -30,9 +30,7 @@ watch(open, (isOpen) => {
 
 async function submit() {
   if (!canSubmit.value) return
-  const body: Record<string, string> = { domain: props.domain, duration: duration.value }
-  if (note.value.trim()) body.note = note.value.trim()
-  if (!(await forbid.run({ vm: props.vm, body })).ok) return
+  if (!(await forbid.run({ vm: props.vm, domain: props.domain, duration: duration.value, note: note.value.trim() })).ok) return
   toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t('forbid.add.done', { domain: props.domain, vm: props.vm }) })
   open.value = false
 }

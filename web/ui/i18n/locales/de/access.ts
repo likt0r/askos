@@ -129,6 +129,7 @@ export default {
       open: 'Web öffnen',
       opened: 'Offenes Web für {vm} bis {until}.',
       closed: 'Offenes Web für {vm} geschlossen.',
+      closeFailed: 'Open web konnte nicht geschlossen werden',
     },
     blocked: {
       title: 'Gesperrt in den letzten 24 Stunden',

@@ -152,15 +152,23 @@ const CHANGES = {
   revokePairings: declareChange((vm: string) => ({ method: 'POST', path: `/vms/${vm}/pairings/revoke`, body: { confirm: vm } })),
   removePairing: declareChange((a: { vm: string, device: string }) => ({ method: 'POST', path: `/vms/${a.vm}/pairings/remove`, body: { device: a.device } })),
   // Allowlist entries and Forbids (Activity kind `allowlist`; an allow and a Forbid change both lists)
-  allow: declareChange((body: Record<string, string | boolean>) => ({ method: 'POST', path: '/allowlist', body })),
+  allow: declareChange((a: { scope: string, domain?: string, regex?: string, duration: string, note: string }) => ({
+    method: 'POST',
+    path: '/allowlist',
+    // a pattern is sent with its confirmation (its preview was shown and confirmed)
+    body: { scope: a.scope, ...(a.regex ? { regex: a.regex, confirm: true } : { domain: a.domain }), duration: a.duration, ...(a.note ? { note: a.note } : {}) },
+  })),
   extendEntry: declareChange((a: { entry: AllowlistEntry, duration: string }) =>
     ({ method: 'POST', path: allowlistEntryPath(a.entry, 'extend'), body: { duration: a.duration } })),
   makeEntryPermanent: declareChange((entry: AllowlistEntry) => ({ method: 'POST', path: allowlistEntryPath(entry, 'make-permanent') })),
   setEntryNote: declareChange((a: { entry: AllowlistEntry, note: string }) =>
     ({ method: 'PUT', path: allowlistEntryPath(a.entry, 'note'), body: { note: a.note } })),
   removeEntry: declareChange((entry: AllowlistEntry) => ({ method: 'DELETE', path: allowlistEntryPath(entry) })),
-  forbid: declareChange((a: { vm: string, body: Record<string, string> }) =>
-    ({ method: 'POST', path: `/vms/${encodeURIComponent(a.vm)}/forbids`, body: a.body })),
+  forbid: declareChange((a: { vm: string, domain: string, duration: string, note: string }) => ({
+    method: 'POST',
+    path: `/vms/${encodeURIComponent(a.vm)}/forbids`,
+    body: { domain: a.domain, duration: a.duration, ...(a.note ? { note: a.note } : {}) },
+  })),
   extendForbid: declareChange((a: { forbid: ForbidEntry, duration: string }) =>
     ({ method: 'POST', path: forbidPath(a.forbid, 'extend'), body: { duration: a.duration } })),
   makeForbidPermanent: declareChange((forbid: ForbidEntry) => ({ method: 'POST', path: forbidPath(forbid, 'make-permanent') })),

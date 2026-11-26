@@ -393,23 +393,20 @@ describe('Allowlist changes and their failures (#215)', () => {
     expect(useState<unknown[]>('toasts').value).toEqual([])
   })
 
-  it('a pattern refused for strong Signals says so in the dialog', async () => {
-    const pattern = '^mirror[0-9]+\\.vendor\\.example$'
-    const check = `GET /regex/check?list=allowlist&regex=${encodeURIComponent(pattern)}&scope=work`
-    await openApp('/allowlist?vm=work', {
+  it('a Control Room out of reach while the connection dropped is said by the connection notice alone', async () => {
+    useState('toasts').value = []
+    const { es } = await openApp('/allowlist?vm=work', {
       'GET /allowlist?vm=work': ok([]),
-      [check]: ok({ list: 'allowlist', regex: pattern, scope: 'work', matches: {},
-        preview: { hosts: [], more: 0, watchlist_unreadable: null, truncated: false, reaches_back: null, log_unreadable: null } }),
-      'POST /allowlist': fail(409, 'domain_suspicious', 'A destination has strong Signals'),
+      'POST /allowlist': () => { throw new TypeError('Failed to fetch') },
     })
+    es.drop()
+    await settle()
     await click('[data-testid="allowlist-add-open"]')
-    await click('[data-testid="allowlist-add"] [data-testid="entry-kind"] [data-kind="regex"]')
-    await type('[data-testid="add-regex"]', pattern)
-    await click('[data-testid="allowlist-add"] [data-testid="regex-test"]')
-    await click('[data-testid="add-confirm"]')
+    await type('[data-testid="add-domain"]', 'docs.rs')
     await click('[data-testid="add-submit"]')
-    expect(must('[data-testid="add-error"]').querySelector('[data-testid="fault-message"]')!.textContent)
-      .toBe('domain_suspicious: A destination has strong Signals')
-    expect($('[data-testid="refusal"]')).toBeNull()
+    expect($('[data-testid="add-error"]')).toBeNull()
+    expect($('[data-testid="connection-notice"]')).not.toBeNull()
+    expect(useState<unknown[]>('toasts').value).toEqual([])
   })
+
 })

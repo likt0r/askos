@@ -31,8 +31,6 @@ const note = ref('')
 const add = useChange('allow', { form: true, own: ['domain_suspicious'] })
 const busy = add.busy
 const refused = ref<string | null>(null)
-// a pattern refused for strong Signals has no Signals of one destination to show: shown as such
-const failure = computed(() => add.shown.value ?? (refused.value === null && add.error.value instanceof ApiError ? add.error.value : null))
 const checked = ref<RegexCheck | null>(null)
 const confirmed = ref(false)
 const stillForbidden = ref<{ vm: string, domain: string }[]>([])
@@ -83,13 +81,10 @@ async function submit() {
   if (!canSubmit.value) return
   refused.value = null
   const what = isRegex.value ? pattern.value.trim() : normalized.value
-  const body: Record<string, string | boolean> = isRegex.value
-    ? { scope: scope.value, regex: what, duration: duration.value, confirm: true }
-    : { scope: scope.value, domain: what, duration: duration.value }
-  if (note.value.trim()) body.note = note.value.trim()
-  const r = await add.run(body)
+  const r = await add.run({ scope: scope.value, ...(isRegex.value ? { regex: what } : { domain: what }), duration: duration.value, note: note.value.trim() })
   if (!r.ok) {
-    if (r.error instanceof ApiError && r.error.code === 'domain_suspicious' && !isRegex.value) refused.value = what
+    // a pattern is never refused for it (no single destination to check)
+    if (r.error instanceof ApiError && r.error.code === 'domain_suspicious') refused.value = what
     return
   }
   const entry = r.data as AllowlistEntry | null
@@ -171,7 +166,7 @@ async function submit() {
           :title="t('allowlist.add.stillForbidden', { forbids: stillForbidden.map(f => `${f.vm} (${f.domain})`).join(', ') })"
           data-testid="add-still-forbidden"
         />
-        <ChangeFailure :error="failure" data-testid="add-error" />
+        <ChangeFailure :error="add.shown.value" data-testid="add-error" />
         <button type="submit" class="hidden" />
       </form>
     </template>

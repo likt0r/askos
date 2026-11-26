@@ -130,6 +130,7 @@ export default {
       open: 'Open web',
       opened: 'Open web for {vm} until {until}.',
       closed: 'Open web for {vm} closed.',
+      closeFailed: 'Open web could not be closed',
     },
     blocked: {
       title: 'Blocked in the last 24 hours',

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resetSessionForTests } from '~/composables/useSession'
 import { resetLiveForTests } from '~/composables/useLive'
 import { FakeEventSource } from './fakes'
-import { $, $$, changes, click, fail, must, ok, openApp, unmountAll, vm, waitFor } from './access-helpers'
+import { $, $$, changes, click, fail, must, ok, openApp, settle, type, unmountAll, vm, waitFor } from './access-helpers'
 
 const now = () => Math.floor(Date.now() / 1000)
 const SETTINGS = ok({ settings: { open_web_max_minutes: { value: 60, default: 240, is_default: false, applies_later: null, allowed: '1-1440' } } })
@@ -238,14 +238,51 @@ describe('Web tab', () => {
     ])
   })
 
-  it('shows Open web from the VM object and a refusal of the time', async () => {
+  it('shows Open web from the VM object, and a failure to close it as a toast', async () => {
+    useState('toasts').value = []
     const vms = [vm('work', 'running', { open_web_until: new Date(Date.now() + 20 * 60000).toISOString() })]
     await openApp('/vms/work/web', { ...ROUTES, 'DELETE /vms/work/open-web': fail(500, 'action_failed') }, vms)
     expect(must('[data-testid="open-web"]').dataset.open).toBe('true')
     expect(must('[data-testid="open-web-state"]').textContent).toMatch(/\((19|20) min left\)/)
     await click('[data-testid="open-web-close"]')
-    expect(must('[data-testid="open-web"]').textContent).toContain('agentbox reported an error.')
+    // closing is one button, not a form: its failure is a toast that stays (#215)
+    expect(useState<{ title?: string, duration?: number }[]>('toasts').value.map(t => [t.title, t.duration]))
+      .toEqual([['Open web could not be closed', 0]])
+    expect(must('[data-testid="open-web"]').querySelector('[data-change="failed"]')).toBeNull()
     expect(must('[data-testid="open-web"]').dataset.open).toBe('true')
+  })
+
+  it('shows a refused opening at its form, with Details', async () => {
+    useState('toasts').value = []
+    await openApp('/vms/work/web', { ...ROUTES, 'POST /vms/work/open-web': fail(400, 'invalid_minutes', 'Invalid minutes') })
+    await click('[data-testid="open-web-open"]')
+    const failure = must('[data-testid="open-web"] [data-change="failed"]')
+    expect(failure.querySelector('[data-testid="fault-message"]')!.textContent).toBe('invalid_minutes: Invalid minutes')
+    expect(useState<unknown[]>('toasts').value).toEqual([])
+  })
+
+  it('shows a refused Forbid in its dialog; a refused change of a Forbid in its own, cleared for the next', async () => {
+    useState('toasts').value = []
+    await openApp('/vms/work/web', { ...ROUTES,
+      'GET /vms/work/forbids': ok(vmForbids()),
+      'POST /vms/work/forbids': fail(409, 'forbid_exists', 'A Forbid exists'),
+      'PUT /vms/work/forbids/ads.example/note': fail(400, 'invalid_note', 'Bad note') })
+    await click(blockedRow('static.docs.rs').querySelector('[data-testid="blocked-forbid"]')!)
+    await click('[data-testid="forbid-submit"]')
+    expect(must('[data-testid="forbid-error"]').querySelector('[data-testid="fault-message"]')!.textContent).toBe('forbid_exists: A Forbid exists')
+    document.body.querySelectorAll<HTMLElement>('button').forEach((b) => { if (b.textContent?.trim() === 'Cancel') b.click() })
+    await settle()
+
+    const ads = must('[data-testid="forbid-entry"][data-domain="ads.example"]')
+    await click(ads.querySelector('[data-testid="forbid-note-edit"]')!)
+    await type('[data-testid="forbid-note-input"]', 'x')
+    await click('[data-testid="forbid-note-save"]')
+    expect(must('[data-change="failed"] [data-testid="fault-message"]').textContent).toBe('invalid_note: Bad note')
+    document.body.querySelectorAll<HTMLElement>('button').forEach((b) => { if (b.textContent?.trim() === 'Cancel') b.click() })
+    await settle()
+    await click(ads.querySelector('[data-testid="forbid-remove"]')!)
+    expect($('[data-change="failed"]')).toBeNull()
+    expect(useState<unknown[]>('toasts').value).toEqual([])
   })
 
   it('shows a held destination at once, with Allow…, and reloads when one is held', async () => {

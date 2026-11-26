@@ -14,10 +14,10 @@ const now = useNow(5000)
 const CHOICES = [15, 30, 60, 120, 240]
 const longest = ref<number | null>(null)
 const minutes = ref(30)
+// opening has its form (how long); closing is one button, whose failure is a toast
 const opening = useChange('openWeb', { form: true })
-const closing = useChange('closeWeb', { form: true })
+const closing = useChange('closeWeb', { failed: () => t('webTab.openWeb.closeFailed') })
 const busy = computed(() => opening.busy.value || closing.busy.value)
-const failure = computed(() => opening.shown.value ?? closing.shown.value)
 /** ms since epoch from our own action, until the VM object catches up; 0: closed */
 const override = ref<number | null>(null)
 
@@ -114,6 +114,6 @@ async function closeWeb() {
       </div>
       <UButton icon="i-lucide-globe" :label="t('webTab.openWeb.open')" :loading="busy" data-testid="open-web-open" @click="openWeb" />
     </div>
-    <ChangeFailure :error="failure" class="mt-3" />
+    <ChangeFailure :error="opening.shown.value" class="mt-3" />
   </section>
 </template>
