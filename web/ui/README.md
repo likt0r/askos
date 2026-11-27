@@ -149,7 +149,8 @@ module (#216).
   declares `merge`, which joins the answer to it (`buildLog`: after the held cursor, the lines
   joined with `appendLines`). Such a resource also declares `missed`, what its copy becomes when a
   reconnect could not resume (`buildLog`: a gap, so that later events are not kept past what was
-  missed until it is read).
+  missed until it is read), and `readOn`, whether a copy read still has a gap (an answer cut
+  short): it is read on right after.
 - **Asking for one**: `const images = useResource('images')` gives `data` (undefined until an
   answer came), `loading` (nothing yet and a read on the way), `fetching` (a read on the way,
   the first or a read again), `error` (why the last read failed) and `retry()`. Every view that

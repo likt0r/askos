@@ -588,6 +588,42 @@ describe('a Build\'s log', () => {
     off()
   })
 
+  it('an answer cut short keeps the gap and is read on after it at once', async () => {
+    const observer = new QueryObserver(r.client, { queryKey: key('r1'), queryFn: () => r.read('buildLog', { image: 'ml', build: 'r1' }) })
+    const off = observer.subscribe(() => {})
+    await flushPromises()
+    const api = fakeApi({
+      'GET /images/ml/log?build=r1&lines=500&after_cursor=c2': OK({ entries: [3, 4].map(line), cursor: 'c4', truncated: true }),
+      'GET /images/ml/log?build=r1&lines=500&after_cursor=c4': OK({ entries: [5].map(line), cursor: 'c5', truncated: false }),
+    })
+    live.emit('build-log', event('r1', [7], true))
+    await flushPromises()
+    expect(api.calls.map(c => c.path)).toEqual([
+      '/images/ml/log?build=r1&lines=500&after_cursor=c2', '/images/ml/log?build=r1&lines=500&after_cursor=c4'])
+    expect(lines('r1')).toEqual(['c1', 'c2', 'c3', 'c4', 'c5'])
+    off()
+  })
+
+  it('a failed read keeps the gap, and the next read is after the held cursor', async () => {
+    let fail = true
+    const api = fakeApi({ 'GET /images/ml/log?build=r1&lines=500&after_cursor=c2': () => (fail
+      ? { status: 500, body: { error: { code: 'internal', message: 'x' } } }
+      : OK({ entries: [3, 4].map(line), cursor: 'c4' })) })
+    const observer = new QueryObserver(r.client, { queryKey: key('r1'), queryFn: () => r.read('buildLog', { image: 'ml', build: 'r1' }) })
+    const off = observer.subscribe(() => {})
+    await flushPromises()
+    live.emit('build-log', event('r1', [3], true))
+    await flushPromises()
+    expect(r.client.getQueryState(key('r1'))!.status).toBe('error')
+    live.emit('build-log', event('r1', [4]))
+    expect(lines('r1')).toEqual(['c1', 'c2'])
+    fail = false
+    await observer.refetch()
+    expect(lines('r1')).toEqual(['c1', 'c2', 'c3', 'c4'])
+    expect(api.calls.map(c => c.path)).toEqual(Array(2).fill('/images/ml/log?build=r1&lines=500&after_cursor=c2'))
+    off()
+  })
+
   it('a log that turns stale while it is read is read once more, not every log', async () => {
     let answer!: () => void
     const api = fakeApi({ 'GET /images/ml/log?build=r3&lines=500': () => new Promise(resolve => { answer = () => resolve(OK({ entries: [line(1)], cursor: 'c1' })) }),

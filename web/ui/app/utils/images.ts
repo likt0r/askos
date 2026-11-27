@@ -240,14 +240,16 @@ export function buildLogPath(image: string, build: string, held: BuildLog | unde
   return `/images/${encodeURIComponent(image)}/log?${params}`
 }
 
-/** An answer of the log endpoint after the held log's lines. */
+/** An answer of the log endpoint after the held log's lines. One cut short (`truncated`: more
+ * lines follow its last) leaves the gap open. */
 export function joinLog(held: BuildLog | undefined,
-  answer: { entries?: LogLine[], cursor?: string | null, status?: BuildStatus, step?: string | null, error?: string | null, problems?: string[] }): BuildLog {
+  answer: { entries?: LogLine[], cursor?: string | null, status?: BuildStatus, step?: string | null, error?: string | null, problems?: string[], truncated?: boolean }): BuildLog {
   const lines = appendLines(held?.lines ?? [], Array.isArray(answer?.entries) ? answer.entries : [])
   return {
     lines,
     cursor: lines.at(-1)?.cursor ?? answer?.cursor ?? held?.cursor ?? null,
     status: answer?.status, step: answer?.step, error: answer?.error, problems: answer?.problems,
+    ...(answer?.truncated ? { gap: true } : {}),
   }
 }
 

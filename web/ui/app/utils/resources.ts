@@ -38,6 +38,9 @@ interface Declaration<T, P> {
   /** what a copy becomes when events were missed (a reconnect that could not resume), before it
    * is read again: one read on from where it is must not take later events past the gap */
   missed?: (held: T) => T
+  /** the copy read still has a gap (its answer was cut short, or events were skipped meanwhile):
+   * read on right after it */
+  readOn?: (data: T) => boolean
   /** the Host sends no event about its changes: read again whenever a view of it opens (the owner
    * on #216) */
   fresh: boolean
@@ -50,8 +53,10 @@ interface Declaration<T, P> {
 
 /** A resource: its path, or for one with parameters (a VM's), its path from them. */
 function declare<T, P = undefined>(path: string | ((params: P, held: T | undefined) => string),
-  options: { fresh?: boolean, states?: Record<string, () => T>, merge?: (held: T | undefined, answer: any) => T, missed?: (held: T) => T } = {}): Declaration<T, P> {
-  return { path: typeof path === 'string' ? () => path : path, fresh: !!options.fresh, states: options.states ?? {}, merge: options.merge, missed: options.missed }
+  options: { fresh?: boolean, states?: Record<string, () => T>, merge?: (held: T | undefined, answer: any) => T,
+    missed?: (held: T) => T, readOn?: (data: T) => boolean } = {}): Declaration<T, P> {
+  return { path: typeof path === 'string' ? () => path : path, fresh: !!options.fresh, states: options.states ?? {},
+    merge: options.merge, missed: options.missed, readOn: options.readOn }
 }
 
 const RESOURCES = {
@@ -74,7 +79,7 @@ const RESOURCES = {
   version: declare<VersionInfo>('/version'),
   // a Build's log: read on after the held cursor, so only what is new comes
   buildLog: declare<BuildLog, { image: string, build: string }>((p, held) => buildLogPath(p.image, p.build, held),
-    { merge: joinLog, missed: log => ({ ...log, gap: true }) }),
+    { merge: joinLog, missed: log => ({ ...log, gap: true }), readOn: log => !!log.gap }),
   // an Image's Containerfile: the installed Release's, or its Recipe's
   containerfile: declare<ContainerfileText, { image: string }>(p => `/images/${encodeURIComponent(p.image)}/containerfile`),
 }
@@ -383,10 +388,12 @@ export function createResources(live: Pick<Live, 'on' | 'state'>) {
         if (next === null) again.add(hashKey(queryKey))
         else data = next
       }
+      if (declaration.readOn?.(data)) again.add(hashKey(queryKey))
       return data
     }
     finally {
       set.delete(pending)
+      if (!set.size) replays.delete(hashKey(queryKey))
     }
   }
 
