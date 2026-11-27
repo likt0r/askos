@@ -373,18 +373,23 @@ export function createResources(live: Pick<Live, 'on' | 'state'>) {
     if (again.delete(name)) void markStale(name)
   })]
 
-  // the last of each event, for a row that compares (`services`: did the update end?)
   // the last of each event, for a row that compares (`services`: did the update end?), per object
   // for a row with a key (`vm`: a VM's SSH access)
   const before = new Map<string, unknown>([['services', live.state.services]])
   const slot = (eventName: string, row: EventRow, data: unknown) => (row.key ? `${eventName}:${row.key(data)}` : eventName)
-  function know(state: unknown) {
+  /** The objects a row compares, from the live state or a `state` event, which sends them all:
+   * an object it already knew is compared as its own event would be. */
+  function know(state: unknown, compare: boolean) {
     for (const [eventName, row] of Object.entries(ON_EVENT)) {
-      for (const item of row.known?.(state) ?? []) before.set(slot(eventName, row, item), item)
+      for (const item of row.known?.(state) ?? []) {
+        const key = slot(eventName, row, item)
+        if (compare) for (const stale of row.stale?.(item, before.get(key)) ?? []) markStaleBy(stale, item)
+        before.set(key, item)
+      }
     }
   }
-  know(live.state)
-  offs.push(live.on('state', know))
+  know(live.state, false)
+  offs.push(live.on('state', (state: unknown) => know(state, true)))
   offs.push(...Object.entries(ON_EVENT).map(([eventName, row]) => live.on(eventName, (data: unknown) => {
     for (const [name, apply] of Object.entries(row.write ?? {}) as [ResourceName, (d: any, e: any) => any][]) {
       write(name, d => apply(d, data))

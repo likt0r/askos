@@ -442,8 +442,11 @@ describe('a VM\'s GitHub tokens and connection help', () => {
     expect([stale('work'), stale('priv')]).toEqual([false, false])
     live.emit('vm', vmOf('priv', true))
     expect([stale('work'), stale('priv')]).toEqual([false, true])
-    // a `state` event tells the VMs anew: work's host key is made after it
+    // a `state` event tells the VMs anew, and what it changes counts as their own events would
+    r.client.setQueryData(['sshConfig', { vm: 'priv' }], { mode: 'local', hosts: [] })
     live.emit('state', { vms: [vmOf('work', true), vmOf('priv', true)], problems: [] })
+    expect([stale('work'), stale('priv')]).toEqual([true, false])
+    r.client.setQueryData(['sshConfig', { vm: 'work' }], { mode: 'local', hosts: [] })
     live.emit('vm', vmOf('work', true, 'SHA256:x'))
     expect(stale('work')).toBe(true)
     r.stop()

@@ -148,7 +148,8 @@ module (#216).
   resource that has them; when they change, the view reads the new ones. `{ enabled: open }`
   reads only while a dialog is open; `{ extra: true }` declares a read whose failure the view does
   not show; `{ keepPrevious: true }` shows the copy of the parameters before while the new one is
-  read (another period; a view of another VM is another component). A view does not know the path, when to read, or how to drop a late answer.
+  read (another period; a view of another VM is another component). A view does not know the
+  path, when to read, or how to drop a late answer.
 - **Showing a failed read**: `<ReadFailure :resource="images" />`, in place of the section.
   When nothing was read yet, it says what could not be read and why (`useErrorText`), with Retry.
   When data is shown, the data stays and a small notice says it could not be refreshed, with

@@ -197,14 +197,15 @@ async function removeKey() {
 }
 
 // --- the connection help: agentbox ssh-config for this VM ---
-// read again after this VM's `set-ssh` entry (resources module)
+// read again when this VM's event turns SSH access on or off or brings a new host key (resources
+// module)
 const help = useResource('sshConfig', { params: () => ({ vm: props.vm.name }) })
 const config = computed<SshConfig | null>(() => {
   const r = help.data.value
   return r && Array.isArray(r.hosts) ? r : null
 })
 
-// only while SSH access is on (the VM says so at once; the help itself follows `set-ssh`)
+// only while SSH access is on (the VM says so at once; the help itself is read again then)
 const host = computed(() => (enabled.value ? config.value?.hosts.find(h => h.vm === props.vm.name) ?? null : null))
 const localOnly = computed(() => config.value?.mode === 'local')
 const knownHostsFile = computed(() => String(host.value?.options?.UserKnownHostsFile ?? ''))
