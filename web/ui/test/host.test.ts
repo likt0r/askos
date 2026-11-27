@@ -109,6 +109,37 @@ describe('host bar', () => {
     expect(wrapper.find('[data-testid="host-bar-details"]').exists()).toBe(true)
   })
 
+  it('shows a failed read of the history in the tiles, with Retry, and the live readings', async () => {
+    localStorage.setItem('agentbox-hostbar-open', '1')
+    let fail = true
+    const { wrapper, es } = await openPage('/vms', {
+      'GET /host': () => (fail ? { status: 500, body: { error: { code: 'internal', message: 'x' } } } : ok(snapshot)),
+    })
+    es.emit('host', hostSample([reading('cpu.load', 'cpu_load', 12)], {}, 1030))
+    await flushPromises()
+    const failure = wrapper.find('[data-testid="host-bar-details"] [data-testid="host-error"]')
+    expect(failure.text()).toContain('Could not read the Host\'s history.')
+    expect(wrapper.findAll('[data-testid="host-chip"]')).toHaveLength(1)
+    fail = false
+    await failure.findAll('button').find(b => b.text() === 'Retry')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="host-error"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="host-tile"] polyline').attributes('points')!.split(' ')).toHaveLength(3)
+  })
+
+  it('reads the history again after a reconnect that could not resume, with the gap filled', async () => {
+    localStorage.setItem('agentbox-hostbar-open', '1')
+    let answer = snapshot
+    const { wrapper, api, es } = await openPage('/vms', { 'GET /host': () => ok(answer) })
+    const points = () => wrapper.find('[data-testid="host-tile"] polyline').attributes('points')!.split(' ')
+    expect(points()).toHaveLength(3)
+    answer = { ...snapshot, history: [...snapshot.history, ...[1005, 1010, 1015].map(time => ({ time, values: { 'cpu.load': 11 }, vms: {} }))] }
+    es.emit('hello', { stream: 'efgh5678', resumed: false })
+    await flushPromises()
+    expect(api.calls.filter(c => c.path === '/host')).toHaveLength(2)
+    expect(points()).toHaveLength(6)
+  })
+
   it('says so when the Host has no readings', async () => {
     const { wrapper } = await openPage('/vms', { 'GET /host': { status: 503, body: { error: { code: 'readings_unavailable', message: 'x' } } } })
     expect(wrapper.find('[data-testid="host-bar-empty"]').text()).toContain('not available')

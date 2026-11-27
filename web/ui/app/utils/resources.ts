@@ -19,6 +19,7 @@ import { allowlistEntryPath, type AllowlistEntry, entryPath, forbidPath, type Fo
 import { useChangeToast } from '../composables/useChangeToast'
 import { failurePlace, type FailurePlace, unreachable } from './failures'
 import { applyBuild, type BuildEvent, type ContainerfileText, type ImagesOverview } from './images'
+import { type HostOverview, type HostSample, noReadings, withSample } from './host'
 import type { SettingValue } from './settings'
 import type { Pairings } from './vm'
 import type { Live, VersionInfo, Vm } from './live'
@@ -61,6 +62,8 @@ const RESOURCES = {
     fresh: true,
     states: { github_app_missing: () => ({ apps: [], missing: [], none: true }) },
   }),
+  // the Host's readings with 30 minutes of history; a Host without a sampler is a state
+  host: declare<HostOverview>('/host', { states: { readings_unavailable: noReadings } }),
   // the UI build installed and the Release of Agent Box the Host runs
   version: declare<VersionInfo>('/version'),
   // an Image's Containerfile: the installed Release's, or its Recipe's
@@ -123,6 +126,10 @@ const ON_EVENT: Record<string, EventRow> = {
       && (before.ssh?.enabled !== vm.ssh?.enabled || before.ssh?.host_key_fingerprint !== vm.ssh?.host_key_fingerprint)
       ? [{ name: 'sshConfig', params: () => ({ vm: vm.name }) }]
       : []),
+  },
+  // a sample of the Host's readings (every 5 s): appended to the history
+  host: {
+    write: { host: (data, sample: HostSample) => withSample(data, sample) },
   },
   // a VM got a GitHub token or was refused one: its list of tokens and requests is read again
   'github-token': {
