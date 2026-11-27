@@ -421,7 +421,7 @@ describe('reload prompt', () => {
 
   it('keeps the page\'s own version through signing out and in again', async () => {
     let installed = 'aaaa'
-    const { wrapper } = await openPage('/vms', {
+    const { wrapper, api } = await openPage('/vms', {
       'GET /version': () => ok({ api: 1, version: installed, ui: 'nuxt', installed: null }),
       'DELETE /session': ok({ authenticated: false }),
       'POST /session': ok({ authenticated: true, expires: '2026-11-04T00:00:00Z' }),
@@ -434,6 +434,7 @@ describe('reload prompt', () => {
     await wrapper.find('form').trigger('submit')
     await vi.waitFor(() => expect(useRouter().currentRoute.value.path).toBe('/vms'))
     await settle()
+    expect(api.calls.filter(c => c.path === '/version')).toHaveLength(2)      // read again, naming 'bbbb'
     const es = FakeEventSource.last
     es.emit('hello', { stream: 'efgh5678', resumed: false })
     es.emit('version', version('bbbb'))
