@@ -8,8 +8,10 @@
 //
 // Data is read again only for a reason the stream or the owner gives: a row of the tables below
 // (an event, an Activity entry, a change made in this browser), a `hello` with `resumed: false`
-// that is not the first, or "Retry". Never by the clock, never on window focus, never as an automatic retry; a read that
-// failed because the Control Room could not be reached is read again with the next `hello`.
+// that is not the first, or "Retry"; and a resource the Host sends no event about (`fresh`) when a
+// view of it opens. Never by the clock, never on window focus, never as an automatic retry; a
+// read that failed because the Control Room could not be reached is read again with the next
+// `hello`.
 import { notifyManager, QueryClient, useMutation, useQuery } from '@tanstack/vue-query'
 import { computed, type ComputedRef, type MaybeRefOrGetter, type Ref, ref, toValue } from 'vue'
 import { api, ApiError } from './api'
@@ -418,12 +420,13 @@ export interface Resource<T> {
   retry: () => Promise<void>
 }
 
-/** A resource by name, for a view: one shared copy per resource, kept current by the table above. */
 /** The options of a resource: with its parameters when it has them. */
 type OptionsOf<N extends ResourceName> = ResourceParams<N> extends undefined
   ? [options?: ResourceOptions]
   : [options: ResourceOptions<ResourceParams<N>> & { params: MaybeRefOrGetter<ResourceParams<N>> }]
 
+/** A resource by name, for a view: one shared copy per resource (and set of parameters), kept
+ * current by the tables above. */
 export function useResource<N extends ResourceName>(name: N, ...[options = {}]: OptionsOf<N>): Resource<ResourceData<N>> {
   const r = useResources()
   const params = () => toValue(options.params)

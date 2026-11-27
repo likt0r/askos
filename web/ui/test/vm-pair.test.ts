@@ -119,6 +119,14 @@ describe('Pair tab', () => {
     expect(reads()).toBe(2)
   })
 
+  it('reads the devices again on Refresh', async () => {
+    const api = fakeApi({ 'GET /session': SIGNED_IN, 'GET /vms/work/pairings': { status: 200, body: DEVICES } })
+    await openApp('/vms/work/pair', [vm('work')])
+    expect(api.calls.filter(c => c.path === '/vms/work/pairings')).toHaveLength(1)
+    await click('pair-refresh')
+    expect(api.calls.filter(c => c.path === '/vms/work/pairings')).toHaveLength(2)
+  })
+
   it('forgets the code when leaving the tab', async () => {
     fakeApi({
       'GET /session': SIGNED_IN,

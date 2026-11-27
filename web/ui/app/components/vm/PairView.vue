@@ -114,8 +114,7 @@ const canRemove = (d: Device) => data.value?.single_removal === true && d.remova
 
 const time = (iso: string | null) => formatTime(iso, locale.value)
 
-// another VM: no code of this one
-watch(() => props.name, hideCode)
+// leaving the tab, another VM's tab included (the page remounts): no code kept
 onBeforeUnmount(hideCode)
 </script>
 
