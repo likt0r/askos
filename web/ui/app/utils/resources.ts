@@ -91,8 +91,7 @@ const RESOURCES = {
   // says when it grows
   vmLog: declare<VmLog, { vm: string, filters: LogFilters, shown: number }>((p, held) => vmLogPath(p.vm, p.filters, held),
     { fresh: true, forget: true, merge: joinVmLog }),
-  // the Settings (the form holds a draft of them; a VM's defaults and Open web's longest
-  // duration read them too)
+  // the Settings (the form holds a draft of them; a VM's defaults read them too)
   settings: declare<{ settings: Record<string, SettingInfo> }>('/settings'),
   // the Activity timeline for a filter, the newest `lines` entries (`since`: only that recent)
   activity: declare<ActivityResult, ActivityParams>(p => `/activity?${activityQuery(p, p.lines, p.since)}`),

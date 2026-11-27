@@ -894,6 +894,24 @@ describe('creating a VM', () => {
     expect(api.calls.filter(c => c.path === '/settings')).toHaveLength(1)
   })
 
+  it('goes on without the Settings\' defaults when they cannot be read, and takes them at the next opening', async () => {
+    let failing = true
+    const api = fakeApi(routes({ 'GET /settings': () => (failing
+      ? { status: 502, body: { error: { code: 'action_failed', message: 'x' } } }
+      : OK({ settings: { default_image: { value: 'rust' }, default_memory_mib: { value: 16384 }, default_data_disk_gib: { value: 200 } } })) }))
+    await openApp('/vms', [WORK])
+    await click('vm-create')
+    expect((byTestId('create-memory').element as HTMLInputElement).value).toBe('')
+    expect(byTestId('create-dialog').find('[data-read]').exists()).toBe(false)      // an extra: no failure shown
+    document.body.querySelectorAll<HTMLElement>('[data-testid="create-dialog"] button').forEach((b) => { if (b.textContent?.trim() === 'Cancel') b.click() })
+    await flushPromises()
+    failing = false
+    await click('vm-create')
+    await flushPromises()
+    expect((byTestId('create-memory').element as HTMLInputElement).value).toBe('16384')
+    expect(api.calls.filter(c => c.path === '/settings')).toHaveLength(2)
+  })
+
   it('a change of the Settings reaches the next opening', async () => {
     let memory = 16384
     fakeApi(routes({ 'GET /settings': () => OK({ settings: { default_image: { value: 'base' }, default_memory_mib: { value: memory }, default_data_disk_gib: { value: 200 } } }) }))

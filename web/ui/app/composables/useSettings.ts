@@ -59,6 +59,9 @@ export function useSettings() {
   // end: one that succeeded or failed with a 5xx reads what is stored then; a refused one follows
   // it as here.
   let missed = false
+  // the read after this browser's save failed: the next copy read is the save's, taken keeping
+  // what is typed (as that read would have), not as a change from elsewhere
+  let ownNext = false
   function follow() {
     if (dirty.value.length) changedElsewhere.value = true
     else adopt(stored())
@@ -67,6 +70,10 @@ export function useSettings() {
     if (!data) return
     if (saving.value) missed = true
     else if (!keys.value.length) adopt(stored())
+    else if (ownNext) {
+      ownNext = false
+      update(stored())
+    }
     else follow()
   }, { immediate: true, flush: 'sync' })      // at once: a save on the way sees it as its own
   watch(() => dirty.value.length, (n) => {
@@ -76,7 +83,8 @@ export function useSettings() {
   /** Read what is stored now, after a save: adopting it, or keeping what is typed. */
   async function readNow(keepTyped: boolean) {
     await settings.retry()
-    if (settings.error.value) return
+    ownNext = !!settings.error.value
+    if (ownNext) return
     if (keepTyped) update(stored())
     else adopt(stored())
   }
