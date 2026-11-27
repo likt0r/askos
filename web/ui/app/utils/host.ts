@@ -48,13 +48,25 @@ export function noReadings(): HostOverview {
   return { time: null, readings: [], vms: {}, interval: 0, history_seconds: 1800, thresholds: {}, history: [], unavailable: true }
 }
 
-/** The overview with a live sample added to its history (`appendSample`); the same object when
- * the sample adds nothing. */
+/** The overview with a live sample as its current one (unless it is older than the one held),
+ * added to its history (`appendSample`); the same object when it changes nothing. */
 export function withSample(host: HostOverview, sample: HostSample | null | undefined): HostOverview {
   if (!sample || !Array.isArray(sample.readings)) return host
   const history = Array.isArray(host.history) ? host.history : []
   const next = appendSample(history, sample, host.history_seconds ?? 1800)
-  return next === history ? host : { ...host, history: next }
+  // the current sample: this one, unless it is older than the one held
+  const current = sample.time === null || host.time === null || sample.time >= host.time
+  if (next === history && !current) return host
+  return { ...host, ...(current ? { time: sample.time, readings: sample.readings, vms: sample.vms ?? {} } : {}), history: next }
+}
+
+/** The first copy from a live sample, before GET /host brought the history and the rest. */
+export function firstSample(sample: HostSample | null | undefined): HostOverview | undefined {
+  if (!sample || !Array.isArray(sample.readings)) return undefined
+  return {
+    time: sample.time, readings: sample.readings, vms: sample.vms ?? {}, interval: 5, history_seconds: 1800, thresholds: {},
+    history: appendSample([], sample, 1800),
+  }
 }
 
 /** Order of the tiles; unknown kinds (a newer backend) come last. */

@@ -84,9 +84,10 @@ app/
   components/settings/     SettingsForm, SettingsField
   components/notifications/  NotificationsPreferences, NotificationsReloadPrompt
   composables/             useSession (with `default_language` from GET/POST /session), useLive
-                           (the one live connection), useLanguage (the switch with Automatic;
-                           the sign-in page's order and `default_language`, both applied by the
-                           auth middleware), useErrorText (API error code -> translated text),
+                           (the one live connection), useVms and useSystem (the pushed VM list and
+                           the state of `agentbox watch`, the Host reboot and the services),
+                           useLanguage (the switch with Automatic; the sign-in page's order and
+                           `default_language`, both applied by the auth middleware), useErrorText (API error code -> translated text),
                            useNow, useActivity, useHost, useImages (the resource `images`,
                            rebuilds, Update now), useSettings,
                            useNotifications (this browser's preference, the `notification`
@@ -101,8 +102,8 @@ app/
   utils/api.ts             fetch for /api/v1: X-Agentbox: 1 on changes, ApiError with the code
   utils/resources.ts       the resources module: every resource declared once, the cache
                            (TanStack Query), the table of what an event does, useResource, change
-  utils/live.ts            EventSource state: snapshot + vm events, reconnect, dead stream;
-                           `live.on(name, fn)` for the other events
+  utils/live.ts            the connection only: the EventSource, reconnect, dead stream, and
+                           `live.on(name, fn)`, which hands every event on
   utils/language.ts        the choice in this browser (localStorage; none: Automatic), else
                            `default_language` of the Settings if en or de (once signed in), else
                            the browser's language, else English; the sign-in page skips the Settings
@@ -125,10 +126,12 @@ test/                      Vitest
 
 Server data lives in one cache, in `app/utils/resources.ts` ([ADR
 0026](../../docs/adr/0026-the-control-room-ui-holds-server-data-in-one-cache.md)). The resources
-it holds: `images` (`GET /images`), `pairings` (`GET /vms/<vm>/pairings`), `githubApp`
+it holds: `vms` (`GET /vms`: the VMs and the problems of their records) and `system` (`GET
+/system`: `agentbox watch`, the Host-reboot notice, the services and their warnings), which the
+stream pushes, `images` (`GET /images`), `pairings` (`GET /vms/<vm>/pairings`), `githubApp`
 (`GET /github-app`), `githubTokens` (`GET /vms/<vm>/github-tokens?since=`), `sshConfig` (`GET
 /vms/<vm>/ssh-config`), `containerfile` (`GET /images/<image>/containerfile`, read only while
-its panel is open), `host` (`GET /host`: the Host's readings with 30 minutes of history),
+its panel is open), `host` (`GET /host`: the Host's current sample and 30 minutes of history),
 `buildLog` (`GET /images/<image>/log?build=`: a Build's log), `activity` (`GET /activity`: a
 timeline for a filter), `settings` (`GET /settings`: the Settings form holds a draft of them; a
 VM's defaults and Open web's longest duration read them too), `allowlist` (`GET
@@ -140,8 +143,7 @@ VM's defaults and Open web's longest duration read them too), `allowlist` (`GET
 asked), `vmLog` (`GET /vms/<vm>/logs`: a VM's journal for the filters applied) and `version`
 (`GET /version`: the UI build installed and the Release; the reload prompt takes the build of
 its first answer as the page's own and keeps it through later reads). Every view reads through
-it; only the pushed data (the VM list and the live state of `utils/live.ts`) moves into it later
-(#217).
+it, pushed data included; `utils/live.ts` holds none.
 
 - **Declaring a resource**: one line in `RESOURCES`, its name, its path and the type of its answer
   (`images: declare<ImagesOverview>('/images')`); one with parameters takes its path from them
@@ -163,7 +165,13 @@ it; only the pushed data (the VM list and the live state of `utils/live.ts`) mov
   and each "Show" is a new copy, the newest entries; while following, what one answer could not
   hold comes with the next poll). One the API asks to read at most so often declares `spacing`
   (`blocked`: 1000 ms): a stale mark comes no sooner than that after the last read of the copy
-  ended, and after a read on the way ends.
+  ended, and after a read on the way ends. One the stream pushes whole, on connect and whenever it
+  changes, is declared `pushed` (`vms`, `system`): an event writes its copy also when there is
+  none yet, the copy stays while no view shows it, and neither a view that opens nor a reconnect
+  that could not resume reads it; its GET is the fallback, for a row that marks it stale
+  (`agentbox watch` running again: the VM list) and for Retry. One whose first copy an event may
+  bring is declared `seeds` (`host`: a sample before GET /host answers, which then brings the
+  history).
 - **Asking for one**: `const images = useResource('images')` gives `data` (undefined until an
   answer came), `loading` (nothing yet and a read on the way), `fetching` (a read on the way, the
   first or a read again), `error` (why the last read failed) and `retry()`. Every view that asks
@@ -187,13 +195,16 @@ it; only the pushed data (the VM list and the live state of `utils/live.ts`) mov
   live, such a read shows like any other. For an extra it shows nothing. It offers no "Details"
   yet: the Host's text is shown only once #215 has checked that it cannot carry a secret.
 - **What an event does** (`ON_EVENT`, `ON_ACTIVITY`): an event that carries the whole object is
-  written into the cache (`build`, through `applyBuild`; each `host` sample is appended to the
-  history of `host`, through `appendSample`; the lines of a `build-log` event to that Build's
-  `buildLog`, a row with `writeParams`, until one says lines were skipped: then later lines are
-  not kept and the gap is read after the held cursor; each `activity` entry into every `activity`
-  timeline whose filter it passes, by agentbox's text or the words the UI shows for it in its
-  language, through `addEntry`: a row with `writeEach`, which reaches every copy with its
-  parameters). An event that only says something changed marks the resource stale: `images` after
+  written into the cache (`state` as the VM list, sorted, and `vm` into it, replacing that VM;
+  `watch`, `host-reboot` and `services` into `system`; `version` into `version` once it was read;
+  `build`, through `applyBuild`; each `host` sample as the current one of `host`, appended to its
+  history through `appendSample`; the lines of a `build-log` event to that Build's `buildLog`, a
+  row with `writeParams`, until one says lines were skipped: then later lines are not kept and the
+  gap is read after the held cursor; each `activity` entry into every `activity` timeline whose
+  filter it passes, by agentbox's text or the words the UI shows for it in its language, through
+  `addEntry`: a row with `writeEach`, which reaches every copy with its parameters). An event that
+  only says something changed marks the resource stale: `vms` after a `watch` event that says
+  `agentbox watch` runs again (VM state may have changed unseen while it did not); `images` after
   a `build` event whose status is not `running` (and that Build's `buildLog`, for the end of it)
   or that `applyBuild` cannot place, after `updating` of the `services` event goes from true to
   false, when the version check (`agentbox-versions.service` in the `services` event) stops
@@ -268,17 +279,17 @@ it; only the pushed data (the VM list and the live state of `utils/live.ts`) mov
 
 ### Subscribing to the live stream
 
-`useLive()` owns the one `EventSource`. State events (`state`, `vm`, `host`, ...) update
-`live.state`. Everything else is delivered to subscribers: `const off = live.on('activity',
-(data) => ...)` (names in `STREAM_EVENTS` in `utils/live.ts`; state events and `hello` work
-too, and the listener runs after the state was updated). Events are whole objects, so a repeat
-does no harm. Subscribe in a composable and call `off()` in `onScopeDispose`; refetch on
-`hello` with `resumed: false`, because events may have been missed. A throwing listener does
-not stop the others. No view reads on an event itself: its data comes from the resources
-module, whose tables follow the stream. `useLiveEvent(name, fn, delayMs)` (subscribing for a
-component, `fn` once per burst) and `useReloadOnActivity(load, { codes, kinds, match })` (a
-`load` on the Activity entries that change a view's data) have no caller left; #218 removes
-them.
+`useLive()` owns the one `EventSource` and only the connection: its state (`connection`,
+`stream`, `retryAt`, `attempts`), the reconnect and the dead stream. Every event goes to its
+subscribers, `const off = live.on('activity', (data) => ...)` (names in `PUSHED_EVENTS` and
+`STREAM_EVENTS` in `utils/live.ts`; `hello` works too). The resources module subscribes to them
+all and writes what they carry into its cache, so a view never knows whether its data was read
+or pushed. Events are whole objects, so a repeat does no harm. Subscribe in a composable and
+call `off()` in `onScopeDispose`. A throwing listener does not stop the others. No view reads
+on an event itself: its data comes from the resources module, whose tables follow the stream.
+`useLiveEvent(name, fn, delayMs)` (subscribing for a component, `fn` once per burst) and
+`useReloadOnActivity(load, { codes, kinds, match })` (a `load` on the Activity entries that
+change a view's data) have no caller left; #218 removes them.
 
 ### Adding an i18n area
 

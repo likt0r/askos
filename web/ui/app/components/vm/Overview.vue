@@ -9,7 +9,6 @@ import type { Vm } from '~/utils/live'
 
 const props = defineProps<{ vm: Vm }>()
 const { t, te, locale } = useI18n()
-const live = useLive()
 
 const imageOpen = ref(false)
 const memoryOpen = ref(false)
@@ -33,7 +32,8 @@ function openSecret(name: string | null, mode: 'set' | 'remove') {
 const orcaDevices = computed(() => (props.vm.devices ?? []).filter(d => d.kind !== 'ssh'))
 const sshSessions = computed(() => (props.vm.devices ?? []).filter(d => d.kind === 'ssh'))
 
-const used = computed(() => memoryInUse(live.state.host, props.vm.name))
+const { sample } = useHost()
+const used = computed(() => memoryInUse(sample.value, props.vm.name))
 const limit = computed(() => (typeof props.vm.memory_mib === 'number' ? mibAsGib(props.vm.memory_mib) : null))
 const cleanup = computed(() => containerImageCleanup(props.vm))
 

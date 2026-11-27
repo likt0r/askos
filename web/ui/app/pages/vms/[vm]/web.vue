@@ -5,10 +5,10 @@ import type { AllowlistEntry, ForbidEntry } from '~/utils/access'
 
 const { t } = useI18n()
 const route = useRoute()
-const live = useLive()
+const { vms } = useVms()
 
 const name = computed(() => String(route.params.vm))
-const vm = computed(() => live.state.vms.find(v => v.name === name.value))
+const vm = computed(() => vms.value.find(v => v.name === name.value))
 // an allow for the VM lifts its Forbid of the domain, a forbid takes the place of its entry: both
 // lists change together (ADR 0024; the resources module's rows)
 const entriesList = useResource('vmAllowlist', { params: () => ({ vm: name.value }) })

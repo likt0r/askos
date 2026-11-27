@@ -5,7 +5,8 @@ export function useLive(): Live {
   if (!live) {
     live = createLive({
       checkSession: () => useSession().refresh(),
-      fetchVms: () => api<VmList>('/vms'),
+      // the cache is there to take what the stream pushes from its first event
+      beforeStart: () => startResources(),
       onSignedOut: () => useSession().ended(),
     })
   }

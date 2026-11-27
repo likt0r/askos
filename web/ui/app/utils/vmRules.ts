@@ -166,7 +166,7 @@ export function priorityName(n: number | null | undefined): string | null {
 // --- showing a VM ---------------------------------------------------------------
 
 /** Memory the VM's QEMU process uses (host readings), in bytes, or null. */
-export function memoryInUse(host: Record<string, unknown> | null, name: string): number | null {
+export function memoryInUse(host: { vms?: unknown } | null, name: string): number | null {
   const vms = host?.vms as Record<string, { memory_bytes?: unknown }> | undefined
   const bytes = vms?.[name]?.memory_bytes
   return typeof bytes === 'number' && Number.isFinite(bytes) ? bytes : null

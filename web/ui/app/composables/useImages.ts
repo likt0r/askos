@@ -13,10 +13,8 @@ export function useImages() {
   const starting = ref<string | null>(null)
   // whether the update runs by the last `services` event (the backend decides, also while its
   // unit still stops); null before one
-  const updateUnit = computed<boolean | null>(() => {
-    const updating = (live.state.services as { updating?: unknown } | null)?.updating
-    return typeof updating === 'boolean' ? updating : null
-  })
+  const systemUpdating = useSystem().updating
+  const updateUnit = computed<boolean | null>(() => (typeof systemUpdating.value === 'boolean' ? systemUpdating.value : null))
   const updating = computed(() => updateUnit.value ?? overview.value?.updating ?? false)
 
   // a rebuild from its button: a failure is a toast, except a Build or an update that runs

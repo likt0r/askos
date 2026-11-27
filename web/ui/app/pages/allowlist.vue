@@ -11,7 +11,7 @@ definePageMeta({ titleKey: 'nav.allowlist' })
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
-const live = useLive()
+const { vms } = useVms()
 
 const EVERY = '*'
 const filter = computed<string>({
@@ -21,9 +21,9 @@ const filter = computed<string>({
 const filters = computed(() => [
   { value: EVERY, label: t('allowlist.filter.every') },
   { value: 'all', label: t('allowlist.filter.allVms') },
-  ...live.state.vms.map(vm => ({ value: vm.name, label: t('allowlist.filter.vm', { vm: vm.name }) })),
+  ...vms.value.map(vm => ({ value: vm.name, label: t('allowlist.filter.vm', { vm: vm.name }) })),
 ])
-const vmNames = computed(() => live.state.vms.map(vm => vm.name))
+const vmNames = computed(() => vms.value.map(vm => vm.name))
 
 const list = useResource('allowlist', { params: () => ({ filter: filter.value }), keepPrevious: true })
 const entries = computed<AllowlistEntry[]>(() => (Array.isArray(list.data.value) ? list.data.value : []))

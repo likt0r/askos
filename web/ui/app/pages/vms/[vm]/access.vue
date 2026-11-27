@@ -2,9 +2,9 @@
 // A VM's Access tab: its GitHub owners, its Claude token, its SSH access, the GitHub tokens it
 // got and the refused requests.
 const route = useRoute()
-const live = useLive()
+const { vms } = useVms()
 const name = computed(() => String(route.params.vm))
-const vm = computed(() => live.state.vms.find(v => v.name === name.value))
+const vm = computed(() => vms.value.find(v => v.name === name.value))
 </script>
 
 <template>

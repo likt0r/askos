@@ -1,5 +1,7 @@
 // The live connection to GET /api/v1/events (Server-Sent Events, docs/control-room-api.md
-// "Live events") and the state it carries. One instance per page (useLive()).
+// "Live events"): only the connection. What the events carry goes to their subscribers; the
+// resources module writes it into its cache (utils/resources.ts). One instance per page
+// (useLive()).
 //
 // EventSource retries on its own only after a dropped connection. After an HTTP error
 // (401 when the session ended, 503 too_many_streams, a backend that is restarting) it
@@ -69,21 +71,25 @@ export interface SshAccess {
 export interface VmProblem { vm: string, problem: string }
 export interface VmList { vms: Vm[], problems: VmProblem[] }
 export interface WatchState { running: boolean, since: string | null, restarts: number, last_exit: number | null }
-export interface VersionState { version: string, ui: string, installed: string | null }
+export interface HostReboot { needed: boolean | null, packages?: string[], checked?: string | null }
+/** A Host unit as the `services` event and GET /system list it. */
+export interface ServiceUnit { unit?: string, state?: string, [key: string]: unknown }
+export interface ServicesEvent { units?: ServiceUnit[], warnings?: unknown[], updating?: boolean }
+/** GET /system as the UI holds it, kept current by the `watch`, `host-reboot` and `services`
+ * events (`updating` only from the event). */
+export interface SystemState {
+  watch?: WatchState | null
+  host_reboot?: HostReboot | null
+  services?: ServiceUnit[] | null
+  warnings?: unknown[] | null
+  updating?: boolean
+  ui?: unknown
+}
 /** GET /version: the installed UI build (null while none is) and the Release of Agent Box. */
 export interface VersionInfo { api?: number, version?: string | null, ui?: string | null, installed?: string | null, release?: string | null }
 
 export interface LiveState {
   connection: Connection
-  /** false until the first `state` event or fetch: the VM list is not known yet */
-  loaded: boolean
-  vms: Vm[]
-  problems: VmProblem[]
-  watch: WatchState | null
-  version: VersionState | null
-  host: Record<string, unknown> | null
-  hostReboot: Record<string, unknown> | null
-  services: Record<string, unknown> | null
   /** the stream id from `hello`; changes when the backend restarts */
   stream: string | null
   /** when the next attempt to connect is due (ms since epoch), while reconnecting */
@@ -92,7 +98,10 @@ export interface LiveState {
   attempts: number
 }
 
-/** Events that carry no state of their own: views subscribe with `on()`. */
+/** Events that carry an object whole, which the resources module keeps (VMs, the Host's sample,
+ * the services, the version, `agentbox watch`, the Host-reboot notice). */
+export const PUSHED_EVENTS = ['state', 'vm', 'host', 'services', 'version', 'watch', 'host-reboot'] as const
+/** Events that carry no state of their own. Subscribers of both use `on()`. */
 export const STREAM_EVENTS = ['activity', 'alert', 'held', 'github-token', 'build', 'build-log', 'notification'] as const
 export type Listener = (data: any) => void
 
@@ -106,8 +115,8 @@ export interface LiveOptions {
   url?: string
   /** true while the session is valid; throws when the backend cannot be asked */
   checkSession: () => Promise<boolean>
-  /** GET /vms, used after `agentbox watch` runs again */
-  fetchVms: () => Promise<VmList>
+  /** before the stream opens: what subscribes to it is there (the resources module) */
+  beforeStart?: () => void
   /** the session ended */
   onSignedOut?: () => void
   createEventSource?: (url: string) => EventSourceLike
@@ -123,6 +132,20 @@ export function sortVms(vms: Vm[]): Vm[] {
   return [...vms].sort((a, b) => (a.network ?? Infinity) - (b.network ?? Infinity) || a.name.localeCompare(b.name))
 }
 
+/** The VM list of a `state` event or GET /vms: sorted, with its problems. */
+export function vmList(list: Partial<VmList> | null | undefined): VmList {
+  return { vms: sortVms(Array.isArray(list?.vms) ? list.vms : []), problems: Array.isArray(list?.problems) ? list.problems : [] }
+}
+
+/** The list with one VM's object replaced (a `vm` event), or added in its place. */
+export function withVm(list: VmList, vm: Vm): VmList {
+  const i = list.vms.findIndex(v => v.name === vm.name)
+  if (i < 0) return { ...list, vms: sortVms([...list.vms, vm]) }
+  const vms = [...list.vms]
+  vms.splice(i, 1, vm)
+  return { ...list, vms }
+}
+
 export function createLive(options: LiveOptions) {
   const url = options.url ?? '/api/v1/events'
   const backoff = options.backoffMs ?? [1000, 3000, 5000, 10000, 20000, 30000]
@@ -130,10 +153,7 @@ export function createLive(options: LiveOptions) {
   const now = options.now ?? (() => Date.now())
   const create = options.createEventSource ?? ((u: string) => new EventSource(u))
 
-  const state = reactive<LiveState>({
-    connection: 'idle', loaded: false, vms: [], problems: [], watch: null, version: null,
-    host: null, hostReboot: null, services: null, stream: null, retryAt: null, attempts: 0,
-  })
+  const state = reactive<LiveState>({ connection: 'idle', stream: null, retryAt: null, attempts: 0 })
 
   let source: EventSourceLike | null = null
   let retryTimer: ReturnType<typeof setTimeout> | null = null
@@ -143,28 +163,7 @@ export function createLive(options: LiveOptions) {
   let generation = 0        // events of a replaced EventSource are ignored
   const listeners = new Map<string, Set<Listener>>()
 
-  function setVms(list: Partial<VmList>) {
-    state.vms = sortVms(Array.isArray(list.vms) ? list.vms : [])
-    state.problems = Array.isArray(list.problems) ? list.problems : []
-    state.loaded = true
-  }
-
-  function replaceVm(vm: Vm) {
-    if (!vm || typeof vm.name !== 'string') return
-    const i = state.vms.findIndex(v => v.name === vm.name)
-    if (i >= 0) state.vms.splice(i, 1, vm)
-    else state.vms = sortVms([...state.vms, vm])
-  }
-
-  async function refetchVms() {
-    try {
-      setVms(await options.fetchVms())
-    }
-    catch {
-      // the next `state`/`vm` event or reconnect brings the list
-    }
-  }
-
+  // the connection's own state; every event goes to its subscribers too
   const handlers: Record<string, (data: any) => void> = {
     hello(data) {
       state.connection = 'live'
@@ -172,35 +171,13 @@ export function createLive(options: LiveOptions) {
       state.retryAt = null
       state.stream = typeof data?.stream === 'string' ? data.stream : null
     },
-    state(data) {
-      setVms(data ?? {})
-    },
-    vm(data) {
-      replaceVm(data)
-    },
-    watch(data) {
-      const wasStopped = state.watch?.running === false
-      state.watch = data
-      // VM state may have changed unseen while the root helper was not running
-      if (wasStopped && data?.running === true) void refetchVms()
-    },
-    version(data) {
-      state.version = data
-    },
-    host(data) {
+    host() {
       periodic = true
-      state.host = data
-    },
-    'host-reboot'(data) {
-      state.hostReboot = data
-    },
-    services(data) {
-      state.services = data
     },
   }
 
-  /** Subscribe to an event by name (state events too, after the state was updated);
-   * returns the function that unsubscribes. Whole objects, never patches: a repeat is harmless. */
+  /** Subscribe to an event by name; returns the function that unsubscribes. Whole objects,
+   * never patches: a repeat is harmless. */
   function on(name: string, listener: Listener): () => void {
     const set = listeners.get(name) ?? new Set<Listener>()
     set.add(listener)
@@ -220,7 +197,7 @@ export function createLive(options: LiveOptions) {
   }
 
   function listen(es: EventSourceLike, gen: number) {
-    const names = new Set<string>([...Object.keys(handlers), ...STREAM_EVENTS])
+    const names = new Set<string>([...Object.keys(handlers), ...PUSHED_EVENTS, ...STREAM_EVENTS])
     for (const name of names) {
       const handle = handlers[name]
       es.addEventListener(name, (event: MessageEvent) => {
@@ -297,6 +274,7 @@ export function createLive(options: LiveOptions) {
 
   function start() {
     if (source || retryTimer) return
+    options.beforeStart?.()
     state.attempts = 0
     open()
     if (!watchdog) watchdog = setInterval(checkPulse, Math.min(5000, deadAfter / 2))
@@ -317,16 +295,13 @@ export function createLive(options: LiveOptions) {
     state.connection = connection
   }
 
-  /** Forget everything (sign-out). */
+  /** Forget the stream (sign-out). */
   function reset() {
     stop()
-    Object.assign(state, {
-      loaded: false, vms: [], problems: [], watch: null, version: null, host: null,
-      hostReboot: null, services: null, stream: null, attempts: 0,
-    })
+    Object.assign(state, { stream: null, attempts: 0 })
   }
 
-  return { state, start, stop, reset, reconnectNow, refetchVms, on }
+  return { state, start, stop, reset, reconnectNow, on }
 }
 
 export type Live = ReturnType<typeof createLive>
