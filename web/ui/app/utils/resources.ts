@@ -29,19 +29,23 @@ notifyManager.setScheduler(queueMicrotask)
 
 interface Declaration<T, P> {
   path: (params: P) => string
+  /** the Host sends no event about its changes: read again whenever a view of it opens (the owner
+   * on #216) */
+  fresh: boolean
   /** only carry the types of the answer and of the parameters */
   answer?: T
   params?: P
 }
 
 /** A resource: its path, or for one with parameters (a VM's), its path from them. */
-function declare<T, P = undefined>(path: string | ((params: P) => string)): Declaration<T, P> {
-  return { path: typeof path === 'string' ? () => path : path }
+function declare<T, P = undefined>(path: string | ((params: P) => string), options: { fresh?: boolean } = {}): Declaration<T, P> {
+  return { path: typeof path === 'string' ? () => path : path, fresh: !!options.fresh }
 }
 
 const RESOURCES = {
   images: declare<ImagesOverview>('/images'),
-  pairings: declare<Pairings, { vm: string }>(p => `/vms/${p.vm}/pairings`),
+  // a device pairs inside Orca with the code: nothing on the Host records it
+  pairings: declare<Pairings, { vm: string }>(p => `/vms/${p.vm}/pairings`, { fresh: true }),
 }
 
 export type ResourceName = keyof typeof RESOURCES
@@ -428,6 +432,8 @@ export function useResource<N extends ResourceName>(name: N, ...[options = {}]: 
     queryKey: computed(() => (params() === undefined ? [name] : [name, params()])),
     // the parameters of the copy read, from its own key
     queryFn: ({ queryKey }) => r.read(name, queryKey[1] as ResourceParams<N>),
+    // one the Host sends no event about is read again whenever a view of it opens
+    refetchOnMount: RESOURCES[name].fresh ? 'always' : true,
     enabled: () => toValue(options.enabled ?? true),
   }, r.client)
   return {

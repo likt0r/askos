@@ -103,6 +103,22 @@ describe('Pair tab', () => {
     expect(byTestId('pair-devices').findAll('[data-testid="pair-device"]').map(r => r.attributes('data-device'))).toEqual(['dev-titan'])
   })
 
+  it('reads the devices again whenever the tab opens: the Host hears nothing of a device that pairs', async () => {
+    const api = fakeApi({
+      'GET /session': SIGNED_IN,
+      'GET /vms/work/pairings': { status: 200, body: DEVICES },
+      'GET /vms/work/logs?boot=current&lines=200': { status: 200, body: { vm: 'work', entries: [], cursor: null, truncated: false } },
+    })
+    await openApp('/vms/work/pair', [vm('work')])
+    const reads = () => api.calls.filter(c => c.path === '/vms/work/pairings').length
+    expect(reads()).toBe(1)
+    await useRouter().push('/vms/work/log')
+    await flushPromises()
+    await useRouter().push('/vms/work/pair')
+    await flushPromises()
+    expect(reads()).toBe(2)
+  })
+
   it('forgets the code when leaving the tab', async () => {
     fakeApi({
       'GET /session': SIGNED_IN,
