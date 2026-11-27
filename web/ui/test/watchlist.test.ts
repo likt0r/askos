@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resetSessionForTests } from '~/composables/useSession'
 import { resetLiveForTests } from '~/composables/useLive'
 import { FakeEventSource } from './fakes'
-import { $, $$, changes, click, fail, must, ok, openApp, settle, type, unmountAll, waitFor, withData } from './access-helpers'
+import { $, $$, changes, click, fail, must, ok, openApp, settle, type, unmountAll, vm, waitFor, withData } from './access-helpers'
 
 const now = () => Math.floor(Date.now() / 1000)
 
@@ -214,6 +214,22 @@ describe('Watchlist view', () => {
     expect(item('roh-ip')).toContain('roh-ip')
   })
 
+  it('keeps the Alerts shown while a new VM\'s are read, and drops a VM\'s when it goes', async () => {
+    let answer: (() => void) | null = null
+    const { es } = await openApp('/watchlist', routes({
+      'GET /vms/lab/alerts': () => new Promise(resolve => { answer = () => resolve(ok([])) }) as never,
+    }))
+    expect(alertRows().map(r => r[0]).sort()).toEqual(['priv', 'work', 'work'])
+    es.emit('state', { vms: [vm('work'), vm('priv', 'running', { network: 2 }), vm('lab', 'running', { network: 3 })], problems: [] })
+    await settle()
+    expect(alertRows().map(r => r[0]).sort()).toEqual(['priv', 'work', 'work'])
+    answer!()
+    await settle()
+    es.emit('state', { vms: [vm('work'), vm('lab', 'running', { network: 3 })], problems: [] })
+    await settle()
+    expect(alertRows().map(r => r[0])).toEqual(['work', 'work'])
+  })
+
   it('says which VM\'s Alerts could not be read', async () => {
     await openApp('/watchlist', routes({ 'GET /vms/priv/alerts': fail(502, 'journal_failed') }))
     expect(must('[data-testid="alerts"]').textContent).toContain('Could not read the Alerts of priv.')
@@ -350,7 +366,12 @@ describe('Watchlist view', () => {
     expect($('[data-testid="hand-list-error"]')).toBeNull()
     expect($$('[data-testid="watchlist-entry"]')).toEqual([])
     expect($$('[data-testid="feed"]').map(f => f.dataset.feed)).toEqual(['threat-intelligence', 'newly-registered'])
-    expect($('[data-testid="feeds-error"]')).toBeNull()
+  })
+
+  it('shows a failed read of the Watchlist once, at the hand-maintained list, not again at the Feeds', async () => {
+    await openApp('/watchlist', routes({ 'GET /watchlist': fail(502, 'action_failed') }))
+    expect(must('[data-testid="hand-list-error"]').textContent).toContain('Could not read the Watchlist.')
+    expect($('[data-testid="watchlist-feeds"] [data-read]')).toBeNull()
   })
 
   it('shows the command for the Host when a missing Watchlist would be created again', async () => {
@@ -507,6 +528,9 @@ describe('Watchlist view', () => {
     await click(harmless.querySelector('[data-testid="regex-test"]')!)
     expect(must('[data-testid="harmless"] [data-testid="regex-error"]').textContent)
       .toContain('Dieser Ausdruck kann kein Eintrag sein: ein Quantor oder eine Alternative in einer wiederholten Gruppe')
+    // the check's answer, not a failed read: nothing to read again
+    expect(must('[data-testid="harmless"] [data-testid="regex-error"]').textContent).not.toContain('Konnte')
+    expect(must('[data-testid="harmless"] [data-testid="regex-error"]').querySelector('button')).toBeNull()
     await type('[data-testid="harmless-regex"]', '.*')
     expect($('[data-testid="harmless"] [data-testid="regex-error"]')).toBeNull()
     await click('[data-testid="harmless-add"]')

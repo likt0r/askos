@@ -15,7 +15,7 @@ const result = computed<DomainCheck | null>(() => checking.data.value ?? null)
 const busy = checking.fetching
 // the Harmless marks (an extra here: their list shows its failure)
 const marks = useResource('harmless', { extra: true })
-const harmless = computed<HarmlessMark[]>(() => (Array.isArray(marks.data.value) ? marks.data.value : []))
+const harmless = computed<HarmlessMark[]>(() => (Array.isArray(marks.data.value) ? marks.data.value.filter(m => m && typeof m === 'object') : []))
 // marking is one button, whose failure is a toast; unmarking is asked first, in its dialog
 const mark = useChange('markHarmless', { failed: () => t('watchlist.harmless.markFailed') })
 const unmark = useChange('unmarkHarmless', { form: true })

@@ -23,8 +23,12 @@ const alerts = computed<VmAlert[]>(() => each.value.flatMap((r) => {
   const groups = r.data.value
   return (Array.isArray(groups) ? groups : []).map((a: AlertGroup) => ({ ...a, vm }))
 }))
-// the VM list is known and every VM's Alerts were read (or could not be)
-const loaded = computed(() => live.state.loaded && each.value.every(r => !r.loading.value))
+// the VM list is known and every VM's Alerts were read (or could not be) once; a VM that comes
+// later is read while the others stay on screen
+const everyRead = computed(() => each.value.every(r => !r.loading.value))
+const readOnce = ref(false)
+watch(everyRead, (all) => { if (all && live.state.loaded) readOnce.value = true }, { immediate: true })
+const loaded = computed(() => live.state.loaded && (readOnce.value || everyRead.value))
 const loading = computed(() => each.value.some(r => r.fetching.value))
 const unseen = computed(() => alerts.value.filter(a => !a.seen))
 const shown = computed(() => {

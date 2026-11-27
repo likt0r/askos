@@ -831,10 +831,13 @@ describe('the stale table for the Watchlist page', () => {
     expect(marks()).toEqual(Object.fromEntries(Object.keys(keys).map(k => [k, (names as string[]).includes(k)])))
   })
 
-  it('mark-seen and an Alert mark only that VM\'s Alerts stale', () => {
+  it('mark-seen marks only that VM\'s Alerts stale', () => {
     live.emit('activity', { ...entry('mark-seen'), vm: 'priv' })
     expect([stale(keys.work), stale(keys.priv)]).toEqual([false, true])
+  })
+
+  it('an Alert marks only that VM\'s Alerts stale', () => {
     live.emit('alert', { vm: 'work', domain: 'x.example' })
-    expect(stale(keys.work)).toBe(true)
+    expect([stale(keys.work), stale(keys.priv)]).toEqual([true, false])
   })
 })

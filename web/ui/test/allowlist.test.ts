@@ -141,6 +141,26 @@ describe('Allowlist view', () => {
       body: { scope: 'work', regex: pattern, duration: '1h', confirm: true } }])
   })
 
+  it('keeps the preview that was confirmed: a read of the check after it does not change it', async () => {
+    const pattern = '^mirror[0-9]+\\.vendor\\.example$'
+    const check = `GET /regex/check?list=allowlist&regex=${encodeURIComponent(pattern)}&scope=work`
+    let hosts = [{ host: 'mirror1.vendor.example', allowed: 0, blocked: 3, signals: [], strong: false }]
+    const { es } = await openApp('/allowlist?vm=work', {
+      'GET /allowlist?vm=work': ok([]),
+      [check]: () => ok({ list: 'allowlist', regex: pattern, scope: 'work', matches: {},
+        preview: { hosts, more: 0, watchlist_unreadable: null, truncated: false, reaches_back: null, log_unreadable: null } }),
+    })
+    await click('[data-testid="allowlist-add-open"]')
+    await click('[data-testid="allowlist-add"] [data-testid="entry-kind"] [data-kind="regex"]')
+    await type('[data-testid="add-regex"]', pattern)
+    await click('[data-testid="allowlist-add"] [data-testid="regex-test"]')
+    await click('[data-testid="add-confirm"]')
+    hosts = [...hosts, { host: 'mirror2.vendor.example', allowed: 0, blocked: 1, signals: [], strong: false }]
+    es.emit('hello', { stream: 'y', resumed: false })
+    await settle()
+    expect($$('[data-testid="regex-preview-host"]').map(h => h.dataset.host)).toEqual(['mirror1.vendor.example'])
+  })
+
   it('drops a preview or a refusal that comes back after the pattern changed: no confirmation without its preview', async () => {
     const pattern = '^mirror[0-9]+\\.vendor\\.example$'
     const path = (p: string) => `GET /regex/check?list=allowlist&regex=${encodeURIComponent(p)}&scope=work`

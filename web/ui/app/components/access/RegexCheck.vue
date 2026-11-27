@@ -11,6 +11,7 @@ const props = withDefaults(defineProps<{ list: RegexList, pattern: string, scope
 /** the check of the current pattern and scope, or null */
 const checked = defineModel<RegexCheck | null>('checked', { default: null })
 const { t } = useI18n()
+const errorText = useErrorText()
 const when = useWhen()
 
 const host = ref('')
@@ -38,11 +39,25 @@ watch(() => [props.pattern, props.scope, props.list], () => {
   asked.value = null
   checked.value = null
 })
-// the answer of the check asked for, the copy of its own parameters
+// the answer of the check asked for, the copy of its own parameters, taken once: a preview the
+// owner may have confirmed does not change under the confirmation (a later read of the copy)
+let taken = 0
 watch(() => [checking.data.value, checking.error.value, asked.value] as const, ([data, error, ask]) => {
-  if (!ask) return
-  checked.value = error ? null : data ?? null
-  if (data) tested.value = ask.host
+  if (!ask || ask.asked === taken) return
+  if (error) {
+    checked.value = null
+    return
+  }
+  if (!data) return
+  taken = ask.asked
+  checked.value = data
+  tested.value = ask.host
+})
+// the rules refuse the pattern: the check's answer (as adding it would answer), not a failed read
+const REFUSED = ['invalid_pattern', 'pattern_too_broad']
+const refusal = computed(() => {
+  const e = asked.value ? checking.error.value : null
+  return e instanceof ApiError && REFUSED.includes(e.code) ? e : null
 })
 
 function check() {
@@ -87,7 +102,8 @@ function seen(h: { allowed: number, blocked: number }) {
     <p v-if="hostProblem" class="text-sm text-error">
       {{ hostProblem }}
     </p>
-    <ReadFailure v-if="asked" :resource="checking" data-testid="regex-error" />
+    <UAlert v-if="refusal" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(refusal)" role="alert" data-testid="regex-error" />
+    <ReadFailure v-else-if="asked" :resource="checking" data-testid="regex-error" />
     <div v-if="checked" class="space-y-2 text-sm" data-testid="regex-result">
       <p class="text-muted">
         {{ t('regex.check.valid') }}

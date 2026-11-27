@@ -91,8 +91,7 @@ app/
                            rebuilds, Update now), useSettings,
                            useNotifications (this browser's preference, the `notification`
                            listener), useReloadPrompt (own version vs. `version` event),
-                           useLiveEvent (live.on() for a component, bursts gathered),
-                           useReloadOnActivity (a view's load on the Activity entries that change its data),
+                           useLiveEvent and useReloadOnActivity (no caller left, #218),
                            useWhen (times in the UI language), useChangeToast (a failed change
                            without a form: a toast that stays, with Details), useFaultToast (a fault the UI can
                            go on from: a toast that stays, with Details)
@@ -272,15 +271,14 @@ it; only the pushed data (the VM list and the live state of `utils/live.ts`) mov
 `useLive()` owns the one `EventSource`. State events (`state`, `vm`, `host`, ...) update
 `live.state`. Everything else is delivered to subscribers: `const off = live.on('activity',
 (data) => ...)` (names in `STREAM_EVENTS` in `utils/live.ts`; state events and `hello` work
-too, and the listener runs after the state was updated). Events are whole objects, so a
-repeat does no harm. Subscribe in a composable and call `off()` in `onScopeDispose`; refetch
-on `hello` with `resumed: false`, because events may have been missed. A throwing listener
-does not stop the others. In a component that only reloads a list on an event,
-`useLiveEvent(name, fn, delayMs)` does the subscribing and unsubscribing and runs `fn` once
-per burst. A view that shows data an Activity entry can change uses
-`useReloadOnActivity(load, { codes, kinds, match })`: it calls `load` once per burst when an
-`activity` entry's `code ?? action` is in `codes` (or its `kind` in `kinds`, and `match(entry)` agrees),
-and after a `hello` with `resumed: false` that is not the view's first.
+too, and the listener runs after the state was updated). Events are whole objects, so a repeat
+does no harm. Subscribe in a composable and call `off()` in `onScopeDispose`; refetch on
+`hello` with `resumed: false`, because events may have been missed. A throwing listener does
+not stop the others. No view reads on an event itself: its data comes from the resources
+module, whose tables follow the stream. `useLiveEvent(name, fn, delayMs)` (subscribing for a
+component, `fn` once per burst) and `useReloadOnActivity(load, { codes, kinds, match })` (a
+`load` on the Activity entries that change a view's data) have no caller left; #218 removes
+them.
 
 ### Adding an i18n area
 
