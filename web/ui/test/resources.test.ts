@@ -493,10 +493,28 @@ describe('the Host\'s readings', () => {
     expect(history()).toEqual([970, 1000, 1005])
     expect(r.client.getQueryData<{ time: number }>(['host'])!.time).toBe(1005)
     live.emit('host', sample(1005))
-    live.emit('host', sample(1001))      // older than the one held: no current one, no point
-    expect(history()).toEqual([970, 1000, 1005])
+    const repeated = r.client.getQueryData(['host'])
+    live.emit('host', sample(1001))      // older than the one held: nothing changes
+    expect(r.client.getQueryData(['host'])).toBe(repeated)
     expect(r.client.getQueryData<{ time: number }>(['host'])!.time).toBe(1005)
+    live.emit('host', sample(null))      // no time: the current one, no point
+    expect(history()).toEqual([970, 1000, 1005])
     expect(r.client.getQueryState(['host'])!.isInvalidated).toBe(false)
+  })
+
+  it('a first sample during the first read is applied to its answer, with no second read', async () => {
+    let answer!: () => void
+    const api = fakeApi({ 'GET /host': () => new Promise(resolve => { answer = () => resolve(OK(snapshot([940, 970, 1000]))) }) })
+    const observer = new QueryObserver(r.client, { queryKey: ['host'], queryFn: () => r.read('host') })
+    const off = observer.subscribe(() => {})
+    await flushPromises()
+    live.emit('host', sample(1005))
+    answer()
+    await flushPromises()
+    await flushPromises()
+    expect(api.calls).toHaveLength(1)
+    expect(history()).toEqual([970, 1000, 1005])
+    off()
   })
 
   it('takes a sample before any read as the first copy, and reads the history then', async () => {
@@ -912,6 +930,38 @@ describe('the pushed resources: the VMs, the system state, the version', () => {
     await flushPromises()
     expect(api.calls.map(c => c.path)).toEqual(['/vms'])
     expect(names()).toEqual([['work', 'paused'], ['priv', 'running']])
+  })
+
+  it('reads the VM list once more when it was marked stale during its read', async () => {
+    let answer!: () => void
+    let reads = 0
+    fakeApi({ 'GET /vms': () => { reads++; return reads === 1 ? new Promise(resolve => { answer = () => resolve(OK({ vms: [vmOf('one')], problems: [] })) }) : OK({ vms: [vmOf('two')], problems: [] }) } })
+    live.emit('state', { vms: [vmOf('work')], problems: [] })
+    const observer = new QueryObserver(r.client, { queryKey: ['vms'], enabled: false })
+    const off = observer.subscribe(() => {})
+    void r.markStale('vms')      // a change: read
+    await flushPromises()
+    void r.markStale('vms')      // another, while that read is on the way
+    answer()
+    await flushPromises()
+    await flushPromises()
+    expect(reads).toBe(2)
+    expect(names()).toEqual([['two', 'running']])
+    off()
+  })
+
+  it('takes the VM list of GET /vms sorted, and keeps updating through a read of the system state', async () => {
+    fakeApi({
+      'GET /vms': OK({ vms: [vmOf('b', 'running', { network: 2 }), vmOf('a', 'running', { network: 1 })], problems: [] }),
+      'GET /system': OK({ watch: null, host_reboot: null, services: [], warnings: [], ui: null }),
+    })
+    live.emit('state', { vms: [], problems: [] })
+    live.emit('services', { units: [], warnings: [], updating: true })
+    await r.markStale('vms')
+    await r.markStale('system')
+    await flushPromises()
+    expect(names().map(n => n[0])).toEqual(['a', 'b'])
+    expect(r.client.getQueryData<{ updating: boolean }>(['system'])!.updating).toBe(true)
   })
 
   it('is not read by a reconnect that could not resume: the stream sends it again', async () => {

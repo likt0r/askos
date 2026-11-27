@@ -78,10 +78,11 @@ function declare<T, P = undefined>(path: string | ((params: P, held: T | undefin
 
 const RESOURCES = {
   // the VMs and the problems of their records (`state` and `vm` events)
-  vms: declare<VmList>('/vms', { pushed: true }),
+  vms: declare<VmList>('/vms', { pushed: true, merge: (_held, answer: Partial<VmList>) => vmList(answer) }),
   // the root helper `agentbox watch`, the Host-reboot notice, the services and their warnings
   // (`watch`, `host-reboot` and `services` events)
-  system: declare<SystemState>('/system', { pushed: true }),
+  // (`updating` comes with the `services` event only: a read keeps it)
+  system: declare<SystemState>('/system', { pushed: true, merge: (held, answer: SystemState) => ({ ...answer, updating: held?.updating }) }),
   images: declare<ImagesOverview>('/images'),
   // a device pairs inside Orca with the code: nothing on the Host records it
   pairings: declare<Pairings, { vm: string }>(p => `/vms/${p.vm}/pairings`, { fresh: true }),
@@ -188,8 +189,8 @@ interface EventRow {
   stale?: (event: any, before: any) => Stale[]
   /** compare per object (a VM by its name) */
   key?: (event: any) => string | undefined
-  /** the objects known before their first event: from the live state, and from each `state`
-   * event, which sends them all */
+  /** the objects known before their own first event: from each `state` event, which sends them
+   * all (on connect too) */
   known?: (state: any) => any[]
 }
 
@@ -573,11 +574,12 @@ export function createResources(live: Pick<Live, 'on' | 'state'>, context: Conte
   function markStaleNow(queryKey: readonly unknown[]): Promise<void> {
     for (const query of client.getQueryCache().findAll({ queryKey, fetchStatus: 'fetching' })) again.add(query.queryHash)
     // a pushed resource no view reads by itself: read its copy now
+    // (a change does not wait for it: the stream may tell it sooner)
     if ((RESOURCES[queryKey[0] as ResourceName] as Declaration<unknown, unknown>).pushed) {
-      const reads = client.getQueryCache().findAll({ queryKey })
-        .filter(query => query.state.fetchStatus !== 'fetching')
-        .map(query => client.fetchQuery({ queryKey: query.queryKey, staleTime: 0 }).then(() => {}, () => {}))
-      return Promise.all(reads).then(() => {})
+      for (const query of client.getQueryCache().findAll({ queryKey })) {
+        if (query.state.fetchStatus !== 'fetching') void client.fetchQuery({ queryKey: query.queryKey, staleTime: 0 }).catch(() => {})
+      }
+      return Promise.resolve()
     }
     return client.invalidateQueries({ queryKey, predicate: query => query.state.fetchStatus !== 'fetching' }, { cancelRefetch: false })
   }
@@ -600,7 +602,8 @@ export function createResources(live: Pick<Live, 'on' | 'state'>, context: Conte
       const first = apply(undefined as never)
       if (first === undefined || first === null) return
       client.setQueryData(queryKey, first)
-      if (declaration.seeds) void markStale(name, params)      // read for the rest
+      // read for the rest, unless a read is on the way already: it takes this event too
+      if (declaration.seeds && query?.state.fetchStatus !== 'fetching') void markStale(name, params)
       return
     }
     const next = apply(data)
@@ -611,7 +614,7 @@ export function createResources(live: Pick<Live, 'on' | 'state'>, context: Conte
 
   const offs = [client.getQueryCache().subscribe((event) => {
     if (event.type !== 'updated' || (event.action.type !== 'success' && event.action.type !== 'error')) return
-    if (again.delete(event.query.queryHash)) void client.invalidateQueries({ queryKey: event.query.queryKey, exact: true }, { cancelRefetch: false })
+    if (again.delete(event.query.queryHash)) void markStaleNow(event.query.queryKey)
     // a read that ended took what a waiting mark was for (it was set while no read was on the way)
     const timer = waiting.get(event.query.queryHash)
     if (timer) {
@@ -625,18 +628,18 @@ export function createResources(live: Pick<Live, 'on' | 'state'>, context: Conte
   // for a row with a key (`vm`: a VM's SSH access)
   const before = new Map<string, unknown>()
   const slot = (eventName: string, row: EventRow, data: unknown) => (row.key ? `${eventName}:${row.key(data)}` : eventName)
-  /** The objects a row compares, from the live state or a `state` event, which sends them all:
-   * an object it already knew is compared as its own event would be. */
-  function know(state: unknown, compare: boolean) {
+  /** The objects a row compares, from a `state` event, which sends them all: an object it already
+   * knew is compared as its own event would be. */
+  function know(state: unknown) {
     for (const [eventName, row] of Object.entries(ON_EVENT)) {
       for (const item of row.known?.(state) ?? []) {
         const key = slot(eventName, row, item)
-        if (compare) for (const stale of row.stale?.(item, before.get(key)) ?? []) markStaleBy(stale, item)
+        for (const stale of row.stale?.(item, before.get(key)) ?? []) markStaleBy(stale, item)
         before.set(key, item)
       }
     }
   }
-  offs.push(live.on('state', (state: unknown) => know(state, true)))
+  offs.push(live.on('state', (state: unknown) => know(state)))
   offs.push(...Object.entries(ON_EVENT).map(([eventName, row]) => live.on(eventName, (data: unknown) => {
     for (const [name, apply] of Object.entries(row.write ?? {}) as [ResourceName, (d: any, e: any) => any][]) {
       write(name, row.writeParams?.(data), d => apply(d, data))

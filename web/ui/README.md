@@ -84,11 +84,12 @@ app/
   components/settings/     SettingsForm, SettingsField
   components/notifications/  NotificationsPreferences, NotificationsReloadPrompt
   composables/             useSession (with `default_language` from GET/POST /session), useLive
-                           (the one live connection), useVms and useSystem (the pushed VM list and
-                           the state of `agentbox watch`, the Host reboot and the services),
+                           (the one live connection), useVms and useSystem (the pushed VM list
+                           and the state of `agentbox watch`, the Host reboot and the services),
                            useLanguage (the switch with Automatic; the sign-in page's order and
-                           `default_language`, both applied by the auth middleware), useErrorText (API error code -> translated text),
-                           useNow, useActivity, useHost, useImages (the resource `images`,
+                           `default_language`, both applied by the auth middleware), useErrorText
+                           (API error code -> translated text), useNow, useActivity, useHost,
+                           useImages (the resource `images`,
                            rebuilds, Update now), useSettings,
                            useNotifications (this browser's preference, the `notification`
                            listener), useReloadPrompt (own version vs. `version` event),
@@ -226,8 +227,8 @@ it, pushed data included; `utils/live.ts` holds none.
   `domainCheck` after each of these; `githubApp` after `set-github-app`, `remove-github-app`,
   `set-owners`, `create` and `delete`; `githubTokens` of the event's VM after a `github-token`
   event, `sshConfig` of a VM when its `vm` event turns SSH access on or off or brings a new host
-  key (a row with `key` compares each VM with its own event before, `known` from the live state
-  and each `state` event). A write keeps a stale mark and a failed read's error. A stale resource
+  key (a row with `key` compares each VM with its own event before, `known` from each `state`
+  event). A write keeps a stale mark and a failed read's error. A stale resource
   that a view shows is read again; one that nothing shows is read when a view next asks for it. A
   new Activity code that changes a resource needs a row here; without one, the view shows old data
   until the next reconnect or reload.
