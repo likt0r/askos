@@ -37,6 +37,26 @@ export interface HostSnapshot extends HostSample {
   history: HostHistoryPoint[]
 }
 
+/** GET /host as the UI holds it: the readings with their history, or that this Host has no
+ * sampler (`503 readings_unavailable`: a state, not a failure). */
+export interface HostOverview extends HostSnapshot {
+  unavailable?: boolean
+}
+
+/** A Host without a sampler. */
+export function noReadings(): HostOverview {
+  return { time: null, readings: [], vms: {}, interval: 0, history_seconds: 1800, thresholds: {}, history: [], unavailable: true }
+}
+
+/** The overview with a live sample added to its history (`appendSample`); the same object when
+ * the sample adds nothing. */
+export function withSample(host: HostOverview, sample: HostSample | null | undefined): HostOverview {
+  if (!sample || !Array.isArray(sample.readings)) return host
+  const history = Array.isArray(host.history) ? host.history : []
+  const next = appendSample(history, sample, host.history_seconds ?? 1800)
+  return next === history ? host : { ...host, history: next }
+}
+
 /** Order of the tiles; unknown kinds (a newer backend) come last. */
 export const HOST_KIND_ORDER = [
   'cpu_load', 'cpu_temp', 'cpu_power', 'memory', 'swap', 'swap_activity',

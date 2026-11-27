@@ -486,3 +486,47 @@ describe('an Image\'s Containerfile', () => {
     expect(api.calls.map(c => c.path)).toEqual(['/images/a%20b/containerfile'])
   })
 })
+
+describe('the Host\'s readings', () => {
+  let live: ReturnType<typeof fakeLive>
+  let r: Resources
+  beforeEach(() => {
+    live = fakeLive()
+    r = createResources(live as never)
+  })
+  afterEach(() => r.stop())
+
+  const point = (time: number) => ({ time, values: { 'cpu.load': time / 100 }, vms: {} })
+  const snapshot = (times: number[]) => ({ interval: 5, history_seconds: 60, thresholds: {}, time: times.at(-1) ?? null, readings: [], vms: {}, history: times.map(point) })
+  const sample = (time: number | null) => ({ time, readings: [{ id: 'cpu.load', kind: 'cpu_load', value: 1 }], vms: {} })
+  const history = () => r.client.getQueryData<{ history: { time: number }[] }>(['host'])!.history.map(p => p.time)
+
+  it('appends each sample to the history, within its window, and skips a repeated one', () => {
+    r.client.setQueryData(['host'], snapshot([940, 970, 1000]))
+    live.emit('host', sample(1005))
+    expect(history()).toEqual([970, 1000, 1005])
+    const before = r.client.getQueryData(['host'])
+    live.emit('host', sample(1005))
+    live.emit('host', sample(null))
+    expect(r.client.getQueryData(['host'])).toBe(before)
+    expect(r.client.getQueryState(['host'])!.isInvalidated).toBe(false)
+  })
+
+  it('appends a sample that arrives while the history is read to its answer', async () => {
+    let answer!: () => void
+    fakeApi({ 'GET /host': () => new Promise(resolve => { answer = () => resolve(OK(snapshot([940, 970, 1000]))) }) })
+    const observer = new QueryObserver(r.client, { queryKey: ['host'], queryFn: () => r.read('host') })
+    const off = observer.subscribe(() => {})
+    await flushPromises()
+    live.emit('host', sample(1005))
+    answer()
+    await flushPromises()
+    expect(history()).toEqual([970, 1000, 1005])
+    off()
+  })
+
+  it('reads a Host without a sampler as a state', async () => {
+    fakeApi({ 'GET /host': { status: 503, body: { error: { code: 'readings_unavailable', message: 'x' } } } })
+    expect(await r.read('host')).toMatchObject({ unavailable: true, readings: [], history: [] })
+  })
+})

@@ -6,7 +6,6 @@ import { beforeEach, afterEach, vi } from 'vitest'
 import App from '~/app.vue'
 import { resetSessionForTests } from '~/composables/useSession'
 import { resetLiveForTests } from '~/composables/useLive'
-import { resetHostForTests } from '~/composables/useHost'
 import { resetNotificationsForTests } from '~/composables/useNotifications'
 import { resetReloadPromptForTests } from '~/composables/useReloadPrompt'
 import { fakeApi, FakeEventSource, SIGNED_IN } from './fakes'
@@ -17,7 +16,6 @@ export function useFreshApp() {
   beforeEach(async () => {
     resetSessionForTests()
     resetLiveForTests()
-    resetHostForTests()
     resetNotificationsForTests()
     resetReloadPromptForTests()
     FakeEventSource.reset()

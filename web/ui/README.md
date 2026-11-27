@@ -129,7 +129,8 @@ Server data lives in one cache, in `app/utils/resources.ts` ([ADR
 it holds so far: `images` (`GET /images`), `pairings` (`GET /vms/<vm>/pairings`), `githubApp`
 (`GET /github-app`), `githubTokens` (`GET /vms/<vm>/github-tokens?since=`), `sshConfig`
 (`GET /vms/<vm>/ssh-config`), `containerfile` (`GET /images/<image>/containerfile`, read only
-while its panel is open) and `version` (`GET /version`: the UI build installed and the
+while its panel is open), `host` (`GET /host`: the Host's readings with 30 minutes of history)
+and `version` (`GET /version`: the UI build installed and the
 Release; the reload prompt takes the build of its first answer as the page's own and keeps it
 through later reads). Every
 other view still reads on its own, as the next section describes, until it moves into the
@@ -143,7 +144,8 @@ module (#216).
   Orca; `githubApp`: an App installed on GitHub): it is read again whenever a view of it opens
   (the owner on #216). A code the Host answers for a state, not a failure, is declared in
   `states` and read as data (`github_app_missing`: no App set up, `{ apps: [], missing: [], none:
-  true }`), so a later failed read keeps that state, not an older overview.
+  true }`; `readings_unavailable`: a Host without a sampler), so a later failed read keeps that
+  state, not an older overview.
 - **Asking for one**: `const images = useResource('images')` gives `data` (undefined until an
   answer came), `loading` (nothing yet and a read on the way), `fetching` (a read on the way,
   the first or a read again), `error` (why the last read failed) and `retry()`. Every view that
@@ -162,7 +164,8 @@ module (#216).
   live, such a read shows like any other. For an extra it shows nothing. It offers no "Details"
   yet: the Host's text is shown only once #215 has checked that it cannot carry a secret.
 - **What an event does** (`ON_EVENT`, `ON_ACTIVITY`): an event that carries the whole object
-  is written into the cache (`build`, through `applyBuild`). An event that only says something
+  is written into the cache (`build`, through `applyBuild`; each `host` sample is appended to
+  the history of `host`, through `appendSample`). An event that only says something
   changed marks the resource stale: `images` after a `build` event whose status is not `running`
   or that `applyBuild` cannot place, after `updating` of the `services` event goes from true to
   false, when the version check (`agentbox-versions.service` in the `services` event) stops

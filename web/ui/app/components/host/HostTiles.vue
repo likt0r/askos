@@ -1,10 +1,10 @@
 <script setup lang="ts">
 // The Host's readings as tiles with their 30-minute history, and the memory of each VM.
-// Used by the expanded host bar and by the System page.
+// Used by the expanded host bar and by the System page, which show a failed read of them.
 import type { HostReading } from '~/utils/host'
 
 const { t, te } = useI18n()
-const { sample, readings, history, windowSeconds, unavailable } = useHost()
+const { resource, sample, readings, history, windowSeconds, unavailable } = useHost()
 
 const memory = computed(() => vmMemory(sample.value?.vms))
 const maxVm = computed(() => Math.max(1, ...memory.value.rows.map(r => r.bytes)))
@@ -28,6 +28,7 @@ function percentKind(r: HostReading) {
 
 <template>
   <div class="flex flex-col gap-3" data-testid="host-tiles">
+    <ReadFailure :resource="resource" data-testid="host-error" />
     <p v-if="!readings.length" class="text-sm text-muted" data-testid="host-empty">
       {{ unavailable ? t('host.unavailable.all') : t('host.waiting') }}
     </p>

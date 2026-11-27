@@ -11,6 +11,7 @@ export default {
       githubApp: 'the GitHub Apps',
       pairings: 'the Paired devices',
       containerfile: 'the Containerfile',
+      host: 'the Host\'s readings',
     },
   },
 }
