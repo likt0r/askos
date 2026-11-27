@@ -40,15 +40,23 @@ export interface ActivityResult {
   retention_days: number
 }
 
+/** A timeline as the resource `activity` reads it: a filter, how many of the newest entries,
+ * and `since` (only that recent, e.g. `-14d`). */
+export interface ActivityParams extends ActivityFilter {
+  lines: number
+  since?: string
+}
+
 export const ACTIVITY_PAGE = 200
 export const ACTIVITY_MAX_LINES = 5000
 
-export function activityQuery(filter: ActivityFilter, lines: number): string {
+export function activityQuery(filter: ActivityFilter, lines: number, since?: string): string {
   const params = new URLSearchParams()
   if (filter.kinds.length) params.set('kind', filter.kinds.join(','))
   if (filter.vm) params.set('vm', filter.vm)
   const search = filter.search.trim()
   if (search) params.set('search', search)
+  if (since) params.set('since', since)
   params.set('lines', String(Math.min(lines, ACTIVITY_MAX_LINES)))
   return params.toString()
 }
@@ -82,6 +90,13 @@ export function addEntry(list: ActivityEntry[], entry: ActivityEntry, limit: num
   const at = list.findIndex(e => millis(e) < millis(entry))
   const next = at < 0 ? [...list, entry] : [...list.slice(0, at), entry, ...list.slice(at)]
   return next.slice(0, limit)
+}
+
+/** A timeline with a live entry added (`addEntry`); the same timeline when it adds nothing. */
+export function withEntry(result: ActivityResult, entry: ActivityEntry, limit: number): ActivityResult {
+  const entries = Array.isArray(result.entries) ? result.entries : []
+  const next = addEntry(entries, entry, limit)
+  return next === entries ? result : { ...result, entries: next }
 }
 
 export function isEntry(data: unknown): data is ActivityEntry {

@@ -22,6 +22,7 @@ import { applyBuild, type BuildEvent, type BuildLog, type BuildLogEvent, buildLo
 import { type HostOverview, type HostSample, noReadings, withSample } from './host'
 import type { SettingValue } from './settings'
 import type { Pairings } from './vm'
+import { type ActivityEntry, type ActivityParams, activityQuery, type ActivityResult, activityText, isEntry, matchesFilter, type Translator, withEntry } from './activity'
 import { joinVmLog, type LogFilters, type VmLog, vmLogPath } from './vmRules'
 import type { Live, VersionInfo, Vm } from './live'
 
@@ -90,6 +91,8 @@ const RESOURCES = {
   // says when it grows
   vmLog: declare<VmLog, { vm: string, filters: LogFilters, shown: number }>((p, held) => vmLogPath(p.vm, p.filters, held),
     { fresh: true, forget: true, merge: joinVmLog }),
+  // the Activity timeline for a filter, the newest `lines` entries (`since`: only that recent)
+  activity: declare<ActivityResult, ActivityParams>(p => `/activity?${activityQuery(p, p.lines, p.since)}`),
   // an Image's Containerfile: the installed Release's, or its Recipe's
   containerfile: declare<ContainerfileText, { image: string }>(p => `/images/${encodeURIComponent(p.image)}/containerfile`),
 }
@@ -131,6 +134,8 @@ interface EventRow {
   /** the parameters of the copy `write` goes into (a Build's log: the event's Image and Build);
    * none: the resource without parameters */
   writeParams?: (event: any) => unknown
+  /** written into every copy of the resource, with its parameters (each Activity filter) */
+  writeEach?: { [N in ResourceName]?: (data: ResourceData<N>, event: any, params: ResourceParams<N>, context: Context) => ResourceData<N> | null }
   /** `before`: the last event of this row, or with `key` the last of the same object */
   stale?: (event: any, before: any) => Stale[]
   /** compare per object (a VM by its name) */
@@ -144,7 +149,21 @@ interface EventRow {
 const ofBuild = (event: { image?: string | null, build?: string | null }): Stale =>
   ({ name: 'buildLog', params: () => ({ image: event.image, build: event.build }) })
 
+/** What a row may need of the page: the words an Activity entry shows in the UI's language. */
+interface Context {
+  words: (entry: ActivityEntry) => string
+}
+
 const ON_EVENT: Record<string, EventRow> = {
+  // one whole Activity entry: into each timeline whose filter it passes (by agentbox's text or
+  // the words the UI shows for it), newest first, no repeats (`addEntry`)
+  activity: {
+    writeEach: {
+      activity: (data, entry, params, context) => (isEntry(entry) && matchesFilter(entry, params, context.words(entry))
+        ? withEntry(data, entry, params.lines)
+        : data),
+    },
+  },
   // one Build; once it ended, what it changed (the current Build, who uses what, older Builds
   // removed) is read again, and the end of its log
   build: {
@@ -353,7 +372,7 @@ export type ChangeArgs<N extends ChangeName> = Parameters<(typeof CHANGES)[N]['r
 // ---- the cache -------------------------------------------------------------------------------
 
 /** The cache and its wiring to one live connection. */
-export function createResources(live: Pick<Live, 'on' | 'state'>) {
+export function createResources(live: Pick<Live, 'on' | 'state'>, context: Context = { words: () => '' }) {
   const client = new QueryClient({
     defaultOptions: {
       queries: {
@@ -460,6 +479,12 @@ export function createResources(live: Pick<Live, 'on' | 'state'>) {
     for (const [name, apply] of Object.entries(row.write ?? {}) as [ResourceName, (d: any, e: any) => any][]) {
       write(name, row.writeParams?.(data), d => apply(d, data))
     }
+    for (const [name, apply] of Object.entries(row.writeEach ?? {}) as [ResourceName, (d: any, e: any, p: any, c: Context) => any][]) {
+      for (const query of client.getQueryCache().findAll({ queryKey: [name] })) {
+        const params = query.queryKey[1]
+        write(name, params, d => apply(d, data, params, context))
+      }
+    }
     for (const stale of row.stale?.(data, before.get(slot(eventName, row, data))) ?? []) markStaleBy(stale, data as Concerns)
     before.set(slot(eventName, row, data), data)
   })))
@@ -507,8 +532,16 @@ export type Resources = ReturnType<typeof createResources>
 let resources: Resources | null = null
 
 function useResources(): Resources {
-  resources ??= createResources(useLive())
+  resources ??= createResources(useLive(), { words: activityWords() })
   return resources
+}
+
+/** The words of an Activity entry in the UI's language, as it shows them (useActivityText): from
+ * the app's i18n, whose language may change. */
+function activityWords(): Context['words'] {
+  const i18n = useNuxtApp().$i18n
+  const tr: Translator = { t: (key, values) => i18n.t(key, values ?? {}), te: key => i18n.te(key) }
+  return entry => activityText(entry, tr)
 }
 
 /** Tests only: the cache and its wiring. */
