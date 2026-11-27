@@ -1,12 +1,9 @@
 <script setup lang="ts">
 // All settings, in groups, with one Save for the changed ones (all or nothing).
 const { t, te } = useI18n()
-const errorText = useErrorText()
 const s = useSettings()
-const { info, draft, errors, keys, dirty, loading, loadError, saving, saveError, saved, changedElsewhere } = s
+const { info, draft, errors, keys, dirty, loading, saving, saveError, saved, changedElsewhere } = s
 const { chosen, followDefaultLanguage } = useLanguage()
-
-onMounted(() => void s.load())
 
 // a new default language applies in this browser as soon as PATCH answers, before the form
 // reloads (unless a language was chosen here)
@@ -38,15 +35,7 @@ function label(key: string) {
     <p v-if="loading && !keys.length" class="text-sm text-muted" data-testid="settings-loading">
       {{ t('settings.loading') }}
     </p>
-    <UAlert
-      v-if="loadError"
-      color="error"
-      variant="subtle"
-      icon="i-lucide-circle-alert"
-      :title="errorText(loadError)"
-      :actions="[{ label: t('settings.retry'), color: 'error', variant: 'outline', onClick: () => s.load(true) }]"
-      data-testid="settings-load-error"
-    />
+    <ReadFailure :resource="s.settings" data-testid="settings-load-error" />
 
     <UAlert
       v-if="changedElsewhere"

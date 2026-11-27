@@ -699,3 +699,16 @@ describe('the Activity timelines', () => {
     expect(descriptions(all)).toEqual(['b', 'a'])
   })
 })
+
+describe('the stale table for the Settings', () => {
+  it('set-settings marks them stale, nothing else does', () => {
+    const live = fakeLive()
+    const r = createResources(live as never)
+    r.client.setQueryData(['settings'], { settings: {} })
+    live.emit('activity', { ...entry('set-image') })
+    expect(r.client.getQueryState(['settings'])!.isInvalidated).toBe(false)
+    live.emit('activity', { ...entry('set-settings'), kind: 'settings' })
+    expect(r.client.getQueryState(['settings'])!.isInvalidated).toBe(true)
+    r.stop()
+  })
+})

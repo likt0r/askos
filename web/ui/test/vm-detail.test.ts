@@ -878,6 +878,37 @@ describe('creating a VM', () => {
     expect(document.body.textContent).toContain('Network 3, Orca port 6803.')
   })
 
+  it('fills the Settings\' defaults again when opened again, from the copy already read', async () => {
+    const api = fakeApi(routes())
+    await openApp('/vms', [WORK])
+    await click('vm-create')
+    await type('create-memory', '20000')
+    document.body.querySelectorAll<HTMLElement>('[data-testid="create-dialog"] button').forEach((b) => { if (b.textContent?.trim() === 'Cancel') b.click() })
+    await flushPromises()
+    await click('vm-create')
+    expect((byTestId('create-memory').element as HTMLInputElement).value).toBe('16384')
+    expect((byTestId('create-disk').element as HTMLInputElement).value).toBe('200')
+    await type('create-name', 'lab')
+    await submit('create-dialog')
+    expect(api.calls.find(c => c.method === 'POST')?.body).toMatchObject({ image: 'base', memory_mib: 16384 })
+    expect(api.calls.filter(c => c.path === '/settings')).toHaveLength(1)
+  })
+
+  it('a change of the Settings reaches the next opening', async () => {
+    let memory = 16384
+    fakeApi(routes({ 'GET /settings': () => OK({ settings: { default_image: { value: 'base' }, default_memory_mib: { value: memory }, default_data_disk_gib: { value: 200 } } }) }))
+    const { es } = await openApp('/vms', [WORK])
+    await click('vm-create')
+    document.body.querySelectorAll<HTMLElement>('[data-testid="create-dialog"] button').forEach((b) => { if (b.textContent?.trim() === 'Cancel') b.click() })
+    await flushPromises()
+    memory = 32768
+    es.emit('activity', { time: '2026-11-03T12:00:00Z', vm: null, actor: 'root', kind: 'settings', action: 'set-settings', code: 'set-settings', outcome: 'ok', description: '' })
+    await flushPromises()
+    await click('vm-create')
+    await flushPromises()
+    expect((byTestId('create-memory').element as HTMLInputElement).value).toBe('32768')
+  })
+
   it('copies the SSH keys of another VM once when asked, and says how many', async () => {
     const api = fakeApi(routes({ 'POST /vms': { status: 201, body: { vm: 'lab', network: 3, orca_port: 6803, image: 'base',
       ssh_keys_from: 'work', ssh_keys: [{ fingerprint: 'SHA256:a', name: 'laptop', type: 'ssh-ed25519' },

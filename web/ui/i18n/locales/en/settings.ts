@@ -2,7 +2,6 @@
 export default {
   settings: {
     loading: 'Loading settings…',
-    retry: 'Try again',
     default: 'Default: {value}',
     restore: 'Use default',
     save: 'Save {n} change | Save {n} changes',

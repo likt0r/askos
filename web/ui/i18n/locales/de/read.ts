@@ -10,6 +10,7 @@ export default {
       sshConfig: 'die Verbindungshilfe',
       githubApp: 'die GitHub-Apps',
       pairings: 'die gekoppelten Geräte',
+      settings: 'die Einstellungen',
       activity: 'die Aktivität',
       vmLog: 'das Log der VM',
       buildLog: 'das Protokoll des Builds',
