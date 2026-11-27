@@ -92,7 +92,7 @@ app/
                            useImages (the resource `images`,
                            rebuilds, Update now), useSettings,
                            useNotifications (this browser's preference, the `notification`
-                           listener), useReloadPrompt (own version vs. `version` event),
+                           listener), useReloadPrompt (own version vs. the resource `version`),
                            useLiveEvent and useReloadOnActivity (no caller left, #218),
                            useWhen (times in the UI language), useChangeToast (a failed change
                            without a form: a toast that stays, with Details), useFaultToast (a fault the UI can

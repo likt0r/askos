@@ -6,8 +6,8 @@ const live = useLive()
 const now = useNow()
 
 const dropped = computed(() => live.state.connection === 'reconnecting')
-const watch = useSystem().watch
-const watchStopped = computed(() => live.state.connection === 'live' && watch.value?.running === false)
+const watchState = useSystem().watch
+const watchStopped = computed(() => live.state.connection === 'live' && watchState.value?.running === false)
 const description = computed(() => {
   if (!live.state.retryAt) return t('connection.reconnecting')
   const seconds = Math.max(0, Math.ceil((live.state.retryAt - now.value) / 1000))

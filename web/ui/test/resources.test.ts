@@ -517,6 +517,21 @@ describe('the Host\'s readings', () => {
     off()
   })
 
+  it('a sample after a failed read is the copy, with the failure kept and no read of its own', async () => {
+    const api = fakeApi({ 'GET /host': { status: 500, body: { error: { code: 'internal', message: 'x' } } } })
+    const observer = new QueryObserver(r.client, { queryKey: ['host'], queryFn: () => r.read('host') })
+    const off = observer.subscribe(() => {})
+    await flushPromises()
+    expect(api.calls).toHaveLength(1)
+    live.emit('host', sample(1005))
+    await flushPromises()
+    expect(api.calls).toHaveLength(1)
+    const state = r.client.getQueryState<{ readings: unknown[] }>(['host'])!
+    expect([state.status, state.data!.readings.length]).toEqual(['error', 1])
+    expect(state.error).toMatchObject({ code: 'internal' })
+    off()
+  })
+
   it('takes a sample before any read as the first copy, and reads the history then', async () => {
     const api = fakeApi({ 'GET /host': OK(snapshot([940, 970, 1000])) })
     const observer = new QueryObserver(r.client, { queryKey: ['host'], queryFn: () => r.read('host'), enabled: false })

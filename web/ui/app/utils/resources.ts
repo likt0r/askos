@@ -26,7 +26,8 @@ import type { SettingInfo, SettingValue } from './settings'
 import type { Pairings } from './vm'
 import { type ActivityEntry, type ActivityParams, activityQuery, type ActivityResult, activityText, isEntry, matchesFilter, type Translator, withEntry } from './activity'
 import { joinVmLog, type LogFilters, type VmLog, vmLogPath } from './vmRules'
-import { type HostReboot, type Live, type ServicesEvent, type SystemState, type VersionInfo, type Vm, type VmList, vmList, type WatchState, withVm } from './live'
+import type { HostReboot, Live, ServicesEvent, SystemState, VersionInfo, Vm, VmList, WatchState } from './live'
+import { vmList, withVm } from './vmRules'
 
 // query-core hands results to the views through setTimeout(0) by default; a microtask gives them
 // in the same turn, which the tests wait for with flushPromises. Production takes the same path.
@@ -365,7 +366,8 @@ function declareChange<A = void>(request: (args: A) => ChangeRequest, stale: Res
 
 /** Every change the views make, declared once: its request, and what it makes stale. A change
  * that records an Activity entry is read again through that entry's row in ON_ACTIVITY, once, so
- * it names nothing here (the owner on #215). */
+ * it names nothing here (the owner on #215); a pushed resource (`vms`), which no entry's row
+ * names, it does name. */
 const CHANGES = {
   // the Images: a Build's `build` events and the Activity entries say what changed
   rebuild: declareChange((image: string) => ({ method: 'POST', path: '/builds', body: { image } })),
@@ -601,9 +603,12 @@ export function createResources(live: Pick<Live, 'on' | 'state'>, context: Conte
       if (!declaration.pushed && !declaration.seeds) return
       const first = apply(undefined as never)
       if (first === undefined || first === null) return
+      const failed = query?.state.status === 'error' ? query.state.error : null
       client.setQueryData(queryKey, first)
-      // read for the rest, unless a read is on the way already: it takes this event too
-      if (declaration.seeds && query?.state.fetchStatus !== 'fetching') void markStale(name, params)
+      // read for the rest, unless a read is on the way already (it takes this event too) or the
+      // last one failed (no automatic retry: Retry reads it, with its failure still shown)
+      if (failed) query!.setState({ status: 'error', error: failed, isInvalidated: true })
+      else if (declaration.seeds && query?.state.fetchStatus !== 'fetching') void markStale(name, params)
       return
     }
     const next = apply(data)

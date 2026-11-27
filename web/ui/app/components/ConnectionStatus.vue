@@ -4,13 +4,13 @@ const props = defineProps<{ collapsed?: boolean, compact?: boolean }>()
 
 const { t } = useI18n()
 const live = useLive()
-const watch = useSystem().watch
+const watchState = useSystem().watch
 const now = useNow()
 
 // whole class names, so Tailwind finds them
 const dot = computed(() => {
   switch (live.state.connection) {
-    case 'live': return watch.value?.running === false ? 'bg-warning' : 'bg-success'
+    case 'live': return watchState.value?.running === false ? 'bg-warning' : 'bg-success'
     case 'connecting': return 'bg-info'
     case 'reconnecting': return 'bg-warning'
     default: return 'bg-inverted/40'

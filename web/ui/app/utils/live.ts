@@ -128,24 +128,6 @@ export interface LiveOptions {
 
 const CLOSED = 2
 
-export function sortVms(vms: Vm[]): Vm[] {
-  return [...vms].sort((a, b) => (a.network ?? Infinity) - (b.network ?? Infinity) || a.name.localeCompare(b.name))
-}
-
-/** The VM list of a `state` event or GET /vms: sorted, with its problems. */
-export function vmList(list: Partial<VmList> | null | undefined): VmList {
-  return { vms: sortVms(Array.isArray(list?.vms) ? list.vms : []), problems: Array.isArray(list?.problems) ? list.problems : [] }
-}
-
-/** The list with one VM's object replaced (a `vm` event), or added in its place. */
-export function withVm(list: VmList, vm: Vm): VmList {
-  const i = list.vms.findIndex(v => v.name === vm.name)
-  if (i < 0) return { ...list, vms: sortVms([...list.vms, vm]) }
-  const vms = [...list.vms]
-  vms.splice(i, 1, vm)
-  return { ...list, vms }
-}
-
 export function createLive(options: LiveOptions) {
   const url = options.url ?? '/api/v1/events'
   const backoff = options.backoffMs ?? [1000, 3000, 5000, 10000, 20000, 30000]

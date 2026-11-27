@@ -90,6 +90,27 @@ describe('Access tab', () => {
     expect(changes(api.calls)).toEqual([{ method: 'PUT', path: '/vms/work/github-owners', body: { owners: ['likt0r', 'acme'] }, csrf: '1' }])
   })
 
+  it('reads the VM list after saving the owners and after storing or removing the Claude token', async () => {
+    const { api } = await openApp('/vms/work/access', {
+      ...ACCESS,
+      'PUT /vms/work/github-owners': ok({ vm: 'work', owners: ['likt0r'] }),
+      'PUT /vms/work/claude-token': ok({ vm: 'work', stored: true, length: TOKEN.length }),
+      'DELETE /vms/work/claude-token': ok({ vm: 'work', removed: true }),
+    }, [workVm()])
+    const reads = () => api.calls.filter(c => c.method === 'GET' && c.path === '/vms').length
+    const before = reads()
+    await click('[data-testid="owners-edit"]')
+    await click($$('[data-testid="owner-remove"]')[1]!)
+    await click('[data-testid="owners-save"]')
+    await waitFor(() => expect(reads()).toBe(before + 1))
+    await type('[data-testid="claude-input"]', TOKEN)
+    await click('[data-testid="claude-submit"]')
+    await waitFor(() => expect(reads()).toBe(before + 2))
+    await click('[data-testid="claude-remove"]')
+    await click('[data-testid="confirm-action"]')
+    await waitFor(() => expect(reads()).toBe(before + 3))
+  })
+
   it('stores a Claude token checked by the backend and never shows it again', async () => {
     const { api } = await openApp('/vms/work/access', { ...ACCESS, 'PUT /vms/work/claude-token': ok({ vm: 'work', stored: true, length: TOKEN.length }) }, [workVm()])
     expect(must('[data-testid="claude-since"]').textContent).toContain('A token is stored since')
