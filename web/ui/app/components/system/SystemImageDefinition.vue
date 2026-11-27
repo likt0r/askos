@@ -9,14 +9,19 @@ import type { Build, Image } from '~/utils/images'
 const props = defineProps<{ image: Image, build?: Build | null }>()
 const { t } = useI18n()
 
+// the installed Release has no Containerfile for an Image it no longer defines; a Recipe has its own
+const readable = computed(() => props.image.in_release !== false || !!props.image.recipe)
 const open = ref(false)
-const containerfile = useResource('containerfile', { params: () => ({ image: props.image.name }), enabled: open })
+// shown and read while open, and while there is a text to read (a removed Recipe's Image may
+// have none)
+const shown = computed(() => open.value && readable.value)
+const containerfile = useResource('containerfile', { params: () => ({ image: props.image.name }), enabled: shown })
 const file = computed(() => containerfile.data.value ?? null)
+// where the text shown came from, by its own answer: the Image may have changed since
+const fromRecipe = computed(() => !!file.value?.recipe_sha256)
 
 const link = computed(() => githubLink(props.image.containerfile_url))
 const fileLink = computed(() => githubLink(file.value?.url))
-// the installed Release has no Containerfile for an Image it no longer defines; a Recipe has its own
-const readable = computed(() => props.image.in_release !== false || !!props.image.recipe)
 const panelId = computed(() => `containerfile-${props.image.name}`)
 
 // where the link points: what the current Build came from
@@ -28,19 +33,19 @@ const builtFrom = computed(() => {
 })
 // the text is the installed Release's (or the current Recipe's); the current Build may have come
 // from other files
-const differs = computed(() => !!file.value && !!props.build && (props.image.recipe
+const differs = computed(() => !!file.value && !!props.build && (fromRecipe.value
   ? !!props.build.recipe_sha256 && props.build.recipe_sha256 !== file.value.recipe_sha256
   : !(props.build.release && props.build.release === file.value.release)))
 const differsText = computed(() => {
   const b = props.build
-  if (props.image.recipe) return t('system.definition.differsRecipe')
+  if (fromRecipe.value) return t('system.definition.differsRecipe')
   if (b?.release) return t('system.definition.differsRelease', { release: b.release })
   if (b?.commit) return t('system.definition.differsCommit', { commit: b.commit.slice(0, 12) })
   return t('system.definition.differsUnknown')
 })
 
 function toggle() {
-  open.value = !open.value
+  open.value = !shown.value
 }
 </script>
 
@@ -64,22 +69,22 @@ function toggle() {
         size="xs"
         color="neutral"
         variant="ghost"
-        :icon="open ? 'i-lucide-chevron-up' : 'i-lucide-file-text'"
-        :label="open ? t('system.definition.hide') : t('system.definition.show')"
-        :aria-expanded="open"
+        :icon="shown ? 'i-lucide-chevron-up' : 'i-lucide-file-text'"
+        :label="shown ? t('system.definition.hide') : t('system.definition.show')"
+        :aria-expanded="shown"
         :aria-controls="panelId"
         data-testid="containerfile-toggle"
         @click="toggle"
       />
     </div>
-    <div v-if="open" :id="panelId" class="mt-2" data-testid="containerfile">
+    <div v-if="shown" :id="panelId" class="mt-2" data-testid="containerfile">
       <ReadFailure :resource="containerfile" class="mb-2" data-testid="containerfile-error" />
       <p v-if="containerfile.loading.value" class="text-sm text-muted">
         {{ t('system.definition.loading') }}
       </p>
       <template v-else-if="file">
         <p class="mb-1 flex flex-wrap items-center gap-x-2 text-xs text-muted" data-testid="containerfile-source">
-          <span>{{ image.recipe ? t('system.definition.fromRecipe') : file.release ? t('system.definition.fromRelease', { release: file.release }) : t('system.definition.fromInstalled') }}</span>
+          <span>{{ fromRecipe ? t('system.definition.fromRecipe') : file.release ? t('system.definition.fromRelease', { release: file.release }) : t('system.definition.fromInstalled') }}</span>
           <a
             v-if="fileLink"
             :href="fileLink"

@@ -343,6 +343,47 @@ describe('System page: Image definition follows the Activity', () => {
     expect(part(wrapper, 'base', 'containerfile-error').attributes('data-read')).toBe('stale')
   })
 
+  it('closes an open Recipe panel when its Recipe is removed and nothing defines the Image', async () => {
+    const recipe = image('dms', { in_release: false, recipe: true, containerfile_url: null, containerfile: 'Recipe dms: Containerfile (current recipe.tar)' })
+    let images = overview([recipe])
+    const { wrapper, es } = await openSystem(images, {
+      'GET /images': () => ok(images),
+      'GET /images/dms/containerfile': () => (images.images[0] === recipe
+        ? ok({ ...containerfile('dms'), text: 'FROM recipe\n', url: null, recipe_sha256: 'aaa' })
+        : { status: 404, body: { error: { code: 'containerfile_not_found', message: 'x' } } }),
+    })
+    await toggle(wrapper, 'dms')
+    expect(part(wrapper, 'dms', 'containerfile-text').text()).toBe('FROM recipe')
+    images = overview([{ ...recipe, recipe: false, containerfile: 'vm/images/dms/Containerfile' }])
+    es.emit('activity', entry('recipe.remove', 'dms'))
+    await wait(() => expect(part(wrapper, 'dms', 'containerfile-toggle').exists()).toBe(false))
+    await quiet()
+    expect(part(wrapper, 'dms', 'containerfile').exists()).toBe(false)
+    expect(card(wrapper, 'dms').text()).not.toContain('FROM recipe')
+  })
+
+  it('names where the text shown came from by its answer, also while the next is read', async () => {
+    const recipe = image('dms', { in_release: true, recipe: true, containerfile_url: null })
+    let images = overview([recipe])
+    let answer!: () => void
+    const { wrapper, es } = await openSystem(images, {
+      'GET /images': () => ok(images),
+      'GET /images/dms/containerfile': () => (images.images[0] === recipe
+        ? ok({ ...containerfile('dms'), text: 'FROM recipe\n', url: null, recipe_sha256: 'aaa' })
+        : new Promise(resolve => { answer = () => resolve(ok({ ...containerfile('dms'), recipe_sha256: null })) })),
+    })
+    await toggle(wrapper, 'dms')
+    images = overview([{ ...recipe, recipe: false }])      // the Release defines it again
+    es.emit('activity', entry('recipe.remove', 'dms'))
+    await wait(() => expect(part(wrapper, 'dms', 'image-recipe').exists()).toBe(false))
+    await flushPromises()
+    expect(part(wrapper, 'dms', 'containerfile-text').text()).toBe('FROM recipe')
+    expect(part(wrapper, 'dms', 'containerfile-source').text()).toContain('From the Recipe on this Host')
+    answer()
+    await wait(() => expect(part(wrapper, 'dms', 'containerfile-text').text()).toBe(RUST_TEXT.trim()))
+    expect(part(wrapper, 'dms', 'containerfile-source').text()).toContain('From the installed Release 0.2.0')
+  })
+
   it('ignores other codes, and a hello that resumed; a hello that could not resume reads again', async () => {
     const { wrapper, api, es } = await open()
     await toggle(wrapper, 'base')
