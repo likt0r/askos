@@ -216,11 +216,28 @@ describe('System page: Image definition (#67)', () => {
         : ok(containerfile('base'))),
     })
     await toggle(wrapper, 'base')
-    expect(part(wrapper, 'base', 'containerfile-error').text()).toBe('The installed Release has no Containerfile for this Image.')
+    expect(part(wrapper, 'base', 'containerfile-error').text()).toContain('Could not read the Containerfile.')
+    expect(part(wrapper, 'base', 'containerfile-error').text()).toContain('The installed Release has no Containerfile for this Image.')
     expect(part(wrapper, 'base', 'containerfile-text').exists()).toBe(false)
     expect(wrapper.find('[data-testid="images-error"]').exists()).toBe(false)
     await toggle(wrapper, 'base')
     await toggle(wrapper, 'base')
+    expect(answers).toBe(2)
+    expect(part(wrapper, 'base', 'containerfile-error').exists()).toBe(false)
+    expect(part(wrapper, 'base', 'containerfile-text').text()).toBe(BASE_TEXT.trim())
+  })
+
+  it('reads again with Retry', async () => {
+    let answers = 0
+    const { wrapper } = await openSystem(overview([image('base')]), {
+      'GET /images/base/containerfile': () => (++answers === 1
+        ? { status: 500, body: { error: { code: 'internal', message: 'x' } } }
+        : ok(containerfile('base'))),
+    })
+    await toggle(wrapper, 'base')
+    const retry = part(wrapper, 'base', 'containerfile-error').findAll('button').find(b => b.text() === 'Retry')!
+    await retry.trigger('click')
+    await flushPromises()
     expect(answers).toBe(2)
     expect(part(wrapper, 'base', 'containerfile-error').exists()).toBe(false)
     expect(part(wrapper, 'base', 'containerfile-text').text()).toBe(BASE_TEXT.trim())
@@ -310,6 +327,20 @@ describe('System page: Image definition follows the Activity', () => {
     await toggle(wrapper, 'base')
     expect(reads(api, 'base')).toBe(2)
     expect(part(wrapper, 'base', 'containerfile-text').text()).toContain('FROM scratch')
+  })
+
+  it('keeps the text shown when reading it again fails, with a notice', async () => {
+    let fail = false
+    const { wrapper, api, es } = await openSystem(overview([image('base')]), {
+      'GET /images/base/containerfile': () => (fail ? { status: 500, body: { error: { code: 'internal', message: 'x' } } } : ok(containerfile('base'))),
+    })
+    await toggle(wrapper, 'base')
+    fail = true
+    es.emit('activity', entry('recipe.set', 'base'))
+    await wait(() => expect(reads(api, 'base')).toBe(2))
+    await flushPromises()
+    expect(part(wrapper, 'base', 'containerfile-text').text()).toBe(BASE_TEXT.trim())
+    expect(part(wrapper, 'base', 'containerfile-error').attributes('data-read')).toBe('stale')
   })
 
   it('ignores other codes, and a hello that resumed; a hello that could not resume reads again', async () => {

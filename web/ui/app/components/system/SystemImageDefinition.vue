@@ -2,17 +2,16 @@
 // An Image's definition (#67): its Containerfile, linked in the repository at the Release tag or
 // commit its current Build came from (just the path when that is not known), and on request its
 // text from the installed Release, which the next Build takes: read-only, read on the Host by
-// agentbox, never fetched from GitHub.
-import type { Build, ContainerfileText, Image } from '~/utils/images'
+// agentbox, never fetched from GitHub. The text is read only while the panel is open; a Recipe
+// that changes reads it again then (the resources module's rows).
+import type { Build, Image } from '~/utils/images'
 
 const props = defineProps<{ image: Image, build?: Build | null }>()
 const { t } = useI18n()
-const errorText = useErrorText()
 
 const open = ref(false)
-const loading = ref(false)
-const error = ref<unknown>(null)
-const file = ref<ContainerfileText | null>(null)
+const containerfile = useResource('containerfile', { params: () => ({ image: props.image.name }), enabled: open })
+const file = computed(() => containerfile.data.value ?? null)
 
 const link = computed(() => githubLink(props.image.containerfile_url))
 const fileLink = computed(() => githubLink(file.value?.url))
@@ -40,43 +39,8 @@ const differsText = computed(() => {
   return t('system.definition.differsUnknown')
 })
 
-// only the newest read counts: one that refresh() dropped meanwhile changes nothing
-let reading = 0
-
-async function load() {
-  const mine = ++reading
-  loading.value = true
-  try {
-    const text = await api<ContainerfileText>(`/images/${encodeURIComponent(props.image.name)}/containerfile`)
-    if (mine !== reading) return
-    file.value = text
-    error.value = null
-  }
-  catch (e) {
-    if (mine === reading) error.value = e
-  }
-  finally {
-    if (mine === reading) loading.value = false
-  }
-}
-
-// a Recipe defines the Image's text: an open panel reads it again, a closed one at its next opening
-function refresh() {
-  if (open.value) return void load()
-  reading += 1
-  file.value = null
-  error.value = null
-  loading.value = false
-}
-useReloadOnActivity(refresh, {
-  codes: ['recipe.set', 'recipe.restore', 'recipe.remove'],
-  match: entry => entry.params?.name === props.image.name,
-})
-
 function toggle() {
   open.value = !open.value
-  // read once; after a failure again at the next opening
-  if (open.value && !file.value && !loading.value) void load()
 }
 </script>
 
@@ -109,13 +73,11 @@ function toggle() {
       />
     </div>
     <div v-if="open" :id="panelId" class="mt-2" data-testid="containerfile">
-      <p v-if="error" class="text-sm text-error" data-testid="containerfile-error">
-        {{ errorText(error) }}
-      </p>
-      <p v-else-if="!file" class="text-sm text-muted">
+      <ReadFailure :resource="containerfile" class="mb-2" data-testid="containerfile-error" />
+      <p v-if="containerfile.loading.value" class="text-sm text-muted">
         {{ t('system.definition.loading') }}
       </p>
-      <template v-else>
+      <template v-else-if="file">
         <p class="mb-1 flex flex-wrap items-center gap-x-2 text-xs text-muted" data-testid="containerfile-source">
           <span>{{ image.recipe ? t('system.definition.fromRecipe') : file.release ? t('system.definition.fromRelease', { release: file.release }) : t('system.definition.fromInstalled') }}</span>
           <a
