@@ -132,7 +132,7 @@ watch(() => props.name, () => {
         <UButton type="submit" icon="i-lucide-refresh-cw" :label="t('vm.log.show')" :loading="showing" data-testid="log-show" />
         <UButton color="neutral" variant="ghost" :label="t('vm.log.clear')" data-testid="log-clear" @click="clearFilters" />
         <span class="flex-1" />
-        <USwitch v-model="follow" :label="t('vm.log.follow')" :disabled="!loaded && !log.error.value" data-testid="log-follow" />
+        <USwitch v-model="follow" :label="t('vm.log.follow')" :disabled="log.data.value === undefined && !log.error.value" data-testid="log-follow" />
       </div>
     </form>
 
@@ -144,7 +144,7 @@ watch(() => props.name, () => {
 
     <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
       <span v-if="loaded" data-testid="log-count">{{ t('vm.log.count', entries.length) }}</span>
-      <span v-if="log.data.value?.dropped">{{ t('vm.log.dropped', { max: MAX_SHOWN }) }}</span>
+      <span v-if="loaded && log.data.value?.dropped">{{ t('vm.log.dropped', { max: MAX_SHOWN }) }}</span>
       <span v-if="follow" class="inline-flex items-center gap-1 text-success" data-testid="log-following">
         <UIcon name="i-lucide-radio" class="size-3.5" />{{ t('vm.log.following') }}
       </span>

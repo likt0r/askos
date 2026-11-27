@@ -85,10 +85,11 @@ const RESOURCES = {
     { merge: joinLog, missed: log => ({ ...log, gap: true }), readOn: log => !!log.gap }),
   // a VM's journal for the filters the owner applied (`shown`: each "Show", and each opening of
   // the tab, is a new copy, the newest entries read anew): read on after the held cursor while
-  // following, by the view's clock (what one answer could not hold comes with the next); after a
-  // reconnect that could not resume, the newest anew; nothing on the Host says when it grows
+  // following, by the view's clock (what one answer could not hold comes with the next), and
+  // when marked stale (the journal's cursor does not depend on the stream); nothing on the Host
+  // says when it grows
   vmLog: declare<VmLog, { vm: string, filters: LogFilters, shown: number }>((p, held) => vmLogPath(p.vm, p.filters, held),
-    { fresh: true, forget: true, merge: joinVmLog, missed: log => ({ ...log, cursor: null }) }),
+    { fresh: true, forget: true, merge: joinVmLog }),
   // an Image's Containerfile: the installed Release's, or its Recipe's
   containerfile: declare<ContainerfileText, { image: string }>(p => `/images/${encodeURIComponent(p.image)}/containerfile`),
 }

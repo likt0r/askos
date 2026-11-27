@@ -187,15 +187,16 @@ describe('Log tab', () => {
     expect(logCalls(api.calls)).toHaveLength(3)
   })
 
-  it('a reconnect that could not resume reads the newest entries anew', async () => {
-    let newest = [entry(1, 'first')]
-    const api = fakeApi(routes(() => ({ status: 200, body: { vm: 'work', entries: newest, cursor: newest.at(-1)!.cursor, truncated: false } })))
+  it('a reconnect that could not resume keeps the entries and reads on after their cursor', async () => {
+    const api = fakeApi(routes(q => ({ status: 200, body: q.after_cursor === 's=1'
+      ? { vm: 'work', entries: [entry(2, 'second')], cursor: 's=2', truncated: true }
+      : { vm: 'work', entries: [entry(1, 'first')], cursor: 's=1', truncated: false } })))
     const { es } = await openApp('/vms/work/log', [WORK])
-    newest = [entry(5, 'fifth')]
-    es.emit('hello', { stream: 'other', resumed: false })
+    es.emit('hello', { stream: 'other', resumed: false })      // the journal's cursor is still good
     await flushPromises()
-    expect(logCalls(api.calls).at(-1)).toEqual({ boot: 'current', lines: '200' })
-    expect(byTestId('log-entries').findAll('[data-testid="log-message"]').map(m => m.text())).toEqual(['fifth'])
+    expect(logCalls(api.calls).at(-1)).toEqual({ boot: 'current', lines: '200', after_cursor: 's=1' })
+    expect(byTestId('log-entries').findAll('[data-testid="log-message"]').map(m => m.text())).toEqual(['first', 'second'])
+    expect(exists('log-more')).toBe(true)
   })
 
   it('keeps the entries of the filters before on screen while a "Show" reads, without their count', async () => {
@@ -210,6 +211,8 @@ describe('Log tab', () => {
     expect(byTestId('log-entries').findAll('[data-testid="log-message"]').map(m => m.text())).toEqual(['first'])
     expect(exists('log-count')).toBe(false)
     expect(byTestId('log-show').find('.animate-spin').exists()).toBe(true)
+    // following can still be turned on or off meanwhile
+    expect(document.body.querySelector('[data-testid="log-follow"] [disabled], [data-testid="log-follow"][disabled]')).toBeNull()
     answer!()
     await flushPromises()
     expect(byTestId('log-entries').findAll('[data-testid="log-message"]').map(m => m.text())).toEqual(['orca only'])

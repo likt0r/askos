@@ -154,7 +154,7 @@ module (#216).
   short): it is read on right after. One that each opening of its view reads anew is declared
   `forget`: not kept once no view shows it (`vmLog`: each opening of the Log tab and each "Show"
   is a new copy, the newest entries; while following, what one answer could not hold comes with
-  the next poll, and after a reconnect that could not resume its `missed` reads the newest anew).
+  the next poll).
 - **Asking for one**: `const images = useResource('images')` gives `data` (undefined until an
   answer came), `loading` (nothing yet and a read on the way), `fetching` (a read on the way, the
   first or a read again), `error` (why the last read failed) and `retry()`. Every view that asks
