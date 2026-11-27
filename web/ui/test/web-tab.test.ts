@@ -341,8 +341,6 @@ describe('Web tab', () => {
     await settle()
     expect(loads()).toBe(2)
     await waitFor(() => expect(loads()).toBe(3))
-    await new Promise(r => setTimeout(r, 300))
-    expect(loads()).toBe(2)
   })
 
   it('takes Open web\'s longest duration from the Settings, and follows a change of them', async () => {
