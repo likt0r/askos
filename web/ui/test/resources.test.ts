@@ -664,3 +664,38 @@ describe('a Build\'s log', () => {
     off()
   })
 })
+
+describe('the Activity timelines', () => {
+  const live = fakeLive()
+  let r: Resources
+  const result = (descriptions: string[]) => ({ entries: descriptions.map((d, i) => entry2(d, `2026-11-0${i + 1}T00:00:00Z`)), truncated: false, retention_days: 90 })
+  function entry2(description: string, time = '2026-11-09T00:00:00Z', over: Record<string, unknown> = {}) {
+    return { time, vm: 'work', actor: 'owner', kind: 'allowlist', action: 'allow', outcome: 'ok', description, ...over }
+  }
+  const all = { kinds: [], vm: '', search: '', lines: 2 }
+  const alerts = { kinds: ['alert'], vm: '', search: '', lines: 200 }
+  const shown = { kinds: [], vm: '', search: 'erlaubt', lines: 200 }
+  const descriptions = (params: unknown) => r.client.getQueryData<{ entries: { description: string }[] }>(['activity', params])!.entries.map(e => e.description)
+  beforeEach(() => {
+    r = createResources(live as never, { words: e => (e.action === 'allow' ? `erlaubt ${e.description}` : '') })
+    r.client.setQueryData(['activity', all], result(['b', 'a']))
+    r.client.setQueryData(['activity', alerts], result([]))
+    r.client.setQueryData(['activity', shown], result([]))
+  })
+  afterEach(() => r.stop())
+
+  it('writes an entry into each timeline whose filter it passes, newest first, within its length', () => {
+    live.emit('activity', entry2('new'))
+    expect(descriptions(all)).toEqual(['new', 'b'])
+    expect(descriptions(alerts)).toEqual([])
+    // the search finds it by the words the UI shows for it
+    expect(descriptions(shown)).toEqual(['new'])
+    expect(r.client.getQueryState(['activity', all])!.isInvalidated).toBe(false)
+  })
+
+  it('writes nothing that is no entry, and a repeat once', () => {
+    live.emit('activity', { time: 't' })
+    live.emit('activity', entry2('b', '2026-11-01T00:00:00Z'))
+    expect(descriptions(all)).toEqual(['b', 'a'])
+  })
+})

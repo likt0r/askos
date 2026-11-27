@@ -22,7 +22,6 @@ export default {
     failed: 'fehlgeschlagen',
     by: 'von {actor}',
     loading: 'Lade Aktivität…',
-    retry: 'Erneut versuchen',
     empty: 'Es ist noch nichts passiert.',
     noMatch: 'Kein Eintrag passt zum Filter.',
     truncated: 'Zeigt die neuesten {n} Einträge.',

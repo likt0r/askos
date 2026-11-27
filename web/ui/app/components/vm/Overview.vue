@@ -46,23 +46,17 @@ const agents = computed(() => {
 const disk = computed(() => props.vm.system_disk ?? null)
 const diskSince = computed(() => formatTime(disk.value?.since, locale.value))
 
-// why the last automatic Reset did not happen (Activity), while one is due
-const postponed = ref<string | null>(null)
-async function loadPostponed() {
-  postponed.value = null
-  if (!props.vm.reset_due) return
-  const name = props.vm.name
-  try {
-    const r = await api<{ entries?: { action?: string, reason?: string }[] }>(
-      `/activity?kind=reset&vm=${encodeURIComponent(name)}&since=-14d&lines=1`)
-    const last = r?.entries?.[0]
-    if (name === props.vm.name && last?.action === 'reset.postponed') postponed.value = last.reason ?? 'unknown'
-  }
-  catch {
-    // Activity not readable: the Reset due mark stands on its own
-  }
-}
-watch(() => [props.vm.name, props.vm.reset_due, disk.value?.since], loadPostponed, { immediate: true })
+// why the last automatic Reset did not happen (Activity), while one is due: the newest Reset
+// entry of the last 14 days (an extra: unreadable, the Reset due mark stands on its own)
+const resets = useResource('activity', {
+  params: () => ({ kinds: ['reset'], vm: props.vm.name, search: '', since: '-14d', lines: 1 }),
+  enabled: () => !!props.vm.reset_due,
+  extra: true,
+})
+const postponed = computed(() => {
+  const last = props.vm.reset_due ? resets.data.value?.entries?.[0] : undefined
+  return last?.action === 'reset.postponed' ? last.reason ?? 'unknown' : null
+})
 const postponedText = computed(() => {
   const r = postponed.value
   if (!r) return null

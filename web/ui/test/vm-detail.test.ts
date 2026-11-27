@@ -40,6 +40,17 @@ describe('VM overview', () => {
     expect(api.calls.some(c => c.path.startsWith('/activity'))).toBe(true)
   })
 
+  it('says why a Reset waits as soon as its Activity entry comes, without reading again', async () => {
+    const api = fakeApi({ 'GET /session': SIGNED_IN, 'GET /activity?kind=reset&vm=work&since=-14d&lines=1': OK({ entries: [] }) })
+    const { es } = await openApp('/vms/work/web', [WORK])
+    expect(exists('overview-postponed')).toBe(false)
+    es.emit('activity', { time: '2026-11-03T12:00:00Z', vm: 'work', actor: 'timer', kind: 'reset', action: 'reset.postponed',
+      outcome: 'ok', description: 'postponed', reason: 'agents-working' })
+    await flushPromises()
+    expect(text('overview-postponed')).toBe('Automatic Reset postponed: agents are working')
+    expect(api.calls.filter(c => c.path.startsWith('/activity'))).toHaveLength(1)
+  })
+
   it('names an open SSH session as why a Reset waits, and lists it apart from the Orca connections of the same address', async () => {
     fakeApi({
       'GET /session': SIGNED_IN,

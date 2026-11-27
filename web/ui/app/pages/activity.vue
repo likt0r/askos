@@ -3,8 +3,8 @@
 definePageMeta({ titleKey: 'nav.activity' })
 const { t } = useI18n()
 const live = useLive()
-const errorText = useErrorText()
-const { filter, entries, truncated, retentionDays, loading, error, reload, showMore, lines } = useActivity()
+const { filter, timeline, entries, truncated, retentionDays, loading, showMore, lines } = useActivity()
+const MAX_LINES = ACTIVITY_MAX_LINES
 
 const vmNames = computed(() => {
   const names = new Set(live.state.vms.map(v => v.name))
@@ -19,22 +19,17 @@ const filtered = computed(() => filter.kinds.length > 0 || !!filter.vm || !!filt
   <div class="mx-auto flex w-full max-w-6xl flex-col gap-4" data-testid="activity-page">
     <ActivityFilters v-model="filter" :vms="vmNames" />
 
-    <UAlert
-      v-if="error"
-      color="error"
-      variant="subtle"
-      icon="i-lucide-circle-alert"
-      :title="errorText(error)"
-      :actions="[{ label: t('activity.retry'), color: 'error', variant: 'outline', onClick: () => reload() }]"
-      data-testid="activity-error"
-    />
-    <p v-else-if="loading && !entries.length" class="text-sm text-muted" data-testid="activity-loading">
-      {{ t('activity.loading') }}
-    </p>
-    <p v-else-if="!entries.length" class="rounded-lg border border-dashed border-default p-8 text-center text-sm text-muted" data-testid="activity-empty">
-      {{ filtered ? t('activity.noMatch') : t('activity.empty') }}
-    </p>
-    <ActivityList v-else :entries="entries" />
+    <ReadFailure :resource="timeline" data-testid="activity-error" />
+    <!-- a failed read with nothing to show: the failure says it all -->
+    <template v-if="!timeline.error.value || entries.length">
+      <p v-if="loading && !entries.length" class="text-sm text-muted" data-testid="activity-loading">
+        {{ t('activity.loading') }}
+      </p>
+      <p v-else-if="!entries.length" class="rounded-lg border border-dashed border-default p-8 text-center text-sm text-muted" data-testid="activity-empty">
+        {{ filtered ? t('activity.noMatch') : t('activity.empty') }}
+      </p>
+      <ActivityList v-else :entries="entries" />
+    </template>
 
     <div v-if="truncated" class="flex flex-wrap items-center gap-3 text-sm text-muted" data-testid="activity-truncated">
       <span>{{ t('activity.truncated', { n: entries.length }) }}</span>
