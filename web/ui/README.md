@@ -88,7 +88,7 @@ app/
                            the sign-in page's order and `default_language`, both applied by the
                            auth middleware), useErrorText (API error code -> translated text),
                            useNow, useActivity, useHost, useImages (the resource `images`,
-                           rebuilds, Update now, the log of a Build), useSettings,
+                           rebuilds, Update now), useSettings,
                            useNotifications (this browser's preference, the `notification`
                            listener), useReloadPrompt (own version vs. `version` event),
                            useLiveEvent (live.on() for a component, bursts gathered),
@@ -129,23 +129,28 @@ Server data lives in one cache, in `app/utils/resources.ts` ([ADR
 it holds so far: `images` (`GET /images`), `pairings` (`GET /vms/<vm>/pairings`), `githubApp`
 (`GET /github-app`), `githubTokens` (`GET /vms/<vm>/github-tokens?since=`), `sshConfig`
 (`GET /vms/<vm>/ssh-config`), `containerfile` (`GET /images/<image>/containerfile`, read only
-while its panel is open), `host` (`GET /host`: the Host's readings with 30 minutes of history)
-and `version` (`GET /version`: the UI build installed and the
-Release; the reload prompt takes the build of its first answer as the page's own and keeps it
-through later reads). Every
-other view still reads on its own, as the next section describes, until it moves into the
+while its panel is open), `host` (`GET /host`: the Host's readings with 30 minutes of
+history), `buildLog` (`GET /images/<image>/log?build=`: a Build's log) and `version`
+(`GET /version`: the UI build installed and the Release; the reload prompt takes the build of its
+first answer as the page's own and keeps it through later reads). Every other view still reads
+on its own, as the next section describes, until it moves into the
 module (#216).
 
-- **Declaring a resource**: one line in `RESOURCES`, its name, its path and the type of its
-  answer (`images: declare<ImagesOverview>('/images')`); one with parameters takes its path from
-  them (`pairings: declare<Pairings, { vm: string }>(p => `/vms/${p.vm}/pairings`)`). The key in
-  the cache is `[name]`, or `[name, params]`: one copy per set of parameters. A resource whose
-  changes the Host sends no event about is declared `fresh` (`pairings`: a device pairs inside
-  Orca; `githubApp`: an App installed on GitHub): it is read again whenever a view of it opens
-  (the owner on #216). A code the Host answers for a state, not a failure, is declared in
-  `states` and read as data (`github_app_missing`: no App set up, `{ apps: [], missing: [], none:
-  true }`; `readings_unavailable`: a Host without a sampler), so a later failed read keeps that
-  state, not an older overview.
+- **Declaring a resource**: one line in `RESOURCES`, its name, its path and the type of its answer
+  (`images: declare<ImagesOverview>('/images')`); one with parameters takes its path from them
+  (`pairings: declare<Pairings, { vm: string }>(p => `/vms/${p.vm}/pairings`)`). The key in the
+  cache is `[name]`, or `[name, params]`: one copy per set of parameters. A resource whose changes
+  the Host sends no event about is declared `fresh` (`pairings`: a device pairs inside Orca;
+  `githubApp`: an App installed on GitHub): it is read again whenever a view of it opens (the
+  owner on #216). A code the Host answers for a state, not a failure, is declared in `states` and
+  read as data (`github_app_missing`: no App set up, `{ apps: [], missing: [], none: true }`;
+  `readings_unavailable`: a Host without a sampler), so a later failed read keeps that state, not
+  an older overview. A resource read on from where its copy is takes the held copy in its path and
+  declares `merge`, which joins the answer to it (`buildLog`: after the held cursor, the lines
+  joined with `appendLines`). Such a resource also declares `missed`, what its copy becomes when a
+  reconnect could not resume (`buildLog`: a gap, so that later events are not kept past what was
+  missed until it is read), and `readOn`, whether a copy read still has a gap (an answer cut
+  short): it is read on right after.
 - **Asking for one**: `const images = useResource('images')` gives `data` (undefined until an
   answer came), `loading` (nothing yet and a read on the way), `fetching` (a read on the way,
   the first or a read again), `error` (why the last read failed) and `retry()`. Every view that
@@ -163,34 +168,35 @@ module (#216).
   `network`) before the stream is live, which the next `hello` reads again. Once the stream is
   live, such a read shows like any other. For an extra it shows nothing. It offers no "Details"
   yet: the Host's text is shown only once #215 has checked that it cannot carry a secret.
-- **What an event does** (`ON_EVENT`, `ON_ACTIVITY`): an event that carries the whole object
-  is written into the cache (`build`, through `applyBuild`; each `host` sample is appended to
-  the history of `host`, through `appendSample`). An event that only says something
-  changed marks the resource stale: `images` after a `build` event whose status is not `running`
-  or that `applyBuild` cannot place, after `updating` of the `services` event goes from true to
-  false, when the version check (`agentbox-versions.service` in the `services` event) stops
-  running (started by hand, it records no Activity entry), and after the Activity codes
-  `maintenance.versions`, `update-now`, `recipe.set`, `recipe.restore`, `recipe.remove` (a
-  Recipe's Image comes or goes; these three also mark the `containerfile` of the Image the
-  entry's `name` parameter names, a row `ofEntryImage(name)`) and `create`, `delete`,
-  `set-image`, `reset`, `reset.automatic`, `reset.update` (which VMs use and pin each Build);
-  `pairings` of the entry's VM after `observe`, `unpair` and `revoke-pairings` (a row
-  `ofEntryVm(name)` marks only that VM's copy);
-  `githubApp` after `set-github-app`, `remove-github-app`, `set-owners`, `create` and `delete`;
-  `githubTokens` of the event's VM after a `github-token` event, `sshConfig` of a VM when its `vm`
-  event turns SSH access on or off or brings a new host key (a row with `key` compares each VM
-  with its own event before, `known` from the live state and each `state` event). A write
-  keeps a stale mark and a failed read's error. A
-  stale resource that a view shows is read again; one that nothing shows is read when a view
-  next asks for it. A new Activity code that changes a resource needs a row here; without one,
-  the view shows old data until the next reconnect or reload.
+- **What an event does** (`ON_EVENT`, `ON_ACTIVITY`): an event that carries the whole object is
+  written into the cache (`build`, through `applyBuild`; each `host` sample is appended to the
+  history of `host`, through `appendSample`; the lines of a `build-log` event to that Build's
+  `buildLog`, a row with `writeParams`, until one says lines were skipped: then later lines are
+  not kept and the gap is read after the held cursor). An event that only says something changed
+  marks the resource stale: `images` after a `build` event whose status is not `running` (and that
+  Build's `buildLog`, for the end of it) or that `applyBuild` cannot place, after `updating` of
+  the `services` event goes from true to false, when the version check
+  (`agentbox-versions.service` in the `services` event) stops running (started by hand, it records
+  no Activity entry), and after the Activity codes `maintenance.versions`, `update-now`,
+  `recipe.set`, `recipe.restore`, `recipe.remove` (a Recipe's Image comes or goes; these three
+  also mark the `containerfile` of the Image the entry's `name` parameter names, a row
+  `ofEntryImage(name)`) and `create`, `delete`, `set-image`, `reset`, `reset.automatic`,
+  `reset.update` (which VMs use and pin each Build); `pairings` of the entry's VM after `observe`,
+  `unpair` and `revoke-pairings` (a row `ofEntryVm(name)` marks only that VM's copy); `githubApp`
+  after `set-github-app`, `remove-github-app`, `set-owners`, `create` and `delete`; `githubTokens`
+  of the event's VM after a `github-token` event, `sshConfig` of a VM when its `vm` event turns
+  SSH access on or off or brings a new host key (a row with `key` compares each VM with its own
+  event before, `known` from the live state and each `state` event). A write keeps a stale mark
+  and a failed read's error. A stale resource that a view shows is read again; one that nothing
+  shows is read when a view next asks for it. A new Activity code that changes a resource needs a
+  row here; without one, the view shows old data until the next reconnect or reload.
 - **An event during a read**: an event written while a read of its resource is on the way is
-  applied to that read's answer as well, and a resource that turns stale during a read is read
-  once more right after it (once for a whole burst). The older answer never undoes an event.
+  applied to that read's answer as well, and a copy that turns stale during its read is read once
+  more right after it (once for a whole burst; other copies of the resource are not). The older
+  answer never undoes an event.
 - **When data is read again**: only for a reason the stream or the owner gives: a row of the
   table, a change made in this browser, a `hello` with `resumed: false` that is not the first
-  (everything is stale, and `onMissedEvents` listeners run for what lives outside the cache,
-  such as a Build's log), any `hello` for the reads that could not reach the Control Room, or
+  (everything is stale), any `hello` for the reads that could not reach the Control Room, or
   Retry. Never by the clock, never on window focus, never as an automatic retry.
 - **A change made in this browser**: every change is declared once in `CHANGES`, its request
   from the view's arguments and what it makes stale (`rebuild: declareChange((image: string) =>

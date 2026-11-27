@@ -12,13 +12,13 @@
 // view of it opens. Never by the clock, never on window focus, never as an automatic retry; a
 // read that failed because the Control Room could not be reached is read again with the next
 // `hello`.
-import { keepPreviousData, notifyManager, QueryClient, useMutation, useQuery } from '@tanstack/vue-query'
+import { hashKey, keepPreviousData, notifyManager, QueryClient, useMutation, useQuery } from '@tanstack/vue-query'
 import { computed, type ComputedRef, type MaybeRefOrGetter, type Ref, ref, toValue } from 'vue'
 import { api, ApiError } from './api'
 import { allowlistEntryPath, type AllowlistEntry, entryPath, forbidPath, type ForbidEntry, type GithubAppOverview, type GithubTokens, type SshConfig, type Target } from './access'
 import { useChangeToast } from '../composables/useChangeToast'
 import { failurePlace, type FailurePlace, unreachable } from './failures'
-import { applyBuild, type BuildEvent, type ContainerfileText, type ImagesOverview } from './images'
+import { applyBuild, type BuildEvent, type BuildLog, type BuildLogEvent, buildLogPath, type ContainerfileText, type ImagesOverview, joinLog, withLogEvent } from './images'
 import { type HostOverview, type HostSample, noReadings, withSample } from './host'
 import type { SettingValue } from './settings'
 import type { Pairings } from './vm'
@@ -31,7 +31,16 @@ notifyManager.setScheduler(queueMicrotask)
 // ---- the resources ---------------------------------------------------------------------------
 
 interface Declaration<T, P> {
-  path: (params: P) => string
+  /** `held`: the copy in the cache, for a resource read on from where it is (a Build's log) */
+  path: (params: P, held: T | undefined) => string
+  /** an answer that continues the held copy, joined to it */
+  merge?: (held: T | undefined, answer: any) => T
+  /** what a copy becomes when events were missed (a reconnect that could not resume), before it
+   * is read again: one read on from where it is must not take later events past the gap */
+  missed?: (held: T) => T
+  /** the copy read still has a gap (its answer was cut short, or events were skipped meanwhile):
+   * read on right after it */
+  readOn?: (data: T) => boolean
   /** the Host sends no event about its changes: read again whenever a view of it opens (the owner
    * on #216) */
   fresh: boolean
@@ -43,9 +52,11 @@ interface Declaration<T, P> {
 }
 
 /** A resource: its path, or for one with parameters (a VM's), its path from them. */
-function declare<T, P = undefined>(path: string | ((params: P) => string),
-  options: { fresh?: boolean, states?: Record<string, () => T> } = {}): Declaration<T, P> {
-  return { path: typeof path === 'string' ? () => path : path, fresh: !!options.fresh, states: options.states ?? {} }
+function declare<T, P = undefined>(path: string | ((params: P, held: T | undefined) => string),
+  options: { fresh?: boolean, states?: Record<string, () => T>, merge?: (held: T | undefined, answer: any) => T,
+    missed?: (held: T) => T, readOn?: (data: T) => boolean } = {}): Declaration<T, P> {
+  return { path: typeof path === 'string' ? () => path : path, fresh: !!options.fresh, states: options.states ?? {},
+    merge: options.merge, missed: options.missed, readOn: options.readOn }
 }
 
 const RESOURCES = {
@@ -66,13 +77,19 @@ const RESOURCES = {
   host: declare<HostOverview>('/host', { states: { readings_unavailable: noReadings } }),
   // the UI build installed and the Release of Agent Box the Host runs
   version: declare<VersionInfo>('/version'),
+  // a Build's log: read on after the held cursor, so only what is new comes
+  buildLog: declare<BuildLog, { image: string, build: string }>((p, held) => buildLogPath(p.image, p.build, held),
+    { merge: joinLog, missed: log => ({ ...log, gap: true }), readOn: log => !!log.gap }),
   // an Image's Containerfile: the installed Release's, or its Recipe's
   containerfile: declare<ContainerfileText, { image: string }>(p => `/images/${encodeURIComponent(p.image)}/containerfile`),
 }
 
 export type ResourceName = keyof typeof RESOURCES
-export type ResourceParams<N extends ResourceName> = (typeof RESOURCES)[N] extends Declaration<unknown, infer P> ? P : never
+export type ResourceParams<N extends ResourceName> = (typeof RESOURCES)[N] extends Declaration<any, infer P> ? P : never
 export type ResourceData<N extends ResourceName> = NonNullable<(typeof RESOURCES)[N]['answer']>
+
+/** The key of a copy in the cache: `[name]`, or `[name, params]` for one with parameters. */
+const keyOf = (name: ResourceName, params?: unknown) => (params === undefined ? [name] : [name, params])
 
 // ---- what an event does ----------------------------------------------------------------------
 
@@ -101,6 +118,9 @@ const ofEntryImage = (name: 'containerfile'): Stale => ({
  * then), or only says that something changed (`stale` names the resources to read again). */
 interface EventRow {
   write?: { [N in ResourceName]?: (data: ResourceData<N>, event: any) => ResourceData<N> | null }
+  /** the parameters of the copy `write` goes into (a Build's log: the event's Image and Build);
+   * none: the resource without parameters */
+  writeParams?: (event: any) => unknown
   /** `before`: the last event of this row, or with `key` the last of the same object */
   stale?: (event: any, before: any) => Stale[]
   /** compare per object (a VM by its name) */
@@ -110,12 +130,24 @@ interface EventRow {
   known?: (state: any) => any[]
 }
 
+/** A Build's log, of the event's Image and Build. */
+const ofBuild = (event: { image?: string | null, build?: string | null }): Stale =>
+  ({ name: 'buildLog', params: () => ({ image: event.image, build: event.build }) })
+
 const ON_EVENT: Record<string, EventRow> = {
   // one Build; once it ended, what it changed (the current Build, who uses what, older Builds
-  // removed) is read again
+  // removed) is read again, and the end of its log
   build: {
     write: { images: (data, event: BuildEvent) => (event?.image && event.build ? applyBuild(data, event) : data) },
-    stale: (event: BuildEvent) => (event?.status !== 'running' ? ['images'] : []),
+    stale: (event: BuildEvent) => (event?.status !== 'running'
+      ? ['images', ...(event?.image && event.build ? [ofBuild(event)] : [])]
+      : []),
+  },
+  // lines of a running Build's log: appended to it; lines skipped (`truncated`): the gap is read
+  'build-log': {
+    writeParams: (event: BuildLogEvent) => (event?.image && event.build ? { image: event.image, build: event.build } : undefined),
+    write: { buildLog: (data, event: BuildLogEvent) => withLogEvent(data, event) },
+    stale: (event: BuildLogEvent) => (event?.truncated && event.image && event.build ? [ofBuild(event)] : []),
   },
   // a VM's SSH access turned on or off, or its host key made: its connection help is read again
   // (whatever did it: the UI, the CLI, regenerate)
@@ -325,23 +357,26 @@ export function createResources(live: Pick<Live, 'on' | 'state'>) {
     },
   })
 
-  // replays: events that arrived while a read of their resource was on the way, applied to its
-  // answer, so that the older answer does not undo them
-  const replays = new Map<ResourceName, Set<((data: any) => any)[]>>()
-  // resources to read once more when the read on the way ends: it may have started before what
-  // made them stale
-  const again = new Set<ResourceName>()
+  // replays: events that arrived while a read of their copy was on the way (by the hash of its
+  // key), applied to its answer, so that the older answer does not undo them
+  const replays = new Map<string, Set<((data: any) => any)[]>>()
+  // copies (by the hash of their key) to read once more when the read on the way ends: it may
+  // have started before what made them stale
+  const again = new Set<string>()
 
   async function read<N extends ResourceName>(name: N, params?: ResourceParams<N>): Promise<ResourceData<N>> {
+    const queryKey = keyOf(name, params)
     const pending: ((data: any) => any)[] = []
-    const set = replays.get(name) ?? new Set()
-    replays.set(name, set)
+    const set = replays.get(hashKey(queryKey)) ?? new Set()
+    replays.set(hashKey(queryKey), set)
     set.add(pending)
     try {
       const declaration = RESOURCES[name] as Declaration<ResourceData<N>, unknown>
+      const held = client.getQueryData<ResourceData<N>>(queryKey)
       let data: ResourceData<N>
       try {
-        data = await api<ResourceData<N>>(declaration.path(params))
+        const answer = await api<ResourceData<N>>(declaration.path(params, held))
+        data = declaration.merge ? declaration.merge(held, answer) : answer
       }
       catch (e) {
         const state = e instanceof ApiError && Object.hasOwn(declaration.states, e.code) ? declaration.states[e.code] : undefined
@@ -350,26 +385,25 @@ export function createResources(live: Pick<Live, 'on' | 'state'>) {
       }
       for (const apply of pending) {
         const next = apply(data)
-        if (next === null) again.add(name)
+        if (next === null) again.add(hashKey(queryKey))
         else data = next
       }
+      if (declaration.readOn?.(data)) again.add(hashKey(queryKey))
       return data
     }
     finally {
       set.delete(pending)
+      if (!set.size) replays.delete(hashKey(queryKey))
     }
   }
 
-  /** Mark a resource stale, with every set of its parameters or only these: a view that shows it
-   * reads it again, at once or, when a read is on the way, right after it (with every set of its
-   * parameters then); one that is not shown reads it when it is next shown. */
+  /** Mark a resource stale, with every set of its parameters or only these: a view that shows a
+   * copy reads it again, at once or, when a read of that copy is on the way, right after it; one
+   * that is not shown reads it when it is next shown. */
   function markStale(name: ResourceName, params?: unknown): Promise<void> {
-    const queryKey = params === undefined ? [name] : [name, params]
-    if (client.isFetching({ queryKey }) > 0) {
-      again.add(name)
-      return Promise.resolve()
-    }
-    return client.invalidateQueries({ queryKey }, { cancelRefetch: false })
+    const queryKey = keyOf(name, params)
+    for (const query of client.getQueryCache().findAll({ queryKey, fetchStatus: 'fetching' })) again.add(query.queryHash)
+    return client.invalidateQueries({ queryKey, predicate: query => query.state.fetchStatus !== 'fetching' }, { cancelRefetch: false })
   }
 
   function markStaleBy(stale: Stale, event: Concerns) {
@@ -377,22 +411,22 @@ export function createResources(live: Pick<Live, 'on' | 'state'>) {
     else void markStale(stale.name, stale.params(event ?? {}))
   }
 
-  function write<N extends ResourceName>(name: N, apply: (data: ResourceData<N>) => ResourceData<N> | null) {
-    const pendings = replays.get(name)
+  function write<N extends ResourceName>(name: N, params: unknown, apply: (data: ResourceData<N>) => ResourceData<N> | null) {
+    const queryKey = keyOf(name, params)
+    const pendings = replays.get(hashKey(queryKey))
     if (pendings?.size) for (const p of pendings) p.push(apply)
-    const query = client.getQueryCache().find<ResourceData<N>>({ queryKey: [name], exact: true })
+    const query = client.getQueryCache().find<ResourceData<N>>({ queryKey, exact: true })
     const data = query?.state.data
     if (!query || data === undefined) return
     const next = apply(data)
-    if (next === null) void markStale(name)
+    if (next === null) void markStale(name, params)
     // only the data: a stale mark and a failed read's error stay (setQueryData would clear both)
     else query.setState({ data: next, dataUpdatedAt: Date.now() })
   }
 
   const offs = [client.getQueryCache().subscribe((event) => {
     if (event.type !== 'updated' || (event.action.type !== 'success' && event.action.type !== 'error')) return
-    const name = event.query.queryKey[0] as ResourceName
-    if (again.delete(name)) void markStale(name)
+    if (again.delete(event.query.queryHash)) void client.invalidateQueries({ queryKey: event.query.queryKey, exact: true }, { cancelRefetch: false })
   })]
 
   // the last of each event, for a row that compares (`services`: did the update end?), per object
@@ -414,7 +448,7 @@ export function createResources(live: Pick<Live, 'on' | 'state'>) {
   offs.push(live.on('state', (state: unknown) => know(state, true)))
   offs.push(...Object.entries(ON_EVENT).map(([eventName, row]) => live.on(eventName, (data: unknown) => {
     for (const [name, apply] of Object.entries(row.write ?? {}) as [ResourceName, (d: any, e: any) => any][]) {
-      write(name, d => apply(d, data))
+      write(name, row.writeParams?.(data), d => apply(d, data))
     }
     for (const stale of row.stale?.(data, before.get(slot(eventName, row, data))) ?? []) markStaleBy(stale, data as Concerns)
     before.set(slot(eventName, row, data), data)
@@ -425,7 +459,6 @@ export function createResources(live: Pick<Live, 'on' | 'state'>) {
     for (const stale of (entry && code && ON_ACTIVITY[code]) || []) markStaleBy(stale, entry!)
   }))
 
-  const missedListeners = new Set<() => void>()
   // a stream id: a `hello` came before the cache was made
   let helloSeen = live.state.stream !== null
   offs.push(live.on('hello', (data: { resumed?: boolean } | null) => {
@@ -434,25 +467,25 @@ export function createResources(live: Pick<Live, 'on' | 'state'>) {
     const missed = helloSeen && data?.resumed === false
     helloSeen = true
     for (const query of client.getQueryCache().getAll()) {
+      const [name, params] = query.queryKey as [ResourceName, unknown?]
+      const gap = missed ? (RESOURCES[name] as Declaration<unknown, unknown>).missed : undefined
+      if (gap) {
+        // the copy, and the answer of a read on the way, have a gap
+        for (const pending of replays.get(query.queryHash) ?? []) pending.push(gap)
+        if (query.state.data !== undefined) query.setState({ data: gap(query.state.data) })
+      }
       // the connection is there: a read that failed because the Control Room could not be
       // reached is read again
       if (missed || (query.state.status === 'error' && unreachable(query.state.error))) {
-        void markStale(query.queryKey[0] as ResourceName)
+        void markStale(name, params)
       }
     }
-    if (missed) for (const fn of [...missedListeners]) fn()
   }))
 
   return {
     client,
     read,
     markStale,
-    /** Called after a `hello` with `resumed: false` that is not the first: events were missed.
-     * For what lives outside the cache (a Build's log). */
-    onMissedEvents(fn: () => void) {
-      missedListeners.add(fn)
-      return () => { missedListeners.delete(fn) }
-    },
     stop() {
       for (const off of offs) off()
       client.clear()
@@ -519,7 +552,7 @@ export function useResource<N extends ResourceName>(name: N, ...[options = {}]: 
   const params = () => toValue(options.params)
   const query = useQuery({
     // one copy per resource, and per set of parameters for one that has them
-    queryKey: computed(() => (params() === undefined ? [name] : [name, params()])),
+    queryKey: computed(() => keyOf(name, params())),
     // the parameters of the copy read, from its own key
     queryFn: ({ queryKey }) => r.read(name, queryKey[1] as ResourceParams<N>),
     // one the Host sends no event about is read again whenever a view of it opens
@@ -617,10 +650,5 @@ export function useChange<N extends ChangeName, T = unknown>(name: N, options: C
     text: computed(() => (place.value === 'form' ? errorText(failure.value) : null)),
     reset,
   }
-}
-
-/** See `onMissedEvents` of the resources. */
-export function onMissedEvents(fn: () => void) {
-  return useResources().onMissedEvents(fn)
 }
 

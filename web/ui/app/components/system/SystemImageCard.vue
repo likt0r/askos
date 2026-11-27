@@ -3,18 +3,15 @@
 // of its tools next to what is available (marked when a new Build would bring something), the Update (a Build, then a Reset of
 // the VMs picked) and rebuild buttons with live progress, and its Builds with status, reasons of a rejected or failed one, and which VMs use
 // or are pinned to each.
-import type { Available, Build, BuildLog, Image } from '~/utils/images'
+import type { Available, Build, Image } from '~/utils/images'
 
 const props = defineProps<{
   image: Image
   available?: Available | null
-  logs: Record<string, BuildLog>
-  logLoading: Record<string, boolean>
-  logErrors: Record<string, unknown>
   busy: boolean
   starting: boolean
 }>()
-const emit = defineEmits<{ rebuild: [], update: [], log: [build: string] }>()
+const emit = defineEmits<{ rebuild: [], update: [] }>()
 const { t, te, locale } = useI18n()
 
 const STATUS_COLOR: Record<string, 'success' | 'info' | 'error' | 'warning' | 'neutral'> = {
@@ -30,19 +27,13 @@ const digests = computed(() => digestRows(currentBuild.value, props.available))
 function toggle(build: string) {
   const next = new Set(open.value)
   if (next.has(build)) next.delete(build)
-  else {
-    next.add(build)
-    emit('log', build)
-  }
+  else next.add(build)
   open.value = next
 }
 
 // a running Build shows its log without being asked
 watch(() => running.value?.build, (build) => {
-  if (build && !open.value.has(build)) {
-    open.value = new Set([...open.value, build])
-    emit('log', build)
-  }
+  if (build && !open.value.has(build)) open.value = new Set([...open.value, build])
 }, { immediate: true })
 
 function status(b: Build) {
@@ -62,7 +53,6 @@ const steps = computed(() => buildSteps(running.value?.build_vm))
 const stepsDone = computed(() => stepIndex(running.value?.step, running.value?.build_vm))
 // in the step build: podman's step n of m and its command, as the log has them (#183)
 const podman = computed(() => podmanStep(running.value))
-const log = (b: string) => props.logs[logKey(props.image.name, b)]
 </script>
 
 <template>
@@ -222,9 +212,8 @@ const log = (b: string) => props.logs[logKey(props.image.name, b)]
         </div>
         <SystemBuildLog
           v-if="open.has(b.build)"
-          :lines="log(b.build)?.lines ?? []"
-          :loading="logLoading[logKey(image.name, b.build)]"
-          :error="logErrors[logKey(image.name, b.build)]"
+          :image="image.name"
+          :build="b.build"
           :running="b.status === 'running'"
         />
       </li>

@@ -532,10 +532,9 @@ describe('System page: Build log', () => {
   const rEvent = (entries: unknown[], extra: Record<string, unknown> = {}) =>
     ({ unit: 'u', target: 'ml', image: 'ml', build: 'r1', entries, cursor: (entries.at(-1) as any)?.cursor ?? 'c0', truncated: false, ...extra })
 
-  it('opens the log of an older Build by fetching it, and hides it again', async () => {
+  it('opens the log of an older Build by fetching it, hides it, and shows it again without a read', async () => {
     const { wrapper, api } = await openSystem({
       'GET /images/base/log?build=20261102-0300&lines=500': logOf('base', '20261102-0300', [line(1, 'dnf install foo'), line(2, 'error: no such package')], 'c2'),
-      'GET /images/base/log?build=20261102-0300&lines=500&after_cursor=c2': logOf('base', '20261102-0300', [], 'c2'),
     })
     expect(wrapper.find('[data-testid="build-log"]').exists()).toBe(false)
     const toggle = rows(wrapper)[1]!.find('[data-testid="build-log-toggle"]')
@@ -547,10 +546,10 @@ describe('System page: Build log', () => {
     expect(rows(wrapper)[1]!.find('[data-testid="build-log-toggle"]').attributes('aria-expanded')).toBe('true')
     await rows(wrapper)[1]!.find('[data-testid="build-log-toggle"]').trigger('click')
     expect(wrapper.find('[data-testid="build-log"]').exists()).toBe(false)
-    // opening it again asks only for what is newer than the held cursor
+    // opening it again shows the held log: its events kept it current, nothing is read
     await rows(wrapper)[1]!.find('[data-testid="build-log-toggle"]').trigger('click')
     await flushPromises()
-    expect(api.calls.at(-1)!.path).toBe('/images/base/log?build=20261102-0300&lines=500&after_cursor=c2')
+    expect(api.calls.filter(c => c.path.startsWith('/images/base/log'))).toHaveLength(1)
     expect(lines(wrapper)).toEqual(['dnf install foo', 'error: no such package'])
   })
 
@@ -699,6 +698,63 @@ describe('System page: Build log', () => {
     await flushPromises()
     expect(loads).toBe(2)
     expect(api.calls.some(c => c.path === `/images/ml/log?build=r1&lines=500&after_cursor=c1`)).toBe(true)
+  })
+
+  it('a closed log of a Build that ended meanwhile reads only what is newer when opened again', async () => {
+    let images = RUNNING
+    const { wrapper, es, api } = await openSystem({
+      'GET /images': () => ok(images),
+      [LOG_R1]: logOf('ml', 'r1', [line(1)], 'c1'),
+      [`${LOG_R1}&after_cursor=c1`]: logOf('ml', 'r1', [line(2, 'done')], 'c2'),
+    })
+    images = overview([{ ...ML, builds: [build('r1', { status: 'ok' }), ...ML.builds] }])
+    const toggle = () => wrapper.find('[data-image="ml"] [data-testid="build-log-toggle"]')
+    await toggle().trigger('click')      // closed
+    await flushPromises()
+    expect(wrapper.find('[data-testid="build-log"]').exists()).toBe(false)
+    es.emit('build', { ...build('r1', { status: 'ok' }), image: 'ml', unit: 'u' })
+    await flushPromises()
+    expect(api.calls.filter(c => c.path.startsWith('/images/ml/log'))).toHaveLength(1)
+    await toggle().trigger('click')
+    await flushPromises()
+    expect(api.calls.filter(c => c.path.startsWith('/images/ml/log')).map(c => c.path).at(-1)).toBe(`/images/ml/log?build=r1&lines=500&after_cursor=c1`)
+    expect(lines(wrapper)).toEqual(['line 1', 'done'])
+  })
+
+  it('shows a failed first read of a log with Retry', async () => {
+    let fail = true
+    const { wrapper } = await openSystem({
+      'GET /images/base/log?build=20261102-0300&lines=500': () => (fail
+        ? { status: 500, body: { error: { code: 'internal', message: 'x' } } }
+        : logOf('base', '20261102-0300', [line(1)], 'c1')),
+    })
+    await rows(wrapper)[1]!.find('[data-testid="build-log-toggle"]').trigger('click')
+    await flushPromises()
+    const failure = wrapper.find('[data-testid="build-log-error"]')
+    expect(failure.text()).toContain('Could not read the Build\'s log.')
+    fail = false
+    await failure.findAll('button').find(b => b.text() === 'Retry')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="build-log-error"]').exists()).toBe(false)
+    expect(lines(wrapper)).toEqual(['line 1'])
+  })
+
+  it('a closed log reads what a reconnect that could not resume missed, before lines that came after it', async () => {
+    const { wrapper, es, api } = await openSystem({
+      'GET /images': ok(RUNNING),
+      [LOG_R1]: logOf('ml', 'r1', [line(1), line(2)], 'c2'),
+      [`${LOG_R1}&after_cursor=c2`]: logOf('ml', 'r1', [line(3), line(4), line(5)], 'c5'),
+    })
+    const toggle = () => wrapper.find('[data-image="ml"] [data-testid="build-log-toggle"]')
+    await toggle().trigger('click')      // closed
+    await flushPromises()
+    es.emit('hello', { stream: 'other', resumed: false })      // lines 3 and 4 were missed
+    es.emit('build-log', rEvent([line(5)]))
+    await flushPromises()
+    await toggle().trigger('click')
+    await flushPromises()
+    expect(api.calls.filter(c => c.path.startsWith('/images/ml/log')).map(c => c.path).at(-1)).toBe(`/images/ml/log?build=r1&lines=500&after_cursor=c2`)
+    expect(lines(wrapper)).toEqual(['line 1', 'line 2', 'line 3', 'line 4', 'line 5'])
   })
 
   it('ignores log events of a Build whose log is not open', async () => {

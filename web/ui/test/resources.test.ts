@@ -122,16 +122,12 @@ describe('the stale table for images (without a view)', () => {
   })
 
   it('a hello that could not resume marks everything stale, unless it is the first; one that resumed does not', () => {
-    const missed = vi.fn()
-    r.onMissedEvents(missed)
     live.emit('hello', { stream: 'a', resumed: false })
     expect(stale()).toBe(false)
     live.emit('hello', { stream: 'a', resumed: true })
     expect(stale()).toBe(false)
-    expect(missed).not.toHaveBeenCalled()
     live.emit('hello', { stream: 'b', resumed: false })
     expect(stale()).toBe(true)
-    expect(missed).toHaveBeenCalledOnce()
   })
 
   it('a hello after the cache was made is no first one when the stream was live before', () => {
@@ -528,5 +524,143 @@ describe('the Host\'s readings', () => {
   it('reads a Host without a sampler as a state', async () => {
     fakeApi({ 'GET /host': { status: 503, body: { error: { code: 'readings_unavailable', message: 'x' } } } })
     expect(await r.read('host')).toMatchObject({ unavailable: true, readings: [], history: [] })
+  })
+})
+
+describe('a Build\'s log', () => {
+  let live: ReturnType<typeof fakeLive>
+  let r: Resources
+  const line = (n: number) => ({ time: 't', message: `line ${n}`, cursor: `c${n}` })
+  const log = (ns: number[]) => ({ lines: ns.map(line), cursor: ns.length ? `c${ns.at(-1)}` : null })
+  const event = (build: string, ns: number[], truncated = false) =>
+    ({ unit: 'u', target: 'ml', image: 'ml', build, entries: ns.map(line), cursor: `c${ns.at(-1)}`, truncated })
+  const key = (build: string) => ['buildLog', { image: 'ml', build }]
+  const lines = (build: string) => r.client.getQueryData<{ lines: { cursor: string }[] }>(key(build))!.lines.map(l => l.cursor)
+  const stale = (build: string) => r.client.getQueryState(key(build))!.isInvalidated
+  beforeEach(() => {
+    live = fakeLive()
+    r = createResources(live as never)
+    r.client.setQueryData(key('r1'), log([1, 2]))
+    r.client.setQueryData(key('r2'), log([1]))
+  })
+  afterEach(() => r.stop())
+
+  it('appends the lines of a build-log event to its Build\'s log only', () => {
+    live.emit('build-log', event('r1', [2, 3]))
+    expect([lines('r1'), lines('r2')]).toEqual([['c1', 'c2', 'c3'], ['c1']])
+    expect([stale('r1'), stale('r2')]).toEqual([false, false])
+  })
+
+  it('after lines were skipped keeps no later lines and reads after the held cursor', async () => {
+    live.emit('build-log', event('r1', [5], true))
+    live.emit('build-log', event('r1', [6]))
+    expect(lines('r1')).toEqual(['c1', 'c2'])
+    expect([stale('r1'), stale('r2')]).toEqual([true, false])
+    const api = fakeApi({ 'GET /images/ml/log?build=r1&lines=500&after_cursor=c2': OK({ entries: [3, 4, 5, 6].map(line), cursor: 'c6' }) })
+    await r.read('buildLog', { image: 'ml', build: 'r1' })
+    expect(api.calls).toHaveLength(1)
+  })
+
+  it('a reconnect that could not resume leaves a gap: later lines are not kept until it is read', () => {
+    live.emit('hello', { stream: 'a', resumed: true })
+    live.emit('hello', { stream: 'b', resumed: false })
+    live.emit('build-log', event('r1', [5]))
+    expect(lines('r1')).toEqual(['c1', 'c2'])
+    expect([stale('r1'), stale('r2')]).toEqual([true, true])
+  })
+
+  it('a reconnect that could not resume during a read leaves the gap in its answer, read once more after it', async () => {
+    let answers = 0
+    const api = fakeApi({ 'GET /images/ml/log?build=r3&lines=500': () => new Promise(resolve => { answer = () => resolve(OK({ entries: [line(1)], cursor: 'c1' })) }),
+      'GET /images/ml/log?build=r3&lines=500&after_cursor=c1': () => { answers++; return OK({ entries: [2, 3].map(line), cursor: 'c3' }) } })
+    let answer!: () => void
+    const observer = new QueryObserver(r.client, { queryKey: key('r3'), queryFn: () => r.read('buildLog', { image: 'ml', build: 'r3' }) })
+    const off = observer.subscribe(() => {})
+    await flushPromises()
+    live.emit('hello', { stream: 'a', resumed: true })
+    live.emit('hello', { stream: 'b', resumed: false })      // line 2 was missed
+    live.emit('build-log', event('r3', [3]))
+    answer()
+    await flushPromises()
+    expect(answers).toBe(1)
+    expect(lines('r3')).toEqual(['c1', 'c2', 'c3'])
+    expect(api.calls.map(c => c.path)).toEqual(['/images/ml/log?build=r3&lines=500', '/images/ml/log?build=r3&lines=500&after_cursor=c1'])
+    off()
+  })
+
+  it('an answer cut short keeps the gap and is read on after it at once', async () => {
+    const observer = new QueryObserver(r.client, { queryKey: key('r1'), queryFn: () => r.read('buildLog', { image: 'ml', build: 'r1' }) })
+    const off = observer.subscribe(() => {})
+    await flushPromises()
+    const api = fakeApi({
+      'GET /images/ml/log?build=r1&lines=500&after_cursor=c2': OK({ entries: [3, 4].map(line), cursor: 'c4', truncated: true }),
+      'GET /images/ml/log?build=r1&lines=500&after_cursor=c4': OK({ entries: [5].map(line), cursor: 'c5', truncated: false }),
+    })
+    live.emit('build-log', event('r1', [7], true))
+    await flushPromises()
+    expect(api.calls.map(c => c.path)).toEqual([
+      '/images/ml/log?build=r1&lines=500&after_cursor=c2', '/images/ml/log?build=r1&lines=500&after_cursor=c4'])
+    expect(lines('r1')).toEqual(['c1', 'c2', 'c3', 'c4', 'c5'])
+    off()
+  })
+
+  it('a failed read keeps the gap, and the next read is after the held cursor', async () => {
+    let fail = true
+    const api = fakeApi({ 'GET /images/ml/log?build=r1&lines=500&after_cursor=c2': () => (fail
+      ? { status: 500, body: { error: { code: 'internal', message: 'x' } } }
+      : OK({ entries: [3, 4].map(line), cursor: 'c4' })) })
+    const observer = new QueryObserver(r.client, { queryKey: key('r1'), queryFn: () => r.read('buildLog', { image: 'ml', build: 'r1' }) })
+    const off = observer.subscribe(() => {})
+    await flushPromises()
+    live.emit('build-log', event('r1', [3], true))
+    await flushPromises()
+    expect(r.client.getQueryState(key('r1'))!.status).toBe('error')
+    live.emit('build-log', event('r1', [4]))
+    expect(lines('r1')).toEqual(['c1', 'c2'])
+    fail = false
+    await observer.refetch()
+    expect(lines('r1')).toEqual(['c1', 'c2', 'c3', 'c4'])
+    expect(api.calls.map(c => c.path)).toEqual(Array(2).fill('/images/ml/log?build=r1&lines=500&after_cursor=c2'))
+    off()
+  })
+
+  it('a log that turns stale while it is read is read once more, not every log', async () => {
+    let answer!: () => void
+    const api = fakeApi({ 'GET /images/ml/log?build=r3&lines=500': () => new Promise(resolve => { answer = () => resolve(OK({ entries: [line(1)], cursor: 'c1' })) }),
+      'GET /images/ml/log?build=r3&lines=500&after_cursor=c1': OK({ entries: [2, 3].map(line), cursor: 'c3' }) })
+    const observers = ['r1', 'r3'].map(build => new QueryObserver(r.client, { queryKey: key(build), queryFn: () => r.read('buildLog', { image: 'ml', build }) }))
+    const offs = observers.map(o => o.subscribe(() => {}))
+    await flushPromises()
+    live.emit('build-log', event('r3', [3], true))      // line 2 skipped while r3 is read
+    answer()
+    await flushPromises()
+    expect(api.calls.map(c => c.path)).toEqual(['/images/ml/log?build=r3&lines=500', '/images/ml/log?build=r3&lines=500&after_cursor=c1'])
+    expect(lines('r3')).toEqual(['c1', 'c2', 'c3'])
+    for (const off of offs) off()
+  })
+
+  it('marks the log of a Build that ended stale, not that of another', () => {
+    live.emit('build', { image: 'ml', build: 'r2', status: 'ok' })
+    expect([stale('r1'), stale('r2')]).toEqual([false, true])
+  })
+
+  it('reads on after the held cursor and joins the answer to the held lines', async () => {
+    const api = fakeApi({ 'GET /images/ml/log?build=r1&lines=500&after_cursor=c2': OK({ entries: [line(3)], cursor: 'c3', status: 'ok' }) })
+    expect((await r.read('buildLog', { image: 'ml', build: 'r1' })).lines.map(l => l.cursor)).toEqual(['c1', 'c2', 'c3'])
+    expect(api.calls).toHaveLength(1)
+  })
+
+  it('an event of another Build\'s log is not applied to the answer of this one', async () => {
+    let answer!: () => void
+    fakeApi({ 'GET /images/ml/log?build=r3&lines=500': () => new Promise(resolve => { answer = () => resolve(OK({ entries: [line(1)], cursor: 'c1' })) }) })
+    const observer = new QueryObserver(r.client, { queryKey: key('r3'), queryFn: () => r.read('buildLog', { image: 'ml', build: 'r3' }) })
+    const off = observer.subscribe(() => {})
+    await flushPromises()
+    live.emit('build-log', event('r1', [3]))
+    live.emit('build-log', event('r3', [2]))
+    answer()
+    await flushPromises()
+    expect(lines('r3')).toEqual(['c1', 'c2'])
+    off()
   })
 })
