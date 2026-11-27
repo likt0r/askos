@@ -6,51 +6,17 @@ import type { AllowlistEntry, ForbidEntry } from '~/utils/access'
 const { t } = useI18n()
 const route = useRoute()
 const live = useLive()
-const errorText = useErrorText()
 
 const name = computed(() => String(route.params.vm))
 const vm = computed(() => live.state.vms.find(v => v.name === name.value))
-const entries = ref<AllowlistEntry[]>([])
-const entriesError = ref<unknown>(null)
-const entriesLoaded = ref(false)
-const forbids = ref<ForbidEntry[]>([])
-const forbidsError = ref<unknown>(null)
-const forbidsLoaded = ref(false)
-
-async function loadEntries() {
-  try {
-    const list = await api<AllowlistEntry[]>(`/vms/${name.value}/allowlist`)
-    entries.value = Array.isArray(list) ? list : []
-    entriesError.value = null
-    entriesLoaded.value = true
-  }
-  catch (e) {
-    entriesError.value = e
-  }
-}
-
-async function loadForbids() {
-  try {
-    const list = await api<ForbidEntry[]>(`/vms/${name.value}/forbids`)
-    forbids.value = Array.isArray(list) ? list : []
-    forbidsError.value = null
-    forbidsLoaded.value = true
-  }
-  catch (e) {
-    forbidsError.value = e
-  }
-}
-
-// an allow for the VM lifts its Forbid of the domain, a forbid takes the place of its entry: both lists
-// change together (ADR 0024)
-function loadBoth() {
-  void loadEntries()
-  void loadForbids()
-}
-
-watch(name, loadBoth)
-onMounted(loadBoth)
-useReloadOnActivity(loadBoth, { kinds: ['allowlist'] })
+// an allow for the VM lifts its Forbid of the domain, a forbid takes the place of its entry: both
+// lists change together (ADR 0024; the resources module's rows)
+const entriesList = useResource('vmAllowlist', { params: () => ({ vm: name.value }) })
+const forbidsList = useResource('forbids', { params: () => ({ vm: name.value }) })
+const entries = computed<AllowlistEntry[]>(() => (Array.isArray(entriesList.data.value) ? entriesList.data.value : []))
+const forbids = computed<ForbidEntry[]>(() => (Array.isArray(forbidsList.data.value) ? forbidsList.data.value : []))
+const entriesLoaded = computed(() => entriesList.data.value !== undefined)
+const forbidsLoaded = computed(() => forbidsList.data.value !== undefined)
 </script>
 
 <template>
@@ -67,8 +33,8 @@ useReloadOnActivity(loadBoth, { kinds: ['allowlist'] })
         <span class="flex-1" />
         <UButton color="neutral" variant="link" size="sm" trailing-icon="i-lucide-arrow-right" :to="`/allowlist?vm=${vm.name}`" :label="t('webTab.entries.all')" />
       </div>
-      <UAlert v-if="entriesError" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(entriesError)" />
-      <p v-else-if="entriesLoaded && !entries.length" class="text-sm text-muted">
+      <ReadFailure :resource="entriesList" data-testid="vm-entries-error" />
+      <p v-if="entriesLoaded && !entries.length" class="text-sm text-muted">
         {{ t('webTab.entries.empty') }}
       </p>
       <AllowlistEntryList v-else-if="entries.length" :entries="entries" />
@@ -81,8 +47,8 @@ useReloadOnActivity(loadBoth, { kinds: ['allowlist'] })
       <p class="text-sm text-muted">
         {{ t('webTab.forbids.intro') }}
       </p>
-      <UAlert v-if="forbidsError" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(forbidsError)" />
-      <p v-else-if="forbidsLoaded && !forbids.length" class="text-sm text-muted" data-testid="forbids-empty">
+      <ReadFailure :resource="forbidsList" data-testid="vm-forbids-error" />
+      <p v-if="forbidsLoaded && !forbids.length" class="text-sm text-muted" data-testid="forbids-empty">
         {{ t('webTab.forbids.empty') }}
       </p>
       <AllowlistForbidList v-else-if="forbids.length" :entries="forbids" />

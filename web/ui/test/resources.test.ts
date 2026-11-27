@@ -712,3 +712,51 @@ describe('the stale table for the Settings', () => {
     r.stop()
   })
 })
+
+describe('the stale table for the Allowlist, the Forbids and the blocked lists', () => {
+  let live: ReturnType<typeof fakeLive>
+  let r: Resources
+  const stale = (key: unknown[]) => r.client.getQueryState(key)!.isInvalidated
+  beforeEach(() => {
+    live = fakeLive()
+    r = createResources(live as never)
+    for (const key of [['allowlist', { filter: '*' }], ['allowlist', { filter: 'work' }], ['vmAllowlist', { vm: 'work' }],
+      ['forbids', { vm: 'priv' }], ['blocked', { vm: 'work' }], ['blocked', { vm: 'priv' }]]) r.client.setQueryData(key, [], { updatedAt: Date.now() - 5000 })
+  })
+  afterEach(() => r.stop())
+
+  it('an entry of kind allowlist, whatever its code, marks every Allowlist and Forbid list stale, not the blocked lists', () => {
+    live.emit('activity', { ...entry('expire-something-new'), kind: 'allowlist', vm: 'work' })
+    expect([stale(['allowlist', { filter: '*' }]), stale(['allowlist', { filter: 'work' }]), stale(['vmAllowlist', { vm: 'work' }]),
+      stale(['forbids', { vm: 'priv' }]), stale(['blocked', { vm: 'work' }])]).toEqual([true, true, true, true, false])
+  })
+
+  it('deleting a VM marks the Allowlist stale (it drops the VM\'s entries)', () => {
+    live.emit('activity', { ...entry('delete'), kind: 'action', vm: 'gone' })
+    expect([stale(['allowlist', { filter: '*' }]), stale(['vmAllowlist', { vm: 'work' }])]).toEqual([true, false])
+  })
+
+  it('an Alert or a hold marks only that VM\'s blocked list, and none without a VM', () => {
+    live.emit('alert', { vm: 'priv', domain: 'x.example' })
+    expect([stale(['blocked', { vm: 'work' }]), stale(['blocked', { vm: 'priv' }])]).toEqual([false, true])
+    live.emit('held', { vm: null })
+    expect(stale(['blocked', { vm: 'work' }])).toBe(false)
+  })
+
+  it('marks a blocked list stale no sooner than a second after its last read, once for a burst', () => {
+    vi.useFakeTimers()
+    try {
+      r.client.setQueryData(['blocked', { vm: 'work' }], [])      // read just now
+      live.emit('held', { vm: 'work' })
+      live.emit('held', { vm: 'work' })
+      expect(stale(['blocked', { vm: 'work' }])).toBe(false)
+      vi.advanceTimersByTime(999)
+      expect(stale(['blocked', { vm: 'work' }])).toBe(false)
+      vi.advanceTimersByTime(2)
+      expect(stale(['blocked', { vm: 'work' }])).toBe(true)
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
+})

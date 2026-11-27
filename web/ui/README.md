@@ -132,11 +132,13 @@ it holds so far: `images` (`GET /images`), `pairings` (`GET /vms/<vm>/pairings`)
 its panel is open), `host` (`GET /host`: the Host's readings with 30 minutes of history),
 `buildLog` (`GET /images/<image>/log?build=`: a Build's log), `activity` (`GET /activity`: a
 timeline for a filter), `settings` (`GET /settings`: the Settings form holds a draft of them; a
-VM's defaults read them too), `vmLog` (`GET /vms/<vm>/logs`: a VM's journal for the filters
-applied) and `version` (`GET /version`: the UI build installed and the Release; the reload
-prompt takes the build of its first answer as the page's own and keeps it through later reads).
-Every other view still reads on its own, as the next section describes, until it moves into the
-module (#216).
+VM's defaults and Open web's longest duration read them too), `allowlist` (`GET
+/allowlist?vm=`), `vmAllowlist` (`GET /vms/<vm>/allowlist`), `forbids` (`GET
+/vms/<vm>/forbids`), `blocked` (`GET /vms/<vm>/blocked`, at most one read a second: `spacing`),
+`vmLog` (`GET /vms/<vm>/logs`: a VM's journal for the filters applied) and `version` (`GET
+/version`: the UI build installed and the Release; the reload prompt takes the build of its
+first answer as the page's own and keeps it through later reads). Every other view still reads
+on its own, as the next section describes, until it moves into the module (#216).
 
 - **Declaring a resource**: one line in `RESOURCES`, its name, its path and the type of its answer
   (`images: declare<ImagesOverview>('/images')`); one with parameters takes its path from them
@@ -191,14 +193,17 @@ module (#216).
   `name` parameter names, a row `ofEntryImage(name)`) and `create`, `delete`, `set-image`,
   `reset`, `reset.automatic`, `reset.update` (which VMs use and pin each Build); `pairings` of the
   entry's VM after `observe`, `unpair` and `revoke-pairings` (a row `ofEntryVm(name)` marks only
-  that VM's copy); `settings` after `set-settings`; `githubApp` after `set-github-app`,
-  `remove-github-app`, `set-owners`, `create` and `delete`; `githubTokens` of the event's VM after
-  a `github-token` event, `sshConfig` of a VM when its `vm` event turns SSH access on or off or
-  brings a new host key (a row with `key` compares each VM with its own event before, `known` from
-  the live state and each `state` event). A write keeps a stale mark and a failed read's error. A
-  stale resource that a view shows is read again; one that nothing shows is read when a view next
-  asks for it. A new Activity code that changes a resource needs a row here; without one, the view
-  shows old data until the next reconnect or reload.
+  that VM's copy); `settings` after `set-settings`; `allowlist`, `vmAllowlist` and `forbids` after
+  any entry of kind `allowlist` (`ON_ACTIVITY_KIND`, a table by kind for a kind whose codes are
+  many: every change of an entry or a Forbid, from the UI, the CLI or the expiry timer), and
+  `allowlist` after `delete` too; `blocked` of the VM after its `alert` and `held` events;
+  `githubApp` after `set-github-app`, `remove-github-app`, `set-owners`, `create` and `delete`;
+  `githubTokens` of the event's VM after a `github-token` event, `sshConfig` of a VM when its `vm`
+  event turns SSH access on or off or brings a new host key (a row with `key` compares each VM
+  with its own event before, `known` from the live state and each `state` event). A write keeps a
+  stale mark and a failed read's error. A stale resource that a view shows is read again; one that
+  nothing shows is read when a view next asks for it. A new Activity code that changes a resource
+  needs a row here; without one, the view shows old data until the next reconnect or reload.
 - **An event during a read**: an event written while a read of its resource is on the way is
   applied to that read's answer as well, and a copy that turns stale during its read is read once
   more right after it (once for a whole burst; other copies of the resource are not). The older

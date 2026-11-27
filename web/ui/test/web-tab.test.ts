@@ -329,4 +329,38 @@ describe('Web tab', () => {
     await waitFor(() => expect(loads()).toBe(2))
     expect($('[data-testid="blocked-empty"]')).toBeNull()
   })
+
+  it('reads the blocked list at most once a second through a burst of this VM\'s events', async () => {
+    const { api, es } = await openApp('/vms/work/web', ROUTES)
+    const loads = () => api.calls.filter(c => c.path === '/vms/work/blocked').length
+    expect(loads()).toBe(1)
+    for (let i = 0; i < 5; i++) es.emit('alert', { time: 't', vm: 'work', domain: `x${i}.example`, signals: ['young'] })
+    await new Promise(r => setTimeout(r, 300))
+    expect(loads()).toBe(1)
+    await waitFor(() => expect(loads()).toBe(2))
+    await new Promise(r => setTimeout(r, 300))
+    expect(loads()).toBe(2)
+  })
+
+  it('takes Open web\'s longest duration from the Settings, and follows a change of them', async () => {
+    let longest = 60
+    const { es } = await openApp('/vms/work/web', { ...ROUTES, 'GET /settings': () => ok({ settings: { open_web_max_minutes: { value: longest } } }) })
+    const minutes = () => [...must('[data-testid="open-web"]').querySelectorAll('[data-minutes]')].map(b => (b as HTMLElement).dataset.minutes)
+    expect(minutes()).toEqual(['15', '30', '60'])
+    longest = 240
+    es.emit('activity', { time: 't', vm: null, actor: 'root', kind: 'settings', action: 'set-settings', code: 'set-settings', outcome: 'ok', description: '' })
+    await waitFor(() => expect(minutes()).toEqual(['15', '30', '60', '120', '240']))
+  })
+
+  it('shows a failed read of the VM\'s entries with Retry', async () => {
+    let failing = true
+    await openApp('/vms/work/web', { ...ROUTES, 'GET /vms/work/allowlist': () => (failing ? fail(502, 'action_failed') : ok(vmEntries())) })
+    const failure = must('[data-testid="vm-entries-error"]')
+    expect(failure.textContent).toContain('Could not read the VM\'s Allowlist entries.')
+    failing = false
+    await click([...failure.querySelectorAll('button')].find(b => b.textContent?.trim() === 'Retry')!)
+    await settle()
+    expect($('[data-testid="vm-entries-error"]')).toBeNull()
+    expect(must('[data-testid="vm-entries"]').textContent).toContain('docs.rs')
+  })
 })
