@@ -115,6 +115,38 @@ export interface LogResult {
   truncated: boolean
 }
 
+/** A VM's journal as the Log tab holds it: the newest entries for the filters, then those that
+ * followed (at most MAX_LOG_LINES; `dropped`: older ones left), and the cursor to follow from. */
+export interface VmLog {
+  entries: LogEntry[]
+  cursor: string | null
+  /** the first answer was cut off: narrow the filters */
+  truncated: boolean
+  dropped: boolean
+}
+
+/** GET /vms/<vm>/logs: the newest entries for the filters, only those after the held log's
+ * cursor once there is one. */
+export function vmLogPath(vm: string, filters: LogFilters, held: VmLog | undefined) {
+  return `/vms/${vm}/logs?${logQuery(filters, held?.cursor)}`
+}
+
+/** An answer of the logs endpoint after the held log's entries (or the first one). */
+export function joinVmLog(held: VmLog | undefined, answer: LogResult): VmLog {
+  const fresh = Array.isArray(answer?.entries) ? answer.entries : []
+  if (!held?.cursor) {
+    return { entries: fresh, cursor: answer?.cursor ?? fresh.at(-1)?.cursor ?? null, truncated: answer?.truncated === true, dropped: false }
+  }
+  if (!fresh.length) return held
+  const all = [...held.entries, ...fresh]
+  return {
+    entries: all.length > MAX_LOG_LINES ? all.slice(-MAX_LOG_LINES) : all,
+    cursor: answer.cursor ?? fresh.at(-1)?.cursor ?? held.cursor,
+    truncated: held.truncated,
+    dropped: held.dropped || all.length > MAX_LOG_LINES,
+  }
+}
+
 // agentbox already hides Pairing codes in logs; this hides anything that still looks
 // like one (and agentbox's own marker, orca://pair?[hidden]) once more, in the UI's language.
 const PAIRING = /orca(?::\/\/|%3A%2F%2F)pair\S*/gi

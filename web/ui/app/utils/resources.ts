@@ -22,6 +22,7 @@ import { applyBuild, type BuildEvent, type BuildLog, type BuildLogEvent, buildLo
 import { type HostOverview, type HostSample, noReadings, withSample } from './host'
 import type { SettingValue } from './settings'
 import type { Pairings } from './vm'
+import { joinVmLog, type LogFilters, type VmLog, vmLogPath } from './vmRules'
 import type { Live, VersionInfo, Vm } from './live'
 
 // query-core hands results to the views through setTimeout(0) by default; a microtask gives them
@@ -80,6 +81,11 @@ const RESOURCES = {
   // a Build's log: read on after the held cursor, so only what is new comes
   buildLog: declare<BuildLog, { image: string, build: string }>((p, held) => buildLogPath(p.image, p.build, held),
     { merge: joinLog, missed: log => ({ ...log, gap: true }), readOn: log => !!log.gap }),
+  // a VM's journal for the filters the owner applied (`shown`: each "Show" is a new read): read
+  // on after the held cursor; nothing on the Host says when it grows, so it is read whenever its
+  // view opens, and while following, by the view's clock
+  vmLog: declare<VmLog, { vm: string, filters: LogFilters, shown: number }>((p, held) => vmLogPath(p.vm, p.filters, held),
+    { fresh: true, merge: joinVmLog }),
   // an Image's Containerfile: the installed Release's, or its Recipe's
   containerfile: declare<ContainerfileText, { image: string }>(p => `/images/${encodeURIComponent(p.image)}/containerfile`),
 }
@@ -523,6 +529,9 @@ export interface ResourceOptions<P = undefined> {
   params?: MaybeRefOrGetter<P>
   /** while the copy of new parameters is read, show the one before (a period or filter changed) */
   keepPrevious?: boolean
+  /** read again by the clock, every this many ms (false: not): the view's own choice, never the
+   * module's (the Log tab while it follows) */
+  every?: MaybeRefOrGetter<number | false>
 }
 
 export interface Resource<T> {
@@ -533,6 +542,8 @@ export interface Resource<T> {
   loading: ComputedRef<boolean>
   /** a read is on the way (the first or a read again) */
   fetching: ComputedRef<boolean>
+  /** with `keepPrevious`: the data shown is the copy of the parameters before, the new one is read */
+  previous: ComputedRef<boolean>
   /** why the last read failed; null after one that succeeded */
   error: Readonly<Ref<unknown>>
   extra: boolean
@@ -558,6 +569,8 @@ export function useResource<N extends ResourceName>(name: N, ...[options = {}]: 
     // one the Host sends no event about is read again whenever a view of it opens
     refetchOnMount: RESOURCES[name].fresh ? 'always' : true,
     placeholderData: options.keepPrevious ? keepPreviousData : undefined,
+    // a computed, not a function: vue-query takes its change at once (stops the clock)
+    refetchInterval: computed(() => toValue(options.every) ?? false),
     enabled: () => toValue(options.enabled ?? true),
   }, r.client)
   return {
@@ -565,6 +578,7 @@ export function useResource<N extends ResourceName>(name: N, ...[options = {}]: 
     data: query.data as Readonly<Ref<ResourceData<N> | undefined>>,
     loading: computed(() => query.isLoading.value),
     fetching: computed(() => query.isFetching.value),
+    previous: computed(() => query.isPlaceholderData.value),
     error: query.error,
     extra: !!options.extra,
     retry: async () => { await query.refetch() },

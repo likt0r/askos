@@ -1,7 +1,7 @@
 // The VM views' rules match the CLI's (agentbox/registry.py, vms.py, guest.py).
 import { describe, expect, it } from 'vitest'
 import {
-  defaultLogFilters, envFromRows, hidePairingCodes, lifecycleActions, logFilterProblems, logQuery, memoryInUse,
+  defaultLogFilters, envFromRows, hidePairingCodes, joinVmLog, lifecycleActions, logFilterProblems, logQuery, MAX_LOG_LINES, memoryInUse,
   nameProblem, parseOwners, pinnableBuilds, wholeNumber,
 } from '~/utils/vmRules'
 import { notResponding } from '~/utils/vm'
@@ -162,5 +162,29 @@ describe('VM state', () => {
       { build: 'b2', status: 'failed', file: null }, { build: 'b1', status: 'migrated', file: 'y' },
       { build: 'b0', status: 'ok', file: null }] }
     expect(pinnableBuilds(image).map(b => b.build)).toEqual(['b3', 'b1'])
+  })
+})
+
+describe('a VM\'s log as the Log tab holds it', () => {
+  const e = (n: number) => ({ time: null, unit: null, identifier: null, priority: 6, message: `m${n}`, boot: null, cursor: `s=${n}` })
+  const answer = (ns: number[], truncated = false) => ({ vm: 'work', entries: ns.map(e), cursor: ns.length ? `s=${ns.at(-1)}` : null, truncated })
+
+  it('takes the first answer as it is', () => {
+    expect(joinVmLog(undefined, answer([1, 2], true))).toEqual({ entries: [e(1), e(2)], cursor: 's=2', truncated: true, dropped: false })
+  })
+
+  it('appends what followed, keeps the newest, and says when older ones left', () => {
+    const held = joinVmLog(undefined, answer([1, 2]))
+    expect(joinVmLog(held, answer([]))).toBe(held)
+    const next = joinVmLog(held, answer([3]))
+    expect(next.entries.map(x => x.cursor)).toEqual(['s=1', 's=2', 's=3'])
+    expect(next.cursor).toBe('s=3')
+    const many = joinVmLog(held, answer(Array.from({ length: MAX_LOG_LINES }, (_, i) => i + 3)))
+    expect(many.entries).toHaveLength(MAX_LOG_LINES)
+    expect(many.dropped).toBe(true)
+  })
+
+  it('takes an answer as the first while the held log has no cursor', () => {
+    expect(joinVmLog(joinVmLog(undefined, answer([])), answer([5]))).toEqual({ entries: [e(5)], cursor: 's=5', truncated: false, dropped: false })
   })
 })

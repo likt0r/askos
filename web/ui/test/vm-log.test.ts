@@ -93,7 +93,8 @@ describe('Log tab', () => {
     expect(text('log-truncated')).toContain('Narrow the filters')
     running = false
     await submit('log-filters')
-    expect(text('log-error')).toBe('The VM is not running.')
+    expect(text('log-error')).toContain('Could not read the VM\'s log.')
+    expect(text('log-error')).toContain('The VM is not running.')
   })
 
   it('follows new entries after the last cursor', async () => {
@@ -123,6 +124,27 @@ describe('Log tab', () => {
     expect(logCalls(api.calls).length).toBe(n)
   })
 
+  it('"Show" reads the newest entries anew; the tab opened again reads what followed', async () => {
+    let newest = [entry(1, 'first'), entry(2, 'second')]
+    const api = fakeApi(routes(q => ({ status: 200, body: q.after_cursor === 's=2'
+      ? { vm: 'work', entries: [entry(3, 'third')], cursor: 's=3', truncated: false }
+      : { vm: 'work', entries: newest, cursor: newest.at(-1)!.cursor, truncated: false } })))
+    await openApp('/vms/work/log', [WORK])
+    const messages = () => byTestId('log-entries').findAll('[data-testid="log-message"]').map(m => m.text())
+    expect(messages()).toEqual(['first', 'second'])
+    await useRouter().push('/vms/work/web')
+    await flushPromises()
+    await useRouter().push('/vms/work/log')
+    await flushPromises()
+    expect(logCalls(api.calls).at(-1)).toEqual({ boot: 'current', lines: '200', after_cursor: 's=2' })
+    expect(messages()).toEqual(['first', 'second', 'third'])
+    newest = [entry(4, 'fourth')]
+    await submit('log-filters')
+    await flushPromises()
+    expect(logCalls(api.calls).at(-1)).toEqual({ boot: 'current', lines: '200' })
+    expect(messages()).toEqual(['fourth'])
+  })
+
   it('stops following when the VM stops answering', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
     fakeApi(routes(q => (q.after_cursor
@@ -131,7 +153,9 @@ describe('Log tab', () => {
     await openApp('/vms/work/log', [WORK])
     await byTestId('log-follow').trigger('click')
     await flushPromises()
-    expect(text('log-error')).toBe('The VM\'s guest agent does not answer.')
+    // the entries shown stay, with the notice that they could not be refreshed
+    expect(byTestId('log-error').attributes('data-read')).toBe('stale')
+    expect(byTestId('log-entries').findAll('[data-testid="log-message"]').map(m => m.text())).toEqual(['first'])
     expect(exists('log-following')).toBe(false)
   })
 })
