@@ -516,6 +516,12 @@ export function createResources(live: Pick<Live, 'on' | 'state'>, context: Conte
   const offs = [client.getQueryCache().subscribe((event) => {
     if (event.type !== 'updated' || (event.action.type !== 'success' && event.action.type !== 'error')) return
     if (again.delete(event.query.queryHash)) void client.invalidateQueries({ queryKey: event.query.queryKey, exact: true }, { cancelRefetch: false })
+    // a read that ended took what a waiting mark was for (it was set while no read was on the way)
+    const timer = waiting.get(event.query.queryHash)
+    if (timer) {
+      clearTimeout(timer)
+      waiting.delete(event.query.queryHash)
+    }
     if (afterRead.delete(event.query.queryHash)) void markStale(event.query.queryKey[0] as ResourceName, event.query.queryKey[1])
   })]
 

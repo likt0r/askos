@@ -737,6 +737,26 @@ describe('the stale table for the Allowlist, the Forbids and the blocked lists',
       .toEqual([true, true, false])
   })
 
+  it('a read before the waiting mark\'s time covers it: no read for it afterwards', async () => {
+    vi.useFakeTimers()
+    try {
+      const api = fakeApi({ 'GET /vms/work/blocked': OK([]) })
+      r.client.setQueryData(['blocked', { vm: 'work' }], [])      // read just now
+      const observer = new QueryObserver(r.client, { queryKey: ['blocked', { vm: 'work' }], queryFn: () => r.read('blocked', { vm: 'work' }) })
+      const off = observer.subscribe(() => {})
+      live.emit('held', { vm: 'work' })      // waits its second
+      await vi.advanceTimersByTimeAsync(300)
+      await observer.refetch()               // Retry, which includes the hold
+      expect(api.calls).toHaveLength(1)
+      await vi.advanceTimersByTimeAsync(3000)
+      expect(api.calls).toHaveLength(1)
+      off()
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('a read longer than the spacing is followed by the next only a spacing after it ended', async () => {
     vi.useFakeTimers()
     try {
