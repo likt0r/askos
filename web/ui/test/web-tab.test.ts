@@ -336,6 +336,11 @@ describe('Web tab', () => {
     expect(loads()).toBe(1)
     for (let i = 0; i < 5; i++) es.emit('alert', { time: 't', vm: 'work', domain: `x${i}.example`, signals: ['young'] })
     await waitFor(() => expect(loads()).toBe(2))
+    // right after that read, another event waits its second
+    es.emit('alert', { time: 't', vm: 'work', domain: 'y.example', signals: ['young'] })
+    await settle()
+    expect(loads()).toBe(2)
+    await waitFor(() => expect(loads()).toBe(3))
     await new Promise(r => setTimeout(r, 300))
     expect(loads()).toBe(2)
   })
@@ -377,5 +382,24 @@ describe('Web tab', () => {
     await openApp('/vms/work/web', { ...ROUTES, 'GET /vms/work/blocked': fail(502, 'action_failed'), 'GET /vms/work/forbids': fail(502, 'action_failed') })
     expect(must('[data-testid="blocked-error"]').textContent).toContain('Could not read the blocked destinations.')
     expect(must('[data-testid="vm-forbids-error"]').textContent).toContain('Could not read the Forbids.')
+  })
+
+  it('chooses a duration within the longest Open web also when the Settings were read already', async () => {
+    const { api } = await openApp('/vms/work/web', {
+      ...ROUTES,
+      'GET /settings': ok({ settings: { open_web_max_minutes: { value: 20 } } }),
+      'GET /vms': ok({ vms: [vm('work'), vm('priv')], problems: [] }),
+      'GET /vms/priv/blocked': ok([]),
+      'GET /vms/priv/allowlist': ok([]),
+      'GET /vms/priv/forbids': ok([]),
+      'POST /vms/priv/open-web': ok({ vm: 'priv', open_until: now() + 900, message: 'x' }),
+    })
+    await useRouter().push('/vms/priv/web')
+    await settle()
+    expect(api.calls.filter(c => c.path === '/settings')).toHaveLength(1)
+    const box = must('[data-testid="open-web"]')
+    expect([...box.querySelectorAll('[data-minutes]')].map(b => (b as HTMLElement).dataset.minutes)).toEqual(['15'])
+    await click('[data-testid="open-web-open"]')
+    expect(changes(api.calls).at(-1)).toMatchObject({ path: '/vms/priv/open-web', body: { minutes: 15 } })
   })
 })

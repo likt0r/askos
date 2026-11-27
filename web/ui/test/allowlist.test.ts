@@ -381,7 +381,7 @@ describe('Allowlist view', () => {
     failing = true
     es.emit('activity', { time: '2026-11-03T12:00:00Z', vm: 'work', actor: 'timer', kind: 'allowlist', action: 'allowlist.expired', outcome: 'ok', description: '' })
     await waitFor(() => expect(must('[data-testid="allowlist-error"]').dataset.read).toBe('stale'))
-    expect($$('[data-testid="entry-row"]').length + $$('[data-testid="allowlist-entry"]').length).toBeGreaterThan(0)
+    expect($$('[data-testid="allowlist-entry"]').length).toBe(3)
   })
 
   it('reloads when a VM is deleted (its entries go), not on other actions, and after a reconnect without resume', async () => {

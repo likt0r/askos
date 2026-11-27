@@ -158,7 +158,9 @@ on its own, as the next section describes, until it moves into the module (#216)
   a gap (an answer cut short): it is read on right after. One that each opening of its view reads
   anew is declared `forget`: not kept once no view shows it (`vmLog`: each opening of the Log tab
   and each "Show" is a new copy, the newest entries; while following, what one answer could not
-  hold comes with the next poll).
+  hold comes with the next poll). One the API asks to read at most so often declares `spacing`
+  (`blocked`: 1000 ms): a stale mark comes no sooner than that after the last read of the copy
+  ended, and after a read on the way ends.
 - **Asking for one**: `const images = useResource('images')` gives `data` (undefined until an
   answer came), `loading` (nothing yet and a read on the way), `fetching` (a read on the way, the
   first or a read again), `error` (why the last read failed) and `retry()`. Every view that asks
@@ -208,8 +210,8 @@ on its own, as the next section describes, until it moves into the module (#216)
   needs a row here; without one, the view shows old data until the next reconnect or reload.
 - **An event during a read**: an event written while a read of its resource is on the way is
   applied to that read's answer as well, and a copy that turns stale during its read is read once
-  more right after it (once for a whole burst; other copies of the resource are not). The older
-  answer never undoes an event.
+  more right after it (a spacing after it, for one declared with `spacing`) (once for a whole
+  burst; other copies of the resource are not). The older answer never undoes an event.
 - **When data is read again**: only for a reason the stream or the owner gives: a row of the
   table, a change made in this browser, a `hello` with `resumed: false` that is not the first
   (everything is stale), any `hello` for the reads that could not reach the Control Room, or

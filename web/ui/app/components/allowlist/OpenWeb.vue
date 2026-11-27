@@ -40,9 +40,10 @@ const until = computed(() => {
 const isOpen = computed(() => until.value > now.value)
 
 watch(() => props.vm.open_web_until, () => { override.value = null })
+// a duration within the longest, also when the Settings were read already (before this view)
 watch(choices, (list) => {
   if (!list.includes(minutes.value)) minutes.value = list.includes(30) ? 30 : list[0]!
-})
+}, { immediate: true })
 
 async function openWeb() {
   closing.reset()
