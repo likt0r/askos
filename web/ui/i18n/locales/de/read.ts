@@ -3,6 +3,7 @@ export default {
   read: {
     failed: 'Konnte {what} nicht lesen.',
     stale: 'Konnte nicht aktualisiert werden; was du siehst, ist evtl. nicht mehr aktuell.',
+    staleOf: 'Konnte {what} nicht aktualisieren; was du siehst, ist evtl. nicht mehr aktuell.',
     retry: 'Erneut versuchen',
     resources: {
       images: 'die Images',
@@ -10,6 +11,12 @@ export default {
       sshConfig: 'die Verbindungshilfe',
       githubApp: 'die GitHub-Apps',
       pairings: 'die gekoppelten Geräte',
+      watchlist: 'die Watchlist',
+      legitimate: 'die legitimen Domains',
+      harmless: 'die Harmlos-Markierungen',
+      alerts: 'die Verdachtsfälle von {vm}',
+      domainCheck: 'die Prüfung von {domain}',
+      regexCheck: 'die Prüfung des Ausdrucks',
       allowlist: 'die Allowlist',
       vmAllowlist: 'die Allowlist-Einträge der VM',
       forbids: 'die Verbote',

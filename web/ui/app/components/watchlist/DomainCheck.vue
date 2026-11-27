@@ -4,15 +4,18 @@
 // mark for a false positive.
 import type { DomainCheck, HarmlessMark } from '~/utils/access'
 
-const props = defineProps<{ harmless: HarmlessMark[] }>()
 const { t } = useI18n()
-const errorText = useErrorText()
 const toast = useToast()
 
 const input = ref('')
-const result = ref<DomainCheck | null>(null)
-const busy = ref(false)
-const error = ref<unknown>(null)
+// the domain checked (the resource `domainCheck`, read again when a list it depends on changes)
+const checked = ref<string | null>(null)
+const checking = useResource('domainCheck', { params: () => ({ domain: checked.value ?? '' }), enabled: () => !!checked.value })
+const result = computed<DomainCheck | null>(() => checking.data.value ?? null)
+const busy = checking.fetching
+// the Harmless marks (an extra here: their list shows its failure)
+const marks = useResource('harmless', { extra: true })
+const harmless = computed<HarmlessMark[]>(() => (Array.isArray(marks.data.value) ? marks.data.value.filter(m => m && typeof m === 'object') : []))
 // marking is one button, whose failure is a toast; unmarking is asked first, in its dialog
 const mark = useChange('markHarmless', { failed: () => t('watchlist.harmless.markFailed') })
 const unmark = useChange('unmarkHarmless', { form: true })
@@ -22,7 +25,7 @@ const confirmUnmark = ref(false)
 const domain = computed(() => normalizeDomain(input.value))
 const valid = computed(() => looksLikeDomain(domain.value))
 /** the domain itself carries a mark (a parent's mark is removed on the parent, a pattern in the list) */
-const ownMark = computed(() => !!result.value && props.harmless.some(m => m.domain === result.value!.domain))
+const ownMark = computed(() => !!result.value && harmless.value.some(m => m.domain === result.value!.domain))
 
 const verdict = computed(() => {
   const r = result.value
@@ -46,24 +49,14 @@ const consequences = computed(() => {
 async function check(d?: string) {
   if (d !== undefined) input.value = d
   if (!valid.value) return
-  busy.value = true
-  error.value = null
-  try {
-    result.value = await api<DomainCheck>(`/watchlist/check?domain=${encodeURIComponent(domain.value)}`)
-  }
-  catch (e) {
-    result.value = null
-    error.value = e
-  }
-  finally {
-    busy.value = false
-  }
+  if (checked.value === domain.value) await checking.retry()
+  else checked.value = domain.value
 }
 
 async function setMark() {
   const d = result.value?.domain
   if (!d || !(await mark.run({ domain: d, regex: null })).ok) return
-  input.value = d          // the page checks it again on the change's Activity entry
+  input.value = d          // its Activity entry reads the check again (the resources module's rows)
   toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t('watchlist.harmless.marked', { domain: d }) })
 }
 
@@ -107,7 +100,7 @@ defineExpose({ check })
       <UButton type="submit" :label="t('watchlist.check.submit')" :loading="busy" :disabled="!valid" data-testid="check-submit" />
     </form>
 
-    <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(error)" role="alert" />
+    <ReadFailure :resource="checking" data-testid="check-error" />
 
     <div v-if="result && verdict" class="space-y-3" data-testid="check-result" :data-strong="result.strong" :data-alert="result.alert">
       <UAlert :color="verdict.color" variant="subtle" :icon="verdict.icon" :title="`${result.domain}: ${verdict.title}`">

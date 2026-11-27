@@ -1,27 +1,35 @@
 <script setup lang="ts">
 // Alerts of every VM (last 24 hours, harmless destinations left out by the backend), new
-// ones first; mark one destination's or a whole VM's as seen. New Alerts arrive as `alert`
-// events and reload the list.
+// ones first; mark one destination's or a whole VM's as seen. The resource `alerts`, one copy per
+// VM: a VM's `alert` events, its Alerts marked seen and a change of the Harmless marks read it
+// again (the resources module's rows).
 import type { AlertGroup, VmAlert } from '~/utils/access'
 
 const emit = defineEmits<{ check: [domain: string] }>()
 const { t } = useI18n()
 const live = useLive()
-const errorText = useErrorText()
 const when = useWhen()
 const now = useNow(30000)
 
-const alerts = ref<VmAlert[]>([])
-const failed = ref<{ vm: string, error: unknown }[]>([])
-const loaded = ref(false)
-const loading = ref(false)
 const onlyNew = ref(false)
 const busy = ref<string | null>(null)
 // a button's change: its failure is a toast; the list is read again on its Activity entry
 const seen = useChange('markSeen', { failed: () => t('watchlist.alerts.markSeenFailed') })
-let request = 0
 
 const vmNames = computed(() => live.state.vms.map(v => v.name))
+const each = useResourceEach('alerts', { params: () => vmNames.value.map(vm => ({ vm })) })
+const alerts = computed<VmAlert[]>(() => each.value.flatMap((r) => {
+  const vm = (r.params as { vm: string }).vm
+  const groups = r.data.value
+  return (Array.isArray(groups) ? groups : []).map((a: AlertGroup) => ({ ...a, vm }))
+}))
+// the VM list is known and every VM's Alerts were read (or could not be) once; a VM that comes
+// later is read while the others stay on screen
+const everyRead = computed(() => each.value.every(r => !r.loading.value))
+const readOnce = ref(false)
+watch(everyRead, (all) => { if (all && live.state.loaded) readOnce.value = true }, { immediate: true })
+const loaded = computed(() => live.state.loaded && (readOnce.value || everyRead.value))
+const loading = computed(() => each.value.some(r => r.fetching.value))
 const unseen = computed(() => alerts.value.filter(a => !a.seen))
 const shown = computed(() => {
   const list = onlyNew.value ? unseen.value : alerts.value
@@ -29,23 +37,9 @@ const shown = computed(() => {
 })
 const vmsWithNew = computed(() => [...new Set(unseen.value.map(a => a.vm))])
 
+/** Read every VM's Alerts again (the refresh button). */
 async function load() {
-  const names = vmNames.value
-  const mine = ++request
-  loading.value = true
-  const results = await Promise.allSettled(names.map(vm => api<AlertGroup[]>(`/vms/${vm}/alerts`)))
-  if (mine !== request) return
-  const list: VmAlert[] = []
-  const errors: { vm: string, error: unknown }[] = []
-  results.forEach((r, i) => {
-    const vm = names[i]!
-    if (r.status === 'fulfilled') list.push(...(Array.isArray(r.value) ? r.value : []).map(a => ({ ...a, vm })))
-    else errors.push({ vm, error: r.reason })
-  })
-  alerts.value = list
-  failed.value = errors
-  loaded.value = live.state.loaded
-  loading.value = false
+  await Promise.all(each.value.map(r => r.retry()))
 }
 
 async function markSeen(vm: string, domain?: string) {
@@ -63,9 +57,7 @@ async function markAllSeen() {
   for (const vm of vmsWithNew.value) await markSeen(vm)
 }
 
-watch(() => `${live.state.loaded}:${vmNames.value.join()}`, () => void load(), { immediate: true })
-useLiveEvent('alert', () => void load(), 1000)
-defineExpose({ load })
+
 </script>
 
 <template>
@@ -93,7 +85,7 @@ defineExpose({ load })
     <p class="text-sm text-muted">
       {{ t('watchlist.alerts.intro') }}
     </p>
-    <UAlert v-for="f in failed" :key="f.vm" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="t('watchlist.alerts.failed', { vm: f.vm, error: errorText(f.error) })" />
+    <ReadFailure v-for="r in each" :key="(r.params as { vm: string }).vm" :resource="r" data-testid="alerts-failed" />
 
     <p v-if="!loaded" class="text-sm text-muted">
       {{ t('access.common.loading') }}

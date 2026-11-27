@@ -285,7 +285,6 @@ export default {
       onlyNew: 'Only new',
       allSeen: 'Mark all as seen',
       intro: 'Suspicious destinations the VMs tried to reach in the last 24 hours, blocked or not.',
-      failed: 'Alerts of {vm} could not be read: {error}',
       none: 'No Alerts in the last 24 hours.',
       noneNew: 'No new Alerts.',
       unseen: 'new',

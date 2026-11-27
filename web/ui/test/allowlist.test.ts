@@ -141,6 +141,26 @@ describe('Allowlist view', () => {
       body: { scope: 'work', regex: pattern, duration: '1h', confirm: true } }])
   })
 
+  it('keeps the preview that was confirmed: a read of the check after it does not change it', async () => {
+    const pattern = '^mirror[0-9]+\\.vendor\\.example$'
+    const check = `GET /regex/check?list=allowlist&regex=${encodeURIComponent(pattern)}&scope=work`
+    let hosts = [{ host: 'mirror1.vendor.example', allowed: 0, blocked: 3, signals: [], strong: false }]
+    const { es } = await openApp('/allowlist?vm=work', {
+      'GET /allowlist?vm=work': ok([]),
+      [check]: () => ok({ list: 'allowlist', regex: pattern, scope: 'work', matches: {},
+        preview: { hosts, more: 0, watchlist_unreadable: null, truncated: false, reaches_back: null, log_unreadable: null } }),
+    })
+    await click('[data-testid="allowlist-add-open"]')
+    await click('[data-testid="allowlist-add"] [data-testid="entry-kind"] [data-kind="regex"]')
+    await type('[data-testid="add-regex"]', pattern)
+    await click('[data-testid="allowlist-add"] [data-testid="regex-test"]')
+    await click('[data-testid="add-confirm"]')
+    hosts = [...hosts, { host: 'mirror2.vendor.example', allowed: 0, blocked: 1, signals: [], strong: false }]
+    es.emit('hello', { stream: 'y', resumed: false })
+    await settle()
+    expect($$('[data-testid="regex-preview-host"]').map(h => h.dataset.host)).toEqual(['mirror1.vendor.example'])
+  })
+
   it('drops a preview or a refusal that comes back after the pattern changed: no confirmation without its preview', async () => {
     const pattern = '^mirror[0-9]+\\.vendor\\.example$'
     const path = (p: string) => `GET /regex/check?list=allowlist&regex=${encodeURIComponent(p)}&scope=work`
@@ -293,6 +313,27 @@ describe('Allowlist view', () => {
     // the form stays open; nothing was added
     expect($('[data-testid="allowlist-add"]')).not.toBeNull()
     expect(changes(api.calls).map(c => c.path)).toEqual(['/allowlist'])
+  })
+
+  it('reads the refused destination\'s Signals again when the Watchlist changes', async () => {
+    let source = 'Shai-Hulud 1'
+    const { es } = await openApp('/allowlist', {
+      'GET /allowlist': ok([]),
+      'POST /allowlist': fail(409, 'domain_suspicious'),
+      'GET /watchlist/check?domain=webhook.site': () => ok({
+        domain: 'webhook.site', alert: true, strong: true, harmless: null, legitimate: null, feeds: {},
+        signals: [{ signal: 'exfil', strong: true, suppressed: false, reason: `Watchlist: webhook.site (${source})`,
+          code: 'watchlist', params: { domain: 'webhook.site', source } }],
+      }),
+    })
+    await click('[data-testid="allowlist-add-open"]')
+    await type('[data-testid="add-domain"]', 'webhook.site')
+    await click('[data-testid="add-duration"] [data-duration="15min"]')
+    await click('[data-testid="add-submit"]')
+    expect(must('[data-testid="refusal"]').textContent).toContain('Shai-Hulud 1')
+    source = 'Shai-Hulud 2'
+    es.emit('activity', { time: 't', vm: null, actor: 'root', kind: 'watch', action: 'watch-set-note', code: 'watch-set-note', outcome: 'ok', description: '' })
+    await waitFor(() => expect(must('[data-testid="refusal"]').textContent).toContain('Shai-Hulud 2'))
   })
 
   it('extends, makes permanent, edits the note and removes only after confirmation', async () => {

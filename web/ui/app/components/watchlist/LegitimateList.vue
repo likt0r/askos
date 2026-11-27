@@ -5,7 +5,10 @@
 // ADR 0013), marked and shown verbatim, lifts only weak Signals, so it needs no --force.
 import type { LegitimateDomain, RegexCheck, Target } from '~/utils/access'
 
-const props = defineProps<{ domains: LegitimateDomain[], loaded: boolean, error?: unknown }>()
+// the resource `legitimate`
+const list = useResource('legitimate')
+const domains = computed<LegitimateDomain[]>(() => (Array.isArray(list.data.value) ? list.data.value : []))
+const loaded = computed(() => list.data.value !== undefined)
 const { t } = useI18n()
 const errorText = useErrorText()
 const toast = useToast()
@@ -16,7 +19,7 @@ const showAll = ref(false)
 // the Host's first, then the built-in ones
 const rows = computed(() => {
   const q = filter.value.trim().toLowerCase()
-  const all = [...props.domains].sort((a, b) => Number(a.builtin) - Number(b.builtin) || entryValue(a).localeCompare(entryValue(b)))
+  const all = [...domains.value].sort((a, b) => Number(a.builtin) - Number(b.builtin) || entryValue(a).localeCompare(entryValue(b)))
   return q ? all.filter(d => entryValue(d).toLowerCase().includes(q) || d.note.toLowerCase().includes(q)) : all
 })
 const visible = computed(() => (showAll.value || filter.value ? rows.value : rows.value.slice(0, 12)))
@@ -43,13 +46,15 @@ async function add() {
   if (!canAdd.value) return
   refused.value = null
   const entry: Target = kind.value === 'regex' ? { domain: null, regex: pattern.value } : { domain: domain.value, regex: null }
+  // listed before: the list may be read again (its Activity entry) before the answer is handled
+  const listed = domains.value.some(x => entryValue(x) === entryValue(entry) && (x.regex != null) === (entry.regex != null))
   const r = await addChange.run({ target: entry, note: note.value.trim() })
   if (!r.ok) {
     if (r.error instanceof ApiError && r.error.code === 'force_required') refused.value = entry.domain
     return
   }
   const answer = r.data as { builtin?: boolean } | null
-  const fresh = !answer?.builtin && !props.domains.some(x => entryValue(x) === entryValue(entry) && (x.regex != null) === (entry.regex != null))
+  const fresh = !answer?.builtin && !listed
   toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t(fresh ? 'watchlist.legitimate.added' : 'watchlist.legitimate.already', { domain: entryValue(entry) }) })
   domainInput.value = ''
   patternInput.value = ''
@@ -106,7 +111,7 @@ function remove() {
       <h3 class="font-medium text-highlighted">
         {{ t('watchlist.legitimate.title') }}
       </h3>
-      <span v-if="props.loaded" class="text-sm text-muted">{{ t('watchlist.legitimate.count', props.domains.length) }}</span>
+      <span v-if="loaded" class="text-sm text-muted">{{ t('watchlist.legitimate.count', domains.length) }}</span>
       <span class="flex-1" />
       <UInput v-model="filter" size="sm" icon="i-lucide-search" :placeholder="t('watchlist.legitimate.filter')" :aria-label="t('watchlist.legitimate.filter')" class="w-full sm:w-56" />
     </div>
@@ -137,7 +142,7 @@ function remove() {
         <code class="mt-1 block break-all font-mono text-xs">sudo agentbox legitimate-add {{ refused }} --force</code>
       </template>
     </UAlert>
-    <UAlert v-if="props.error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(props.error)" />
+    <ReadFailure :resource="list" data-testid="legitimate-read-error" />
 
     <ul v-if="visible.length" class="divide-y divide-default rounded-lg border border-default bg-default" data-testid="legitimate-list">
       <li v-for="d in visible" :key="d.regex != null ? `regex:${d.regex}` : d.domain!" class="flex flex-col gap-1 px-4 py-2 sm:flex-row sm:items-start sm:gap-3" data-testid="legitimate-row" :data-domain="d.domain ?? undefined" :data-regex="d.regex ?? undefined" :data-builtin="d.builtin">
@@ -177,7 +182,7 @@ function remove() {
         </span>
       </li>
     </ul>
-    <p v-else-if="props.loaded" class="text-sm text-muted">
+    <p v-else-if="loaded" class="text-sm text-muted">
       {{ t('watchlist.legitimate.none') }}
     </p>
     <UButton

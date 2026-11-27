@@ -91,8 +91,7 @@ app/
                            rebuilds, Update now), useSettings,
                            useNotifications (this browser's preference, the `notification`
                            listener), useReloadPrompt (own version vs. `version` event),
-                           useLiveEvent (live.on() for a component, bursts gathered),
-                           useReloadOnActivity (a view's load on the Activity entries that change its data),
+                           useLiveEvent and useReloadOnActivity (no caller left, #218),
                            useWhen (times in the UI language), useChangeToast (a failed change
                            without a form: a toast that stays, with Details), useFaultToast (a fault the UI can
                            go on from: a toast that stays, with Details)
@@ -126,7 +125,7 @@ test/                      Vitest
 
 Server data lives in one cache, in `app/utils/resources.ts` ([ADR
 0026](../../docs/adr/0026-the-control-room-ui-holds-server-data-in-one-cache.md)). The resources
-it holds so far: `images` (`GET /images`), `pairings` (`GET /vms/<vm>/pairings`), `githubApp`
+it holds: `images` (`GET /images`), `pairings` (`GET /vms/<vm>/pairings`), `githubApp`
 (`GET /github-app`), `githubTokens` (`GET /vms/<vm>/github-tokens?since=`), `sshConfig` (`GET
 /vms/<vm>/ssh-config`), `containerfile` (`GET /images/<image>/containerfile`, read only while
 its panel is open), `host` (`GET /host`: the Host's readings with 30 minutes of history),
@@ -135,10 +134,14 @@ timeline for a filter), `settings` (`GET /settings`: the Settings form holds a d
 VM's defaults and Open web's longest duration read them too), `allowlist` (`GET
 /allowlist?vm=`), `vmAllowlist` (`GET /vms/<vm>/allowlist`), `forbids` (`GET
 /vms/<vm>/forbids`), `blocked` (`GET /vms/<vm>/blocked`, at most one read a second: `spacing`),
-`vmLog` (`GET /vms/<vm>/logs`: a VM's journal for the filters applied) and `version` (`GET
-/version`: the UI build installed and the Release; the reload prompt takes the build of its
-first answer as the page's own and keeps it through later reads). Every other view still reads
-on its own, as the next section describes, until it moves into the module (#216).
+`watchlist` (`GET /watchlist`, with the Feeds), `legitimate` (`GET /watchlist/legitimate`),
+`harmless` (`GET /watchlist/harmless`), `alerts` (`GET /vms/<vm>/alerts`, one copy per VM),
+`domainCheck` (`GET /watchlist/check?domain=`), `regexCheck` (`GET /regex/check`, read when
+asked), `vmLog` (`GET /vms/<vm>/logs`: a VM's journal for the filters applied) and `version`
+(`GET /version`: the UI build installed and the Release; the reload prompt takes the build of
+its first answer as the page's own and keeps it through later reads). Every view reads through
+it; only the pushed data (the VM list and the live state of `utils/live.ts`) moves into it later
+(#217).
 
 - **Declaring a resource**: one line in `RESOURCES`, its name, its path and the type of its answer
   (`images: declare<ImagesOverview>('/images')`); one with parameters takes its path from them
@@ -170,7 +173,11 @@ on its own, as the next section describes, until it moves into the module (#216)
   `{ keepPrevious: true }` shows the copy of the parameters before while the new one is read
   (another period; a view of another VM is another component), and `previous` says so. `{ every:
   ms }` reads it again by the clock: never the module's choice, only a view's own (the Log tab
-  while it follows). A view does not know the path, when to read, or how to drop a late answer.
+  while it follows). A view does not know the path, when to read, or how to drop a late answer. A
+  view that shows several copies together asks with `useResourceEach(name, { params: () => [...]
+  })` (the Alerts of every VM): one resource object per set of parameters, each with its data,
+  failure and Retry. A failure names the copy's parameters (`read.resources.alerts`: "the Alerts
+  of {vm}").
 - **Showing a failed read**: `<ReadFailure :resource="images" />`, in place of the section.
   When nothing was read yet, it says what could not be read and why (`useErrorText`), with Retry.
   When data is shown, the data stays and a small notice says it could not be refreshed, with
@@ -200,14 +207,19 @@ on its own, as the next section describes, until it moves into the module (#216)
   any entry of kind `allowlist` (`ON_ACTIVITY_KIND`, a table by kind for a kind whose codes are
   many: every change of an entry or a Forbid, from the UI, the CLI or the expiry timer), and after
   `create` and `delete` (a new VM may copy another's entries, a deleted one's go) `allowlist` and
-  that VM's `vmAllowlist` and `forbids`; `blocked` of the VM after its `alert` and `held` events;
-  `githubApp` after `set-github-app`, `remove-github-app`, `set-owners`, `create` and `delete`;
-  `githubTokens` of the event's VM after a `github-token` event, `sshConfig` of a VM when its `vm`
-  event turns SSH access on or off or brings a new host key (a row with `key` compares each VM
-  with its own event before, `known` from the live state and each `state` event). A write keeps a
-  stale mark and a failed read's error. A stale resource that a view shows is read again; one that
-  nothing shows is read when a view next asks for it. A new Activity code that changes a resource
-  needs a row here; without one, the view shows old data until the next reconnect or reload.
+  that VM's `vmAllowlist` and `forbids`; `blocked` of the VM after its `alert` and `held` events,
+  and its `alerts` after its `alert` events and `mark-seen`; `watchlist` after `watch-add`,
+  `watch-remove`, `watch-set-note`, `maintenance.feeds` and `migrate-lists`, `legitimate` after
+  `legitimate-add`, `legitimate-remove`, `legitimate-set-note` and `migrate-lists`, `harmless`
+  after `mark-harmless` and `unmark-harmless` (which mark every VM's `alerts` too), and
+  `domainCheck` after each of these; `githubApp` after `set-github-app`, `remove-github-app`,
+  `set-owners`, `create` and `delete`; `githubTokens` of the event's VM after a `github-token`
+  event, `sshConfig` of a VM when its `vm` event turns SSH access on or off or brings a new host
+  key (a row with `key` compares each VM with its own event before, `known` from the live state
+  and each `state` event). A write keeps a stale mark and a failed read's error. A stale resource
+  that a view shows is read again; one that nothing shows is read when a view next asks for it. A
+  new Activity code that changes a resource needs a row here; without one, the view shows old data
+  until the next reconnect or reload.
 - **An event during a read**: an event written while a read of its resource is on the way is
   applied to that read's answer as well, and a copy that turns stale during its read is read once
   more right after it (a spacing after it, for one declared with `spacing`) (once for a whole
@@ -259,15 +271,14 @@ on its own, as the next section describes, until it moves into the module (#216)
 `useLive()` owns the one `EventSource`. State events (`state`, `vm`, `host`, ...) update
 `live.state`. Everything else is delivered to subscribers: `const off = live.on('activity',
 (data) => ...)` (names in `STREAM_EVENTS` in `utils/live.ts`; state events and `hello` work
-too, and the listener runs after the state was updated). Events are whole objects, so a
-repeat does no harm. Subscribe in a composable and call `off()` in `onScopeDispose`; refetch
-on `hello` with `resumed: false`, because events may have been missed. A throwing listener
-does not stop the others. In a component that only reloads a list on an event,
-`useLiveEvent(name, fn, delayMs)` does the subscribing and unsubscribing and runs `fn` once
-per burst. A view that shows data an Activity entry can change uses
-`useReloadOnActivity(load, { codes, kinds, match })`: it calls `load` once per burst when an
-`activity` entry's `code ?? action` is in `codes` (or its `kind` in `kinds`, and `match(entry)` agrees),
-and after a `hello` with `resumed: false` that is not the view's first.
+too, and the listener runs after the state was updated). Events are whole objects, so a repeat
+does no harm. Subscribe in a composable and call `off()` in `onScopeDispose`; refetch on
+`hello` with `resumed: false`, because events may have been missed. A throwing listener does
+not stop the others. No view reads on an event itself: its data comes from the resources
+module, whose tables follow the stream. `useLiveEvent(name, fn, delayMs)` (subscribing for a
+component, `fn` once per burst) and `useReloadOnActivity(load, { codes, kinds, match })` (a
+`load` on the Activity entries that change a view's data) have no caller left; #218 removes
+them.
 
 ### Adding an i18n area
 

@@ -39,14 +39,14 @@ async function retry() {
     color="error"
     variant="subtle"
     icon="i-lucide-circle-alert"
-    :title="t('read.failed', { what: t(`read.resources.${props.resource.name}`) })"
+    :title="t('read.failed', { what: t(`read.resources.${props.resource.name}`, (props.resource.params ?? {}) as Record<string, unknown>) })"
     :description="errorText(props.resource.error.value)"
     :actions="[{ label: t('read.retry'), color: 'error', variant: 'outline', loading: retrying, onClick: retry }]"
     data-read="failed"
   />
   <p v-else-if="shown === 'stale'" class="flex flex-wrap items-center gap-2 text-xs text-warning" data-read="stale">
     <UIcon name="i-lucide-triangle-alert" class="size-4" />
-    {{ t('read.stale') }}
+    {{ props.resource.params === undefined ? t('read.stale') : t('read.staleOf', { what: t(`read.resources.${props.resource.name}`, props.resource.params as Record<string, unknown>) }) }}
     <UButton color="warning" variant="link" size="xs" class="p-0" :label="t('read.retry')" :loading="retrying" @click="retry" />
   </p>
 </template>
