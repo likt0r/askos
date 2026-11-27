@@ -1,4 +1,5 @@
-// The Release of Agent Box is shown in the sidebar footer, taken from the one GET /version at start.
+// The Release of Agent Box is shown in the sidebar footer, from the resource `version` (GET /version).
+import { flushPromises } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 import { ok, openPage, useFreshApp } from './system-helpers'
 
@@ -11,6 +12,15 @@ describe('Release in the sidebar', () => {
     const { wrapper, api } = await openPage('/vms', { 'GET /version': version({ release: '0.1.0' }) })
     expect(wrapper.find('[data-testid="release"]').text()).toBe('Agent Box v0.1.0')
     expect(api.calls.filter(c => c.path === '/version')).toHaveLength(1)
+  })
+
+  it('shows the Release a reconnect that could not resume reads', async () => {
+    let release = '0.1.0'
+    const { wrapper, es } = await openPage('/vms', { 'GET /version': () => version({ release }) })
+    release = '0.2.0'
+    es.emit('hello', { stream: 'efgh5678', resumed: false })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="release"]').text()).toBe('Agent Box v0.2.0')
   })
 
   it('shows nothing when the Host reports no Release', async () => {

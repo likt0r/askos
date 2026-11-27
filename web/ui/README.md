@@ -127,8 +127,10 @@ test/                      Vitest
 Server data lives in one cache, in `app/utils/resources.ts` ([ADR
 0026](../../docs/adr/0026-the-control-room-ui-holds-server-data-in-one-cache.md)). The resources
 it holds so far: `images` (`GET /images`), `pairings` (`GET /vms/<vm>/pairings`), `githubApp`
-(`GET /github-app`), `githubTokens` (`GET /vms/<vm>/github-tokens?since=`) and `sshConfig`
-(`GET /vms/<vm>/ssh-config`). Every
+(`GET /github-app`), `githubTokens` (`GET /vms/<vm>/github-tokens?since=`), `sshConfig`
+(`GET /vms/<vm>/ssh-config`) and `version` (`GET /version`: the UI build installed and the
+Release; the reload prompt takes the build of its first answer as the page's own and keeps it
+through later reads). Every
 other view still reads on its own, as the next section describes, until it moves into the
 module (#216).
 
