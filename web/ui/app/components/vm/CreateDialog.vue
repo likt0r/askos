@@ -16,8 +16,10 @@ const form = reactive({ name: '', image: '', memory: '' as string | number, disk
 const touched = ref(false)
 const overview = useResource('images', { enabled: open })
 const images = computed<Image[] | null>(() => (overview.data.value ? overview.data.value.images ?? [] : null))
-// the Settings' defaults; null while they are read
-const defaults = ref<Record<string, Setting> | null>(null)
+// the Settings' defaults (an extra: unreadable, the dialog goes on without them); null while
+// they are read
+const settings = useResource('settings', { enabled: open, extra: true })
+const defaults = computed<Record<string, Setting> | null>(() => settings.data.value?.settings ?? (settings.error.value ? {} : null))
 const loading = computed(() => overview.loading.value || defaults.value === null)
 const create = useChange('createVm', { form: true })
 const saving = create.busy
@@ -29,34 +31,31 @@ const nameRefused = computed(() => {
 
 interface Setting { value: unknown }
 
-async function loadDefaults() {
-  defaults.value = null
-  try {
-    defaults.value = (await api<{ settings?: Record<string, Setting> }>('/settings'))?.settings ?? {}
-  }
-  catch {
-    defaults.value = {}
-  }
-  const s = defaults.value
-  if (typeof s.default_memory_mib?.value === 'number') form.memory = s.default_memory_mib.value
-  if (typeof s.default_data_disk_gib?.value === 'number') form.disk = s.default_data_disk_gib.value
-}
-
-// the Image the Settings name, else the first with a Build, once both are known (not from a
-// copy that is being read again)
-watch([images, defaults, overview.fetching], ([list, s, fetching]) => {
-  if (!open.value || form.image || !list || !s || fetching) return
-  const usable = list.filter(i => i.current).map(i => i.name)
-  const wanted = typeof s.default_image?.value === 'string' ? s.default_image.value : 'base'
-  form.image = usable.includes(wanted) ? wanted : usable[0] ?? ''
-})
-
 watch(open, (value) => {
   if (!value) return
   Object.assign(form, { name: '', image: '', memory: '', disk: '', owners: '', copyFrom: NONE, copySshFrom: NONE })
   touched.value = false
   create.reset()
-  void loadDefaults()
+  defaultsTaken = false
+})
+
+// the memory and Data disk the Settings name, once per opening, as soon as they are known (not
+// from a copy that is being read again; after the form was reset for this opening: watched later)
+let defaultsTaken = false
+watch([open, defaults, settings.fetching], ([isOpen, d, fetching]) => {
+  if (!isOpen || !d || fetching || defaultsTaken) return
+  defaultsTaken = true
+  if (typeof d.default_memory_mib?.value === 'number') form.memory = d.default_memory_mib.value
+  if (typeof d.default_data_disk_gib?.value === 'number') form.disk = d.default_data_disk_gib.value
+})
+
+// the Image the Settings name, else the first with a Build, once both are known (not from a
+// copy that is being read again)
+watch([open, images, defaults, overview.fetching, settings.fetching], ([isOpen, list, s, fetching, reading]) => {
+  if (!isOpen || form.image || !list || !s || fetching || reading) return
+  const usable = list.filter(i => i.current).map(i => i.name)
+  const wanted = typeof s.default_image?.value === 'string' ? s.default_image.value : 'base'
+  form.image = usable.includes(wanted) ? wanted : usable[0] ?? ''
 })
 
 const existing = computed(() => live.state.vms.map(v => v.name))

@@ -562,14 +562,14 @@ describe('Settings page', () => {
       await type(wrapper, 'reset_age_days', '9')
       change({ reset_age_days: 30 })
       es.emit('activity', entry)
-      await new Promise(r => setTimeout(r, 500))
+      // the shared copy is read at once; the form keeps what is typed
+      await wait(() => expect(reads(api.calls)).toBe(2))
       await flushPromises()
-      expect(reads(api.calls)).toBe(1)
       expect((input(wrapper, 'reset_age_days').element as HTMLInputElement).value).toBe('9')
       expect(wrapper.find('[data-testid="settings-changed-elsewhere"]').exists()).toBe(true)
       await wrapper.find('[data-testid="settings-discard"]').trigger('click')
-      await wait(() => expect(reads(api.calls)).toBe(2))
       await flushPromises()
+      expect(reads(api.calls)).toBe(2)
       expect((input(wrapper, 'reset_age_days').element as HTMLInputElement).value).toBe('30')
       expect(wrapper.find('[data-testid="settings-changed-elsewhere"]').exists()).toBe(false)
     })
@@ -598,10 +598,11 @@ describe('Settings page', () => {
       await flushPromises()
       current = settingsBody({ reset_age_days: 9 })
       es.emit('activity', entry)
-      await new Promise(r => setTimeout(r, 500))
-      expect(reads(api.calls)).toBe(1)
+      await wait(() => expect(reads(api.calls)).toBe(2))      // the shared copy, read at once
+      await flushPromises()
+      expect(wrapper.find('[data-testid="settings-changed-elsewhere"]').exists()).toBe(false)
       release()
-      await wait(() => expect(reads(api.calls)).toBe(2))
+      await wait(() => expect(reads(api.calls)).toBe(3))
       await flushPromises()
       expect(wrapper.find('[data-testid="settings-changed-elsewhere"]').exists()).toBe(false)
       expect((input(wrapper, 'reset_age_days').element as HTMLInputElement).value).toBe('9')
@@ -721,6 +722,99 @@ describe('Settings page', () => {
       await wrapper.find('[data-testid="settings-load-error"] button').trigger('click')
       await flushPromises()
       expect(wrapper.find('[data-testid="settings-load-error"]').exists()).toBe(false)
+      expect((input(wrapper, 'reset_age_days').element as HTMLInputElement).value).toBe('9')
+    })
+
+    it('a saved change whose read failed is taken by the next read as its own, not as one from elsewhere', async () => {
+      let failing = false
+      let current = settingsBody()
+      const { wrapper } = await openPage('/settings', {
+        'GET /settings': () => (failing ? { status: 502, body: { error: { code: 'action_failed', message: 'x' } } } : ok(current)),
+        'PATCH /settings': () => {
+          failing = true
+          current = settingsBody({ reset_age_days: 9 })
+          return ok(changedBody)
+        },
+      })
+      await type(wrapper, 'reset_age_days', '9')
+      await save(wrapper).trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-testid="settings-load-error"]').exists()).toBe(true)
+      failing = false
+      await wrapper.find('[data-testid="settings-load-error"] button').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-testid="settings-changed-elsewhere"]').exists()).toBe(false)
+      expect(save(wrapper).exists()).toBe(false)
+      expect((input(wrapper, 'reset_age_days').element as HTMLInputElement).value).toBe('9')
+    })
+
+    it('a 5xx save that stored, whose read failed too, keeps the other typed fields as the only changes', async () => {
+      let failing = false
+      let current = settingsBody()
+      const { wrapper } = await openPage('/settings', {
+        'GET /settings': () => (failing ? { status: 502, body: { error: { code: 'action_failed', message: 'x' } } } : ok(current)),
+        'PATCH /settings': () => {
+          failing = true
+          current = settingsBody({ reset_age_days: 9 })
+          return { status: 502, body: { error: { code: 'action_failed', message: 'saved, but not applied' } } }
+        },
+      })
+      await type(wrapper, 'reset_age_days', '9')
+      await save(wrapper).trigger('click')
+      await flushPromises()
+      await type(wrapper, 'builds_kept', '5')
+      failing = false
+      await wrapper.find('[data-testid="settings-load-error"] button').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-testid="settings-changed-elsewhere"]').exists()).toBe(false)
+      expect(save(wrapper).text()).toContain('1')
+      expect((input(wrapper, 'builds_kept').element as HTMLInputElement).value).toBe('5')
+    })
+
+    it('a saved change whose read failed is taken by the next read even when the copy did not change', async () => {
+      let failing = false
+      let release!: () => void
+      let current = settingsBody()
+      const { wrapper, es } = await openPage('/settings', {
+        'GET /settings': () => (failing ? { status: 502, body: { error: { code: 'action_failed', message: 'x' } } } : ok(current)),
+        'PATCH /settings': () => new Promise(resolve => { release = () => { failing = true; resolve(ok(changedBody)) } }),
+      })
+      await type(wrapper, 'reset_age_days', '9')
+      await save(wrapper).trigger('click')
+      await flushPromises()
+      current = settingsBody({ reset_age_days: 9 })
+      es.emit('activity', entry)              // its own entry, read while the save runs
+      await vi.waitFor(() => expect(wrapper.find('[data-testid="settings-changed-elsewhere"]').exists()).toBe(false))
+      await new Promise(r => setTimeout(r, 50))
+      release()
+      await flushPromises()
+      expect(wrapper.find('[data-testid="settings-load-error"]').exists()).toBe(true)
+      failing = false
+      await wrapper.find('[data-testid="settings-load-error"] button').trigger('click')
+      await flushPromises()
+      expect(save(wrapper).exists()).toBe(false)
+      expect(wrapper.find('[data-testid="settings-changed-elsewhere"]').exists()).toBe(false)
+    })
+
+    it('after a failed save whose read failed, a later change from elsewhere still says so', async () => {
+      let failing = false
+      let current = settingsBody()
+      const { wrapper, es } = await openPage('/settings', {
+        'GET /settings': () => (failing ? { status: 502, body: { error: { code: 'action_failed', message: 'x' } } } : ok(current)),
+        'PATCH /settings': () => {
+          failing = true
+          return { status: 502, body: { error: { code: 'action_failed', message: 'agentbox failed' } } }
+        },
+      })
+      await type(wrapper, 'reset_age_days', '9')
+      await save(wrapper).trigger('click')
+      await flushPromises()
+      failing = false
+      await wrapper.find('[data-testid="settings-load-error"] button').trigger('click')
+      await flushPromises()
+      current = settingsBody({ builds_kept: 5 })
+      es.emit('activity', entry)
+      await vi.waitFor(() => expect(wrapper.find('[data-testid="settings-changed-elsewhere"]').exists()).toBe(true))
       expect((input(wrapper, 'reset_age_days').element as HTMLInputElement).value).toBe('9')
     })
 

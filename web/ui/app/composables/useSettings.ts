@@ -1,5 +1,6 @@
-// The Settings form: values from GET /settings, edits as text, per-field problems (checked
-// here first, then the backend's `invalid_setting` with its `field`), one all-or-nothing PATCH.
+// The Settings form: values from the resource `settings` (GET /settings), edits as text, per-field
+// problems (checked here first, then the backend's `invalid_setting` with its `field`), one
+// all-or-nothing PATCH.
 import { computed, reactive, ref, watch } from 'vue'
 import type { SettingInfo, Problem } from '~/utils/settings'
 
@@ -9,12 +10,13 @@ export interface Saved {
 }
 
 export function useSettings() {
+  const settings = useResource('settings')
+  // the Settings the draft started from (what dirty compares against)
   const info = ref<Record<string, SettingInfo>>({})
   const draft = reactive<Record<string, string>>({})
   // a refusal of one Setting: the module's words for it (asked when shown: they follow the language)
   const errors = reactive<Record<string, Problem | { code: 'server', text: () => string }>>({})
-  const loading = ref(true)
-  const loadError = ref<unknown>(null)
+  const loading = settings.loading
   const patch = useChange('setSettings', { form: true })
   // a save runs until the read after it is done
   const reading = ref(false)
@@ -25,62 +27,69 @@ export function useSettings() {
     return e instanceof ApiError && e.field && e.field in info.value ? null : e
   })
   const saved = ref<Saved | null>(null)
-  /** the Settings changed elsewhere while fields were being edited: loaded after save or discard */
+  /** the Settings changed elsewhere while fields were being edited: taken after save or discard */
   const changedElsewhere = ref(false)
 
   const keys = computed(() => Object.keys(info.value))
   const dirty = computed(() => keys.value.filter(k => settingChanged(k, draft[k] ?? '', info.value[k]!)))
+  const stored = () => settings.data.value?.settings ?? {}
 
-  function adopt(settings: Record<string, SettingInfo>) {
-    info.value = settings
+  function adopt(next: Record<string, SettingInfo>) {
+    info.value = next
     for (const key of Object.keys(draft)) delete draft[key]
-    for (const [key, i] of Object.entries(settings)) draft[key] = String(i.value)
+    for (const [key, i] of Object.entries(next)) draft[key] = String(i.value)
     for (const key of Object.keys(errors)) delete errors[key]
+    changedElsewhere.value = false
   }
 
   /** The Settings as stored now, keeping what is typed: a field not edited takes the stored
    * value, an edited one keeps its text (and is no change any more once it was stored). */
-  function update(settings: Record<string, SettingInfo>) {
+  function update(next: Record<string, SettingInfo>) {
     const before = info.value
-    info.value = settings
-    for (const [key, i] of Object.entries(settings)) {
+    info.value = next
+    for (const [key, i] of Object.entries(next)) {
       if (!(key in draft) || !before[key] || !settingChanged(key, draft[key] ?? '', before[key]!)) draft[key] = String(i.value)
     }
+    changedElsewhere.value = false
   }
 
-  async function load(keepTyped = false) {
-    loading.value = true
-    try {
-      const data = await api<{ settings: Record<string, SettingInfo> }>('/settings')
-      if (keepTyped) update(data.settings ?? {})
-      else adopt(data.settings ?? {})
-      changedElsewhere.value = false
-      loadError.value = null
-    }
-    catch (e) {
-      loadError.value = e
-    }
-    finally {
-      loading.value = false
-    }
-  }
-
-  // a change from elsewhere never throws away what is typed: it waits until nothing is edited (a
-  // failed change counts too: agentbox may have saved before it failed). An entry that comes
-  // while this browser saves waits for the save's end: a save that succeeded or failed with a 5xx
-  // reads what is stored then, a refused one follows the entry as below.
+  // what is stored changed (the resource read again: its Activity entry, a reconnect): it never
+  // throws away what is typed, it waits until nothing is edited (a failed change counts too:
+  // agentbox may have saved before it failed). While this browser saves, the save takes it at its
+  // end: one that succeeded or failed with a 5xx reads what is stored then; a refused one follows
+  // it as here.
   let missed = false
-  function followEntry() {
+  // the read after this browser's save failed: the next read that succeeds (Retry, a reconnect,
+  // the save's own entry) is the save's, taken keeping what is typed (as that read would have),
+  // not as a change from elsewhere, also when the copy did not change
+  let ownNext = false
+  function follow() {
     if (dirty.value.length) changedElsewhere.value = true
-    else void load()
+    else adopt(stored())
   }
-  useReloadOnActivity(() => {
+  watch(() => settings.data.value, (data) => {
+    if (!data) return
     if (saving.value) missed = true
-    else followEntry()
-  }, { kinds: ['settings'] })
-  watch(() => dirty.value.length, (n) => {
-    if (n === 0 && changedElsewhere.value) void load()
+    else if (!keys.value.length) adopt(stored())
+    else if (!ownNext) follow()
+  }, { immediate: true, flush: 'sync' })      // at once: a save on the way sees it as its own
+  watch(() => settings.fetching.value, (fetching) => {
+    if (fetching || !ownNext || saving.value || settings.error.value) return
+    ownNext = false
+    update(stored())
   })
+  watch(() => dirty.value.length, (n) => {
+    if (n === 0 && changedElsewhere.value) adopt(stored())
+  })
+
+  /** Read what is stored now, after a save: adopting it, or keeping what is typed. */
+  async function readNow(keepTyped: boolean) {
+    await settings.retry()
+    ownNext = !!settings.error.value
+    if (ownNext) return
+    if (keepTyped) update(stored())
+    else adopt(stored())
+  }
 
   function setDraft(key: string, text: string) {
     draft[key] = text
@@ -93,7 +102,8 @@ export function useSettings() {
   }
 
   function discard() {
-    adopt(info.value)
+    ownNext = false
+    adopt(stored())
     patch.reset()
   }
 
@@ -111,6 +121,7 @@ export function useSettings() {
     if (Object.keys(errors).length || !Object.keys(body).length) return false
     reading.value = true
     missed = false
+    ownNext = false
     let read = false
     try {
       const r = await patch.run(body)
@@ -120,7 +131,7 @@ export function useSettings() {
         // a refusal stored nothing; a failure of agentbox may have come after it saved ("saved, but
         // not applied"): what is stored now, without throwing away what is typed
         if (e instanceof ApiError && e.status >= 500) {
-          await load(true)
+          await readNow(true)
           read = true
         }
         return false
@@ -129,16 +140,16 @@ export function useSettings() {
       // the form holds a draft, so it reads at once what is stored now, and its own Activity entry
       // reads once more (an exception the owner settled on #215: waiting for the entry could leave
       // the form saving for good)
-      await load()
+      await readNow(false)
       read = true
       return true
     }
     finally {
       reading.value = false
-      if (missed && !read) followEntry()
+      if (missed && !read) follow()
       missed = false
     }
   }
 
-  return { info, draft, errors, keys, dirty, loading, loadError, saving, saveError, saved, changedElsewhere, load, setDraft, restoreDefault, discard, save }
+  return { settings, info, draft, errors, keys, dirty, loading, saving, saveError, saved, changedElsewhere, setDraft, restoreDefault, discard, save }
 }

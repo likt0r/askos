@@ -20,7 +20,7 @@ import { useChangeToast } from '../composables/useChangeToast'
 import { failurePlace, type FailurePlace, unreachable } from './failures'
 import { applyBuild, type BuildEvent, type BuildLog, type BuildLogEvent, buildLogPath, type ContainerfileText, type ImagesOverview, joinLog, withLogEvent } from './images'
 import { type HostOverview, type HostSample, noReadings, withSample } from './host'
-import type { SettingValue } from './settings'
+import type { SettingInfo, SettingValue } from './settings'
 import type { Pairings } from './vm'
 import { type ActivityEntry, type ActivityParams, activityQuery, type ActivityResult, activityText, isEntry, matchesFilter, type Translator, withEntry } from './activity'
 import { joinVmLog, type LogFilters, type VmLog, vmLogPath } from './vmRules'
@@ -91,6 +91,8 @@ const RESOURCES = {
   // says when it grows
   vmLog: declare<VmLog, { vm: string, filters: LogFilters, shown: number }>((p, held) => vmLogPath(p.vm, p.filters, held),
     { fresh: true, forget: true, merge: joinVmLog }),
+  // the Settings (the form holds a draft of them; a VM's defaults read them too)
+  settings: declare<{ settings: Record<string, SettingInfo> }>('/settings'),
   // the Activity timeline for a filter, the newest `lines` entries (`since`: only that recent)
   activity: declare<ActivityResult, ActivityParams>(p => `/activity?${activityQuery(p, p.lines, p.since)}`),
   // an Image's Containerfile: the installed Release's, or its Recipe's
@@ -233,6 +235,8 @@ const ON_ACTIVITY: Record<string, Stale[]> = {
   'set-github-app': ['githubApp'],
   'remove-github-app': ['githubApp'],
   'set-owners': ['githubApp'],
+  // the Settings
+  'set-settings': ['settings'],
   // a VM's Paired devices
   'observe': [ofEntryVm('pairings')],
   'unpair': [ofEntryVm('pairings')],
