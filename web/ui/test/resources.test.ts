@@ -361,3 +361,14 @@ describe('the stale table for the GitHub Apps', () => {
     r.stop()
   })
 })
+
+describe('a code the Host answers for a state', () => {
+  it('is read as the declared data, not as a failure', async () => {
+    const r = createResources(fakeLive() as never)
+    fakeApi({ 'GET /github-app': { status: 409, body: { error: { code: 'github_app_missing', message: 'x' } } } })
+    expect(await r.read('githubApp')).toEqual({ apps: [], missing: [], none: true })
+    fakeApi({ 'GET /github-app': { status: 502, body: { error: { code: 'github_unavailable', message: 'x' } } } })
+    await expect(r.read('githubApp')).rejects.toMatchObject({ code: 'github_unavailable' })
+    r.stop()
+  })
+})

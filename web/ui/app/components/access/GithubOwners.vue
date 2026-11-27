@@ -19,8 +19,7 @@ const app = useResource('githubApp', { extra: true })
 const missing = computed(() => {
   const data = app.data.value
   // no App set up: no Installation to miss (the System page says so)
-  const noApp = app.error.value instanceof ApiError && app.error.value.code === 'github_app_missing'
-  return data && !noApp ? new Set(data.missing.filter(m => m.vms.includes(props.vm.name)).map(m => m.owner.toLowerCase())) : null
+  return data && !data.none ? new Set(data.missing.filter(m => m.vms.includes(props.vm.name)).map(m => m.owner.toLowerCase())) : null
 })
 
 const owners = computed(() => props.vm.github_owners ?? [])

@@ -293,6 +293,8 @@ export interface GithubAppOverview {
   apps: GithubApp[]
   /** GitHub owners of VMs that no App is installed on */
   missing: { owner: string, vms: string[] }[]
+  /** no App is set up (the Host answers `github_app_missing`, read as this state) */
+  none?: boolean
 }
 
 // --- reasons in the UI language (#69) ----------------------------------------------------------

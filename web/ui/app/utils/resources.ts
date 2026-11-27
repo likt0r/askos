@@ -34,22 +34,29 @@ interface Declaration<T, P> {
   /** the Host sends no event about its changes: read again whenever a view of it opens (the owner
    * on #216) */
   fresh: boolean
+  /** codes the Host answers for a state, not a failure: read as this data */
+  states: Record<string, () => T>
   /** only carry the types of the answer and of the parameters */
   answer?: T
   params?: P
 }
 
 /** A resource: its path, or for one with parameters (a VM's), its path from them. */
-function declare<T, P = undefined>(path: string | ((params: P) => string), options: { fresh?: boolean } = {}): Declaration<T, P> {
-  return { path: typeof path === 'string' ? () => path : path, fresh: !!options.fresh }
+function declare<T, P = undefined>(path: string | ((params: P) => string),
+  options: { fresh?: boolean, states?: Record<string, () => T> } = {}): Declaration<T, P> {
+  return { path: typeof path === 'string' ? () => path : path, fresh: !!options.fresh, states: options.states ?? {} }
 }
 
 const RESOURCES = {
   images: declare<ImagesOverview>('/images'),
   // a device pairs inside Orca with the code: nothing on the Host records it
   pairings: declare<Pairings, { vm: string }>(p => `/vms/${p.vm}/pairings`, { fresh: true }),
-  // an App installed or uninstalled on GitHub: nothing on the Host records it
-  githubApp: declare<GithubAppOverview>('/github-app', { fresh: true }),
+  // an App installed or uninstalled on GitHub: nothing on the Host records it; no App set up is a
+  // state, not a failure
+  githubApp: declare<GithubAppOverview>('/github-app', {
+    fresh: true,
+    states: { github_app_missing: () => ({ apps: [], missing: [], none: true }) },
+  }),
 }
 
 export type ResourceName = keyof typeof RESOURCES
@@ -285,7 +292,16 @@ export function createResources(live: Pick<Live, 'on' | 'state'>) {
     replays.set(name, set)
     set.add(pending)
     try {
-      let data = await api<ResourceData<N>>((RESOURCES[name].path as (p: unknown) => string)(params))
+      const declaration = RESOURCES[name] as Declaration<ResourceData<N>, unknown>
+      let data: ResourceData<N>
+      try {
+        data = await api<ResourceData<N>>(declaration.path(params))
+      }
+      catch (e) {
+        const state = e instanceof ApiError ? declaration.states[e.code] : undefined
+        if (!state) throw e
+        data = state()
+      }
       for (const apply of pending) {
         const next = apply(data)
         if (next === null) again.add(name)

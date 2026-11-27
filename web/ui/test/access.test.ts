@@ -404,8 +404,27 @@ describe('the GitHub Apps through the resources module (#216)', () => {
   })
 
   it('a failed first read shows what could not be read, with Retry', async () => {
-    await openApp('/system', { 'GET /github-app': fail(502, 'github_unavailable', 'GitHub answers 502') })
+    let answer = () => fail(502, 'github_unavailable', 'GitHub answers 502') as unknown
+    const { api } = await openApp('/system', { 'GET /github-app': () => answer() })
     const failed = must('[data-testid="github-app"] [data-read="failed"]')
     expect(failed.textContent).toContain('Could not read the GitHub Apps.')
+    answer = () => ok(APP)
+    await click(failed.querySelector('button')!)
+    await waitFor(() => expect($('[data-testid="app-info"]')).not.toBeNull())
+    expect(api.calls.filter(c => c.path === '/github-app')).toHaveLength(2)
+  })
+
+  it('no App set up stays so when a later read fails: the removed Apps never come back', async () => {
+    let answer = () => ok({ ...APP, missing: [{ owner: 'acme-corp', vms: ['work'] }] }) as unknown
+    const { es } = await openApp('/system', { 'GET /github-app': () => answer() })
+    expect($('[data-testid="app-info"]')).not.toBeNull()
+    answer = () => fail(409, 'github_app_missing')
+    es.emit('activity', activity('remove-github-app'))
+    await waitFor(() => expect($('[data-testid="app-info"]')).toBeNull())
+    answer = () => fail(500, 'internal', 'boom')
+    es.emit('activity', activity('create'))
+    await waitFor(() => expect(must('[data-testid="github-app"] [data-read]').getAttribute('data-read')).toBe('stale'))
+    expect($('[data-testid="app-info"]')).toBeNull()
+    expect(must('[data-testid="github-app"]').textContent).toContain('No GitHub App is set up.')
   })
 })

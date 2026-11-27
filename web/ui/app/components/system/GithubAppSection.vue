@@ -10,17 +10,10 @@ const { t } = useI18n()
 const errorText = useErrorText()
 const toast = useToast()
 
-// the Apps, read again on the Activity entries that change them; with no App set up the Host
-// answers `github_app_missing`, which this section words itself: there is no overview then
+// the Apps, read again on the Activity entries that change them; no App set up is a state of
+// the resource (`none`): there is no overview then
 const apps = useResource('githubApp')
-// no App set up (the Host's answer): said until a read finds one (a read again clears the error
-// while it runs)
-const noApp = ref<ApiError | null>(null)
-watch([apps.error, apps.fetching], ([error, fetching]) => {
-  if (error instanceof ApiError && error.code === 'github_app_missing') noApp.value = error
-  else if (!fetching) noApp.value = null
-}, { immediate: true })
-const missingApp = computed(() => noApp.value !== null)
+const missingApp = computed(() => apps.data.value?.none === true)
 const overview = computed(() => (missingApp.value ? null : apps.data.value ?? null))
 const loading = apps.fetching
 const copied = ref<number | null>(null)
@@ -148,12 +141,12 @@ async function remove() {
       color="warning"
       variant="subtle"
       icon="i-lucide-circle-alert"
-      :title="errorText(noApp)"
+      :title="t('errors.github_app_missing')"
       :description="t('githubApp.missingApp')"
       data-testid="app-error"
     />
-    <ReadFailure :resource="apps" :own="['github_app_missing']" data-testid="app-error" />
-    <p v-if="apps.loading.value && !missingApp" class="text-sm text-muted">
+    <ReadFailure :resource="apps" data-testid="app-error" />
+    <p v-if="apps.loading.value" class="text-sm text-muted">
       {{ t('access.common.loading') }}
     </p>
 

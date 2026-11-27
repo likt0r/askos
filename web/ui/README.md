@@ -137,7 +137,9 @@ module (#216).
   the cache is `[name]`, or `[name, params]`: one copy per set of parameters. A resource whose
   changes the Host sends no event about is declared `fresh` (`pairings`: a device pairs inside
   Orca; `githubApp`: an App installed on GitHub): it is read again whenever a view of it opens
-  (the owner on #216).
+  (the owner on #216). A code the Host answers for a state, not a failure, is declared in
+  `states` and read as data (`github_app_missing`: no App set up, `{ apps: [], missing: [], none:
+  true }`), so a later failed read keeps that state, not an older overview.
 - **Asking for one**: `const images = useResource('images')` gives `data` (undefined until an
   answer came), `loading` (nothing yet and a read on the way), `fetching` (a read on the way,
   the first or a read again), `error` (why the last read failed) and `retry()`. Every view that
@@ -145,9 +147,7 @@ module (#216).
   resource that has them; when they change, the view reads the new ones. `{ enabled: open }`
   reads only while a dialog is open; `{ extra: true }` declares a read whose failure the view does
   not show. A view does not know the path, when to read, or how to drop a late answer.
-- **Showing a failed read**: `<ReadFailure :resource="images" />`, in place of the section
-  (`:own="[code]"` leaves a code the view words itself to the view: `github_app_missing`, no App
-  set up).
+- **Showing a failed read**: `<ReadFailure :resource="images" />`, in place of the section.
   When nothing was read yet, it says what could not be read and why (`useErrorText`), with Retry.
   When data is shown, the data stays and a small notice says it could not be refreshed, with
   Retry. While the live connection is down it shows nothing: the connection notice says that.
