@@ -23,8 +23,6 @@ builds_kept: 3, release: '1.0.0', disks_readable: true }
 
 const reads = (api: ReturnType<typeof fakeApi>) => api.calls.filter(c => c.path === '/images').length
 const pinnable = () => [...document.body.querySelectorAll('[data-testid="build-choice"] [role="radio"]')].map(r => r.getAttribute('value'))
-/** the Images section: other sections of the System page show their own reads */
-const images = () => byTestId('system-images').element
 const failure = (within: ParentNode = document.body) => within.querySelector('[data-read]')?.getAttribute('data-read') ?? null
 
 describe('one copy of the Images', () => {
@@ -195,16 +193,16 @@ describe('a failed read of the Images', () => {
 
   it('a page that loads while the Control Room is out of reach reads again with the first hello', async () => {
     let answers = 0
-    const api = fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': () => (++answers === 1 ? OFFLINE() : OK(IMAGES)) })
+    const api = fakeApi({ 'GET /session': SIGNED_IN, 'GET /github-app': OK({ apps: [], missing: [] }), 'GET /images': () => (++answers === 1 ? OFFLINE() : OK(IMAGES)) })
     await openApp('/system', [WORK])
     expect(reads(api)).toBe(2)
-    expect(failure(images())).toBeNull()
+    expect(failure()).toBeNull()
     expect(byTestId('system-images').element.querySelectorAll('[data-testid="image-card"]')).toHaveLength(1)
   })
 
   it('with the connection down only the connection notice speaks; the read happens again when it is back', async () => {
     let offline = false
-    const api = fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': () => (offline ? OFFLINE() : OK(IMAGES)) })
+    const api = fakeApi({ 'GET /session': SIGNED_IN, 'GET /github-app': OK({ apps: [], missing: [] }), 'GET /images': () => (offline ? OFFLINE() : OK(IMAGES)) })
     const { es } = await openApp('/system', [WORK])
     const section = byTestId('system-images').element
     offline = true
@@ -213,20 +211,20 @@ describe('a failed read of the Images', () => {
     await flushPromises()
     expect(reads(api)).toBe(2)
     expect(exists('connection-notice')).toBe(true)
-    expect(failure(images())).toBeNull()
+    expect(failure()).toBeNull()
     expect(section.querySelectorAll('[data-testid="image-card"]')).toHaveLength(1)     // what it showed stays
 
     offline = false
     es.emit('hello', { stream: 'ab12cd34', resumed: true })
     await flushPromises()
     expect(reads(api)).toBe(3)
-    expect(failure(images())).toBeNull()
+    expect(failure()).toBeNull()
   })
 
   it('says nothing while the read again after the connection came back is on the way', async () => {
     let answer: () => unknown = () => OK(IMAGES)
     let release!: () => void
-    fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': () => answer() as never })
+    fakeApi({ 'GET /session': SIGNED_IN, 'GET /github-app': OK({ apps: [], missing: [] }), 'GET /images': () => answer() as never })
     const { es } = await openApp('/system', [WORK])
     answer = OFFLINE
     es.emit('activity', { time: 't', vm: null, actor: 'timer', kind: 'action', action: 'maintenance.versions', code: 'maintenance.versions', outcome: 'ok', description: '' })
@@ -236,10 +234,10 @@ describe('a failed read of the Images', () => {
     es.emit('hello', { stream: 'ab12cd34', resumed: true })
     await flushPromises()
     expect(exists('connection-notice')).toBe(false)
-    expect(failure(images())).toBeNull()
+    expect(failure()).toBeNull()
     release()
     await flushPromises()
-    expect(failure(images())).toBeNull()
+    expect(failure()).toBeNull()
   })
 
   it('a read that cannot reach the Control Room while the stream is live shows Retry', async () => {

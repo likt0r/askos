@@ -388,6 +388,21 @@ describe('the GitHub Apps through the resources module (#216)', () => {
     expect(api.calls.filter(c => c.path === '/github-app').length).toBe(before + 1)
   })
 
+  it('keeps saying no App is set up while it reads again', async () => {
+    let release: (() => void) | null = null
+    const { es } = await openApp('/system', { 'GET /github-app': () => (release === null
+      ? fail(409, 'github_app_missing')
+      : new Promise(resolve => { const r = release!; release = () => { r(); resolve(fail(409, 'github_app_missing')) } })) as never })
+    expect(must('[data-testid="app-error"]').textContent).toContain('No GitHub App is set up.')
+    release = () => {}
+    es.emit('activity', activity('create'))
+    await new Promise(r => setTimeout(r, 400))
+    expect(must('[data-testid="app-error"]').textContent).toContain('No GitHub App is set up.')
+    release!()
+    await settle()
+    expect(must('[data-testid="app-error"]').textContent).toContain('No GitHub App is set up.')
+  })
+
   it('a failed first read shows what could not be read, with Retry', async () => {
     await openApp('/system', { 'GET /github-app': fail(502, 'github_unavailable', 'GitHub answers 502') })
     const failed = must('[data-testid="github-app"] [data-read="failed"]')
