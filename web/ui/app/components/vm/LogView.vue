@@ -97,9 +97,9 @@ function show() {
   applied.value = { filters: { ...filters }, shown: nextShow() }
 }
 
-// following asks at once, then by the clock; a failed read stops it
+// following asks at once (unless a read is on the way), then by the clock; a failed read stops it
 watch(follow, (on) => {
-  if (on) void log.retry()
+  if (on && !log.fetching.value) void log.retry()
 })
 watch(log.error, (e) => {
   if (e) follow.value = false
@@ -108,11 +108,6 @@ watch(log.error, (e) => {
 function clearFilters() {
   Object.assign(filters, defaultLogFilters())
 }
-
-watch(() => props.name, () => {
-  follow.value = false
-  showed = true
-})
 </script>
 
 <template>

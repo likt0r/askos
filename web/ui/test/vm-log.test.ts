@@ -221,6 +221,23 @@ describe('Log tab', () => {
     expect(text('log-count')).toBe('one entry')
   })
 
+  it('turning Follow on while a read is on the way asks nothing more', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    let answer: (() => void) | null = null
+    const api = fakeApi(routes(q => (q.after_cursor
+      ? new Promise(resolve => { answer = () => resolve({ status: 200, body: { vm: 'work', entries: [entry(2, 'second')], cursor: 's=2', truncated: false } }) }) as never
+      : { status: 200, body: { vm: 'work', entries: [entry(1, 'first')], cursor: 's=1', truncated: false } })))
+    const { es } = await openApp('/vms/work/log', [WORK])
+    es.emit('hello', { stream: 'other', resumed: false })      // reads on after s=1, held back
+    await flushPromises()
+    await byTestId('log-follow').trigger('click')
+    await flushPromises()
+    expect(logCalls(api.calls).map(q => q.after_cursor)).toEqual([undefined, 's=1'])
+    answer!()
+    await flushPromises()
+    expect(byTestId('log-entries').findAll('[data-testid="log-message"]').map(m => m.text())).toEqual(['first', 'second'])
+  })
+
   it('stops following when the VM stops answering', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
     fakeApi(routes(q => (q.after_cursor

@@ -127,7 +127,6 @@ export interface VmLog {
   more?: boolean
 }
 
-
 /** GET /vms/<vm>/logs: the newest entries for the filters, only those after the held log's
  * cursor once there is one. */
 export function vmLogPath(vm: string, filters: LogFilters, held: VmLog | undefined) {
