@@ -126,8 +126,9 @@ test/                      Vitest
 
 Server data lives in one cache, in `app/utils/resources.ts` ([ADR
 0026](../../docs/adr/0026-the-control-room-ui-holds-server-data-in-one-cache.md)). The resources
-it holds so far: `images` (`GET /images`), `pairings` (`GET /vms/<vm>/pairings`) and
-`githubApp` (`GET /github-app`). Every
+it holds so far: `images` (`GET /images`), `pairings` (`GET /vms/<vm>/pairings`), `githubApp`
+(`GET /github-app`), `githubTokens` (`GET /vms/<vm>/github-tokens?since=`) and `sshConfig`
+(`GET /vms/<vm>/ssh-config`). Every
 other view still reads on its own, as the next section describes, until it moves into the
 module (#216).
 
@@ -146,7 +147,8 @@ module (#216).
   asks shares one copy and one read. `{ params: () => ({ vm }) }` names the parameters of a
   resource that has them; when they change, the view reads the new ones. `{ enabled: open }`
   reads only while a dialog is open; `{ extra: true }` declares a read whose failure the view does
-  not show. A view does not know the path, when to read, or how to drop a late answer.
+  not show; `{ keepPrevious: true }` shows the copy of the parameters before while the new one is
+  read (another period). A view does not know the path, when to read, or how to drop a late answer.
 - **Showing a failed read**: `<ReadFailure :resource="images" />`, in place of the section.
   When nothing was read yet, it says what could not be read and why (`useErrorText`), with Retry.
   When data is shown, the data stays and a small notice says it could not be refreshed, with
@@ -165,7 +167,9 @@ module (#216).
   Recipe's Image comes or goes) and `create`, `delete`, `set-image`, `reset`, `reset.automatic`,
   `reset.update` (which VMs use and pin each Build); `pairings` of the entry's VM after `observe`,
   `unpair` and `revoke-pairings` (a row `ofEntryVm(name)` marks only that VM's copy);
-  `githubApp` after `set-github-app`, `remove-github-app`, `set-owners`, `create` and `delete`. A write
+  `githubApp` after `set-github-app`, `remove-github-app`, `set-owners`, `create` and `delete`;
+  `githubTokens` of the event's VM after a `github-token` event, `sshConfig` of the entry's VM
+  after `set-ssh`. A write
   keeps a stale mark and a failed read's error. A
   stale resource that a view shows is read again; one that nothing shows is read when a view
   next asks for it. A new Activity code that changes a resource needs a row here; without one,

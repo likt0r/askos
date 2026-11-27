@@ -162,6 +162,18 @@ describe('Access tab', () => {
   })
 })
 
+describe('a VM\'s GitHub tokens through the resources module (#216)', () => {
+  it('a github-token event of another VM reads nothing', async () => {
+    const { api, es } = await openApp('/vms/work/access', ACCESS, [workVm()])
+    const loads = () => api.calls.filter(c => c.path.startsWith('/vms/work/github-tokens')).length
+    es.emit('github-token', { time: 't', vm: 'priv', action: 'issued', outcome: 'issued', repository: 'x/y', request: 'x/y', reason: null, expires: null })
+    await settle()
+    await new Promise(r => setTimeout(r, 300))
+    expect(loads()).toBe(1)
+  })
+
+})
+
 describe('GitHub App section', () => {
   it('shows every App with its Installations, the VMs relying on each, missing ones and the install link', async () => {
     const writeText = vi.fn(async () => {})

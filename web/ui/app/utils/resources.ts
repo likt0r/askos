@@ -12,10 +12,10 @@
 // view of it opens. Never by the clock, never on window focus, never as an automatic retry; a
 // read that failed because the Control Room could not be reached is read again with the next
 // `hello`.
-import { notifyManager, QueryClient, useMutation, useQuery } from '@tanstack/vue-query'
+import { keepPreviousData, notifyManager, QueryClient, useMutation, useQuery } from '@tanstack/vue-query'
 import { computed, type ComputedRef, type MaybeRefOrGetter, type Ref, ref, toValue } from 'vue'
 import { api, ApiError } from './api'
-import { allowlistEntryPath, type AllowlistEntry, entryPath, forbidPath, type ForbidEntry, type GithubAppOverview, type Target } from './access'
+import { allowlistEntryPath, type AllowlistEntry, entryPath, forbidPath, type ForbidEntry, type GithubAppOverview, type GithubTokens, type SshConfig, type Target } from './access'
 import { useChangeToast } from '../composables/useChangeToast'
 import { failurePlace, type FailurePlace, unreachable } from './failures'
 import { applyBuild, type BuildEvent, type ImagesOverview } from './images'
@@ -53,6 +53,8 @@ const RESOURCES = {
   pairings: declare<Pairings, { vm: string }>(p => `/vms/${p.vm}/pairings`, { fresh: true }),
   // an App installed or uninstalled on GitHub: nothing on the Host records it; no App set up is a
   // state, not a failure
+  githubTokens: declare<GithubTokens, { vm: string, since: string }>(p => `/vms/${p.vm}/github-tokens?since=${encodeURIComponent(p.since)}`),
+  sshConfig: declare<SshConfig, { vm: string }>(p => `/vms/${p.vm}/ssh-config`),
   githubApp: declare<GithubAppOverview>('/github-app', {
     fresh: true,
     states: { github_app_missing: () => ({ apps: [], missing: [], none: true }) },
@@ -65,12 +67,22 @@ export type ResourceData<N extends ResourceName> = NonNullable<(typeof RESOURCES
 
 // ---- what an event does ----------------------------------------------------------------------
 
+/** A resource an event or an Activity entry makes stale: by its name, or for one with
+ * parameters, only those of the event (its VM's). */
+type Stale = ResourceName | { name: ResourceName, params: (entry: { vm?: string | null }) => unknown }
+
+/** The resources a VM has one of (their parameters are `{ vm }`). */
+type VmResourceName = { [N in ResourceName]: ResourceParams<N> extends { vm: string } ? N : never }[ResourceName]
+
+/** A VM's resource, of the entry's VM (every VM's when it names none). */
+const ofEntryVm = (name: VmResourceName): Stale => ({ name, params: entry => (entry.vm ? { vm: entry.vm } : undefined) })
+
 /** One row: a live event either carries the whole object and is written into a resource
  * (`write` returns the new data, or null when it cannot place the event: the resource is stale
  * then), or only says that something changed (`stale` names the resources to read again). */
 interface EventRow {
   write?: { [N in ResourceName]?: (data: ResourceData<N>, event: any) => ResourceData<N> | null }
-  stale?: (event: any, before: any) => ResourceName[]
+  stale?: (event: any, before: any) => Stale[]
 }
 
 const ON_EVENT: Record<string, EventRow> = {
@@ -79,6 +91,10 @@ const ON_EVENT: Record<string, EventRow> = {
   build: {
     write: { images: (data, event: BuildEvent) => (event?.image && event.build ? applyBuild(data, event) : data) },
     stale: (event: BuildEvent) => (event?.status !== 'running' ? ['images'] : []),
+  },
+  // a VM got a GitHub token or was refused one: its list of tokens and requests is read again
+  'github-token': {
+    stale: () => [ofEntryVm('githubTokens')],
   },
   // the update of every Image ended: it may have built nothing, so no `build` event says so; the
   // version check ended (`available`, what a Build would update): started by hand, it records no
@@ -95,16 +111,6 @@ function versionCheckRuns(services: { units?: { unit?: string, state?: string }[
   const unit = services?.units?.find(u => u?.unit === VERSION_CHECK)
   return unit?.state === 'running' || unit?.state === 'stopping'
 }
-
-/** A resource an Activity entry makes stale: by its name, or for one with parameters, only those
- * of the entry (its VM's). */
-type Stale = ResourceName | { name: ResourceName, params: (entry: { vm?: string | null }) => unknown }
-
-/** The resources a VM has one of (their parameters are `{ vm }`). */
-type VmResourceName = { [N in ResourceName]: ResourceParams<N> extends { vm: string } ? N : never }[ResourceName]
-
-/** A VM's resource, of the entry's VM (every VM's when it names none). */
-const ofEntryVm = (name: VmResourceName): Stale => ({ name, params: entry => (entry.vm ? { vm: entry.vm } : undefined) })
 
 /** Activity entries (`code ?? action`) after which resources are read again. The end of a Build
  * needs no row: its `build` event marks `images` stale. */
@@ -126,6 +132,8 @@ const ON_ACTIVITY: Record<string, Stale[]> = {
   'set-github-app': ['githubApp'],
   'remove-github-app': ['githubApp'],
   'set-owners': ['githubApp'],
+  // a VM's SSH access turned on or off: its connection help (and host key) change
+  'set-ssh': [ofEntryVm('sshConfig')],
   // a VM's Paired devices
   'observe': [ofEntryVm('pairings')],
   'unpair': [ofEntryVm('pairings')],
@@ -326,6 +334,11 @@ export function createResources(live: Pick<Live, 'on' | 'state'>) {
     return client.invalidateQueries({ queryKey }, { cancelRefetch: false })
   }
 
+  function markStaleBy(stale: Stale, event: { vm?: string | null }) {
+    if (typeof stale === 'string') void markStale(stale)
+    else void markStale(stale.name, stale.params(event ?? {}))
+  }
+
   function write<N extends ResourceName>(name: N, apply: (data: ResourceData<N>) => ResourceData<N> | null) {
     const pendings = replays.get(name)
     if (pendings?.size) for (const p of pendings) p.push(apply)
@@ -350,16 +363,13 @@ export function createResources(live: Pick<Live, 'on' | 'state'>) {
     for (const [name, apply] of Object.entries(row.write ?? {}) as [ResourceName, (d: any, e: any) => any][]) {
       write(name, d => apply(d, data))
     }
-    for (const name of row.stale?.(data, before[eventName]) ?? []) void markStale(name)
+    for (const stale of row.stale?.(data, before[eventName]) ?? []) markStaleBy(stale, data)
     before[eventName] = data
   })))
 
   offs.push(live.on('activity', (entry: { code?: string, action?: string, vm?: string | null } | null) => {
     const code = entry?.code ?? entry?.action
-    for (const stale of (entry && code && ON_ACTIVITY[code]) || []) {
-      if (typeof stale === 'string') void markStale(stale)
-      else void markStale(stale.name, stale.params(entry!))
-    }
+    for (const stale of (entry && code && ON_ACTIVITY[code]) || []) markStaleBy(stale, entry!)
   }))
 
   const missedListeners = new Set<() => void>()
@@ -425,6 +435,8 @@ export interface ResourceOptions<P = undefined> {
   enabled?: MaybeRefOrGetter<boolean>
   /** the parameters of a resource that has them (a VM's: `{ vm }`); a change reads the new ones */
   params?: MaybeRefOrGetter<P>
+  /** while the copy of new parameters is read, show the one before (a period or filter changed) */
+  keepPrevious?: boolean
 }
 
 export interface Resource<T> {
@@ -459,6 +471,7 @@ export function useResource<N extends ResourceName>(name: N, ...[options = {}]: 
     queryFn: ({ queryKey }) => r.read(name, queryKey[1] as ResourceParams<N>),
     // one the Host sends no event about is read again whenever a view of it opens
     refetchOnMount: RESOURCES[name].fresh ? 'always' : true,
+    placeholderData: options.keepPrevious ? keepPreviousData : undefined,
     enabled: () => toValue(options.enabled ?? true),
   }, r.client)
   return {

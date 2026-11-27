@@ -443,3 +443,23 @@ describe('SSH changes and their failures (#215)', () => {
     expect(useState<unknown[]>('toasts').value).toEqual([])
   })
 })
+
+describe('the connection help through the resources module (#216)', () => {
+  it('is read again on its VM\'s set-ssh entry, and a failed read shows what could not be read', async () => {
+    let failing = false
+    const { api, es } = await openSsh({}, {
+      'GET /vms/work/ssh-config': () => (failing ? fail(502, 'action_failed', 'x') : ok(sshConfig('local', true))),
+    })
+    const reads = () => api.calls.filter(c => c.path === '/vms/work/ssh-config').length
+    expect(reads()).toBe(1)
+    expect($('[data-testid="ssh-config-block"]')).not.toBeNull()
+    failing = true
+    es.emit('activity', { time: 't', vm: 'work', actor: 'owner', kind: 'action', action: 'set-ssh', code: 'set-ssh', outcome: 'ok', description: '' })
+    await waitFor(() => expect(reads()).toBe(2))
+    await settle()
+    expect(must('[data-testid="ssh-help-failed"]').getAttribute('data-read')).toBe('stale')
+    es.emit('activity', { time: 't', vm: 'priv', actor: 'owner', kind: 'action', action: 'set-ssh', code: 'set-ssh', outcome: 'ok', description: '' })
+    await new Promise(r => setTimeout(r, 300))
+    expect(reads()).toBe(2)
+  })
+})

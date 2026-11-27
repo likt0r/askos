@@ -519,7 +519,6 @@ export default {
         localOnly: 'Der Host ist Local-only: Der SSH-Port lauscht nur auf dem Host, das funktioniert also auf dem Host selbst.',
         mine: 'Auf dem Host kommen deine eigenen Schlüssel aus ~/.ssh hinzu mit:',
         off: 'Schalte den SSH-Zugang ein, um zu sehen, wie du dich verbindest.',
-        failed: 'Die Hilfe zum Verbinden kann nicht angezeigt werden: {error}',
       },
     },
   },

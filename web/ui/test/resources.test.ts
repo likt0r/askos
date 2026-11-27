@@ -331,6 +331,44 @@ describe('a resource with parameters in a view', () => {
   })
 })
 
+describe('keepPrevious', () => {
+  beforeEach(async () => {
+    const { setUp } = await import('./vm-helpers')
+    await setUp()
+  })
+  afterEach(async () => {
+    const { tearDown } = await import('./vm-helpers')
+    tearDown()
+  })
+
+  it('shows the copy of the parameters before while the new one is read', async () => {
+    const { mount } = await import('@vue/test-utils')
+    const { defineComponent, h, ref } = await import('vue')
+    const { useResource } = await import('~/utils/resources')
+    let release!: () => void
+    fakeApi({
+      'GET /vms/work/github-tokens?since=-7d': OK({ repositories: [{ repository: 'a/b' }], requests: [] }),
+      'GET /vms/work/github-tokens?since=-24h': () => new Promise(resolve => { release = () => resolve(OK({ repositories: [], requests: [] })) }),
+    })
+    const since = ref('-7d')
+    const view = mount(defineComponent({
+      setup() {
+        const tokens = useResource('githubTokens', { params: () => ({ vm: 'work', since: since.value }), keepPrevious: true })
+        return () => h('p', String(tokens.data.value?.repositories.length ?? 'none'))
+      },
+    }))
+    await flushPromises()
+    expect(view.text()).toBe('1')
+    since.value = '-24h'
+    await flushPromises()
+    expect(view.text()).toBe('1')
+    release()
+    await flushPromises()
+    expect(view.text()).toBe('0')
+    view.unmount()
+  })
+})
+
 describe('a VM\'s copy marked stale while it is read', () => {
   it('is read once more after that read', async () => {
     const live = fakeLive()
@@ -378,6 +416,28 @@ describe('a failure code named like a built-in property', () => {
     const r = createResources(fakeLive() as never)
     fakeApi({ 'GET /github-app': { status: 500, body: { error: { code: 'constructor', message: 'x' } } } })
     await expect(r.read('githubApp')).rejects.toMatchObject({ code: 'constructor' })
+    r.stop()
+  })
+})
+
+describe('a VM\'s GitHub tokens and connection help', () => {
+  it('a github-token event marks only its VM\'s tokens stale, whatever their period', () => {
+    const live = fakeLive()
+    const r = createResources(live as never)
+    for (const vm of ['work', 'priv']) r.client.setQueryData(['githubTokens', { vm, since: '-7d' }], { repositories: [], requests: [] })
+    live.emit('github-token', { vm: 'work', action: 'issued' })
+    const stale = (vm: string) => r.client.getQueryState(['githubTokens', { vm, since: '-7d' }])!.isInvalidated
+    expect([stale('work'), stale('priv')]).toEqual([true, false])
+    r.stop()
+  })
+
+  it('set-ssh marks only its VM\'s connection help stale', () => {
+    const live = fakeLive()
+    const r = createResources(live as never)
+    for (const vm of ['work', 'priv']) r.client.setQueryData(['sshConfig', { vm }], { mode: 'local', hosts: [] })
+    live.emit('activity', { ...entry('set-ssh'), vm: 'priv' })
+    const stale = (vm: string) => r.client.getQueryState(['sshConfig', { vm }])!.isInvalidated
+    expect([stale('work'), stale('priv')]).toEqual([false, true])
     r.stop()
   })
 })

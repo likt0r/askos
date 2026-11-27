@@ -197,26 +197,15 @@ async function removeKey() {
 }
 
 // --- the connection help: agentbox ssh-config for this VM ---
-const config = ref<SshConfig | null>(null)
-const configError = ref<unknown>(null)
+// read again after this VM's `set-ssh` entry (resources module)
+const help = useResource('sshConfig', { params: () => ({ vm: props.vm.name }) })
+const config = computed<SshConfig | null>(() => {
+  const r = help.data.value
+  return r && Array.isArray(r.hosts) ? r : null
+})
 
-async function loadConfig() {
-  const name = props.vm.name
-  try {
-    const r = await api<SshConfig>(`/vms/${name}/ssh-config`)
-    if (name !== props.vm.name) return
-    config.value = r && Array.isArray(r.hosts) ? r : null
-    configError.value = null
-  }
-  catch (e) {
-    if (name !== props.vm.name) return
-    config.value = null
-    configError.value = e
-  }
-}
-watch(() => [props.vm.name, enabled.value, ssh.value?.host_key_fingerprint ?? null], loadConfig, { immediate: true })
-
-const host = computed(() => config.value?.hosts.find(h => h.vm === props.vm.name) ?? null)
+// only while SSH access is on (the VM says so at once; the help itself follows `set-ssh`)
+const host = computed(() => (enabled.value ? config.value?.hosts.find(h => h.vm === props.vm.name) ?? null : null))
 const localOnly = computed(() => config.value?.mode === 'local')
 const knownHostsFile = computed(() => String(host.value?.options?.UserKnownHostsFile ?? ''))
 const mineCommand = computed(() => `sudo agentbox add-ssh-key ${props.vm.name} --mine`)
@@ -451,10 +440,8 @@ async function copy(what: string, text: string) {
       <h4 class="text-sm font-medium text-highlighted">
         {{ t('access.ssh.help.title') }}
       </h4>
-      <p v-if="configError" class="text-sm text-error" data-testid="ssh-help-failed">
-        {{ t('access.ssh.help.failed', { error: errorText(configError) }) }}
-      </p>
-      <p v-else-if="!enabled" class="text-sm text-muted" data-testid="ssh-help-off">
+      <ReadFailure :resource="help" data-testid="ssh-help-failed" />
+      <p v-if="!enabled && !help.error.value" class="text-sm text-muted" data-testid="ssh-help-off">
         {{ t('access.ssh.help.off') }}
       </p>
       <template v-if="host">
