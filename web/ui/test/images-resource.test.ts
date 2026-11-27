@@ -23,7 +23,7 @@ builds_kept: 3, release: '1.0.0', disks_readable: true }
 
 const reads = (api: ReturnType<typeof fakeApi>) => api.calls.filter(c => c.path === '/images').length
 const pinnable = () => [...document.body.querySelectorAll('[data-testid="build-choice"] [role="radio"]')].map(r => r.getAttribute('value'))
-// the Images' failure: the System page also shows one of the Host's readings (in its tiles)
+// the Images' failure: the System page also shows one of the Host's history (in its tiles)
 const failure = (within: ParentNode = document.body) => within.querySelector('[data-read]:not([data-testid="host-error"])')?.getAttribute('data-read') ?? null
 
 describe('one copy of the Images', () => {

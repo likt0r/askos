@@ -11,7 +11,7 @@ export default {
       githubApp: 'die GitHub-Apps',
       pairings: 'die gekoppelten Geräte',
       containerfile: 'das Containerfile',
-      host: 'die Messwerte des Hosts',
+      host: 'den Verlauf des Hosts',
     },
   },
 }
