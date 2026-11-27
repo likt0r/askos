@@ -30,7 +30,7 @@ One table in the module says, for every live event and Activity entry, which of 
 | The event carries the whole object: it is written into the cache | The event only says that something changed: the resource is marked stale and read again |
 |---|---|
 | `state`, `vm`, `host`, `services`, `version`, `watch`, `host-reboot` | Allowlist, Forbids, Watchlist, Legitimate domains, Harmless marks |
-| `build` (one Build), `build-log` (lines), `activity` (one entry, for the Activity timeline) | Settings, GitHub App, pairings, Alerts, the blocked list, GitHub tokens, the Images overview once a Build ends |
+| `build` (one Build), `build-log` (lines), `activity` (one entry, for the Activity timeline) | Settings, GitHub App, pairings, Alerts, the blocked list, GitHub tokens, a VM's SSH connection help, the Images overview once a Build ends |
 
 - **The UI never computes server data from an Activity entry.** An entry of kind `allowlist` carries a code and parameters, not the Allowlist entry; working out the new list from it would repeat the backend's rules in the UI, such as which of an Allowlist entry and a Forbid wins ([ADR 0024](0024-the-more-specific-of-an-allowlist-entry-and-a-forbid-wins.md)).
 - **An event that arrives while a read of the same resource is on the way is not lost to the older answer.** The module handles this once, for every resource.

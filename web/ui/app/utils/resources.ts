@@ -21,7 +21,7 @@ import { failurePlace, type FailurePlace, unreachable } from './failures'
 import { applyBuild, type BuildEvent, type ImagesOverview } from './images'
 import type { SettingValue } from './settings'
 import type { Pairings } from './vm'
-import type { Live } from './live'
+import type { Live, Vm } from './live'
 
 // query-core hands results to the views through setTimeout(0) by default; a microtask gives them
 // in the same turn, which the tests wait for with flushPromises. Production takes the same path.
@@ -51,10 +51,12 @@ const RESOURCES = {
   images: declare<ImagesOverview>('/images'),
   // a device pairs inside Orca with the code: nothing on the Host records it
   pairings: declare<Pairings, { vm: string }>(p => `/vms/${p.vm}/pairings`, { fresh: true }),
+  // the tokens a VM got and the requests refused, for a period
+  githubTokens: declare<GithubTokens, { vm: string, since: string }>(p => `/vms/${p.vm}/github-tokens?since=${encodeURIComponent(p.since)}`),
+  // a VM's SSH connection help (its `~/.ssh/config` block and host key)
+  sshConfig: declare<SshConfig, { vm: string }>(p => `/vms/${p.vm}/ssh-config`),
   // an App installed or uninstalled on GitHub: nothing on the Host records it; no App set up is a
   // state, not a failure
-  githubTokens: declare<GithubTokens, { vm: string, since: string }>(p => `/vms/${p.vm}/github-tokens?since=${encodeURIComponent(p.since)}`),
-  sshConfig: declare<SshConfig, { vm: string }>(p => `/vms/${p.vm}/ssh-config`),
   githubApp: declare<GithubAppOverview>('/github-app', {
     fresh: true,
     states: { github_app_missing: () => ({ apps: [], missing: [], none: true }) },
@@ -82,7 +84,13 @@ const ofEntryVm = (name: VmResourceName): Stale => ({ name, params: entry => (en
  * then), or only says that something changed (`stale` names the resources to read again). */
 interface EventRow {
   write?: { [N in ResourceName]?: (data: ResourceData<N>, event: any) => ResourceData<N> | null }
+  /** `before`: the last event of this row, or with `key` the last of the same object */
   stale?: (event: any, before: any) => Stale[]
+  /** compare per object (a VM by its name) */
+  key?: (event: any) => string | undefined
+  /** the objects known before their first event: from the live state, and from each `state`
+   * event, which sends them all */
+  known?: (state: any) => any[]
 }
 
 const ON_EVENT: Record<string, EventRow> = {
@@ -91,6 +99,16 @@ const ON_EVENT: Record<string, EventRow> = {
   build: {
     write: { images: (data, event: BuildEvent) => (event?.image && event.build ? applyBuild(data, event) : data) },
     stale: (event: BuildEvent) => (event?.status !== 'running' ? ['images'] : []),
+  },
+  // a VM's SSH access turned on or off, or its host key made: its connection help is read again
+  // (whatever did it: the UI, the CLI, regenerate)
+  vm: {
+    key: (vm: Vm) => vm?.name,
+    known: (state: { vms?: Vm[] }) => (Array.isArray(state?.vms) ? state.vms : []),
+    stale: (vm: Vm, before: Vm | undefined) => (before && vm?.name
+      && (before.ssh?.enabled !== vm.ssh?.enabled || before.ssh?.host_key_fingerprint !== vm.ssh?.host_key_fingerprint)
+      ? [{ name: 'sshConfig', params: () => ({ vm: vm.name }) }]
+      : []),
   },
   // a VM got a GitHub token or was refused one: its list of tokens and requests is read again
   'github-token': {
@@ -132,8 +150,6 @@ const ON_ACTIVITY: Record<string, Stale[]> = {
   'set-github-app': ['githubApp'],
   'remove-github-app': ['githubApp'],
   'set-owners': ['githubApp'],
-  // a VM's SSH access turned on or off: its connection help (and host key) change
-  'set-ssh': [ofEntryVm('sshConfig')],
   // a VM's Paired devices
   'observe': [ofEntryVm('pairings')],
   'unpair': [ofEntryVm('pairings')],
@@ -358,13 +374,23 @@ export function createResources(live: Pick<Live, 'on' | 'state'>) {
   })]
 
   // the last of each event, for a row that compares (`services`: did the update end?)
-  const before: Record<string, unknown> = { services: live.state.services }
+  // the last of each event, for a row that compares (`services`: did the update end?), per object
+  // for a row with a key (`vm`: a VM's SSH access)
+  const before = new Map<string, unknown>([['services', live.state.services]])
+  const slot = (eventName: string, row: EventRow, data: unknown) => (row.key ? `${eventName}:${row.key(data)}` : eventName)
+  function know(state: unknown) {
+    for (const [eventName, row] of Object.entries(ON_EVENT)) {
+      for (const item of row.known?.(state) ?? []) before.set(slot(eventName, row, item), item)
+    }
+  }
+  know(live.state)
+  offs.push(live.on('state', know))
   offs.push(...Object.entries(ON_EVENT).map(([eventName, row]) => live.on(eventName, (data: unknown) => {
     for (const [name, apply] of Object.entries(row.write ?? {}) as [ResourceName, (d: any, e: any) => any][]) {
       write(name, d => apply(d, data))
     }
-    for (const stale of row.stale?.(data, before[eventName]) ?? []) markStaleBy(stale, data)
-    before[eventName] = data
+    for (const stale of row.stale?.(data, before.get(slot(eventName, row, data))) ?? []) markStaleBy(stale, data as { vm?: string | null })
+    before.set(slot(eventName, row, data), data)
   })))
 
   offs.push(live.on('activity', (entry: { code?: string, action?: string, vm?: string | null } | null) => {

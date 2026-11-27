@@ -148,7 +148,7 @@ module (#216).
   resource that has them; when they change, the view reads the new ones. `{ enabled: open }`
   reads only while a dialog is open; `{ extra: true }` declares a read whose failure the view does
   not show; `{ keepPrevious: true }` shows the copy of the parameters before while the new one is
-  read (another period). A view does not know the path, when to read, or how to drop a late answer.
+  read (another period; a view of another VM is another component). A view does not know the path, when to read, or how to drop a late answer.
 - **Showing a failed read**: `<ReadFailure :resource="images" />`, in place of the section.
   When nothing was read yet, it says what could not be read and why (`useErrorText`), with Retry.
   When data is shown, the data stays and a small notice says it could not be refreshed, with
@@ -168,8 +168,9 @@ module (#216).
   `reset.update` (which VMs use and pin each Build); `pairings` of the entry's VM after `observe`,
   `unpair` and `revoke-pairings` (a row `ofEntryVm(name)` marks only that VM's copy);
   `githubApp` after `set-github-app`, `remove-github-app`, `set-owners`, `create` and `delete`;
-  `githubTokens` of the event's VM after a `github-token` event, `sshConfig` of the entry's VM
-  after `set-ssh`. A write
+  `githubTokens` of the event's VM after a `github-token` event, `sshConfig` of a VM when its `vm`
+  event turns SSH access on or off or brings a new host key (a row with `key` compares each VM
+  with its own event before, `known` from the live state and each `state` event). A write
   keeps a stale mark and a failed read's error. A
   stale resource that a view shows is read again; one that nothing shows is read when a view
   next asks for it. A new Activity code that changes a resource needs a row here; without one,

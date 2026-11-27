@@ -431,13 +431,21 @@ describe('a VM\'s GitHub tokens and connection help', () => {
     r.stop()
   })
 
-  it('set-ssh marks only its VM\'s connection help stale', () => {
+  it('a VM\'s event that turns SSH access on or off, or brings a new host key, marks only its help stale', () => {
     const live = fakeLive()
+    const vmOf = (name: string, enabled: boolean, key: string | null = null) => ({ name, state: 'running', ssh: { enabled, port: 2201, host_key_fingerprint: key, keys: [], pending: false } })
+    ;(live.state as Record<string, unknown>).vms = [vmOf('work', false), vmOf('priv', false)]
     const r = createResources(live as never)
     for (const vm of ['work', 'priv']) r.client.setQueryData(['sshConfig', { vm }], { mode: 'local', hosts: [] })
-    live.emit('activity', { ...entry('set-ssh'), vm: 'priv' })
     const stale = (vm: string) => r.client.getQueryState(['sshConfig', { vm }])!.isInvalidated
+    live.emit('vm', { ...vmOf('work', false), state: 'paused' })          // nothing of SSH changed
+    expect([stale('work'), stale('priv')]).toEqual([false, false])
+    live.emit('vm', vmOf('priv', true))
     expect([stale('work'), stale('priv')]).toEqual([false, true])
+    // a `state` event tells the VMs anew: work's host key is made after it
+    live.emit('state', { vms: [vmOf('work', true), vmOf('priv', true)], problems: [] })
+    live.emit('vm', vmOf('work', true, 'SHA256:x'))
+    expect(stale('work')).toBe(true)
     r.stop()
   })
 })

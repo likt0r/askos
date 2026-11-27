@@ -163,6 +163,11 @@ describe('Access tab', () => {
 })
 
 describe('a VM\'s GitHub tokens through the resources module (#216)', () => {
+  it('a failed read shows what could not be read', async () => {
+    await openApp('/vms/work/access', { ...ACCESS, 'GET /vms/work/github-tokens?since=-7d': fail(502, 'action_failed', 'x') }, [workVm()])
+    expect(must('[data-testid="github-tokens"] [data-read="failed"]').textContent).toContain('Could not read the GitHub tokens.')
+  })
+
   it('a github-token event of another VM reads nothing', async () => {
     const { api, es } = await openApp('/vms/work/access', ACCESS, [workVm()])
     const loads = () => api.calls.filter(c => c.path.startsWith('/vms/work/github-tokens')).length
