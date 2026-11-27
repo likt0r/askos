@@ -836,6 +836,11 @@ describe('the stale table for the Watchlist page', () => {
     expect([stale(keys.work), stale(keys.priv)]).toEqual([false, true])
   })
 
+  it.each(['create', 'delete'])('%s marks that VM\'s Alerts stale', (code) => {
+    live.emit('activity', { ...entry(code), vm: 'priv' })
+    expect([stale(keys.work), stale(keys.priv)]).toEqual([false, true])
+  })
+
   it('an Alert marks only that VM\'s Alerts stale', () => {
     live.emit('alert', { vm: 'work', domain: 'x.example' })
     expect([stale(keys.work), stale(keys.priv)]).toEqual([true, false])

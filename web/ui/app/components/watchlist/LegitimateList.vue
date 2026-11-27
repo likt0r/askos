@@ -46,13 +46,15 @@ async function add() {
   if (!canAdd.value) return
   refused.value = null
   const entry: Target = kind.value === 'regex' ? { domain: null, regex: pattern.value } : { domain: domain.value, regex: null }
+  // listed before: the list may be read again (its Activity entry) before the answer is handled
+  const listed = domains.value.some(x => entryValue(x) === entryValue(entry) && (x.regex != null) === (entry.regex != null))
   const r = await addChange.run({ target: entry, note: note.value.trim() })
   if (!r.ok) {
     if (r.error instanceof ApiError && r.error.code === 'force_required') refused.value = entry.domain
     return
   }
   const answer = r.data as { builtin?: boolean } | null
-  const fresh = !answer?.builtin && !domains.value.some(x => entryValue(x) === entryValue(entry) && (x.regex != null) === (entry.regex != null))
+  const fresh = !answer?.builtin && !listed
   toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t(fresh ? 'watchlist.legitimate.added' : 'watchlist.legitimate.already', { domain: entryValue(entry) }) })
   domainInput.value = ''
   patternInput.value = ''

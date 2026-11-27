@@ -103,7 +103,8 @@ function seen(h: { allowed: number, blocked: number }) {
       {{ hostProblem }}
     </p>
     <UAlert v-if="refusal" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(refusal)" role="alert" data-testid="regex-error" />
-    <ReadFailure v-else-if="asked" :resource="checking" data-testid="regex-error" />
+    <!-- a preview taken stays as it was confirmed: a later read of its copy changes nothing shown -->
+    <ReadFailure v-else-if="asked && !checked" :resource="checking" data-testid="regex-error" />
     <div v-if="checked" class="space-y-2 text-sm" data-testid="regex-result">
       <p class="text-muted">
         {{ t('regex.check.valid') }}

@@ -3,6 +3,7 @@ export default {
   read: {
     failed: 'Konnte {what} nicht lesen.',
     stale: 'Konnte nicht aktualisiert werden; was du siehst, ist evtl. nicht mehr aktuell.',
+    staleOf: 'Konnte {what} nicht aktualisieren; was du siehst, ist evtl. nicht mehr aktuell.',
     retry: 'Erneut versuchen',
     resources: {
       images: 'die Images',

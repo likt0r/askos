@@ -315,6 +315,27 @@ describe('Allowlist view', () => {
     expect(changes(api.calls).map(c => c.path)).toEqual(['/allowlist'])
   })
 
+  it('reads the refused destination\'s Signals again when the Watchlist changes', async () => {
+    let source = 'Shai-Hulud 1'
+    const { es } = await openApp('/allowlist', {
+      'GET /allowlist': ok([]),
+      'POST /allowlist': fail(409, 'domain_suspicious'),
+      'GET /watchlist/check?domain=webhook.site': () => ok({
+        domain: 'webhook.site', alert: true, strong: true, harmless: null, legitimate: null, feeds: {},
+        signals: [{ signal: 'exfil', strong: true, suppressed: false, reason: `Watchlist: webhook.site (${source})`,
+          code: 'watchlist', params: { domain: 'webhook.site', source } }],
+      }),
+    })
+    await click('[data-testid="allowlist-add-open"]')
+    await type('[data-testid="add-domain"]', 'webhook.site')
+    await click('[data-testid="add-duration"] [data-duration="15min"]')
+    await click('[data-testid="add-submit"]')
+    expect(must('[data-testid="refusal"]').textContent).toContain('Shai-Hulud 1')
+    source = 'Shai-Hulud 2'
+    es.emit('activity', { time: 't', vm: null, actor: 'root', kind: 'watch', action: 'watch-set-note', code: 'watch-set-note', outcome: 'ok', description: '' })
+    await waitFor(() => expect(must('[data-testid="refusal"]').textContent).toContain('Shai-Hulud 2'))
+  })
+
   it('extends, makes permanent, edits the note and removes only after confirmation', async () => {
     const { api, es } = await openApp('/allowlist', {
       'GET /allowlist': ok(entries()),

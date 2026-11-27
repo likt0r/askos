@@ -125,7 +125,7 @@ test/                      Vitest
 
 Server data lives in one cache, in `app/utils/resources.ts` ([ADR
 0026](../../docs/adr/0026-the-control-room-ui-holds-server-data-in-one-cache.md)). The resources
-it holds so far: `images` (`GET /images`), `pairings` (`GET /vms/<vm>/pairings`), `githubApp`
+it holds: `images` (`GET /images`), `pairings` (`GET /vms/<vm>/pairings`), `githubApp`
 (`GET /github-app`), `githubTokens` (`GET /vms/<vm>/github-tokens?since=`), `sshConfig` (`GET
 /vms/<vm>/ssh-config`), `containerfile` (`GET /images/<image>/containerfile`, read only while
 its panel is open), `host` (`GET /host`: the Host's readings with 30 minutes of history),

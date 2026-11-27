@@ -230,6 +230,62 @@ describe('Watchlist view', () => {
     expect(alertRows().map(r => r[0])).toEqual(['work', 'work'])
   })
 
+  it('names the VM whose Alerts could not be refreshed, and reads every VM\'s again when the page opens', async () => {
+    let failing = false
+    const { api, es } = await openApp('/watchlist', routes({
+      'GET /vms/priv/alerts': () => (failing ? fail(502, 'journal_failed') : ok([])),
+    }))
+    failing = true
+    es.emit('activity', { time: 't', vm: 'priv', actor: 'owner', kind: 'alert', action: 'mark-seen', code: 'mark-seen', outcome: 'ok', description: '' })
+    await waitFor(() => expect(must('[data-testid="alerts"]').textContent).toContain('Could not refresh the Alerts of priv;'))
+    const reads = () => api.calls.filter(c => c.path === '/vms/work/alerts').length
+    const before = reads()
+    await useRouter().push('/activity')
+    await settle()
+    await useRouter().push('/watchlist')
+    await settle()
+    expect(reads()).toBe(before + 1)
+  })
+
+  it('shows failed reads of the domain check, the Legitimate domains and the Harmless marks', async () => {
+    await openApp('/watchlist', routes({
+      'GET /watchlist/legitimate': fail(502, 'action_failed'),
+      'GET /watchlist/harmless': fail(502, 'action_failed'),
+      'GET /watchlist/check?domain=odd.example': fail(502, 'action_failed'),
+    }))
+    expect(must('[data-testid="legitimate-read-error"]').textContent).toContain('Could not read the Legitimate domains.')
+    expect(must('[data-testid="harmless-read-error"]').textContent).toContain('Could not read the Harmless marks.')
+    await type('[data-testid="check-input"]', 'odd.example')
+    await click('[data-testid="check-submit"]')
+    await waitFor(() => expect(must('[data-testid="check-error"]').textContent).toContain('Could not read the check of odd.example.'))
+  })
+
+  it('says it added a Legitimate domain also when the list was read again before the answer', async () => {
+    let release!: () => void
+    let listed = LEGITIMATE
+    const { es } = await openApp('/watchlist', routes({
+      'GET /watchlist/legitimate': () => ok(listed),
+      'POST /watchlist/legitimate': () => new Promise(resolve => { release = () => resolve(ok({ domain: 'mirror.example', builtin: false })) }) as never,
+    }))
+    await type('[data-testid="legitimate-add-domain"]', 'mirror.example')
+    await click('[data-testid="legitimate-add-submit"]')
+    listed = [...LEGITIMATE, { domain: 'mirror.example', regex: null, note: '', builtin: false, added: now(), added_by: 'owner' }] as typeof LEGITIMATE
+    es.emit('activity', { time: 't', vm: null, actor: 'owner', kind: 'watch', action: 'legitimate-add', code: 'legitimate-add', outcome: 'ok', description: '' })
+    await settle()
+    release()
+    await waitFor(() => expect(document.body.textContent).toContain('mirror.example is a Legitimate domain.'))
+    expect(document.body.textContent).not.toContain('mirror.example is a Legitimate domain already.')
+  })
+
+  it('shows a failed pattern check that is no refusal with Retry', async () => {
+    await openApp('/watchlist', routes({ 'GET /regex/check?list=harmless&regex=%5Ex%24': fail(502, 'action_failed') }))
+    const harmless = must('[data-testid="harmless"]')
+    await click(harmless.querySelector('[data-testid="entry-kind"] [data-kind="regex"]')!)
+    await type('[data-testid="harmless-regex"]', '^x$')
+    await click(harmless.querySelector('[data-testid="regex-test"]')!)
+    await waitFor(() => expect(must('[data-testid="harmless"] [data-testid="regex-error"]').textContent).toContain('Could not read the check of the pattern.'))
+  })
+
   it('says which VM\'s Alerts could not be read', async () => {
     await openApp('/watchlist', routes({ 'GET /vms/priv/alerts': fail(502, 'journal_failed') }))
     expect(must('[data-testid="alerts"]').textContent).toContain('Could not read the Alerts of priv.')

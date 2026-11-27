@@ -112,9 +112,10 @@ const RESOURCES = {
   watchlist: declare<Watchlist>('/watchlist'),
   legitimate: declare<LegitimateDomain[]>('/watchlist/legitimate'),
   harmless: declare<HarmlessMark[]>('/watchlist/harmless'),
-  // a VM's Alerts of the last 24 hours (harmless destinations left out): gathered for at most a
-  // second through a burst of `alert` events
-  alerts: declare<AlertGroup[], { vm: string }>(p => `/vms/${p.vm}/alerts`, { spacing: 1000 }),
+  // a VM's Alerts of the last 24 hours (harmless destinations left out): they age out with no
+  // event, so read whenever a view of them opens; gathered for at most a second through a burst of
+  // `alert` events
+  alerts: declare<AlertGroup[], { vm: string }>(p => `/vms/${p.vm}/alerts`, { fresh: true, spacing: 1000 }),
   // what the Watchlist, the Feeds and the patterns say of a domain; it changes with them
   domainCheck: declare<DomainCheck, { domain: string }>(p => `/watchlist/check?domain=${encodeURIComponent(p.domain)}`),
   // a pattern's preview: what it matches of the destinations seen in the last 7 days, which change
@@ -262,8 +263,9 @@ const ON_ACTIVITY: Record<string, Stale[]> = {
   // which VMs use and pin each Image and Build (`vms`, `used_by`, `pinned_by`)
   // and the Allowlist: a new VM may copy another's entries, takes over none left under its name
   // and no Forbids; deleting a VM drops its entries
-  'create': ['images', 'githubApp', 'allowlist', ofEntryVm('vmAllowlist'), ofEntryVm('forbids')],
-  'delete': ['images', 'githubApp', 'allowlist', ofEntryVm('vmAllowlist'), ofEntryVm('forbids')],
+  // (and a VM's Alerts: deleting it drops what was marked seen)
+  'create': ['images', 'githubApp', 'allowlist', ofEntryVm('vmAllowlist'), ofEntryVm('forbids'), ofEntryVm('alerts')],
+  'delete': ['images', 'githubApp', 'allowlist', ofEntryVm('vmAllowlist'), ofEntryVm('forbids'), ofEntryVm('alerts')],
   'set-image': ['images'],
   'reset': ['images'],
   'reset.automatic': ['images'],
@@ -731,7 +733,7 @@ export function useResource<N extends ResourceName>(name: N, ...[options = {}]: 
 /** One copy of a resource per set of parameters, for a view that shows several together (the
  * Alerts of every VM): each with its data, its failure and its Retry, kept current alike. */
 export function useResourceEach<N extends ResourceName>(name: N,
-  options: { params: MaybeRefOrGetter<ResourceParams<N>[]>, extra?: boolean }): ComputedRef<Resource<ResourceData<N>>[]> {
+  options: { params: MaybeRefOrGetter<ResourceParams<N>[]> }): ComputedRef<Resource<ResourceData<N>>[]> {
   const r = useResources()
   const list = () => toValue(options.params)
   const declaration = RESOURCES[name] as Declaration<unknown, unknown>
@@ -753,7 +755,7 @@ export function useResourceEach<N extends ResourceName>(name: N,
       fetching: computed(() => result.isFetching),
       previous: computed(() => false),
       error: computed(() => result.error),
-      extra: !!options.extra,
+      extra: false,
       retry: async () => { await result.refetch() },
     }))
   })
