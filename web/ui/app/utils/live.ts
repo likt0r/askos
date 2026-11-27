@@ -70,6 +70,8 @@ export interface VmProblem { vm: string, problem: string }
 export interface VmList { vms: Vm[], problems: VmProblem[] }
 export interface WatchState { running: boolean, since: string | null, restarts: number, last_exit: number | null }
 export interface VersionState { version: string, ui: string, installed: string | null }
+/** GET /version: the installed UI build (null while none is) and the Release of Agent Box. */
+export interface VersionInfo { api?: number, version?: string | null, ui?: string | null, installed?: string | null, release?: string | null }
 
 export interface LiveState {
   connection: Connection

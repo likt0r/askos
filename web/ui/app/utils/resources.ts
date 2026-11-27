@@ -21,7 +21,7 @@ import { failurePlace, type FailurePlace, unreachable } from './failures'
 import { applyBuild, type BuildEvent, type ImagesOverview } from './images'
 import type { SettingValue } from './settings'
 import type { Pairings } from './vm'
-import type { Live, Vm } from './live'
+import type { Live, VersionInfo, Vm } from './live'
 
 // query-core hands results to the views through setTimeout(0) by default; a microtask gives them
 // in the same turn, which the tests wait for with flushPromises. Production takes the same path.
@@ -61,6 +61,8 @@ const RESOURCES = {
     fresh: true,
     states: { github_app_missing: () => ({ apps: [], missing: [], none: true }) },
   }),
+  // the UI build installed and the Release of Agent Box the Host runs
+  version: declare<VersionInfo>('/version'),
 }
 
 export type ResourceName = keyof typeof RESOURCES

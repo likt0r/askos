@@ -9,6 +9,7 @@ import {
   defaultPrefs, isNotificationEvent, loadPrefs, notificationKey, PREFS_KEY, savePrefs,
 } from '~/utils/notifications'
 import { ok, openPage, useFreshApp } from './system-helpers'
+import { FakeEventSource } from './fakes'
 
 interface Shown { title: string, options: Record<string, unknown> }
 
@@ -404,6 +405,41 @@ describe('reload prompt', () => {
     es.emit('version', version('aaaa'))
     await settle()
     expect(prompt(wrapper).exists()).toBe(false)
+  })
+
+  it('keeps the page\'s own version when a reconnect that could not resume reads a newer one', async () => {
+    let installed = 'aaaa'
+    const { wrapper, es, api } = await openPage('/vms', { 'GET /version': () => ok({ api: 1, version: installed, ui: 'nuxt', installed: null }) })
+    installed = 'bbbb'      // a new build installed, which this page is not
+    es.emit('hello', { stream: 'efgh5678', resumed: false })
+    await settle()
+    expect(api.calls.filter(c => c.path === '/version')).toHaveLength(2)
+    es.emit('version', version('bbbb'))
+    await settle()
+    expect(prompt(wrapper).exists()).toBe(true)
+  })
+
+  it('keeps the page\'s own version through signing out and in again', async () => {
+    let installed = 'aaaa'
+    const { wrapper, api } = await openPage('/vms', {
+      'GET /version': () => ok({ api: 1, version: installed, ui: 'nuxt', installed: null }),
+      'DELETE /session': ok({ authenticated: false }),
+      'POST /session': ok({ authenticated: true, expires: '2026-11-04T00:00:00Z' }),
+    })
+    installed = 'bbbb'
+    await wrapper.find('[data-testid="sign-out"]').trigger('click')
+    await vi.waitFor(() => expect(useRouter().currentRoute.value.path).toBe('/sign-in'))
+    await settle()
+    await wrapper.find('input[type="password"]').setValue('pw')
+    await wrapper.find('form').trigger('submit')
+    await vi.waitFor(() => expect(useRouter().currentRoute.value.path).toBe('/vms'))
+    await settle()
+    expect(api.calls.filter(c => c.path === '/version')).toHaveLength(2)      // read again, naming 'bbbb'
+    const es = FakeEventSource.last
+    es.emit('hello', { stream: 'efgh5678', resumed: false })
+    es.emit('version', version('bbbb'))
+    await settle()
+    expect(prompt(wrapper).exists()).toBe(true)
   })
 
   it('shows no prompt when GET /version fails', async () => {

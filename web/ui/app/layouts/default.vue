@@ -31,7 +31,6 @@ function online() {
 
 onMounted(() => {
   live.start()
-  void loadOwnVersion()
   window.addEventListener('online', online)
 })
 onBeforeUnmount(() => {

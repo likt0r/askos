@@ -1,33 +1,29 @@
 // A new Control Room build was installed: the `version` event carries a version that differs
-// from the one this page loaded with (GET /version at start). Open pages offer to reload.
-import { computed, ref } from 'vue'
+// from the one this page loaded with. Open pages offer to reload. The page's own version is the
+// UI build of the first answer of the resource `version` (GET /version, read when the app shell
+// opens); later answers, after a reconnect or a sign-in, may name a newer build, not this page's.
+import { computed, ref, watch } from 'vue'
 
 const own = ref<string | null>(null)
-const release = ref<string | null>(null)
 const dismissed = ref<string | null>(null)
-let asked = false
 
-/** The version of this page, asked once after it loaded. */
-export async function loadOwnVersion() {
-  if (asked) return
-  asked = true
-  try {
-    const data = await api<{ version?: string, ui?: string, release?: string | null }>('/version')
-    if (typeof data?.version === 'string') own.value = data.version
-    if (typeof data?.release === 'string') release.value = data.release
-  }
-  catch {
-    asked = false      // the next page load asks again; without a version nothing is offered
-  }
+/** GET /version; its failure shows nothing (without a version nothing is offered). */
+function useVersion() {
+  return useResource('version', { extra: true }).data
 }
 
 /** The Release of Agent Box the Host runs (GET /version), once known. */
 export function useRelease() {
-  return release
+  const version = useVersion()
+  return computed(() => (typeof version.value?.release === 'string' ? version.value.release : null))
 }
 
 export function useReloadPrompt() {
   const live = useLive()
+  const version = useVersion()
+  watch(() => version.value?.version, (v) => {
+    if (own.value === null && typeof v === 'string') own.value = v
+  }, { immediate: true })
   const available = computed(() => {
     const v = live.state.version
     return !!v && v.ui === 'nuxt' && !!own.value && v.version !== own.value
@@ -45,7 +41,5 @@ export function useReloadPrompt() {
 /** Tests only. */
 export function resetReloadPromptForTests() {
   own.value = null
-  release.value = null
   dismissed.value = null
-  asked = false
 }
