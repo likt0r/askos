@@ -266,3 +266,87 @@ describe('reading a resource', () => {
     }
   })
 })
+
+describe('a resource with parameters (a VM\'s)', () => {
+  let live: ReturnType<typeof fakeLive>
+  let r: Resources
+  beforeEach(() => {
+    live = fakeLive()
+    r = createResources(live as never)
+    for (const vm of ['work', 'priv']) r.client.setQueryData(['pairings', { vm }], { vm, devices: [], observer_known: true, single_removal: false })
+  })
+  afterEach(() => r.stop())
+
+  const stale = (vm: string) => r.client.getQueryState(['pairings', { vm }])!.isInvalidated
+
+  it.each(['observe', 'unpair', 'revoke-pairings'])('%s marks only the entry\'s VM\'s pairings stale', (code) => {
+    live.emit('activity', { ...entry(code), vm: 'work' })
+    expect([stale('work'), stale('priv')]).toEqual([true, false])
+  })
+
+  it('an entry without a VM marks every VM\'s', () => {
+    live.emit('activity', { ...entry('observe'), vm: null })
+    expect([stale('work'), stale('priv')]).toEqual([true, true])
+  })
+
+  it('reads its own path from its parameters', async () => {
+    const api = fakeApi({ 'GET /vms/priv/pairings': OK({ vm: 'priv', devices: [] }) })
+    await r.read('pairings', { vm: 'priv' })
+    expect(api.calls.map(c => c.path)).toEqual(['/vms/priv/pairings'])
+  })
+})
+
+describe('a resource with parameters in a view', () => {
+  beforeEach(async () => {
+    const { setUp } = await import('./vm-helpers')
+    await setUp()
+  })
+  afterEach(async () => {
+    const { tearDown } = await import('./vm-helpers')
+    tearDown()
+  })
+
+  it('reads the copy of the new parameters when they change', async () => {
+    const { mount } = await import('@vue/test-utils')
+    const { defineComponent, h, ref } = await import('vue')
+    const { useResource } = await import('~/utils/resources')
+    const api = fakeApi({
+      'GET /vms/work/pairings': OK({ vm: 'work', devices: [] }),
+      'GET /vms/priv/pairings': OK({ vm: 'priv', devices: [] }),
+    })
+    const vm = ref('work')
+    const view = mount(defineComponent({
+      setup() {
+        const pairings = useResource('pairings', { params: () => ({ vm: vm.value }) })
+        return () => h('p', pairings.data.value?.vm ?? '')
+      },
+    }))
+    await flushPromises()
+    expect(view.text()).toBe('work')
+    vm.value = 'priv'
+    await flushPromises()
+    expect(view.text()).toBe('priv')
+    expect(api.calls.map(c => c.path)).toEqual(['/vms/work/pairings', '/vms/priv/pairings'])
+    view.unmount()
+  })
+})
+
+describe('a VM\'s copy marked stale while it is read', () => {
+  it('is read once more after that read', async () => {
+    const live = fakeLive()
+    const r = createResources(live as never)
+    const answers: (() => void)[] = []
+    const api = fakeApi({ 'GET /vms/work/pairings': () => new Promise(resolve => answers.push(() => resolve(OK({ vm: 'work', devices: [] })))) })
+    const observer = new QueryObserver(r.client, { queryKey: ['pairings', { vm: 'work' }], queryFn: () => r.read('pairings', { vm: 'work' }) })
+    const off = observer.subscribe(() => {})
+    await flushPromises()
+    live.emit('activity', { ...entry('observe'), vm: 'work' })
+    answers[0]!()
+    await flushPromises()
+    expect(api.calls).toHaveLength(2)
+    answers[1]!()
+    await flushPromises()
+    off()
+    r.stop()
+  })
+})

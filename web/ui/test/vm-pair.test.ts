@@ -86,6 +86,47 @@ describe('Pair tab', () => {
     expect(document.body.innerHTML).not.toContain(CODE)
   })
 
+  it('forgets the code when going to another VM\'s Pair tab, and shows that VM\'s devices', async () => {
+    fakeApi({
+      'GET /session': SIGNED_IN,
+      'GET /vms/work/pairings': { status: 200, body: DEVICES },
+      'GET /vms/priv/pairings': { status: 200, body: { ...DEVICES, vm: 'priv', devices: [DEVICES.devices[1]] } },
+      'POST /vms/work/pairing-code': { status: 200, body: { vm: 'work', code: CODE } },
+    })
+    await openApp('/vms/work/pair', [vm('work'), vm('priv', 'running', { network: 2 })])
+    await click('pair-reveal')
+    await submit('reveal-dialog')
+    expect(text('pair-code')).toBe(CODE)
+    await useRouter().push('/vms/priv/pair')
+    await flushPromises()
+    expect(document.body.innerHTML).not.toContain(CODE)
+    expect(byTestId('pair-devices').findAll('[data-testid="pair-device"]').map(r => r.attributes('data-device'))).toEqual(['dev-titan'])
+  })
+
+  it('reads the devices again whenever the tab opens: the Host hears nothing of a device that pairs', async () => {
+    const api = fakeApi({
+      'GET /session': SIGNED_IN,
+      'GET /vms/work/pairings': { status: 200, body: DEVICES },
+      'GET /vms/work/logs?boot=current&lines=200': { status: 200, body: { vm: 'work', entries: [], cursor: null, truncated: false } },
+    })
+    await openApp('/vms/work/pair', [vm('work')])
+    const reads = () => api.calls.filter(c => c.path === '/vms/work/pairings').length
+    expect(reads()).toBe(1)
+    await useRouter().push('/vms/work/log')
+    await flushPromises()
+    await useRouter().push('/vms/work/pair')
+    await flushPromises()
+    expect(reads()).toBe(2)
+  })
+
+  it('reads the devices again on Refresh', async () => {
+    const api = fakeApi({ 'GET /session': SIGNED_IN, 'GET /vms/work/pairings': { status: 200, body: DEVICES } })
+    await openApp('/vms/work/pair', [vm('work')])
+    expect(api.calls.filter(c => c.path === '/vms/work/pairings')).toHaveLength(1)
+    await click('pair-refresh')
+    expect(api.calls.filter(c => c.path === '/vms/work/pairings')).toHaveLength(2)
+  })
+
   it('forgets the code when leaving the tab', async () => {
     fakeApi({
       'GET /session': SIGNED_IN,
@@ -149,7 +190,9 @@ describe('Pair tab', () => {
   it('shows when the VM cannot be asked', async () => {
     fakeApi({ 'GET /session': SIGNED_IN, 'GET /vms/work/pairings': { status: 409, body: { error: { code: 'vm_not_running', message: 'x' } } } })
     await openApp('/vms/work/pair', [vm('work', 'stopped')])
-    expect(text('pair-error')).toBe('The VM is not running.')
+    // the read-failure element: what could not be read, and why
+    expect(text('pair-error')).toContain('Could not read the Paired devices.')
+    expect(text('pair-error')).toContain('The VM is not running.')
   })
 })
 

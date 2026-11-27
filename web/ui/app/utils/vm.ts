@@ -58,3 +58,17 @@ export function notResponding(vm: Vm): NotResponding | null {
     wakes: w && typeof w.count === 'number' && w.count > 0 ? { count: w.count, last: w.last ?? null } : null,
   }
 }
+
+/** A device paired with a VM's Orca (GET /vms/<vm>/pairings). */
+export interface Device {
+  id: string
+  name: string
+  scope: 'mobile' | 'runtime' | string
+  paired_at: string | null
+  last_seen_at: string | null
+  observer: boolean
+  removable: boolean
+}
+
+/** GET /vms/<vm>/pairings. */
+export interface Pairings { vm: string, devices: Device[], observer_known: boolean, single_removal: boolean }

@@ -1,6 +1,6 @@
 # The Control Room UI holds all server data in one cache; an event writes into it or marks it stale
 
-Status: Accepted (#212), by the owner on 2026-11-26. Built so far: the resources module with its first resource, `images`, its rows of the table and the read-failure element (#214, `web/ui/app/utils/resources.ts`, `web/ui/app/components/ReadFailure.vue`); every change of the UI but signing in and out through it, with its failure placed by kind (#215, `useChange`, `web/ui/app/utils/failures.ts`). Details show a failure's code and message, not its `detail` (#224). The other steps are the children of #212.
+Status: Accepted (#212), by the owner on 2026-11-26. Built so far: the resources module with its first resource, `images`, its rows of the table and the read-failure element (#214, `web/ui/app/utils/resources.ts`, `web/ui/app/components/ReadFailure.vue`); every change of the UI but signing in and out through it, with its failure placed by kind (#215, `useChange`, `web/ui/app/utils/failures.ts`). Details show a failure's code and message, not its `detail` (#224). Reads move in one page at a time (#216): resources may take parameters (a VM's), so far a VM's Paired devices. The other steps are the children of #212.
 
 ## Context
 
@@ -34,7 +34,7 @@ One table in the module says, for every live event and Activity entry, which of 
 
 - **The UI never computes server data from an Activity entry.** An entry of kind `allowlist` carries a code and parameters, not the Allowlist entry; working out the new list from it would repeat the backend's rules in the UI, such as which of an Allowlist entry and a Forbid wins ([ADR 0024](0024-the-more-specific-of-an-allowlist-entry-and-a-forbid-wins.md)).
 - **An event that arrives while a read of the same resource is on the way is not lost to the older answer.** The module handles this once, for every resource.
-- **Data is read again only for a reason the stream or the owner gives**: a row of the table, a change made in this browser, a `hello` with `resumed: false`, or the owner's "Retry". No reading again by the clock, none when the window gets the focus, and no automatic retry of a read that failed; when the connection comes back, the reads that failed because the Control Room could not be reached are read again (the owner on #223, 2026-11-26), and the others wait for "Retry" or a reason above.
+- **Data is read again only for a reason the stream or the owner gives**: a row of the table, a change made in this browser, a `hello` with `resumed: false`, or the owner's "Retry". A resource whose changes the Host sends no event about, such as a VM's Paired devices, is read again whenever a view of it opens (the owner on #216, 2026-11-27). No reading again by the clock, none when the window gets the focus, and no automatic retry of a read that failed; when the connection comes back, the reads that failed because the Control Room could not be reached are read again (the owner on #223, 2026-11-26), and the others wait for "Retry" or a reason above.
 
 ### Where a failure appears
 

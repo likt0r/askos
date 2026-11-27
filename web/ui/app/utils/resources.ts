@@ -8,15 +8,19 @@
 //
 // Data is read again only for a reason the stream or the owner gives: a row of the tables below
 // (an event, an Activity entry, a change made in this browser), a `hello` with `resumed: false`
-// that is not the first, or "Retry". Never by the clock, never on window focus, never as an automatic retry; a read that
-// failed because the Control Room could not be reached is read again with the next `hello`.
+// that is not the first, or "Retry"; and a resource the Host sends no event about (`fresh`) when a
+// view of it opens. Never by the clock, never on window focus, never as an automatic retry; a
+// read that failed because the Control Room could not be reached is read again with the next
+// `hello`.
 import { notifyManager, QueryClient, useMutation, useQuery } from '@tanstack/vue-query'
 import { computed, type ComputedRef, type MaybeRefOrGetter, type Ref, ref, toValue } from 'vue'
 import { api, ApiError } from './api'
 import { allowlistEntryPath, type AllowlistEntry, entryPath, forbidPath, type ForbidEntry, type Target } from './access'
+import { useChangeToast } from '../composables/useChangeToast'
 import { failurePlace, type FailurePlace, unreachable } from './failures'
 import { applyBuild, type BuildEvent, type ImagesOverview } from './images'
 import type { SettingValue } from './settings'
+import type { Pairings } from './vm'
 import type { Live } from './live'
 
 // query-core hands results to the views through setTimeout(0) by default; a microtask gives them
@@ -25,21 +29,29 @@ notifyManager.setScheduler(queueMicrotask)
 
 // ---- the resources ---------------------------------------------------------------------------
 
-interface Declaration<T> {
-  path: string
-  /** only carries the type of the answer */
+interface Declaration<T, P> {
+  path: (params: P) => string
+  /** the Host sends no event about its changes: read again whenever a view of it opens (the owner
+   * on #216) */
+  fresh: boolean
+  /** only carry the types of the answer and of the parameters */
   answer?: T
+  params?: P
 }
 
-function declare<T>(path: string): Declaration<T> {
-  return { path }
+/** A resource: its path, or for one with parameters (a VM's), its path from them. */
+function declare<T, P = undefined>(path: string | ((params: P) => string), options: { fresh?: boolean } = {}): Declaration<T, P> {
+  return { path: typeof path === 'string' ? () => path : path, fresh: !!options.fresh }
 }
 
 const RESOURCES = {
   images: declare<ImagesOverview>('/images'),
+  // a device pairs inside Orca with the code: nothing on the Host records it
+  pairings: declare<Pairings, { vm: string }>(p => `/vms/${p.vm}/pairings`, { fresh: true }),
 }
 
 export type ResourceName = keyof typeof RESOURCES
+export type ResourceParams<N extends ResourceName> = (typeof RESOURCES)[N] extends Declaration<unknown, infer P> ? P : never
 export type ResourceData<N extends ResourceName> = NonNullable<(typeof RESOURCES)[N]['answer']>
 
 // ---- what an event does ----------------------------------------------------------------------
@@ -75,9 +87,19 @@ function versionCheckRuns(services: { units?: { unit?: string, state?: string }[
   return unit?.state === 'running' || unit?.state === 'stopping'
 }
 
+/** A resource an Activity entry makes stale: by its name, or for one with parameters, only those
+ * of the entry (its VM's). */
+type Stale = ResourceName | { name: ResourceName, params: (entry: { vm?: string | null }) => unknown }
+
+/** The resources a VM has one of (their parameters are `{ vm }`). */
+type VmResourceName = { [N in ResourceName]: ResourceParams<N> extends { vm: string } ? N : never }[ResourceName]
+
+/** A VM's resource, of the entry's VM (every VM's when it names none). */
+const ofEntryVm = (name: VmResourceName): Stale => ({ name, params: entry => (entry.vm ? { vm: entry.vm } : undefined) })
+
 /** Activity entries (`code ?? action`) after which resources are read again. The end of a Build
  * needs no row: its `build` event marks `images` stale. */
-const ON_ACTIVITY: Record<string, ResourceName[]> = {
+const ON_ACTIVITY: Record<string, Stale[]> = {
   'maintenance.versions': ['images'],
   'update-now': ['images'],
   // a Recipe defines an Image: it comes, changes or goes without a Build
@@ -91,6 +113,10 @@ const ON_ACTIVITY: Record<string, ResourceName[]> = {
   'reset': ['images'],
   'reset.automatic': ['images'],
   'reset.update': ['images'],
+  // a VM's Paired devices
+  'observe': [ofEntryVm('pairings')],
+  'unpair': [ofEntryVm('pairings')],
+  'revoke-pairings': [ofEntryVm('pairings')],
 }
 
 // ---- the changes -----------------------------------------------------------------------------
@@ -247,13 +273,13 @@ export function createResources(live: Pick<Live, 'on' | 'state'>) {
   // made them stale
   const again = new Set<ResourceName>()
 
-  async function read<N extends ResourceName>(name: N): Promise<ResourceData<N>> {
+  async function read<N extends ResourceName>(name: N, params?: ResourceParams<N>): Promise<ResourceData<N>> {
     const pending: ((data: any) => any)[] = []
     const set = replays.get(name) ?? new Set()
     replays.set(name, set)
     set.add(pending)
     try {
-      let data = await api<ResourceData<N>>(RESOURCES[name].path)
+      let data = await api<ResourceData<N>>((RESOURCES[name].path as (p: unknown) => string)(params))
       for (const apply of pending) {
         const next = apply(data)
         if (next === null) again.add(name)
@@ -266,18 +292,16 @@ export function createResources(live: Pick<Live, 'on' | 'state'>) {
     }
   }
 
-  function fetching(name: ResourceName) {
-    return client.getQueryState([name])?.fetchStatus === 'fetching'
-  }
-
-  /** Mark a resource stale: a view that shows it reads it again, at once or, when a read is on
-   * the way, right after it; one that is not shown reads it when it is next shown. */
-  function markStale(name: ResourceName): Promise<void> {
-    if (fetching(name)) {
+  /** Mark a resource stale, with every set of its parameters or only these: a view that shows it
+   * reads it again, at once or, when a read is on the way, right after it (with every set of its
+   * parameters then); one that is not shown reads it when it is next shown. */
+  function markStale(name: ResourceName, params?: unknown): Promise<void> {
+    const queryKey = params === undefined ? [name] : [name, params]
+    if (client.isFetching({ queryKey }) > 0) {
       again.add(name)
       return Promise.resolve()
     }
-    return client.invalidateQueries({ queryKey: [name] }, { cancelRefetch: false })
+    return client.invalidateQueries({ queryKey }, { cancelRefetch: false })
   }
 
   function write<N extends ResourceName>(name: N, apply: (data: ResourceData<N>) => ResourceData<N> | null) {
@@ -308,9 +332,12 @@ export function createResources(live: Pick<Live, 'on' | 'state'>) {
     before[eventName] = data
   })))
 
-  offs.push(live.on('activity', (entry: { code?: string, action?: string } | null) => {
+  offs.push(live.on('activity', (entry: { code?: string, action?: string, vm?: string | null } | null) => {
     const code = entry?.code ?? entry?.action
-    for (const name of (code && ON_ACTIVITY[code]) || []) void markStale(name)
+    for (const stale of (entry && code && ON_ACTIVITY[code]) || []) {
+      if (typeof stale === 'string') void markStale(stale)
+      else void markStale(stale.name, stale.params(entry!))
+    }
   }))
 
   const missedListeners = new Set<() => void>()
@@ -369,11 +396,13 @@ export function clearResources() {
 
 // ---- what a view uses ------------------------------------------------------------------------
 
-export interface ResourceOptions {
+export interface ResourceOptions<P = undefined> {
   /** a read whose failure the view does not show (ReadFailure shows nothing) */
   extra?: boolean
   /** read only while this is true (a dialog: while it is open) */
   enabled?: MaybeRefOrGetter<boolean>
+  /** the parameters of a resource that has them (a VM's: `{ vm }`); a change reads the new ones */
+  params?: MaybeRefOrGetter<P>
 }
 
 export interface Resource<T> {
@@ -391,12 +420,23 @@ export interface Resource<T> {
   retry: () => Promise<void>
 }
 
-/** A resource by name, for a view: one shared copy per resource, kept current by the table above. */
-export function useResource<N extends ResourceName>(name: N, options: ResourceOptions = {}): Resource<ResourceData<N>> {
+/** The options of a resource: with its parameters when it has them. */
+type OptionsOf<N extends ResourceName> = ResourceParams<N> extends undefined
+  ? [options?: ResourceOptions]
+  : [options: ResourceOptions<ResourceParams<N>> & { params: MaybeRefOrGetter<ResourceParams<N>> }]
+
+/** A resource by name, for a view: one shared copy per resource (and set of parameters), kept
+ * current by the tables above. */
+export function useResource<N extends ResourceName>(name: N, ...[options = {}]: OptionsOf<N>): Resource<ResourceData<N>> {
   const r = useResources()
+  const params = () => toValue(options.params)
   const query = useQuery({
-    queryKey: [name],
-    queryFn: () => r.read(name),
+    // one copy per resource, and per set of parameters for one that has them
+    queryKey: computed(() => (params() === undefined ? [name] : [name, params()])),
+    // the parameters of the copy read, from its own key
+    queryFn: ({ queryKey }) => r.read(name, queryKey[1] as ResourceParams<N>),
+    // one the Host sends no event about is read again whenever a view of it opens
+    refetchOnMount: RESOURCES[name].fresh ? 'always' : true,
     enabled: () => toValue(options.enabled ?? true),
   }, r.client)
   return {
