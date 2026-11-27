@@ -127,12 +127,6 @@ export interface VmLog {
   more?: boolean
 }
 
-let shows = 0
-/** A new "Show" of the Log tab (also each time it opens): its own copy, read anew. */
-export function nextLogShow() {
-  shows += 1
-  return shows
-}
 
 /** GET /vms/<vm>/logs: the newest entries for the filters, only those after the held log's
  * cursor once there is one. */

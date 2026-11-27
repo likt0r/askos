@@ -96,6 +96,8 @@ describe('Log tab', () => {
     await submit('log-filters')
     expect(text('log-error')).toContain('Could not read the VM\'s log.')
     expect(text('log-error')).toContain('The VM is not running.')
+    // the entries shown stay under it
+    expect(byTestId('log-entries').findAll('[data-testid="log-message"]').map(m => m.text())).toEqual(['x'])
   })
 
   it('follows new entries after the last cursor', async () => {

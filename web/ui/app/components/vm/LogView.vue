@@ -1,3 +1,12 @@
+<script lang="ts">
+let shows = 0
+/** A new "Show" (also each opening of the tab): its own copy, the newest entries read anew. */
+function nextShow() {
+  shows += 1
+  return shows
+}
+</script>
+
 <script setup lang="ts">
 // A VM's journal, read through its guest agent (the resource `vmLog`, GET /vms/<vm>/logs, #3):
 // filters for unit, priority, since/until, boot, text search and number of lines; "Follow" asks
@@ -16,7 +25,7 @@ const priority = computed({
 })
 // the filters of the last "Show"; each "Show", and each opening of the tab, reads the newest
 // entries anew
-const applied = ref({ filters: { ...filters }, shown: nextLogShow() })
+const applied = ref({ filters: { ...filters }, shown: nextShow() })
 const follow = ref(false)
 const list = ref<HTMLElement | null>(null)
 
@@ -25,7 +34,12 @@ const log = useResource('vmLog', {
   keepPrevious: true,
   every: () => (follow.value ? props.followMs ?? 3000 : false),
 })
-const entries = computed(() => log.data.value?.entries ?? [])
+// the entries shown: a "Show" that failed keeps those before on screen, under its failure
+const kept = shallowRef<VmLog | undefined>(undefined)
+watch(log.data, (data) => {
+  if (data !== undefined) kept.value = data
+}, { immediate: true })
+const entries = computed(() => (log.data.value ?? kept.value)?.entries ?? [])
 const loaded = computed(() => log.data.value !== undefined && !log.previous.value)
 const showing = computed(() => log.loading.value || log.previous.value)
 
@@ -80,7 +94,7 @@ watch(entries, async () => {
 function show() {
   if (problems.value.length) return
   showed = true
-  applied.value = { filters: { ...filters }, shown: nextLogShow() }
+  applied.value = { filters: { ...filters }, shown: nextShow() }
 }
 
 // following asks at once, then by the clock; a failed read stops it
