@@ -10,14 +10,13 @@ import type { AllowlistEntry, BlockedDestination, ForbidEntry } from '~/utils/ac
 const props = withDefaults(defineProps<{ vm: string, entries: AllowlistEntry[], forbids?: ForbidEntry[] }>(), { forbids: () => [] })
 const { t } = useI18n()
 const tr = useTranslator()
-const errorText = useErrorText()
 const when = useWhen()
 const now = useNow(1000)
 
-const rows = ref<BlockedDestination[]>([])
-const loaded = ref(false)
-const loading = ref(false)
-const error = ref<unknown>(null)
+// the resource `blocked`: read again on this VM's `alert` and `held` events, at most once a second
+const blocked = useResource('blocked', { params: () => ({ vm: props.vm }) })
+const rows = computed<BlockedDestination[]>(() => (Array.isArray(blocked.data.value) ? blocked.data.value : []))
+const loaded = computed(() => blocked.data.value !== undefined)
 const allowing = ref<string | null>(null)
 const allowOpen = computed({
   get: () => allowing.value !== null,
@@ -28,22 +27,6 @@ const forbidOpen = computed({
   get: () => forbidding.value !== null,
   set: (v: boolean) => { if (!v) forbidding.value = null },
 })
-
-async function load() {
-  loading.value = true
-  try {
-    const list = await api<BlockedDestination[]>(`/vms/${props.vm}/blocked`)
-    rows.value = Array.isArray(list) ? list : []
-    error.value = null
-    loaded.value = true
-  }
-  catch (e) {
-    error.value = e
-  }
-  finally {
-    loading.value = false
-  }
-}
 
 // why it was blocked in the UI language (#69); the proxy's English reason on hover
 function reason(r: BlockedDestination) {
@@ -59,27 +42,6 @@ function allowedBy(domain: string) {
   return !forbiddenNow(domain) && coveredBy(domain, props.entries, now.value)
 }
 
-watch(() => props.vm, load)
-onMounted(load)
-// one reload a second at most, for this VM's events only: a burst gathered across VMs would
-// keep only its last event and miss this VM's
-let reloading: ReturnType<typeof setTimeout> | null = null
-function reloadSoon() {
-  if (reloading) clearTimeout(reloading)
-  reloading = setTimeout(() => {
-    reloading = null
-    void load()
-  }, 1000)
-}
-onBeforeUnmount(() => {
-  if (reloading) clearTimeout(reloading)
-})
-useLiveEvent('alert', (a) => {
-  if (a?.vm === props.vm) reloadSoon()
-}, 0)
-useLiveEvent('held', (h) => {
-  if (h?.vm === props.vm) reloadSoon()
-}, 0)
 </script>
 
 <template>
@@ -90,10 +52,10 @@ useLiveEvent('held', (h) => {
       </h3>
       <span v-if="loaded" class="text-sm text-muted">{{ t('webTab.blocked.count', rows.length) }}</span>
       <span class="flex-1" />
-      <UButton color="neutral" variant="ghost" size="sm" icon="i-lucide-refresh-cw" :loading="loading" :aria-label="t('access.common.refresh')" @click="load" />
+      <UButton color="neutral" variant="ghost" size="sm" icon="i-lucide-refresh-cw" :loading="blocked.fetching.value" :aria-label="t('access.common.refresh')" @click="blocked.retry()" />
     </div>
-    <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(error)" />
-    <p v-if="!loaded && !error" class="text-sm text-muted">
+    <ReadFailure :resource="blocked" data-testid="blocked-error" />
+    <p v-if="!loaded && !blocked.error.value" class="text-sm text-muted">
       {{ t('access.common.loading') }}
     </p>
     <p v-else-if="loaded && !rows.length" class="text-sm text-muted" data-testid="blocked-empty">

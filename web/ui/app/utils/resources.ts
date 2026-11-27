@@ -15,7 +15,7 @@
 import { hashKey, keepPreviousData, notifyManager, QueryClient, useMutation, useQuery } from '@tanstack/vue-query'
 import { computed, type ComputedRef, type MaybeRefOrGetter, type Ref, ref, toValue } from 'vue'
 import { api, ApiError } from './api'
-import { allowlistEntryPath, type AllowlistEntry, entryPath, forbidPath, type ForbidEntry, type GithubAppOverview, type GithubTokens, type SshConfig, type Target } from './access'
+import { allowlistEntryPath, type AllowlistEntry, type BlockedDestination, entryPath, forbidPath, type ForbidEntry, type GithubAppOverview, type GithubTokens, type SshConfig, type Target } from './access'
 import { useChangeToast } from '../composables/useChangeToast'
 import { failurePlace, type FailurePlace, unreachable } from './failures'
 import { applyBuild, type BuildEvent, type BuildLog, type BuildLogEvent, buildLogPath, type ContainerfileText, type ImagesOverview, joinLog, withLogEvent } from './images'
@@ -48,6 +48,9 @@ interface Declaration<T, P> {
   fresh: boolean
   /** not kept once no view shows it (a copy each view opening reads anew anyway) */
   forget: boolean
+  /** at least this many ms between the end of a read of a copy and the next (the API asks it of
+   * a VM's blocked list): a stale mark meanwhile waits */
+  spacing: number
   /** codes the Host answers for a state, not a failure: read as this data */
   states: Record<string, () => T>
   /** only carry the types of the answer and of the parameters */
@@ -57,10 +60,10 @@ interface Declaration<T, P> {
 
 /** A resource: its path, or for one with parameters (a VM's), its path from them. */
 function declare<T, P = undefined>(path: string | ((params: P, held: T | undefined) => string),
-  options: { fresh?: boolean, forget?: boolean, states?: Record<string, () => T>, merge?: (held: T | undefined, answer: any) => T,
-    missed?: (held: T) => T, readOn?: (data: T) => boolean } = {}): Declaration<T, P> {
+  options: { fresh?: boolean, forget?: boolean, spacing?: number, states?: Record<string, () => T>,
+    merge?: (held: T | undefined, answer: any) => T, missed?: (held: T) => T, readOn?: (data: T) => boolean } = {}): Declaration<T, P> {
   return { path: typeof path === 'string' ? () => path : path, fresh: !!options.fresh, forget: !!options.forget,
-    states: options.states ?? {}, merge: options.merge, missed: options.missed, readOn: options.readOn }
+    spacing: options.spacing ?? 0, states: options.states ?? {}, merge: options.merge, missed: options.missed, readOn: options.readOn }
 }
 
 const RESOURCES = {
@@ -91,7 +94,19 @@ const RESOURCES = {
   // says when it grows
   vmLog: declare<VmLog, { vm: string, filters: LogFilters, shown: number }>((p, held) => vmLogPath(p.vm, p.filters, held),
     { fresh: true, forget: true, merge: joinVmLog }),
-  // the Settings (the form holds a draft of them; a VM's defaults read them too)
+  // the Allowlist: every entry (`filter` `*`), those for all VMs (`all`), or those that apply to a
+  // VM; a VM's entries (its Web tab) and its Forbids; an allow and a Forbid change both (ADR
+  // 0024). Their counts (uses and refusals in the last 24 hours) change with no event: read
+  // whenever a view of them opens
+  allowlist: declare<AllowlistEntry[], { filter: string }>(p => `/allowlist${p.filter === '*' ? '' : `?vm=${encodeURIComponent(p.filter)}`}`, { fresh: true }),
+  vmAllowlist: declare<AllowlistEntry[], { vm: string }>(p => `/vms/${p.vm}/allowlist`, { fresh: true }),
+  forbids: declare<ForbidEntry[], { vm: string }>(p => `/vms/${p.vm}/forbids`, { fresh: true }),
+  // what a VM was refused in the last 24 hours: most refusals come with no event (a Forbid's, a
+  // connection with no name, a hold past those announced), so read whenever its view opens; at
+  // most one read a second (the API asks it)
+  blocked: declare<BlockedDestination[], { vm: string }>(p => `/vms/${p.vm}/blocked`, { fresh: true, spacing: 1000 }),
+  // the Settings (the form holds a draft of them; a VM's defaults and Open web's longest
+  // duration read them too)
   settings: declare<{ settings: Record<string, SettingInfo> }>('/settings'),
   // the Activity timeline for a filter, the newest `lines` entries (`since`: only that recent)
   activity: declare<ActivityResult, ActivityParams>(p => `/activity?${activityQuery(p, p.lines, p.since)}`),
@@ -194,6 +209,9 @@ const ON_EVENT: Record<string, EventRow> = {
   host: {
     write: { host: (data, sample: HostSample) => withSample(data, sample) },
   },
+  // a VM was refused a destination (an Alert) or the proxy holds one for it: its blocked list
+  alert: { stale: (event: { vm?: string | null }) => [ofEntryVm('blocked')].filter(() => !!event?.vm) },
+  held: { stale: (event: { vm?: string | null }) => [ofEntryVm('blocked')].filter(() => !!event?.vm) },
   // a VM got a GitHub token or was refused one: its list of tokens and requests is read again
   'github-token': {
     stale: () => [ofEntryVm('githubTokens')],
@@ -225,8 +243,10 @@ const ON_ACTIVITY: Record<string, Stale[]> = {
   'recipe.restore': ['images', ofEntryImage('containerfile')],
   'recipe.remove': ['images', ofEntryImage('containerfile')],
   // which VMs use and pin each Image and Build (`vms`, `used_by`, `pinned_by`)
-  'create': ['images', 'githubApp'],
-  'delete': ['images', 'githubApp'],
+  // and the Allowlist: a new VM may copy another's entries, takes over none left under its name
+  // and no Forbids; deleting a VM drops its entries
+  'create': ['images', 'githubApp', 'allowlist', ofEntryVm('vmAllowlist'), ofEntryVm('forbids')],
+  'delete': ['images', 'githubApp', 'allowlist', ofEntryVm('vmAllowlist'), ofEntryVm('forbids')],
   'set-image': ['images'],
   'reset': ['images'],
   'reset.automatic': ['images'],
@@ -241,6 +261,13 @@ const ON_ACTIVITY: Record<string, Stale[]> = {
   'observe': [ofEntryVm('pairings')],
   'unpair': [ofEntryVm('pairings')],
   'revoke-pairings': [ofEntryVm('pairings')],
+}
+
+/** Activity entries by their kind, after which resources are read again: for a kind whose codes
+ * are many and grow (the Allowlist's: every change of an entry or a Forbid, from the UI, the CLI
+ * or the expiry timer). */
+const ON_ACTIVITY_KIND: Record<string, Stale[]> = {
+  allowlist: ['allowlist', 'vmAllowlist', 'forbids'],
 }
 
 // ---- the changes -----------------------------------------------------------------------------
@@ -430,11 +457,40 @@ export function createResources(live: Pick<Live, 'on' | 'state'>, context: Conte
     }
   }
 
+  // copies of a resource with `spacing` whose stale mark waits for its time, or for the end of
+  // the read on the way
+  const waiting = new Map<string, ReturnType<typeof setTimeout>>()
+  const afterRead = new Set<string>()
+
   /** Mark a resource stale, with every set of its parameters or only these: a view that shows a
    * copy reads it again, at once or, when a read of that copy is on the way, right after it; one
    * that is not shown reads it when it is next shown. */
   function markStale(name: ResourceName, params?: unknown): Promise<void> {
     const queryKey = keyOf(name, params)
+    const spacing = (RESOURCES[name] as Declaration<unknown, unknown>).spacing
+    if (!spacing) return markStaleNow(queryKey)
+    // each copy at its own time: a spacing after its last read ended (one on the way: after it)
+    const marks: Promise<void>[] = []
+    for (const query of client.getQueryCache().findAll({ queryKey })) {
+      if (waiting.has(query.queryHash)) continue
+      if (query.state.fetchStatus === 'fetching') {
+        afterRead.add(query.queryHash)
+        continue
+      }
+      const wait = Math.max(query.state.dataUpdatedAt, query.state.errorUpdatedAt) + spacing - Date.now()
+      if (wait <= 0) {
+        marks.push(markStaleNow(query.queryKey))
+        continue
+      }
+      waiting.set(query.queryHash, setTimeout(() => {
+        waiting.delete(query.queryHash)
+        void markStale(name, query.queryKey[1])
+      }, wait))
+    }
+    return Promise.all(marks).then(() => {})
+  }
+
+  function markStaleNow(queryKey: readonly unknown[]): Promise<void> {
     for (const query of client.getQueryCache().findAll({ queryKey, fetchStatus: 'fetching' })) again.add(query.queryHash)
     return client.invalidateQueries({ queryKey, predicate: query => query.state.fetchStatus !== 'fetching' }, { cancelRefetch: false })
   }
@@ -460,6 +516,13 @@ export function createResources(live: Pick<Live, 'on' | 'state'>, context: Conte
   const offs = [client.getQueryCache().subscribe((event) => {
     if (event.type !== 'updated' || (event.action.type !== 'success' && event.action.type !== 'error')) return
     if (again.delete(event.query.queryHash)) void client.invalidateQueries({ queryKey: event.query.queryKey, exact: true }, { cancelRefetch: false })
+    // a read that ended took what a waiting mark was for (it was set while no read was on the way)
+    const timer = waiting.get(event.query.queryHash)
+    if (timer) {
+      clearTimeout(timer)
+      waiting.delete(event.query.queryHash)
+    }
+    if (afterRead.delete(event.query.queryHash)) void markStale(event.query.queryKey[0] as ResourceName, event.query.queryKey[1])
   })]
 
   // the last of each event, for a row that compares (`services`: did the update end?), per object
@@ -493,9 +556,10 @@ export function createResources(live: Pick<Live, 'on' | 'state'>, context: Conte
     before.set(slot(eventName, row, data), data)
   })))
 
-  offs.push(live.on('activity', (entry: (Concerns & { code?: string, action?: string }) | null) => {
+  offs.push(live.on('activity', (entry: (Concerns & { code?: string, action?: string, kind?: string }) | null) => {
     const code = entry?.code ?? entry?.action
     for (const stale of (entry && code && ON_ACTIVITY[code]) || []) markStaleBy(stale, entry!)
+    for (const stale of (entry && typeof entry.kind === 'string' && ON_ACTIVITY_KIND[entry.kind]) || []) markStaleBy(stale, entry!)
   }))
 
   // a stream id: a `hello` came before the cache was made
@@ -527,6 +591,7 @@ export function createResources(live: Pick<Live, 'on' | 'state'>, context: Conte
     markStale,
     stop() {
       for (const off of offs) off()
+      for (const timer of waiting.values()) clearTimeout(timer)
       client.clear()
     },
   }

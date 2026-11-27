@@ -132,30 +132,35 @@ it holds so far: `images` (`GET /images`), `pairings` (`GET /vms/<vm>/pairings`)
 its panel is open), `host` (`GET /host`: the Host's readings with 30 minutes of history),
 `buildLog` (`GET /images/<image>/log?build=`: a Build's log), `activity` (`GET /activity`: a
 timeline for a filter), `settings` (`GET /settings`: the Settings form holds a draft of them; a
-VM's defaults read them too), `vmLog` (`GET /vms/<vm>/logs`: a VM's journal for the filters
-applied) and `version` (`GET /version`: the UI build installed and the Release; the reload
-prompt takes the build of its first answer as the page's own and keeps it through later reads).
-Every other view still reads on its own, as the next section describes, until it moves into the
-module (#216).
+VM's defaults and Open web's longest duration read them too), `allowlist` (`GET
+/allowlist?vm=`), `vmAllowlist` (`GET /vms/<vm>/allowlist`), `forbids` (`GET
+/vms/<vm>/forbids`), `blocked` (`GET /vms/<vm>/blocked`, at most one read a second: `spacing`),
+`vmLog` (`GET /vms/<vm>/logs`: a VM's journal for the filters applied) and `version` (`GET
+/version`: the UI build installed and the Release; the reload prompt takes the build of its
+first answer as the page's own and keeps it through later reads). Every other view still reads
+on its own, as the next section describes, until it moves into the module (#216).
 
 - **Declaring a resource**: one line in `RESOURCES`, its name, its path and the type of its answer
   (`images: declare<ImagesOverview>('/images')`); one with parameters takes its path from them
   (`pairings: declare<Pairings, { vm: string }>(p => `/vms/${p.vm}/pairings`)`). The key in the
   cache is `[name]`, or `[name, params]`: one copy per set of parameters. A resource whose changes
   the Host sends no event about is declared `fresh` (`pairings`: a device pairs inside Orca;
-  `githubApp`: an App installed on GitHub): it is read again whenever a view of it opens (the
-  owner on #216). A code the Host answers for a state, not a failure, is declared in `states` and
-  read as data (`github_app_missing`: no App set up, `{ apps: [], missing: [], none: true }`;
-  `readings_unavailable`: a Host without a sampler), so a later failed read keeps that state, not
-  an older overview. A resource read on from where its copy is takes the held copy in its path and
-  declares `merge`, which joins the answer to it (`buildLog`: after the held cursor, the lines
-  joined with `appendLines`). Such a resource also declares `missed`, what its copy becomes when a
-  reconnect could not resume (`buildLog`: a gap, so that later events are not kept past what was
-  missed until it is read), and `readOn`, whether a copy read still has a gap (an answer cut
-  short): it is read on right after. One that each opening of its view reads anew is declared
-  `forget`: not kept once no view shows it (`vmLog`: each opening of the Log tab and each "Show"
-  is a new copy, the newest entries; while following, what one answer could not hold comes with
-  the next poll).
+  `githubApp`: an App installed on GitHub; `blocked`: most refusals send no event; `allowlist`,
+  `vmAllowlist` and `forbids`: their counts of the last 24 hours): it is read again whenever a
+  view of it opens (the owner on #216). A code the Host answers for a state, not a failure, is
+  declared in `states` and read as data (`github_app_missing`: no App set up, `{ apps: [],
+  missing: [], none: true }`; `readings_unavailable`: a Host without a sampler), so a later failed
+  read keeps that state, not an older overview. A resource read on from where its copy is takes
+  the held copy in its path and declares `merge`, which joins the answer to it (`buildLog`: after
+  the held cursor, the lines joined with `appendLines`). Such a resource also declares `missed`,
+  what its copy becomes when a reconnect could not resume (`buildLog`: a gap, so that later events
+  are not kept past what was missed until it is read), and `readOn`, whether a copy read still has
+  a gap (an answer cut short): it is read on right after. One that each opening of its view reads
+  anew is declared `forget`: not kept once no view shows it (`vmLog`: each opening of the Log tab
+  and each "Show" is a new copy, the newest entries; while following, what one answer could not
+  hold comes with the next poll). One the API asks to read at most so often declares `spacing`
+  (`blocked`: 1000 ms): a stale mark comes no sooner than that after the last read of the copy
+  ended, and after a read on the way ends.
 - **Asking for one**: `const images = useResource('images')` gives `data` (undefined until an
   answer came), `loading` (nothing yet and a read on the way), `fetching` (a read on the way, the
   first or a read again), `error` (why the last read failed) and `retry()`. Every view that asks
@@ -191,18 +196,22 @@ module (#216).
   `name` parameter names, a row `ofEntryImage(name)`) and `create`, `delete`, `set-image`,
   `reset`, `reset.automatic`, `reset.update` (which VMs use and pin each Build); `pairings` of the
   entry's VM after `observe`, `unpair` and `revoke-pairings` (a row `ofEntryVm(name)` marks only
-  that VM's copy); `settings` after `set-settings`; `githubApp` after `set-github-app`,
-  `remove-github-app`, `set-owners`, `create` and `delete`; `githubTokens` of the event's VM after
-  a `github-token` event, `sshConfig` of a VM when its `vm` event turns SSH access on or off or
-  brings a new host key (a row with `key` compares each VM with its own event before, `known` from
-  the live state and each `state` event). A write keeps a stale mark and a failed read's error. A
-  stale resource that a view shows is read again; one that nothing shows is read when a view next
-  asks for it. A new Activity code that changes a resource needs a row here; without one, the view
-  shows old data until the next reconnect or reload.
+  that VM's copy); `settings` after `set-settings`; `allowlist`, `vmAllowlist` and `forbids` after
+  any entry of kind `allowlist` (`ON_ACTIVITY_KIND`, a table by kind for a kind whose codes are
+  many: every change of an entry or a Forbid, from the UI, the CLI or the expiry timer), and after
+  `create` and `delete` (a new VM may copy another's entries, a deleted one's go) `allowlist` and
+  that VM's `vmAllowlist` and `forbids`; `blocked` of the VM after its `alert` and `held` events;
+  `githubApp` after `set-github-app`, `remove-github-app`, `set-owners`, `create` and `delete`;
+  `githubTokens` of the event's VM after a `github-token` event, `sshConfig` of a VM when its `vm`
+  event turns SSH access on or off or brings a new host key (a row with `key` compares each VM
+  with its own event before, `known` from the live state and each `state` event). A write keeps a
+  stale mark and a failed read's error. A stale resource that a view shows is read again; one that
+  nothing shows is read when a view next asks for it. A new Activity code that changes a resource
+  needs a row here; without one, the view shows old data until the next reconnect or reload.
 - **An event during a read**: an event written while a read of its resource is on the way is
   applied to that read's answer as well, and a copy that turns stale during its read is read once
-  more right after it (once for a whole burst; other copies of the resource are not). The older
-  answer never undoes an event.
+  more right after it (a spacing after it, for one declared with `spacing`) (once for a whole
+  burst; other copies of the resource are not). The older answer never undoes an event.
 - **When data is read again**: only for a reason the stream or the owner gives: a row of the
   table, a change made in this browser, a `hello` with `resumed: false` that is not the first
   (everything is stale), any `hello` for the reads that could not reach the Control Room, or

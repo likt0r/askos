@@ -1,8 +1,9 @@
 <script setup lang="ts">
 // The Allowlist: every entry (or those that apply to one VM, or those for all VMs), with
 // scope, remaining time, uses in the last 24 hours, note and who added it; add, extend,
-// make permanent, change the note, remove. Changes from elsewhere (CLI, the expiry timer)
-// arrive as `activity` entries of kind `allowlist`, and deleting a VM drops its entries.
+// make permanent, change the note, remove. The resource `allowlist`: changes from elsewhere (CLI,
+// the expiry timer) arrive as `activity` entries of kind `allowlist`, and deleting a VM drops its
+// entries (the resources module's rows).
 import type { AllowlistEntry } from '~/utils/access'
 
 definePageMeta({ titleKey: 'nav.allowlist' })
@@ -11,7 +12,6 @@ const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const live = useLive()
-const errorText = useErrorText()
 
 const EVERY = '*'
 const filter = computed<string>({
@@ -25,41 +25,16 @@ const filters = computed(() => [
 ])
 const vmNames = computed(() => live.state.vms.map(vm => vm.name))
 
-const entries = ref<AllowlistEntry[]>([])
-const loaded = ref(false)
-const loading = ref(false)
-const error = ref<unknown>(null)
+const list = useResource('allowlist', { params: () => ({ filter: filter.value }), keepPrevious: true })
+const entries = computed<AllowlistEntry[]>(() => (Array.isArray(list.data.value) ? list.data.value : []))
+const loaded = computed(() => list.data.value !== undefined)
 const adding = ref(false)
-let request = 0
-
-async function load() {
-  const mine = ++request
-  loading.value = true
-  try {
-    const query = filter.value === EVERY ? '' : `?vm=${encodeURIComponent(filter.value)}`
-    const list = await api<AllowlistEntry[]>(`/allowlist${query}`)
-    if (mine !== request) return
-    entries.value = Array.isArray(list) ? list : []
-    error.value = null
-    loaded.value = true
-  }
-  catch (e) {
-    if (mine === request) error.value = e
-  }
-  finally {
-    if (mine === request) loading.value = false
-  }
-}
 
 const counts = computed(() => ({
   temporary: entries.value.filter(e => e.expires !== null).length,
   total: entries.value.length,
 }))
 
-watch(filter, load)
-onMounted(load)
-// deleting a VM drops its entries
-useReloadOnActivity(load, { kinds: ['allowlist'], codes: ['delete'] })
 </script>
 
 <template>
@@ -77,7 +52,7 @@ useReloadOnActivity(load, { kinds: ['allowlist'], codes: ['delete'] })
         {{ t('allowlist.count', counts.total) }}<template v-if="counts.temporary"> · {{ t('allowlist.temporaryCount', counts.temporary) }}</template>
       </span>
       <span class="flex-1" />
-      <UButton color="neutral" variant="ghost" icon="i-lucide-refresh-cw" :loading="loading" :aria-label="t('access.common.refresh')" @click="load" />
+      <UButton color="neutral" variant="ghost" icon="i-lucide-refresh-cw" :loading="list.fetching.value" :aria-label="t('access.common.refresh')" @click="list.retry()" />
       <UButton icon="i-lucide-plus" :label="t('allowlist.add.open')" data-testid="allowlist-add-open" @click="adding = true" />
     </div>
 
@@ -85,8 +60,8 @@ useReloadOnActivity(load, { kinds: ['allowlist'], codes: ['delete'] })
       {{ t('allowlist.intro') }}
     </p>
 
-    <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(error)" data-testid="allowlist-error" />
-    <p v-if="!loaded && !error" class="text-sm text-muted">
+    <ReadFailure :resource="list" data-testid="allowlist-error" />
+    <p v-if="!loaded && !list.error.value" class="text-sm text-muted">
       {{ t('access.common.loading') }}
     </p>
     <p v-else-if="loaded && !entries.length" class="rounded-lg border border-dashed border-default p-6 text-center text-sm text-muted" data-testid="allowlist-empty">

@@ -329,4 +329,75 @@ describe('Web tab', () => {
     await waitFor(() => expect(loads()).toBe(2))
     expect($('[data-testid="blocked-empty"]')).toBeNull()
   })
+
+  it('reads the blocked list at most once a second through a burst of this VM\'s events', async () => {
+    const { api, es } = await openApp('/vms/work/web', ROUTES)
+    const loads = () => api.calls.filter(c => c.path === '/vms/work/blocked').length
+    expect(loads()).toBe(1)
+    for (let i = 0; i < 5; i++) es.emit('alert', { time: 't', vm: 'work', domain: `x${i}.example`, signals: ['young'] })
+    await waitFor(() => expect(loads()).toBe(2))
+    // right after that read, another event waits its second
+    es.emit('alert', { time: 't', vm: 'work', domain: 'y.example', signals: ['young'] })
+    await settle()
+    expect(loads()).toBe(2)
+    await waitFor(() => expect(loads()).toBe(3))
+  })
+
+  it('takes Open web\'s longest duration from the Settings, and follows a change of them', async () => {
+    let longest = 60
+    const { es } = await openApp('/vms/work/web', { ...ROUTES, 'GET /settings': () => ok({ settings: { open_web_max_minutes: { value: longest } } }) })
+    const minutes = () => [...must('[data-testid="open-web"]').querySelectorAll('[data-minutes]')].map(b => (b as HTMLElement).dataset.minutes)
+    expect(minutes()).toEqual(['15', '30', '60'])
+    longest = 240
+    es.emit('activity', { time: 't', vm: null, actor: 'root', kind: 'settings', action: 'set-settings', code: 'set-settings', outcome: 'ok', description: '' })
+    await waitFor(() => expect(minutes()).toEqual(['15', '30', '60', '120', '240']))
+  })
+
+  it('shows a failed read of the VM\'s entries with Retry', async () => {
+    let failing = true
+    await openApp('/vms/work/web', { ...ROUTES, 'GET /vms/work/allowlist': () => (failing ? fail(502, 'action_failed') : ok(vmEntries())) })
+    const failure = must('[data-testid="vm-entries-error"]')
+    expect(failure.textContent).toContain('Could not read the VM\'s Allowlist entries.')
+    failing = false
+    await click([...failure.querySelectorAll('button')].find(b => b.textContent?.trim() === 'Retry')!)
+    await settle()
+    expect($('[data-testid="vm-entries-error"]')).toBeNull()
+    expect(must('[data-testid="vm-entries"]').textContent).toContain('docs.rs')
+  })
+
+  it('reads the blocked list, the entries and the Forbids again whenever the tab opens (counts change with no event)', async () => {
+    const { api } = await openApp('/vms/work/web', ROUTES)
+    const loads = () => ['blocked', 'allowlist', 'forbids'].map(p => api.calls.filter(c => c.path === `/vms/work/${p}`).length)
+    expect(loads()).toEqual([1, 1, 1])
+    await useRouter().push('/vms/work/access')
+    await settle()
+    await useRouter().push('/vms/work/web')
+    await settle()
+    expect(loads()).toEqual([2, 2, 2])
+  })
+
+  it('shows a failed read of the blocked list and of the Forbids with Retry', async () => {
+    await openApp('/vms/work/web', { ...ROUTES, 'GET /vms/work/blocked': fail(502, 'action_failed'), 'GET /vms/work/forbids': fail(502, 'action_failed') })
+    expect(must('[data-testid="blocked-error"]').textContent).toContain('Could not read the blocked destinations.')
+    expect(must('[data-testid="vm-forbids-error"]').textContent).toContain('Could not read the Forbids.')
+  })
+
+  it('chooses a duration within the longest Open web also when the Settings were read already', async () => {
+    const { api } = await openApp('/vms/work/web', {
+      ...ROUTES,
+      'GET /settings': ok({ settings: { open_web_max_minutes: { value: 20 } } }),
+      'GET /vms': ok({ vms: [vm('work'), vm('priv')], problems: [] }),
+      'GET /vms/priv/blocked': ok([]),
+      'GET /vms/priv/allowlist': ok([]),
+      'GET /vms/priv/forbids': ok([]),
+      'POST /vms/priv/open-web': ok({ vm: 'priv', open_until: now() + 900, message: 'x' }),
+    })
+    await useRouter().push('/vms/priv/web')
+    await settle()
+    expect(api.calls.filter(c => c.path === '/settings')).toHaveLength(1)
+    const box = must('[data-testid="open-web"]')
+    expect([...box.querySelectorAll('[data-minutes]')].map(b => (b as HTMLElement).dataset.minutes)).toEqual(['15'])
+    await click('[data-testid="open-web-open"]')
+    expect(changes(api.calls).at(-1)).toMatchObject({ path: '/vms/priv/open-web', body: { minutes: 15 } })
+  })
 })

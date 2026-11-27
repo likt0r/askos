@@ -11,7 +11,12 @@ const when = useWhen()
 const now = useNow(5000)
 
 const CHOICES = [15, 30, 60, 120, 240]
-const longest = ref<number | null>(null)
+// the Settings' longest Open web (an extra: unreadable, the backend checks the limit anyway)
+const settings = useResource('settings', { extra: true })
+const longest = computed<number | null>(() => {
+  const v = settings.data.value?.settings?.open_web_max_minutes?.value
+  return typeof v === 'number' && v > 0 ? v : null
+})
 const minutes = ref(30)
 // opening has its form (how long); closing is one button, whose failure is a toast
 const opening = useChange('openWeb', { form: true })
@@ -35,20 +40,10 @@ const until = computed(() => {
 const isOpen = computed(() => until.value > now.value)
 
 watch(() => props.vm.open_web_until, () => { override.value = null })
+// a duration within the longest, also when the Settings were read already (before this view)
 watch(choices, (list) => {
   if (!list.includes(minutes.value)) minutes.value = list.includes(30) ? 30 : list[0]!
-})
-
-onMounted(async () => {
-  try {
-    const s = await api<{ settings: Record<string, { value: unknown }> }>('/settings')
-    const v = s?.settings?.open_web_max_minutes?.value
-    if (typeof v === 'number' && v > 0) longest.value = v
-  }
-  catch {
-    // the backend checks the limit anyway
-  }
-})
+}, { immediate: true })
 
 async function openWeb() {
   closing.reset()
