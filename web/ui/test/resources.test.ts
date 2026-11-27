@@ -104,6 +104,14 @@ describe('the stale table for images (without a view)', () => {
     expect(stale()).toBe(true)
   })
 
+  it('takes an entry\'s action when it has no code, and a failed entry too', () => {
+    live.emit('activity', { ...entry('update-now'), code: undefined })
+    expect(stale()).toBe(true)
+    r.client.setQueryData(['images'], overview([{ build: '1', status: 'ok' }]))
+    live.emit('activity', { ...entry('recipe.set'), outcome: 'failed' })      // it may have changed something before it failed
+    expect(stale()).toBe(true)
+  })
+
   it('ignores other Activity codes', () => {
     // a Build's end comes as its `build` event
     for (const code of ['start', 'build.ok', 'build.failed', 'allowlist.add']) live.emit('activity', entry(code))
