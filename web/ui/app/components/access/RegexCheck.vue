@@ -11,13 +11,19 @@ const props = withDefaults(defineProps<{ list: RegexList, pattern: string, scope
 /** the check of the current pattern and scope, or null */
 const checked = defineModel<RegexCheck | null>('checked', { default: null })
 const { t } = useI18n()
-const errorText = useErrorText()
 const when = useWhen()
 
 const host = ref('')
-const busy = ref(false)
-const error = ref<unknown>(null)
 const tested = ref('')
+// the check asked for (the resource `regexCheck`, read anew for each "Test"); none while the
+// pattern, scope or list changed since
+let asks = 0
+const asked = ref<{ list: RegexList, pattern: string, host: string, scope?: string, asked: number } | null>(null)
+const checking = useResource('regexCheck', {
+  params: () => asked.value ?? { list: props.list, pattern: '', host: '', asked: 0 },
+  enabled: () => !!asked.value,
+})
+const busy = computed(() => !!asked.value && checking.fetching.value)
 
 const normalizedHost = computed(() => normalizeDomain(host.value))
 const hostProblem = computed(() => host.value.trim() && !looksLikeDomain(normalizedHost.value) ? t('regex.check.hostInvalid') : null)
@@ -25,37 +31,26 @@ const canCheck = computed(() => looksLikePattern(props.pattern.trim()) && !hostP
 const match = computed(() => (checked.value && tested.value ? checked.value.matches[tested.value] : undefined))
 const preview = computed(() => checked.value?.preview ?? null)
 
-// which request counts: each change of pattern, scope or list and each new check makes the
-// answers to earlier requests stale, and a stale answer is dropped, result or error alike
-let current = 0
-
+// a check belongs to the pattern, scope and list it was made for: one of them changing drops it,
+// also when its answer is still on the way (a confirmation must never follow a preview of
+// something else)
 watch(() => [props.pattern, props.scope, props.list], () => {
-  current++
+  asked.value = null
   checked.value = null
-  error.value = null
-  busy.value = false
+})
+// the answer of the check asked for, the copy of its own parameters
+watch(() => [checking.data.value, checking.error.value, asked.value] as const, ([data, error, ask]) => {
+  if (!ask) return
+  checked.value = error ? null : data ?? null
+  if (data) tested.value = ask.host
 })
 
-async function check() {
+function check() {
   if (!canCheck.value) return
-  const request = ++current
-  busy.value = true
-  error.value = null
+  checked.value = null
+  asks += 1
   const h = host.value.trim() ? normalizedHost.value : ''
-  try {
-    const result = await api<RegexCheck>(regexCheckPath(props.list, props.pattern.trim(), h, props.list === 'allowlist' ? props.scope : undefined))
-    if (request !== current) return
-    tested.value = h
-    checked.value = result
-  }
-  catch (e) {
-    if (request !== current) return
-    checked.value = null
-    error.value = e
-  }
-  finally {
-    if (request === current) busy.value = false
-  }
+  asked.value = { list: props.list, pattern: props.pattern.trim(), host: h, ...(props.list === 'allowlist' ? { scope: props.scope } : {}), asked: asks }
 }
 
 function seen(h: { allowed: number, blocked: number }) {
@@ -92,8 +87,8 @@ function seen(h: { allowed: number, blocked: number }) {
     <p v-if="hostProblem" class="text-sm text-error">
       {{ hostProblem }}
     </p>
-    <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(error)" role="alert" data-testid="regex-error" />
-    <div v-else-if="checked" class="space-y-2 text-sm" data-testid="regex-result">
+    <ReadFailure v-if="asked" :resource="checking" data-testid="regex-error" />
+    <div v-if="checked" class="space-y-2 text-sm" data-testid="regex-result">
       <p class="text-muted">
         {{ t('regex.check.valid') }}
       </p>

@@ -805,3 +805,36 @@ describe('the stale table for the Allowlist, the Forbids and the blocked lists',
     }
   })
 })
+
+describe('the stale table for the Watchlist page', () => {
+  let live: ReturnType<typeof fakeLive>
+  let r: Resources
+  const stale = (key: unknown[]) => r.client.getQueryState(key)!.isInvalidated
+  const keys = { watchlist: ['watchlist'], legitimate: ['legitimate'], harmless: ['harmless'], check: ['domainCheck', { domain: 'x.example' }],
+    work: ['alerts', { vm: 'work' }], priv: ['alerts', { vm: 'priv' }] }
+  const marks = () => Object.fromEntries(Object.entries(keys).map(([k, key]) => [k, stale(key)]))
+  beforeEach(() => {
+    live = fakeLive()
+    r = createResources(live as never)
+    for (const key of Object.values(keys)) r.client.setQueryData(key, [], { updatedAt: Date.now() - 5000 })
+  })
+  afterEach(() => r.stop())
+
+  it.each([
+    ['watch-add', ['watchlist', 'check']], ['watch-remove', ['watchlist', 'check']], ['watch-set-note', ['watchlist', 'check']],
+    ['maintenance.feeds', ['watchlist', 'check']],
+    ['legitimate-add', ['legitimate', 'check']], ['legitimate-remove', ['legitimate', 'check']], ['legitimate-set-note', ['legitimate', 'check']],
+    ['migrate-lists', ['watchlist', 'legitimate', 'check']],
+    ['mark-harmless', ['harmless', 'check', 'work', 'priv']], ['unmark-harmless', ['harmless', 'check', 'work', 'priv']],
+  ])('%s marks %j stale', (code, names) => {
+    live.emit('activity', { ...entry(code as string), vm: null })
+    expect(marks()).toEqual(Object.fromEntries(Object.keys(keys).map(k => [k, (names as string[]).includes(k)])))
+  })
+
+  it('mark-seen and an Alert mark only that VM\'s Alerts stale', () => {
+    live.emit('activity', { ...entry('mark-seen'), vm: 'priv' })
+    expect([stale(keys.work), stale(keys.priv)]).toEqual([false, true])
+    live.emit('alert', { vm: 'work', domain: 'x.example' })
+    expect(stale(keys.work)).toBe(true)
+  })
+})

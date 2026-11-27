@@ -4,9 +4,11 @@
 // domain (with its subdomains) or a pattern (a Regex entry, ADR 0013), marked and shown verbatim.
 import type { HarmlessMark, RegexCheck } from '~/utils/access'
 
-const props = defineProps<{ marks: HarmlessMark[], loaded: boolean, error?: unknown }>()
+// the resource `harmless`
+const list = useResource('harmless')
+const marks = computed<HarmlessMark[]>(() => (Array.isArray(list.data.value) ? list.data.value.filter(m => m && typeof m === 'object') : []))
+const loaded = computed(() => list.data.value !== undefined)
 const { t } = useI18n()
-const errorText = useErrorText()
 const toast = useToast()
 
 const kind = ref<'domain' | 'regex'>('domain')
@@ -85,13 +87,13 @@ async function remove() {
       <UButton type="submit" icon="i-lucide-bell-off" :label="t('watchlist.harmless.mark')" :loading="busy && !removing" :disabled="!valid" data-testid="harmless-add" />
       <AccessRegexCheck v-if="kind === 'regex'" v-model:checked="checked" list="harmless" :pattern="patternInput" class="w-full" />
     </form>
-    <UAlert v-if="props.error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(props.error)" />
+    <ReadFailure :resource="list" data-testid="harmless-read-error" />
     <ChangeFailure :error="removing ? null : mark.shown.value" data-testid="harmless-error" />
-    <p v-if="props.loaded && !props.marks.length" class="text-sm text-muted" data-testid="harmless-empty">
+    <p v-if="loaded && !marks.length" class="text-sm text-muted" data-testid="harmless-empty">
       {{ t('watchlist.harmless.empty') }}
     </p>
-    <ul v-else-if="props.marks.length" class="divide-y divide-default rounded-md border border-default">
-      <li v-for="m in props.marks" :key="key(m)" class="flex items-center gap-2 px-3 py-1.5" data-testid="harmless-row" :data-domain="m.domain ?? undefined" :data-regex="m.regex ?? undefined">
+    <ul v-else-if="marks.length" class="divide-y divide-default rounded-md border border-default">
+      <li v-for="m in marks" :key="key(m)" class="flex items-center gap-2 px-3 py-1.5" data-testid="harmless-row" :data-domain="m.domain ?? undefined" :data-regex="m.regex ?? undefined">
         <UTooltip v-if="m.regex != null" :text="t('regex.badgeHint')">
           <UBadge color="warning" variant="outline" size="sm" icon="i-lucide-regex" :label="t('regex.badge')" data-testid="entry-regex" />
         </UTooltip>

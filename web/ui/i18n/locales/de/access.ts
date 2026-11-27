@@ -282,7 +282,6 @@ export default {
       onlyNew: 'Nur neue',
       allSeen: 'Alle als gesehen markieren',
       intro: 'Verdächtige Ziele, die die VMs in den letzten 24 Stunden erreichen wollten, gesperrt oder nicht.',
-      failed: 'Verdachtsfälle von {vm} nicht lesbar: {error}',
       none: 'Kein Verdacht in den letzten 24 Stunden.',
       noneNew: 'Kein neuer Verdacht.',
       unseen: 'neu',

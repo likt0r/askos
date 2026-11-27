@@ -9,7 +9,9 @@
 import type { RegexCheck, Target, Watchlist, WatchlistEntry } from '~/utils/access'
 import { WATCHLIST_CATEGORIES } from '~/utils/access'
 
-const props = defineProps<{ watchlist: Watchlist | null, error?: unknown }>()
+// the resource `watchlist` (its Feeds show in Feeds.vue, from the same copy)
+const list = useResource('watchlist')
+const watchlist = computed<Watchlist | null>(() => list.data.value ?? null)
 const { t, te } = useI18n()
 const errorText = useErrorText()
 const toast = useToast()
@@ -19,7 +21,7 @@ const filter = ref('')
 const showAll = ref(false)
 const entries = computed(() => {
   const q = filter.value.trim().toLowerCase()
-  const all = props.watchlist?.entries ?? []
+  const all = watchlist.value?.entries ?? []
   return q
     ? all.filter(e => entryValue(e).toLowerCase().includes(q) || e.category.includes(q) || e.source.toLowerCase().includes(q) || e.note.toLowerCase().includes(q))
     : all
@@ -122,15 +124,15 @@ function remove() {
       <h3 class="font-medium text-highlighted">
         {{ t('watchlist.hand.title') }}
       </h3>
-      <span v-if="props.watchlist && !props.watchlist.unreadable" class="text-sm text-muted">{{ t('watchlist.hand.count', props.watchlist.entries.length) }}</span>
+      <span v-if="watchlist && !watchlist.unreadable" class="text-sm text-muted">{{ t('watchlist.hand.count', watchlist.entries.length) }}</span>
       <span class="flex-1" />
       <UInput v-model="filter" size="sm" icon="i-lucide-search" :placeholder="t('watchlist.hand.filter')" :aria-label="t('watchlist.hand.filter')" class="w-full sm:w-56" />
     </div>
     <p class="text-sm text-muted">
       {{ t('watchlist.hand.intro') }}
     </p>
-    <UAlert v-if="props.error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(props.error)" role="alert" data-testid="hand-list-error" />
-    <UAlert v-if="props.watchlist?.unreadable" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="t('errors.watchlist_unreadable')" :description="props.watchlist.unreadable" role="alert" data-testid="hand-list-unreadable" />
+    <ReadFailure :resource="list" data-testid="hand-list-error" />
+    <UAlert v-if="watchlist?.unreadable" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="t('errors.watchlist_unreadable')" :description="watchlist.unreadable" role="alert" data-testid="hand-list-unreadable" />
 
     <form class="grid gap-2 rounded-lg border border-default p-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,1.2fr)_minmax(0,2fr)_minmax(0,2fr)_auto]" novalidate data-testid="watch-add" @submit.prevent="add">
       <AccessEntryKind v-model="kind" size="xs" class="sm:col-span-5" />
@@ -199,7 +201,7 @@ function remove() {
         </span>
       </li>
     </ul>
-    <p v-else-if="props.watchlist" class="text-sm text-muted">
+    <p v-else-if="watchlist" class="text-sm text-muted">
       {{ t('watchlist.hand.none') }}
     </p>
     <UButton

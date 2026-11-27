@@ -39,7 +39,7 @@ async function retry() {
     color="error"
     variant="subtle"
     icon="i-lucide-circle-alert"
-    :title="t('read.failed', { what: t(`read.resources.${props.resource.name}`) })"
+    :title="t('read.failed', { what: t(`read.resources.${props.resource.name}`, (props.resource.params ?? {}) as Record<string, unknown>) })"
     :description="errorText(props.resource.error.value)"
     :actions="[{ label: t('read.retry'), color: 'error', variant: 'outline', loading: retrying, onClick: retry }]"
     data-read="failed"

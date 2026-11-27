@@ -170,7 +170,8 @@ describe('Watchlist view', () => {
       await waitFor(() => expect(loads()).toMatchObject({
         harmless: before.harmless + 1, watchlist: before.watchlist + 1, legitimate: before.legitimate + 1,
       }))
-      expect(loads().alerts).toBeGreaterThan(before.alerts)
+      // the Alerts at most once a second (their spacing)
+      await waitFor(() => expect(loads().alerts).toBeGreaterThan(before.alerts))
     })
   })
 
@@ -215,7 +216,8 @@ describe('Watchlist view', () => {
 
   it('says which VM\'s Alerts could not be read', async () => {
     await openApp('/watchlist', routes({ 'GET /vms/priv/alerts': fail(502, 'journal_failed') }))
-    expect(must('[data-testid="alerts"]').textContent).toContain('Alerts of priv could not be read: Reading the Host\'s journal failed.')
+    expect(must('[data-testid="alerts"]').textContent).toContain('Could not read the Alerts of priv.')
+    expect(must('[data-testid="alerts"]').textContent).toContain('Reading the Host\'s journal failed.')
     expect(alertRows().map(r => r[0])).toEqual(['work', 'work'])
   })
 
@@ -402,6 +404,9 @@ describe('Watchlist view', () => {
     await type('[data-testid="legitimate-add-domain"]', 'https://Mirror.Example/simple')
     await type('[data-testid="legitimate-add-note"]', 'Spiegel')
     await click('[data-testid="legitimate-add-submit"]')
+    // a new one, not one of the list already
+    await waitFor(() => expect(document.body.textContent).toMatch(/mirror\.example.*(added|Legitimate domain)/))
+    expect(document.body.textContent).not.toContain('mirror.example is a Legitimate domain already.')
     await click('[data-testid="legitimate-row"][data-domain="pnpm.io"] [data-testid="legitimate-note-edit"]')
     await type('[data-testid="legitimate-note-input"]', 'npm mirror')
     await click('[data-testid="legitimate-note-save"]')

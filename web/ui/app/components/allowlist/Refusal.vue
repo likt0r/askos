@@ -6,20 +6,13 @@ import type { DomainCheck } from '~/utils/access'
 
 const props = defineProps<{ domain: string }>()
 const { t } = useI18n()
-const check = ref<DomainCheck | null>(null)
+// its Signals (an extra: the refusal stands on its own)
+const checking = useResource('domainCheck', { params: () => ({ domain: props.domain }), extra: true })
+const check = computed<DomainCheck | null>(() => checking.data.value ?? null)
 
 const cli = computed(() => `sudo agentbox check-domain ${props.domain}`)
 const strong = computed(() => check.value?.signals.filter(s => s.strong) ?? [])
 
-watch(() => props.domain, async (domain) => {
-  check.value = null
-  try {
-    check.value = await api<DomainCheck>(`/watchlist/check?domain=${encodeURIComponent(domain)}`)
-  }
-  catch {
-    // the refusal stands on its own; the Signals are extra
-  }
-}, { immediate: true })
 </script>
 
 <template>

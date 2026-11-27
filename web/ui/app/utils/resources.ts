@@ -12,10 +12,12 @@
 // view of it opens. Never by the module's clock (a view may choose its own: `every`), never on
 // window focus, never as an automatic retry; a read that failed because the Control Room could
 // not be reached is read again with the next `hello`.
-import { hashKey, keepPreviousData, notifyManager, QueryClient, useMutation, useQuery } from '@tanstack/vue-query'
+import { hashKey, keepPreviousData, notifyManager, QueryClient, useMutation, useQueries, useQuery } from '@tanstack/vue-query'
 import { computed, type ComputedRef, type MaybeRefOrGetter, type Ref, ref, toValue } from 'vue'
 import { api, ApiError } from './api'
-import { allowlistEntryPath, type AllowlistEntry, type BlockedDestination, entryPath, forbidPath, type ForbidEntry, type GithubAppOverview, type GithubTokens, type SshConfig, type Target } from './access'
+import { type AlertGroup, allowlistEntryPath, type AllowlistEntry, type BlockedDestination, type DomainCheck, entryPath, forbidPath, type ForbidEntry,
+  type GithubAppOverview, type GithubTokens, type HarmlessMark, type LegitimateDomain, type RegexCheck, regexCheckPath, type RegexList, type SshConfig,
+  type Target, type Watchlist } from './access'
 import { useChangeToast } from '../composables/useChangeToast'
 import { failurePlace, type FailurePlace, unreachable } from './failures'
 import { applyBuild, type BuildEvent, type BuildLog, type BuildLogEvent, buildLogPath, type ContainerfileText, type ImagesOverview, joinLog, withLogEvent } from './images'
@@ -105,6 +107,20 @@ const RESOURCES = {
   // connection with no name, a hold past those announced), so read whenever its view opens; at
   // most one read a second (the API asks it)
   blocked: declare<BlockedDestination[], { vm: string }>(p => `/vms/${p.vm}/blocked`, { fresh: true, spacing: 1000 }),
+  // the hand-maintained Watchlist (with the state of the Feeds), the Legitimate domains and the
+  // Harmless marks
+  watchlist: declare<Watchlist>('/watchlist'),
+  legitimate: declare<LegitimateDomain[]>('/watchlist/legitimate'),
+  harmless: declare<HarmlessMark[]>('/watchlist/harmless'),
+  // a VM's Alerts of the last 24 hours (harmless destinations left out): gathered for at most a
+  // second through a burst of `alert` events
+  alerts: declare<AlertGroup[], { vm: string }>(p => `/vms/${p.vm}/alerts`, { spacing: 1000 }),
+  // what the Watchlist, the Feeds and the patterns say of a domain; it changes with them
+  domainCheck: declare<DomainCheck, { domain: string }>(p => `/watchlist/check?domain=${encodeURIComponent(p.domain)}`),
+  // a pattern's preview: what it matches of the destinations seen in the last 7 days, which change
+  // with no event; read when asked, not kept once no view shows it
+  regexCheck: declare<RegexCheck, { list: RegexList, pattern: string, host: string, scope?: string, asked: number }>(
+    p => regexCheckPath(p.list, p.pattern, p.host, p.scope), { fresh: true, forget: true }),
   // the Settings (the form holds a draft of them; a VM's defaults and Open web's longest
   // duration read them too)
   settings: declare<{ settings: Record<string, SettingInfo> }>('/settings'),
@@ -209,8 +225,9 @@ const ON_EVENT: Record<string, EventRow> = {
   host: {
     write: { host: (data, sample: HostSample) => withSample(data, sample) },
   },
-  // a VM was refused a destination (an Alert) or the proxy holds one for it: its blocked list
-  alert: { stale: (event: { vm?: string | null }) => [ofEntryVm('blocked')].filter(() => !!event?.vm) },
+  // a VM was refused a destination (an Alert: its blocked list and its Alerts) or the proxy holds
+  // one for it (its blocked list)
+  alert: { stale: (event: { vm?: string | null }) => [ofEntryVm('blocked'), ofEntryVm('alerts')].filter(() => !!event?.vm) },
   held: { stale: (event: { vm?: string | null }) => [ofEntryVm('blocked')].filter(() => !!event?.vm) },
   // a VM got a GitHub token or was refused one: its list of tokens and requests is read again
   'github-token': {
@@ -257,6 +274,20 @@ const ON_ACTIVITY: Record<string, Stale[]> = {
   'set-owners': ['githubApp'],
   // the Settings
   'set-settings': ['settings'],
+  // the Watchlist and the Feeds, the Legitimate domains, the Harmless marks: the domain check says
+  // something else then, and a Harmless mark makes Alerts of its destination go or come back
+  'watch-add': ['watchlist', 'domainCheck'],
+  'watch-remove': ['watchlist', 'domainCheck'],
+  'watch-set-note': ['watchlist', 'domainCheck'],
+  'maintenance.feeds': ['watchlist', 'domainCheck'],
+  'legitimate-add': ['legitimate', 'domainCheck'],
+  'legitimate-remove': ['legitimate', 'domainCheck'],
+  'legitimate-set-note': ['legitimate', 'domainCheck'],
+  'migrate-lists': ['watchlist', 'legitimate', 'domainCheck'],
+  'mark-harmless': ['harmless', 'domainCheck', 'alerts'],
+  'unmark-harmless': ['harmless', 'domainCheck', 'alerts'],
+  // a VM's Alerts marked seen
+  'mark-seen': [ofEntryVm('alerts')],
   // a VM's Paired devices
   'observe': [ofEntryVm('pairings')],
   'unpair': [ofEntryVm('pairings')],
@@ -642,6 +673,8 @@ export interface ResourceOptions<P = undefined> {
 
 export interface Resource<T> {
   name: ResourceName
+  /** the parameters of the copy shown (its failure names them: "the Alerts of work") */
+  params?: unknown
   /** the last answer; undefined until one came */
   data: Readonly<Ref<T | undefined>>
   /** nothing came yet and a read is on the way */
@@ -684,6 +717,7 @@ export function useResource<N extends ResourceName>(name: N, ...[options = {}]: 
   }, r.client)
   return {
     name,
+    get params() { return params() },
     data: query.data as Readonly<Ref<ResourceData<N> | undefined>>,
     loading: computed(() => query.isLoading.value),
     fetching: computed(() => query.isFetching.value),
@@ -692,6 +726,37 @@ export function useResource<N extends ResourceName>(name: N, ...[options = {}]: 
     extra: !!options.extra,
     retry: async () => { await query.refetch() },
   }
+}
+
+/** One copy of a resource per set of parameters, for a view that shows several together (the
+ * Alerts of every VM): each with its data, its failure and its Retry, kept current alike. */
+export function useResourceEach<N extends ResourceName>(name: N,
+  options: { params: MaybeRefOrGetter<ResourceParams<N>[]>, extra?: boolean }): ComputedRef<Resource<ResourceData<N>>[]> {
+  const r = useResources()
+  const list = () => toValue(options.params)
+  const declaration = RESOURCES[name] as Declaration<unknown, unknown>
+  const results = useQueries({
+    queries: computed(() => list().map(params => ({
+      queryKey: keyOf(name, params),
+      queryFn: ({ queryKey }: { queryKey: readonly unknown[] }) => r.read(name, queryKey[1] as ResourceParams<N>),
+      refetchOnMount: declaration.fresh ? 'always' as const : true,
+      ...(declaration.forget ? { gcTime: 0 } : {}),
+    }))),
+  }, r.client)
+  return computed(() => {
+    const all = list()
+    return results.value.map((result, i) => ({
+      name,
+      params: all[i],
+      data: computed(() => result.data as ResourceData<N> | undefined),
+      loading: computed(() => result.isLoading),
+      fetching: computed(() => result.isFetching),
+      previous: computed(() => false),
+      error: computed(() => result.error),
+      extra: !!options.extra,
+      retry: async () => { await result.refetch() },
+    }))
+  })
 }
 
 // ---- changes ---------------------------------------------------------------------------------
