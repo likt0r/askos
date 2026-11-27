@@ -14,8 +14,9 @@ const priority = computed({
   get: () => filters.priority || ANY,
   set: (v: string) => (filters.priority = v === ANY ? '' : v),
 })
-// the filters of the last "Show"; each "Show" reads the newest entries anew
-const applied = ref({ filters: { ...filters }, shown: 0 })
+// the filters of the last "Show"; each "Show", and each opening of the tab, reads the newest
+// entries anew
+const applied = ref({ filters: { ...filters }, shown: nextLogShow() })
 const follow = ref(false)
 const list = ref<HTMLElement | null>(null)
 
@@ -79,7 +80,7 @@ watch(entries, async () => {
 function show() {
   if (problems.value.length) return
   showed = true
-  applied.value = { filters: { ...filters }, shown: applied.value.shown + 1 }
+  applied.value = { filters: { ...filters }, shown: nextLogShow() }
 }
 
 // following asks at once, then by the clock; a failed read stops it

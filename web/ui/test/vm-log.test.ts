@@ -124,25 +124,59 @@ describe('Log tab', () => {
     expect(logCalls(api.calls).length).toBe(n)
   })
 
-  it('"Show" reads the newest entries anew; the tab opened again reads what followed', async () => {
+  it('"Show" and opening the tab again read the newest entries anew', async () => {
     let newest = [entry(1, 'first'), entry(2, 'second')]
-    const api = fakeApi(routes(q => ({ status: 200, body: q.after_cursor === 's=2'
-      ? { vm: 'work', entries: [entry(3, 'third')], cursor: 's=3', truncated: false }
-      : { vm: 'work', entries: newest, cursor: newest.at(-1)!.cursor, truncated: false } })))
+    const api = fakeApi(routes(() => ({ status: 200, body: { vm: 'work', entries: newest, cursor: newest.at(-1)!.cursor, truncated: false } })))
     await openApp('/vms/work/log', [WORK])
     const messages = () => byTestId('log-entries').findAll('[data-testid="log-message"]').map(m => m.text())
     expect(messages()).toEqual(['first', 'second'])
     await useRouter().push('/vms/work/web')
     await flushPromises()
+    newest = [entry(3, 'third')]
     await useRouter().push('/vms/work/log')
     await flushPromises()
-    expect(logCalls(api.calls).at(-1)).toEqual({ boot: 'current', lines: '200', after_cursor: 's=2' })
-    expect(messages()).toEqual(['first', 'second', 'third'])
+    expect(logCalls(api.calls).at(-1)).toEqual({ boot: 'current', lines: '200' })
+    expect(messages()).toEqual(['third'])
     newest = [entry(4, 'fourth')]
     await submit('log-filters')
     await flushPromises()
+    expect(logCalls(api.calls)).toHaveLength(3)
     expect(logCalls(api.calls).at(-1)).toEqual({ boot: 'current', lines: '200' })
     expect(messages()).toEqual(['fourth'])
+  })
+
+  it('while following, reads on at once when more followed than one answer holds', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const api = fakeApi(routes(q => ({ status: 200, body: q.after_cursor === 's=1'
+      ? { vm: 'work', entries: [entry(2, 'second')], cursor: 's=2', truncated: true }
+      : q.after_cursor === 's=2'
+        ? { vm: 'work', entries: [entry(3, 'third')], cursor: 's=3', truncated: false }
+        : { vm: 'work', entries: [entry(1, 'first')], cursor: 's=1', truncated: false } })))
+    await openApp('/vms/work/log', [WORK])
+    await byTestId('log-follow').trigger('click')
+    await flushPromises()
+    await flushPromises()
+    expect(logCalls(api.calls).map(q => q.after_cursor)).toEqual([undefined, 's=1', 's=2'])
+    expect(byTestId('log-entries').findAll('[data-testid="log-message"]').map(m => m.text())).toEqual(['first', 'second', 'third'])
+    expect(exists('log-truncated')).toBe(false)
+  })
+
+  it('keeps the entries of the filters before on screen while a "Show" reads, without their count', async () => {
+    let answer: (() => void) | null = null
+    fakeApi(routes(q => (q.unit
+      ? new Promise(resolve => { answer = () => resolve({ status: 200, body: { vm: 'work', entries: [entry(2, 'orca only')], cursor: 's=2', truncated: false } }) }) as never
+      : { status: 200, body: { vm: 'work', entries: [entry(1, 'first')], cursor: 's=1', truncated: false } })))
+    await openApp('/vms/work/log', [WORK])
+    await type('log-unit', 'agentbox-orca.service')
+    await submit('log-filters')
+    await flushPromises()
+    expect(byTestId('log-entries').findAll('[data-testid="log-message"]').map(m => m.text())).toEqual(['first'])
+    expect(exists('log-count')).toBe(false)
+    expect(byTestId('log-show').find('.animate-spin').exists()).toBe(true)
+    answer!()
+    await flushPromises()
+    expect(byTestId('log-entries').findAll('[data-testid="log-message"]').map(m => m.text())).toEqual(['orca only'])
+    expect(text('log-count')).toBe('one entry')
   })
 
   it('stops following when the VM stops answering', async () => {

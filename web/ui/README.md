@@ -199,7 +199,8 @@ module (#216).
 - **When data is read again**: only for a reason the stream or the owner gives: a row of the
   table, a change made in this browser, a `hello` with `resumed: false` that is not the first
   (everything is stale), any `hello` for the reads that could not reach the Control Room, or
-  Retry. Never by the clock, never on window focus, never as an automatic retry.
+  Retry. Never by the module's clock (a view may choose its own, `every`), never on window focus,
+  never as an automatic retry.
 - **A change made in this browser**: every change is declared once in `CHANGES`, its request
   from the view's arguments and what it makes stale (`rebuild: declareChange((image: string) =>
   ({ method: 'POST', path: '/builds', body: { image } }))`). A view asks for it by name:

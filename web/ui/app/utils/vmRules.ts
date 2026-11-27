@@ -123,6 +123,15 @@ export interface VmLog {
   /** the first answer was cut off: narrow the filters */
   truncated: boolean
   dropped: boolean
+  /** an answer after the cursor was cut off (it holds the oldest of what followed): more follow */
+  more?: boolean
+}
+
+let shows = 0
+/** A new "Show" of the Log tab (also each time it opens): its own copy, read anew. */
+export function nextLogShow() {
+  shows += 1
+  return shows
 }
 
 /** GET /vms/<vm>/logs: the newest entries for the filters, only those after the held log's
@@ -137,13 +146,15 @@ export function joinVmLog(held: VmLog | undefined, answer: LogResult): VmLog {
   if (!held?.cursor) {
     return { entries: fresh, cursor: answer?.cursor ?? fresh.at(-1)?.cursor ?? null, truncated: answer?.truncated === true, dropped: false }
   }
-  if (!fresh.length) return held
+  const more = answer?.truncated === true
+  if (!fresh.length) return !!held.more === more ? held : { ...held, more }
   const all = [...held.entries, ...fresh]
   return {
     entries: all.length > MAX_LOG_LINES ? all.slice(-MAX_LOG_LINES) : all,
     cursor: answer.cursor ?? fresh.at(-1)?.cursor ?? held.cursor,
     truncated: held.truncated,
     dropped: held.dropped || all.length > MAX_LOG_LINES,
+    more,
   }
 }
 

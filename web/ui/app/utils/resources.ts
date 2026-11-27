@@ -9,9 +9,9 @@
 // Data is read again only for a reason the stream or the owner gives: a row of the tables below
 // (an event, an Activity entry, a change made in this browser), a `hello` with `resumed: false`
 // that is not the first, or "Retry"; and a resource the Host sends no event about (`fresh`) when a
-// view of it opens. Never by the clock, never on window focus, never as an automatic retry; a
-// read that failed because the Control Room could not be reached is read again with the next
-// `hello`.
+// view of it opens. Never by the module's clock (a view may choose its own: `every`), never on
+// window focus, never as an automatic retry; a read that failed because the Control Room could
+// not be reached is read again with the next `hello`.
 import { hashKey, keepPreviousData, notifyManager, QueryClient, useMutation, useQuery } from '@tanstack/vue-query'
 import { computed, type ComputedRef, type MaybeRefOrGetter, type Ref, ref, toValue } from 'vue'
 import { api, ApiError } from './api'
@@ -81,11 +81,12 @@ const RESOURCES = {
   // a Build's log: read on after the held cursor, so only what is new comes
   buildLog: declare<BuildLog, { image: string, build: string }>((p, held) => buildLogPath(p.image, p.build, held),
     { merge: joinLog, missed: log => ({ ...log, gap: true }), readOn: log => !!log.gap }),
-  // a VM's journal for the filters the owner applied (`shown`: each "Show" is a new read): read
-  // on after the held cursor; nothing on the Host says when it grows, so it is read whenever its
-  // view opens, and while following, by the view's clock
+  // a VM's journal for the filters the owner applied (`shown`: each "Show", and each opening of
+  // the tab, is a new copy, the newest entries read anew): read on after the held cursor, while
+  // following by the view's clock, and at once while more follow than one answer holds; nothing
+  // on the Host says when it grows
   vmLog: declare<VmLog, { vm: string, filters: LogFilters, shown: number }>((p, held) => vmLogPath(p.vm, p.filters, held),
-    { fresh: true, merge: joinVmLog }),
+    { fresh: true, merge: joinVmLog, readOn: log => !!log.more }),
   // an Image's Containerfile: the installed Release's, or its Recipe's
   containerfile: declare<ContainerfileText, { image: string }>(p => `/images/${encodeURIComponent(p.image)}/containerfile`),
 }
@@ -569,8 +570,10 @@ export function useResource<N extends ResourceName>(name: N, ...[options = {}]: 
     // one the Host sends no event about is read again whenever a view of it opens
     refetchOnMount: RESOURCES[name].fresh ? 'always' : true,
     placeholderData: options.keepPrevious ? keepPreviousData : undefined,
-    // a computed, not a function: vue-query takes its change at once (stops the clock)
+    // a computed, not a function: vue-query takes its change at once (stops the clock); it goes
+    // on while the browser tab is in the background
     refetchInterval: computed(() => toValue(options.every) ?? false),
+    refetchIntervalInBackground: true,
     enabled: () => toValue(options.enabled ?? true),
   }, r.client)
   return {
