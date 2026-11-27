@@ -350,3 +350,14 @@ describe('a VM\'s copy marked stale while it is read', () => {
     r.stop()
   })
 })
+
+describe('the stale table for the GitHub Apps', () => {
+  it.each(['set-github-app', 'remove-github-app', 'set-owners', 'create', 'delete'])('%s marks githubApp stale', (code) => {
+    const live = fakeLive()
+    const r = createResources(live as never)
+    r.client.setQueryData(['githubApp'], { apps: [], missing: [] })
+    live.emit('activity', entry(code))
+    expect(r.client.getQueryState(['githubApp'])!.isInvalidated).toBe(true)
+    r.stop()
+  })
+})

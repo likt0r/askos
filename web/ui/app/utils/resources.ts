@@ -15,7 +15,7 @@
 import { notifyManager, QueryClient, useMutation, useQuery } from '@tanstack/vue-query'
 import { computed, type ComputedRef, type MaybeRefOrGetter, type Ref, ref, toValue } from 'vue'
 import { api, ApiError } from './api'
-import { allowlistEntryPath, type AllowlistEntry, entryPath, forbidPath, type ForbidEntry, type Target } from './access'
+import { allowlistEntryPath, type AllowlistEntry, entryPath, forbidPath, type ForbidEntry, type GithubAppOverview, type Target } from './access'
 import { useChangeToast } from '../composables/useChangeToast'
 import { failurePlace, type FailurePlace, unreachable } from './failures'
 import { applyBuild, type BuildEvent, type ImagesOverview } from './images'
@@ -48,6 +48,7 @@ const RESOURCES = {
   images: declare<ImagesOverview>('/images'),
   // a device pairs inside Orca with the code: nothing on the Host records it
   pairings: declare<Pairings, { vm: string }>(p => `/vms/${p.vm}/pairings`, { fresh: true }),
+  githubApp: declare<GithubAppOverview>('/github-app'),
 }
 
 export type ResourceName = keyof typeof RESOURCES
@@ -107,12 +108,16 @@ const ON_ACTIVITY: Record<string, Stale[]> = {
   'recipe.restore': ['images'],
   'recipe.remove': ['images'],
   // which VMs use and pin each Image and Build (`vms`, `used_by`, `pinned_by`)
-  'create': ['images'],
-  'delete': ['images'],
+  'create': ['images', 'githubApp'],
+  'delete': ['images', 'githubApp'],
   'set-image': ['images'],
   'reset': ['images'],
   'reset.automatic': ['images'],
   'reset.update': ['images'],
+  // the GitHub Apps, their Installations and which VMs' owners miss one
+  'set-github-app': ['githubApp'],
+  'remove-github-app': ['githubApp'],
+  'set-owners': ['githubApp'],
   // a VM's Paired devices
   'observe': [ofEntryVm('pairings')],
   'unpair': [ofEntryVm('pairings')],

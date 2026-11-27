@@ -324,3 +324,29 @@ describe('Access changes and their failures (#215)', () => {
     expect(toasts()).toEqual([])
   })
 })
+
+describe('the GitHub Apps through the resources module (#216)', () => {
+  const activity = (code: string) => ({ time: 't', vm: 'work', actor: 'owner', kind: 'action', action: code, code, outcome: 'ok', description: '' })
+
+  it('a VM\'s owners follow a change of the Apps: the missing mark is read again', async () => {
+    let missing = [{ owner: 'acme-corp', vms: ['work'] }]
+    const { api, es } = await openApp('/vms/work/access', { ...ACCESS, 'GET /github-app': () => ok({ ...APP, missing }) }, [workVm()])
+    expect(must('[data-owner="acme-corp"]').querySelector('[data-testid="owner-missing"]')).not.toBeNull()
+    missing = []
+    es.emit('activity', activity('set-github-app'))
+    await waitFor(() => expect(must('[data-owner="acme-corp"]').querySelector('[data-testid="owner-missing"]')).toBeNull())
+    expect(api.calls.filter(c => c.path === '/github-app')).toHaveLength(2)
+  })
+
+  it('without an App the section says so in its own words, also after the last one was removed', async () => {
+    let gone = false
+    const { es } = await openApp('/system', { 'GET /github-app': () => (gone ? fail(409, 'github_app_missing') : ok(APP)) })
+    expect($('[data-testid="app-info"]')).not.toBeNull()
+    gone = true
+    es.emit('activity', activity('remove-github-app'))
+    await waitFor(() => expect($('[data-testid="app-info"]')).toBeNull())
+    const notice = must('[data-testid="app-error"]')
+    expect(notice.textContent).toContain('GitHub')
+    expect(must('[data-testid="github-app"]').querySelector('[data-read]')).toBeNull()
+  })
+})

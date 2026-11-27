@@ -4,10 +4,10 @@
 // refreshed, with Retry, and the data stays. Nothing of its own while the live connection is
 // down, and for a read that could not reach the Control Room before the stream is live: the
 // connection notice says it, and the next `hello` reads again. Nothing for a read the view
-// declared an extra.
+// declared an extra, nor for a code the view words itself (`own`).
 import type { Resource } from '~/utils/resources'
 
-const props = defineProps<{ resource: Resource<unknown> }>()
+const props = defineProps<{ resource: Resource<unknown>, own?: string[] }>()
 const { t } = useI18n()
 const errorText = useErrorText()
 const live = useLive()
@@ -15,6 +15,7 @@ const live = useLive()
 const shown = computed(() => {
   const r = props.resource
   if (r.extra || !r.error.value) return null
+  if (r.error.value instanceof ApiError && props.own?.includes(r.error.value.code)) return null
   if (live.state.connection === 'reconnecting') return null
   // not before the stream is live, nor while the read again after a `hello` is on the way
   if (unreachable(r.error.value) && (live.state.connection !== 'live' || r.fetching.value)) return null

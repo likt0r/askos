@@ -23,6 +23,8 @@ builds_kept: 3, release: '1.0.0', disks_readable: true }
 
 const reads = (api: ReturnType<typeof fakeApi>) => api.calls.filter(c => c.path === '/images').length
 const pinnable = () => [...document.body.querySelectorAll('[data-testid="build-choice"] [role="radio"]')].map(r => r.getAttribute('value'))
+/** the Images section: other sections of the System page show their own reads */
+const images = () => byTestId('system-images').element
 const failure = (within: ParentNode = document.body) => within.querySelector('[data-read]')?.getAttribute('data-read') ?? null
 
 describe('one copy of the Images', () => {
@@ -196,7 +198,7 @@ describe('a failed read of the Images', () => {
     const api = fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': () => (++answers === 1 ? OFFLINE() : OK(IMAGES)) })
     await openApp('/system', [WORK])
     expect(reads(api)).toBe(2)
-    expect(failure()).toBeNull()
+    expect(failure(images())).toBeNull()
     expect(byTestId('system-images').element.querySelectorAll('[data-testid="image-card"]')).toHaveLength(1)
   })
 
@@ -211,14 +213,14 @@ describe('a failed read of the Images', () => {
     await flushPromises()
     expect(reads(api)).toBe(2)
     expect(exists('connection-notice')).toBe(true)
-    expect(failure()).toBeNull()
+    expect(failure(images())).toBeNull()
     expect(section.querySelectorAll('[data-testid="image-card"]')).toHaveLength(1)     // what it showed stays
 
     offline = false
     es.emit('hello', { stream: 'ab12cd34', resumed: true })
     await flushPromises()
     expect(reads(api)).toBe(3)
-    expect(failure()).toBeNull()
+    expect(failure(images())).toBeNull()
   })
 
   it('says nothing while the read again after the connection came back is on the way', async () => {
@@ -234,10 +236,10 @@ describe('a failed read of the Images', () => {
     es.emit('hello', { stream: 'ab12cd34', resumed: true })
     await flushPromises()
     expect(exists('connection-notice')).toBe(false)
-    expect(failure()).toBeNull()
+    expect(failure(images())).toBeNull()
     release()
     await flushPromises()
-    expect(failure()).toBeNull()
+    expect(failure(images())).toBeNull()
   })
 
   it('a read that cannot reach the Control Room while the stream is live shows Retry', async () => {
