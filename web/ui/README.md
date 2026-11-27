@@ -93,7 +93,6 @@ app/
                            rebuilds, Update now), useSettings,
                            useNotifications (this browser's preference, the `notification`
                            listener), useReloadPrompt (own version vs. the resource `version`),
-                           useLiveEvent and useReloadOnActivity (no caller left, #218),
                            useWhen (times in the UI language), useChangeToast (a failed change
                            without a form: a toast that stays, with Details), useFaultToast (a fault the UI can
                            go on from: a toast that stays, with Details)
@@ -287,10 +286,9 @@ subscribers, `const off = live.on('activity', (data) => ...)` (names in `PUSHED_
 all and writes what they carry into its cache, so a view never knows whether its data was read
 or pushed. Events are whole objects, so a repeat does no harm. Subscribe in a composable and
 call `off()` in `onScopeDispose`. A throwing listener does not stop the others. No view reads
-on an event itself: its data comes from the resources module, whose tables follow the stream.
-`useLiveEvent(name, fn, delayMs)` (subscribing for a component, `fn` once per burst) and
-`useReloadOnActivity(load, { codes, kinds, match })` (a `load` on the Activity entries that
-change a view's data) have no caller left; #218 removes them.
+on an event itself: its data comes from the resources module, whose tables (`ON_EVENT`,
+`ON_ACTIVITY`, `ON_ACTIVITY_KIND`) are the one way data is kept current; a new event or Activity
+code that changes a resource is a row there.
 
 ### Adding an i18n area
 
