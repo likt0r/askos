@@ -309,6 +309,7 @@ export default {
       lines: 'Eine ganze Zahl von 1 bis {max}.',
     },
     truncated: 'Die Ausgabe wurde gekürzt, weil sie zu groß war. Filter enger fassen.',
+    more: 'Es kamen mehr Einträge nach, als eine Antwort fasst: „Neuen Einträgen folgen“ liest sie, „Anzeigen“ die neuesten.',
     count: 'keine Einträge | ein Eintrag | {n} Einträge',
     dropped: 'Ältere Einträge sind aus der Ansicht gefallen (höchstens {max}).',
     empty: 'Keine Einträge passen zu diesen Filtern.',

@@ -45,6 +45,8 @@ interface Declaration<T, P> {
   /** the Host sends no event about its changes: read again whenever a view of it opens (the owner
    * on #216) */
   fresh: boolean
+  /** not kept once no view shows it (a copy each view opening reads anew anyway) */
+  forget: boolean
   /** codes the Host answers for a state, not a failure: read as this data */
   states: Record<string, () => T>
   /** only carry the types of the answer and of the parameters */
@@ -54,10 +56,10 @@ interface Declaration<T, P> {
 
 /** A resource: its path, or for one with parameters (a VM's), its path from them. */
 function declare<T, P = undefined>(path: string | ((params: P, held: T | undefined) => string),
-  options: { fresh?: boolean, states?: Record<string, () => T>, merge?: (held: T | undefined, answer: any) => T,
+  options: { fresh?: boolean, forget?: boolean, states?: Record<string, () => T>, merge?: (held: T | undefined, answer: any) => T,
     missed?: (held: T) => T, readOn?: (data: T) => boolean } = {}): Declaration<T, P> {
-  return { path: typeof path === 'string' ? () => path : path, fresh: !!options.fresh, states: options.states ?? {},
-    merge: options.merge, missed: options.missed, readOn: options.readOn }
+  return { path: typeof path === 'string' ? () => path : path, fresh: !!options.fresh, forget: !!options.forget,
+    states: options.states ?? {}, merge: options.merge, missed: options.missed, readOn: options.readOn }
 }
 
 const RESOURCES = {
@@ -82,11 +84,11 @@ const RESOURCES = {
   buildLog: declare<BuildLog, { image: string, build: string }>((p, held) => buildLogPath(p.image, p.build, held),
     { merge: joinLog, missed: log => ({ ...log, gap: true }), readOn: log => !!log.gap }),
   // a VM's journal for the filters the owner applied (`shown`: each "Show", and each opening of
-  // the tab, is a new copy, the newest entries read anew): read on after the held cursor, while
-  // following by the view's clock, and at once while more follow than one answer holds; nothing
-  // on the Host says when it grows
+  // the tab, is a new copy, the newest entries read anew): read on after the held cursor while
+  // following, by the view's clock (what one answer could not hold comes with the next); after a
+  // reconnect that could not resume, the newest anew; nothing on the Host says when it grows
   vmLog: declare<VmLog, { vm: string, filters: LogFilters, shown: number }>((p, held) => vmLogPath(p.vm, p.filters, held),
-    { fresh: true, merge: joinVmLog, readOn: log => !!log.more }),
+    { fresh: true, forget: true, merge: joinVmLog, missed: log => ({ ...log, cursor: null }) }),
   // an Image's Containerfile: the installed Release's, or its Recipe's
   containerfile: declare<ContainerfileText, { image: string }>(p => `/images/${encodeURIComponent(p.image)}/containerfile`),
 }
@@ -569,6 +571,7 @@ export function useResource<N extends ResourceName>(name: N, ...[options = {}]: 
     queryFn: ({ queryKey }) => r.read(name, queryKey[1] as ResourceParams<N>),
     // one the Host sends no event about is read again whenever a view of it opens
     refetchOnMount: RESOURCES[name].fresh ? 'always' : true,
+    ...(RESOURCES[name].forget ? { gcTime: 0 } : {}),
     placeholderData: options.keepPrevious ? keepPreviousData : undefined,
     // a computed, not a function: vue-query takes its change at once (stops the clock); it goes
     // on while the browser tab is in the background

@@ -182,6 +182,8 @@ describe('a VM\'s log as the Log tab holds it', () => {
     // an answer after the cursor that was cut off: more follow
     expect(joinVmLog(next, answer([4], true))).toMatchObject({ cursor: 's=4', truncated: false, more: true })
     expect(joinVmLog(joinVmLog(next, answer([4], true)), answer([5]))).toMatchObject({ cursor: 's=5', more: false })
+    // cut off without entries: the same entries, still more to come
+    expect(joinVmLog(next, answer([], true))).toMatchObject({ entries: next.entries, cursor: 's=3', more: true })
     const many = joinVmLog(held, answer(Array.from({ length: MAX_LOG_LINES }, (_, i) => i + 3)))
     expect(many.entries).toHaveLength(MAX_LOG_LINES)
     expect(many.dropped).toBe(true)

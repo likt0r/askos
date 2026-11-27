@@ -309,6 +309,7 @@ export default {
       lines: 'A whole number from 1 to {max}.',
     },
     truncated: 'The output was cut off because it was too large. Narrow the filters.',
+    more: 'More entries followed than one answer holds: “Follow new entries” reads them, “Show” the newest.',
     count: 'no entries | one entry | {n} entries',
     dropped: 'Older entries left the view (at most {max}).',
     empty: 'No entries match these filters.',

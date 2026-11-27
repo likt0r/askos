@@ -137,6 +137,9 @@ watch(() => props.name, () => {
     </form>
 
     <ReadFailure :resource="log" data-testid="log-error" />
+    <p v-if="loaded && log.data.value?.more && !follow" class="text-xs text-warning" data-testid="log-more">
+      {{ t('vm.log.more') }}
+    </p>
     <UAlert v-if="loaded && log.data.value?.truncated" color="warning" variant="subtle" icon="i-lucide-scissors" :title="t('vm.log.truncated')" data-testid="log-truncated" />
 
     <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">

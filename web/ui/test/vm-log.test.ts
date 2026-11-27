@@ -3,6 +3,7 @@
 // entries via the cursor, Pairing codes never shown.
 import { flushPromises } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { resourcesForTests } from '~/utils/resources'
 import { fakeApi, SIGNED_IN, vm, type Call } from './fakes'
 import { byTestId, exists, openApp, setUp, submit, tearDown, text, type } from './vm-helpers'
 
@@ -132,11 +133,15 @@ describe('Log tab', () => {
     expect(messages()).toEqual(['first', 'second'])
     await useRouter().push('/vms/work/web')
     await flushPromises()
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(resourcesForTests().client.getQueryCache().findAll({ queryKey: ['vmLog'] })).toHaveLength(0)
     newest = [entry(3, 'third')]
     await useRouter().push('/vms/work/log')
     await flushPromises()
     expect(logCalls(api.calls).at(-1)).toEqual({ boot: 'current', lines: '200' })
     expect(messages()).toEqual(['third'])
+    // a copy no view shows is not kept
+    expect(resourcesForTests().client.getQueryCache().findAll({ queryKey: ['vmLog'] })).toHaveLength(1)
     newest = [entry(4, 'fourth')]
     await submit('log-filters')
     await flushPromises()
@@ -145,20 +150,52 @@ describe('Log tab', () => {
     expect(messages()).toEqual(['fourth'])
   })
 
-  it('while following, reads on at once when more followed than one answer holds', async () => {
+  it('while following, what one answer could not hold comes with the next poll, and says so when following stops', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
     const api = fakeApi(routes(q => ({ status: 200, body: q.after_cursor === 's=1'
       ? { vm: 'work', entries: [entry(2, 'second')], cursor: 's=2', truncated: true }
       : q.after_cursor === 's=2'
-        ? { vm: 'work', entries: [entry(3, 'third')], cursor: 's=3', truncated: false }
+        ? { vm: 'work', entries: [entry(3, 'third')], cursor: 's=3', truncated: true }
         : { vm: 'work', entries: [entry(1, 'first')], cursor: 's=1', truncated: false } })))
     await openApp('/vms/work/log', [WORK])
     await byTestId('log-follow').trigger('click')
     await flushPromises()
+    expect(logCalls(api.calls).map(q => q.after_cursor)).toEqual([undefined, 's=1'])
+    expect(exists('log-more')).toBe(false)
+    vi.advanceTimersByTime(3000)
     await flushPromises()
     expect(logCalls(api.calls).map(q => q.after_cursor)).toEqual([undefined, 's=1', 's=2'])
     expect(byTestId('log-entries').findAll('[data-testid="log-message"]').map(m => m.text())).toEqual(['first', 'second', 'third'])
+    await byTestId('log-follow').trigger('click')
+    await flushPromises()
+    expect(text('log-more')).toContain('“Follow new entries” reads them')
     expect(exists('log-truncated')).toBe(false)
+  })
+
+  it('an answer cut off without entries asks nothing more until the next poll', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const api = fakeApi(routes(q => ({ status: 200, body: q.after_cursor
+      ? { vm: 'work', entries: [], cursor: null, truncated: true }
+      : { vm: 'work', entries: [entry(1, 'first')], cursor: 's=1', truncated: false } })))
+    await openApp('/vms/work/log', [WORK])
+    await byTestId('log-follow').trigger('click')
+    await flushPromises()
+    await flushPromises()
+    expect(logCalls(api.calls)).toHaveLength(2)
+    vi.advanceTimersByTime(3000)
+    await flushPromises()
+    expect(logCalls(api.calls)).toHaveLength(3)
+  })
+
+  it('a reconnect that could not resume reads the newest entries anew', async () => {
+    let newest = [entry(1, 'first')]
+    const api = fakeApi(routes(() => ({ status: 200, body: { vm: 'work', entries: newest, cursor: newest.at(-1)!.cursor, truncated: false } })))
+    const { es } = await openApp('/vms/work/log', [WORK])
+    newest = [entry(5, 'fifth')]
+    es.emit('hello', { stream: 'other', resumed: false })
+    await flushPromises()
+    expect(logCalls(api.calls).at(-1)).toEqual({ boot: 'current', lines: '200' })
+    expect(byTestId('log-entries').findAll('[data-testid="log-message"]').map(m => m.text())).toEqual(['fifth'])
   })
 
   it('keeps the entries of the filters before on screen while a "Show" reads, without their count', async () => {
