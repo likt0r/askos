@@ -2,22 +2,28 @@
 // An Image's definition (#67): its Containerfile, linked in the repository at the Release tag or
 // commit its current Build came from (just the path when that is not known), and on request its
 // text from the installed Release, which the next Build takes: read-only, read on the Host by
-// agentbox, never fetched from GitHub.
-import type { Build, ContainerfileText, Image } from '~/utils/images'
+// agentbox, never fetched from GitHub. The text is read only while the panel is open; a Recipe
+// that changes reads it again then (the resources module's rows).
+import type { Build, Image } from '~/utils/images'
 
 const props = defineProps<{ image: Image, build?: Build | null }>()
 const { t } = useI18n()
-const errorText = useErrorText()
 
+// the installed Release has no Containerfile for an Image it no longer defines; a Recipe has its own
+const readable = computed(() => props.image.in_release !== false || !!props.image.recipe)
 const open = ref(false)
-const loading = ref(false)
-const error = ref<unknown>(null)
-const file = ref<ContainerfileText | null>(null)
+// shown and read while open, and while there is a text to read (a removed Recipe's Image may
+// have none)
+const shown = computed(() => open.value && readable.value)
+// one that went because its text did, stays closed when a text comes back
+watch(readable, (r) => { if (!r) open.value = false })
+const containerfile = useResource('containerfile', { params: () => ({ image: props.image.name }), enabled: shown })
+const file = computed(() => containerfile.data.value ?? null)
+// where the text shown came from, by its own answer: the Image may have changed since
+const fromRecipe = computed(() => !!file.value?.recipe_sha256)
 
 const link = computed(() => githubLink(props.image.containerfile_url))
 const fileLink = computed(() => githubLink(file.value?.url))
-// the installed Release has no Containerfile for an Image it no longer defines; a Recipe has its own
-const readable = computed(() => props.image.in_release !== false || !!props.image.recipe)
 const panelId = computed(() => `containerfile-${props.image.name}`)
 
 // where the link points: what the current Build came from
@@ -29,54 +35,19 @@ const builtFrom = computed(() => {
 })
 // the text is the installed Release's (or the current Recipe's); the current Build may have come
 // from other files
-const differs = computed(() => !!file.value && !!props.build && (props.image.recipe
+const differs = computed(() => !!file.value && !!props.build && (fromRecipe.value
   ? !!props.build.recipe_sha256 && props.build.recipe_sha256 !== file.value.recipe_sha256
   : !(props.build.release && props.build.release === file.value.release)))
 const differsText = computed(() => {
   const b = props.build
-  if (props.image.recipe) return t('system.definition.differsRecipe')
+  if (fromRecipe.value) return t('system.definition.differsRecipe')
   if (b?.release) return t('system.definition.differsRelease', { release: b.release })
   if (b?.commit) return t('system.definition.differsCommit', { commit: b.commit.slice(0, 12) })
   return t('system.definition.differsUnknown')
 })
 
-// only the newest read counts: one that refresh() dropped meanwhile changes nothing
-let reading = 0
-
-async function load() {
-  const mine = ++reading
-  loading.value = true
-  try {
-    const text = await api<ContainerfileText>(`/images/${encodeURIComponent(props.image.name)}/containerfile`)
-    if (mine !== reading) return
-    file.value = text
-    error.value = null
-  }
-  catch (e) {
-    if (mine === reading) error.value = e
-  }
-  finally {
-    if (mine === reading) loading.value = false
-  }
-}
-
-// a Recipe defines the Image's text: an open panel reads it again, a closed one at its next opening
-function refresh() {
-  if (open.value) return void load()
-  reading += 1
-  file.value = null
-  error.value = null
-  loading.value = false
-}
-useReloadOnActivity(refresh, {
-  codes: ['recipe.set', 'recipe.restore', 'recipe.remove'],
-  match: entry => entry.params?.name === props.image.name,
-})
-
 function toggle() {
-  open.value = !open.value
-  // read once; after a failure again at the next opening
-  if (open.value && !file.value && !loading.value) void load()
+  open.value = !shown.value
 }
 </script>
 
@@ -100,24 +71,22 @@ function toggle() {
         size="xs"
         color="neutral"
         variant="ghost"
-        :icon="open ? 'i-lucide-chevron-up' : 'i-lucide-file-text'"
-        :label="open ? t('system.definition.hide') : t('system.definition.show')"
-        :aria-expanded="open"
+        :icon="shown ? 'i-lucide-chevron-up' : 'i-lucide-file-text'"
+        :label="shown ? t('system.definition.hide') : t('system.definition.show')"
+        :aria-expanded="shown"
         :aria-controls="panelId"
         data-testid="containerfile-toggle"
         @click="toggle"
       />
     </div>
-    <div v-if="open" :id="panelId" class="mt-2" data-testid="containerfile">
-      <p v-if="error" class="text-sm text-error" data-testid="containerfile-error">
-        {{ errorText(error) }}
-      </p>
-      <p v-else-if="!file" class="text-sm text-muted">
+    <div v-if="shown" :id="panelId" class="mt-2" data-testid="containerfile">
+      <ReadFailure :resource="containerfile" class="mb-2" data-testid="containerfile-error" />
+      <p v-if="containerfile.loading.value" class="text-sm text-muted">
         {{ t('system.definition.loading') }}
       </p>
-      <template v-else>
+      <template v-else-if="file">
         <p class="mb-1 flex flex-wrap items-center gap-x-2 text-xs text-muted" data-testid="containerfile-source">
-          <span>{{ image.recipe ? t('system.definition.fromRecipe') : file.release ? t('system.definition.fromRelease', { release: file.release }) : t('system.definition.fromInstalled') }}</span>
+          <span>{{ fromRecipe ? t('system.definition.fromRecipe') : file.release ? t('system.definition.fromRelease', { release: file.release }) : t('system.definition.fromInstalled') }}</span>
           <a
             v-if="fileLink"
             :href="fileLink"

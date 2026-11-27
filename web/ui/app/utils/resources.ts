@@ -18,7 +18,7 @@ import { api, ApiError } from './api'
 import { allowlistEntryPath, type AllowlistEntry, entryPath, forbidPath, type ForbidEntry, type GithubAppOverview, type GithubTokens, type SshConfig, type Target } from './access'
 import { useChangeToast } from '../composables/useChangeToast'
 import { failurePlace, type FailurePlace, unreachable } from './failures'
-import { applyBuild, type BuildEvent, type ImagesOverview } from './images'
+import { applyBuild, type BuildEvent, type ContainerfileText, type ImagesOverview } from './images'
 import type { SettingValue } from './settings'
 import type { Pairings } from './vm'
 import type { Live, VersionInfo, Vm } from './live'
@@ -63,6 +63,8 @@ const RESOURCES = {
   }),
   // the UI build installed and the Release of Agent Box the Host runs
   version: declare<VersionInfo>('/version'),
+  // an Image's Containerfile: the installed Release's, or its Recipe's
+  containerfile: declare<ContainerfileText, { image: string }>(p => `/images/${encodeURIComponent(p.image)}/containerfile`),
 }
 
 export type ResourceName = keyof typeof RESOURCES
@@ -71,15 +73,25 @@ export type ResourceData<N extends ResourceName> = NonNullable<(typeof RESOURCES
 
 // ---- what an event does ----------------------------------------------------------------------
 
+/** What an event or an Activity entry tells about whom it concerns: its VM, and an entry's
+ * parameters (a Recipe's `name`). */
+interface Concerns { vm?: string | null, params?: Record<string, unknown> | null }
+
 /** A resource an event or an Activity entry makes stale: by its name, or for one with
- * parameters, only those of the event (its VM's). */
-type Stale = ResourceName | { name: ResourceName, params: (entry: { vm?: string | null }) => unknown }
+ * parameters, only those of the event (its VM's, its Image's). */
+type Stale = ResourceName | { name: ResourceName, params: (entry: Concerns) => unknown }
 
 /** The resources a VM has one of (their parameters are `{ vm }`). */
 type VmResourceName = { [N in ResourceName]: ResourceParams<N> extends { vm: string } ? N : never }[ResourceName]
 
 /** A VM's resource, of the entry's VM (every VM's when it names none). */
 const ofEntryVm = (name: VmResourceName): Stale => ({ name, params: entry => (entry.vm ? { vm: entry.vm } : undefined) })
+
+/** An Image's resource, of the Image the entry's `name` names (every Image's when it names none). */
+const ofEntryImage = (name: 'containerfile'): Stale => ({
+  name,
+  params: entry => (typeof entry.params?.name === 'string' && entry.params.name ? { image: entry.params.name } : undefined),
+})
 
 /** One row: a live event either carries the whole object and is written into a resource
  * (`write` returns the new data, or null when it cannot place the event: the resource is stale
@@ -137,10 +149,11 @@ function versionCheckRuns(services: { units?: { unit?: string, state?: string }[
 const ON_ACTIVITY: Record<string, Stale[]> = {
   'maintenance.versions': ['images'],
   'update-now': ['images'],
-  // a Recipe defines an Image: it comes, changes or goes without a Build
-  'recipe.set': ['images'],
-  'recipe.restore': ['images'],
-  'recipe.remove': ['images'],
+  // a Recipe defines an Image: it comes, changes or goes without a Build, and so does the text of
+  // its Containerfile
+  'recipe.set': ['images', ofEntryImage('containerfile')],
+  'recipe.restore': ['images', ofEntryImage('containerfile')],
+  'recipe.remove': ['images', ofEntryImage('containerfile')],
   // which VMs use and pin each Image and Build (`vms`, `used_by`, `pinned_by`)
   'create': ['images', 'githubApp'],
   'delete': ['images', 'githubApp'],
@@ -352,7 +365,7 @@ export function createResources(live: Pick<Live, 'on' | 'state'>) {
     return client.invalidateQueries({ queryKey }, { cancelRefetch: false })
   }
 
-  function markStaleBy(stale: Stale, event: { vm?: string | null }) {
+  function markStaleBy(stale: Stale, event: Concerns) {
     if (typeof stale === 'string') void markStale(stale)
     else void markStale(stale.name, stale.params(event ?? {}))
   }
@@ -396,11 +409,11 @@ export function createResources(live: Pick<Live, 'on' | 'state'>) {
     for (const [name, apply] of Object.entries(row.write ?? {}) as [ResourceName, (d: any, e: any) => any][]) {
       write(name, d => apply(d, data))
     }
-    for (const stale of row.stale?.(data, before.get(slot(eventName, row, data))) ?? []) markStaleBy(stale, data as { vm?: string | null })
+    for (const stale of row.stale?.(data, before.get(slot(eventName, row, data))) ?? []) markStaleBy(stale, data as Concerns)
     before.set(slot(eventName, row, data), data)
   })))
 
-  offs.push(live.on('activity', (entry: { code?: string, action?: string, vm?: string | null } | null) => {
+  offs.push(live.on('activity', (entry: (Concerns & { code?: string, action?: string }) | null) => {
     const code = entry?.code ?? entry?.action
     for (const stale of (entry && code && ON_ACTIVITY[code]) || []) markStaleBy(stale, entry!)
   }))

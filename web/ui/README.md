@@ -128,7 +128,8 @@ Server data lives in one cache, in `app/utils/resources.ts` ([ADR
 0026](../../docs/adr/0026-the-control-room-ui-holds-server-data-in-one-cache.md)). The resources
 it holds so far: `images` (`GET /images`), `pairings` (`GET /vms/<vm>/pairings`), `githubApp`
 (`GET /github-app`), `githubTokens` (`GET /vms/<vm>/github-tokens?since=`), `sshConfig`
-(`GET /vms/<vm>/ssh-config`) and `version` (`GET /version`: the UI build installed and the
+(`GET /vms/<vm>/ssh-config`), `containerfile` (`GET /images/<image>/containerfile`, read only
+while its panel is open) and `version` (`GET /version`: the UI build installed and the
 Release; the reload prompt takes the build of its first answer as the page's own and keeps it
 through later reads). Every
 other view still reads on its own, as the next section describes, until it moves into the
@@ -167,9 +168,11 @@ module (#216).
   false, when the version check (`agentbox-versions.service` in the `services` event) stops
   running (started by hand, it records no Activity entry), and after the Activity codes
   `maintenance.versions`, `update-now`, `recipe.set`, `recipe.restore`, `recipe.remove` (a
-  Recipe's Image comes or goes) and `create`, `delete`, `set-image`, `reset`, `reset.automatic`,
-  `reset.update` (which VMs use and pin each Build); `pairings` of the entry's VM after `observe`,
-  `unpair` and `revoke-pairings` (a row `ofEntryVm(name)` marks only that VM's copy);
+  Recipe's Image comes or goes; these three also mark the `containerfile` of the Image the
+  entry's `name` parameter names, a row `ofEntryImage(name)`) and `create`, `delete`,
+  `set-image`, `reset`, `reset.automatic`, `reset.update` (which VMs use and pin each Build);
+  `pairings` of the entry's VM after `observe`, `unpair` and `revoke-pairings` (a row
+  `ofEntryVm(name)` marks only that VM's copy);
   `githubApp` after `set-github-app`, `remove-github-app`, `set-owners`, `create` and `delete`;
   `githubTokens` of the event's VM after a `github-token` event, `sshConfig` of a VM when its `vm`
   event turns SSH access on or off or brings a new host key (a row with `key` compares each VM

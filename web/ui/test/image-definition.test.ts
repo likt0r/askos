@@ -216,11 +216,28 @@ describe('System page: Image definition (#67)', () => {
         : ok(containerfile('base'))),
     })
     await toggle(wrapper, 'base')
-    expect(part(wrapper, 'base', 'containerfile-error').text()).toBe('The installed Release has no Containerfile for this Image.')
+    expect(part(wrapper, 'base', 'containerfile-error').text()).toContain('Could not read the Containerfile.')
+    expect(part(wrapper, 'base', 'containerfile-error').text()).toContain('The installed Release has no Containerfile for this Image.')
     expect(part(wrapper, 'base', 'containerfile-text').exists()).toBe(false)
     expect(wrapper.find('[data-testid="images-error"]').exists()).toBe(false)
     await toggle(wrapper, 'base')
     await toggle(wrapper, 'base')
+    expect(answers).toBe(2)
+    expect(part(wrapper, 'base', 'containerfile-error').exists()).toBe(false)
+    expect(part(wrapper, 'base', 'containerfile-text').text()).toBe(BASE_TEXT.trim())
+  })
+
+  it('reads again with Retry', async () => {
+    let answers = 0
+    const { wrapper } = await openSystem(overview([image('base')]), {
+      'GET /images/base/containerfile': () => (++answers === 1
+        ? { status: 500, body: { error: { code: 'internal', message: 'x' } } }
+        : ok(containerfile('base'))),
+    })
+    await toggle(wrapper, 'base')
+    const retry = part(wrapper, 'base', 'containerfile-error').findAll('button').find(b => b.text() === 'Retry')!
+    await retry.trigger('click')
+    await flushPromises()
     expect(answers).toBe(2)
     expect(part(wrapper, 'base', 'containerfile-error').exists()).toBe(false)
     expect(part(wrapper, 'base', 'containerfile-text').text()).toBe(BASE_TEXT.trim())
@@ -310,6 +327,71 @@ describe('System page: Image definition follows the Activity', () => {
     await toggle(wrapper, 'base')
     expect(reads(api, 'base')).toBe(2)
     expect(part(wrapper, 'base', 'containerfile-text').text()).toContain('FROM scratch')
+  })
+
+  it('keeps the text shown when reading it again fails, with a notice', async () => {
+    let fail = false
+    const { wrapper, api, es } = await openSystem(overview([image('base')]), {
+      'GET /images/base/containerfile': () => (fail ? { status: 500, body: { error: { code: 'internal', message: 'x' } } } : ok(containerfile('base'))),
+    })
+    await toggle(wrapper, 'base')
+    fail = true
+    es.emit('activity', entry('recipe.set', 'base'))
+    await wait(() => expect(reads(api, 'base')).toBe(2))
+    await flushPromises()
+    expect(part(wrapper, 'base', 'containerfile-text').text()).toBe(BASE_TEXT.trim())
+    expect(part(wrapper, 'base', 'containerfile-error').attributes('data-read')).toBe('stale')
+  })
+
+  it('closes an open Recipe panel when its Recipe is removed and nothing defines the Image, for good', async () => {
+    const recipe = image('dms', { in_release: false, recipe: true, containerfile_url: null, containerfile: 'Recipe dms: Containerfile (current recipe.tar)' })
+    let images = overview([recipe])
+    const { wrapper, api, es } = await openSystem(images, {
+      'GET /images': () => ok(images),
+      'GET /images/dms/containerfile': () => (images.images[0] === recipe
+        ? ok({ ...containerfile('dms'), text: 'FROM recipe\n', url: null, recipe_sha256: 'aaa' })
+        : { status: 404, body: { error: { code: 'containerfile_not_found', message: 'x' } } }),
+    })
+    await toggle(wrapper, 'dms')
+    expect(part(wrapper, 'dms', 'containerfile-text').text()).toBe('FROM recipe')
+    images = overview([{ ...recipe, recipe: false, containerfile: 'vm/images/dms/Containerfile' }])
+    es.emit('activity', entry('recipe.remove', 'dms'))
+    await wait(() => expect(part(wrapper, 'dms', 'containerfile-toggle').exists()).toBe(false))
+    await quiet()
+    expect(part(wrapper, 'dms', 'containerfile').exists()).toBe(false)
+    expect(card(wrapper, 'dms').text()).not.toContain('FROM recipe')
+    const before = reads(api, 'dms')
+
+    // the Recipe comes back: its panel stays closed until opened
+    images = overview([recipe])
+    es.emit('activity', entry('recipe.set', 'dms'))
+    await wait(() => expect(part(wrapper, 'dms', 'containerfile-toggle').exists()).toBe(true))
+    await quiet()
+    expect(part(wrapper, 'dms', 'containerfile').exists()).toBe(false)
+    expect(part(wrapper, 'dms', 'containerfile-toggle').attributes('aria-expanded')).toBe('false')
+    expect(reads(api, 'dms')).toBe(before)
+  })
+
+  it('names where the text shown came from by its answer, also while the next is read', async () => {
+    const recipe = image('dms', { in_release: true, recipe: true, containerfile_url: null })
+    let images = overview([recipe])
+    let answer!: () => void
+    const { wrapper, es } = await openSystem(images, {
+      'GET /images': () => ok(images),
+      'GET /images/dms/containerfile': () => (images.images[0] === recipe
+        ? ok({ ...containerfile('dms'), text: 'FROM recipe\n', url: null, recipe_sha256: 'aaa' })
+        : new Promise(resolve => { answer = () => resolve(ok({ ...containerfile('dms'), recipe_sha256: null })) })),
+    })
+    await toggle(wrapper, 'dms')
+    images = overview([{ ...recipe, recipe: false }])      // the Release defines it again
+    es.emit('activity', entry('recipe.remove', 'dms'))
+    await wait(() => expect(part(wrapper, 'dms', 'image-recipe').exists()).toBe(false))
+    await flushPromises()
+    expect(part(wrapper, 'dms', 'containerfile-text').text()).toBe('FROM recipe')
+    expect(part(wrapper, 'dms', 'containerfile-source').text()).toContain('From the Recipe on this Host')
+    answer()
+    await wait(() => expect(part(wrapper, 'dms', 'containerfile-text').text()).toBe(RUST_TEXT.trim()))
+    expect(part(wrapper, 'dms', 'containerfile-source').text()).toContain('From the installed Release 0.2.0')
   })
 
   it('ignores other codes, and a hello that resumed; a hello that could not resume reads again', async () => {

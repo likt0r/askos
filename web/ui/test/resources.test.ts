@@ -452,3 +452,37 @@ describe('a VM\'s GitHub tokens and connection help', () => {
     r.stop()
   })
 })
+
+describe('an Image\'s Containerfile', () => {
+  let live: ReturnType<typeof fakeLive>
+  let r: Resources
+  beforeEach(() => {
+    live = fakeLive()
+    r = createResources(live as never)
+    for (const image of ['base', 'rust']) r.client.setQueryData(['containerfile', { image }], { image, path: 'p', release: null, url: null, text: '', size: 0, truncated: false })
+  })
+  afterEach(() => r.stop())
+
+  const stale = (image: string) => r.client.getQueryState(['containerfile', { image }])!.isInvalidated
+
+  it.each(['recipe.set', 'recipe.restore', 'recipe.remove'])('%s marks only the Recipe\'s Image\'s Containerfile stale', (code) => {
+    live.emit('activity', { ...entry(code), params: { name: 'rust' } })
+    expect([stale('base'), stale('rust')]).toEqual([false, true])
+  })
+
+  it('an entry without a name marks every Image\'s', () => {
+    live.emit('activity', { ...entry('recipe.set'), params: {} })
+    expect([stale('base'), stale('rust')]).toEqual([true, true])
+  })
+
+  it('ignores other codes of the Image', () => {
+    live.emit('activity', { ...entry('set-image'), params: { name: 'rust' } })
+    expect([stale('base'), stale('rust')]).toEqual([false, false])
+  })
+
+  it('reads its own path, the name encoded', async () => {
+    const api = fakeApi({ 'GET /images/a%20b/containerfile': OK({ image: 'a b' }) })
+    await r.read('containerfile', { image: 'a b' })
+    expect(api.calls.map(c => c.path)).toEqual(['/images/a%20b/containerfile'])
+  })
+})
