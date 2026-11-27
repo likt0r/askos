@@ -18,13 +18,14 @@ const busy = set.busy
 const app = useResource('githubApp', { extra: true })
 const missing = computed(() => {
   const data = app.data.value
-  return data ? new Set(data.missing.filter(m => m.vms.includes(props.vm.name)).map(m => m.owner.toLowerCase())) : null
+  // no App set up: no Installation to miss (the System page says so)
+  const noApp = app.error.value instanceof ApiError && app.error.value.code === 'github_app_missing'
+  return data && !noApp ? new Set(data.missing.filter(m => m.vms.includes(props.vm.name)).map(m => m.owner.toLowerCase())) : null
 })
 
 const owners = computed(() => props.vm.github_owners ?? [])
 const inputValid = computed(() => !input.value.trim() || input.value.trim().split(/[\s,]+/).every(looksLikeGithubOwner))
 const changed = computed(() => draft.value.join(',') !== owners.value.join(','))
-
 
 function edit() {
   draft.value = [...owners.value]

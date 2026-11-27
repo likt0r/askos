@@ -136,7 +136,8 @@ module (#216).
   them (`pairings: declare<Pairings, { vm: string }>(p => `/vms/${p.vm}/pairings`)`). The key in
   the cache is `[name]`, or `[name, params]`: one copy per set of parameters. A resource whose
   changes the Host sends no event about is declared `fresh` (`pairings`: a device pairs inside
-  Orca): it is read again whenever a view of it opens (the owner on #216).
+  Orca; `githubApp`: an App installed on GitHub): it is read again whenever a view of it opens
+  (the owner on #216).
 - **Asking for one**: `const images = useResource('images')` gives `data` (undefined until an
   answer came), `loading` (nothing yet and a read on the way), `fetching` (a read on the way,
   the first or a read again), `error` (why the last read failed) and `retry()`. Every view that

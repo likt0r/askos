@@ -48,7 +48,8 @@ const RESOURCES = {
   images: declare<ImagesOverview>('/images'),
   // a device pairs inside Orca with the code: nothing on the Host records it
   pairings: declare<Pairings, { vm: string }>(p => `/vms/${p.vm}/pairings`, { fresh: true }),
-  githubApp: declare<GithubAppOverview>('/github-app'),
+  // an App installed or uninstalled on GitHub: nothing on the Host records it
+  githubApp: declare<GithubAppOverview>('/github-app', { fresh: true }),
 }
 
 export type ResourceName = keyof typeof RESOURCES

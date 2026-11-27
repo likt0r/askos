@@ -4,7 +4,7 @@
 // elsewhere; GitHub owners of VMs that no App is installed on (missing Installations); adding
 // an App, replacing one App's key (checked with GitHub before it is stored; the key is never
 // shown again) and removing an App.
-import type { GithubApp, GithubAppOverview } from '~/utils/access'
+import type { GithubApp } from '~/utils/access'
 
 const { t } = useI18n()
 const errorText = useErrorText()
@@ -38,7 +38,6 @@ const appIdValid = computed(() => /^[1-9]\d{0,11}$/.test(appId.value.trim()))
 const keyLooksRight = computed(() => /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(key.value))
 const canSave = computed(() => appIdValid.value && keyLooksRight.value && !saving.value)
 const known = computed(() => overview.value?.apps.some(a => String(a.id) === appId.value.trim()) ?? false)
-
 
 function appError(app: GithubApp) {
   return app.error ? new ApiError(0, app.error.error, app.error.message) : null

@@ -346,7 +346,51 @@ describe('the GitHub Apps through the resources module (#216)', () => {
     es.emit('activity', activity('remove-github-app'))
     await waitFor(() => expect($('[data-testid="app-info"]')).toBeNull())
     const notice = must('[data-testid="app-error"]')
-    expect(notice.textContent).toContain('GitHub')
+    expect(notice.textContent).toContain('No GitHub App is set up.')
     expect(must('[data-testid="github-app"]').querySelector('[data-read]')).toBeNull()
+  })
+
+  it('a VM\'s owners show no "no Installation" mark once the last App is gone', async () => {
+    let gone = false
+    const { es } = await openApp('/vms/work/access', { ...ACCESS,
+      'GET /github-app': () => (gone ? fail(409, 'github_app_missing') : ok({ ...APP, missing: [{ owner: 'acme-corp', vms: ['work'] }] })) }, [workVm()])
+    expect(must('[data-owner="acme-corp"]').querySelector('[data-testid="owner-missing"]')).not.toBeNull()
+    gone = true
+    es.emit('activity', activity('remove-github-app'))
+    await waitFor(() => expect(must('[data-owner="acme-corp"]').querySelector('[data-testid="owner-missing"]')).toBeNull())
+  })
+
+  it('reads the Apps again whenever a view of them opens: an App installed on GitHub tells the Host nothing', async () => {
+    const { api } = await openApp('/vms/work/access', { ...ACCESS, 'GET /github-app': ok(APP) }, [workVm()])
+    const reads = () => api.calls.filter(c => c.path === '/github-app').length
+    expect(reads()).toBe(1)
+    await useRouter().push('/system')
+    await settle()
+    expect(reads()).toBe(2)
+    await useRouter().push('/vms/work/access')
+    await settle()
+    expect(reads()).toBe(3)
+  })
+
+  it('a failed read shows the read-failure element; a failed read again keeps the overview with its notice; refresh reads again', async () => {
+    let answer = () => ok(APP) as unknown
+    const { api, es } = await openApp('/system', { 'GET /github-app': () => answer() })
+    const section = () => must('[data-testid="github-app"]')
+    expect(section().querySelector('[data-testid="app-info"]')).not.toBeNull()
+    answer = () => fail(502, 'github_unavailable', 'GitHub answers 502')
+    es.emit('activity', activity('set-owners'))
+    await waitFor(() => expect(section().querySelector('[data-read]')?.getAttribute('data-read')).toBe('stale'))
+    expect(section().querySelector('[data-testid="app-info"]')).not.toBeNull()
+    answer = () => ok(APP)
+    const before = api.calls.filter(c => c.path === '/github-app').length
+    await click(section().querySelector<HTMLElement>('[aria-label="Refresh"]')!)
+    await waitFor(() => expect(section().querySelector('[data-read]')).toBeNull())
+    expect(api.calls.filter(c => c.path === '/github-app').length).toBe(before + 1)
+  })
+
+  it('a failed first read shows what could not be read, with Retry', async () => {
+    await openApp('/system', { 'GET /github-app': fail(502, 'github_unavailable', 'GitHub answers 502') })
+    const failed = must('[data-testid="github-app"] [data-read="failed"]')
+    expect(failed.textContent).toContain('Could not read the GitHub Apps.')
   })
 })

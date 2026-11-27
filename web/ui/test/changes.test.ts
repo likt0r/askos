@@ -226,7 +226,7 @@ describe('the GitHub App\'s changes', () => {
     expect(reads()).toBe(1)
     es.emit('activity', { time: 't', vm: null, actor: 'owner', kind: 'credentials', action: 'remove-github-app', code: 'remove-github-app', outcome: 'ok', description: '' })
     await vi.waitFor(() => expect(reads()).toBe(2), { timeout: 2000 })
-    await new Promise(r => setTimeout(r, 400))       // useReloadOnActivity gathers a burst for 300 ms
+    await new Promise(r => setTimeout(r, 400))
     expect(reads()).toBe(2)
   })
 
@@ -244,7 +244,7 @@ describe('the GitHub App\'s changes', () => {
     expect(reads()).toBe(1)
     es.emit('activity', { time: 't', vm: null, actor: 'owner', kind: 'credentials', action: 'set-github-app', code: 'set-github-app', outcome: 'ok', description: '' })
     await vi.waitFor(() => expect(reads()).toBe(2), { timeout: 2000 })
-    await new Promise(r => setTimeout(r, 400))       // useReloadOnActivity gathers a burst for 300 ms
+    await new Promise(r => setTimeout(r, 400))
     expect(reads()).toBe(2)
   })
 
