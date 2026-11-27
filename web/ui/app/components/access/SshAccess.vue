@@ -9,7 +9,7 @@ import type { SshKey, Vm } from '~/utils/live'
 
 const props = defineProps<{ vm: Vm }>()
 const { t, locale } = useI18n()
-const live = useLive()
+const { vms } = useVms()
 const errorText = useErrorText()
 const toast = useToast()
 
@@ -29,10 +29,6 @@ const savedCode = computed(() => savedError.value?.code)
 const missing = computed(() => savedCode.value === 'ssh_missing')
 // a key file too large to be one, refused before anything is sent
 const fileError = ref<ApiError | null>(null)
-
-function refresh() {
-  void live.refetchVms()
-}
 
 function clearFailures() {
   savedError.value = null
@@ -67,7 +63,6 @@ async function setEnabled(on: boolean) {
   const r = await switchChange.run({ vm: props.vm.name, enabled: on })
   if (r.ok) toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t(on ? 'access.ssh.turnedOn' : 'access.ssh.turnedOff', { vm: props.vm.name }) })
   else savedAnyway(r)
-  refresh()
 }
 
 // --- adding a key: its text, from a .pub file or pasted, goes in the request body only ---
@@ -116,7 +111,6 @@ async function addKey() {
   }
   // saved, only not (yet) in the VM: the key is entered
   else if (savedAnyway(r)) clearForm()
-  refresh()
 }
 
 // --- copying the keys of another VM, once (ADR 0001): agentbox adds each by the rules of one
@@ -125,7 +119,7 @@ const copyFrom = ref<string | undefined>(undefined)
 const copyChange = useChange('copySshKeys', { form: true, own: SAVED })
 const copying = copyChange.busy
 const copyResult = ref<SshCopy | null>(null)
-const others = computed(() => live.state.vms.map(v => v.name).filter(n => n !== props.vm.name))
+const others = computed(() => vms.value.map(v => v.name).filter(n => n !== props.vm.name))
 const copyItems = computed(() => others.value.map(n => ({ value: n, label: n })))
 const canCopy = computed(() => !!copyFrom.value && others.value.includes(copyFrom.value) && !full.value && !copying.value)
 
@@ -150,7 +144,6 @@ async function copyKeys() {
     copyFrom.value = undefined
   }
   else savedAnyway(r)
-  refresh()
 }
 
 /** a form's failure that is not "saved anyway": below the forms */
@@ -193,7 +186,6 @@ async function removeKey() {
   }
   // saved, only not (yet) in the VM: said in the section, the dialog closes
   else if (savedAnyway(r)) removeOpen.value = false
-  refresh()
 }
 
 // --- the connection help: agentbox ssh-config for this VM ---

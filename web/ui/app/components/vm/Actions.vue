@@ -7,7 +7,7 @@ import type { Vm } from '~/utils/live'
 const props = defineProps<{ vm: Vm }>()
 const { t } = useI18n()
 const toast = useToast()
-const live = useLive()
+const { vms } = useVms()
 
 type Action = 'start' | 'pause' | 'restart' | 'reset' | 'focus' | 'focus-off'
 const can = computed(() => lifecycleActions(props.vm))
@@ -30,7 +30,7 @@ const deleteOpen = ref(false)
 const resetStart = ref(true)
 
 // other VMs paused (by a Focus or by hand): Focus off is worth offering
-const othersPaused = computed(() => live.state.vms.some(v => v.name !== props.vm.name && v.state === 'paused'))
+const othersPaused = computed(() => vms.value.some(v => v.name !== props.vm.name && v.state === 'paused'))
 
 async function run(action: Action) {
   if (busy.value) return

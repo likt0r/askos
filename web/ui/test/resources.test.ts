@@ -27,7 +27,7 @@ const entry = (code: string) => ({ time: 't', vm: null, actor: 'timer', kind: 'a
 function fakeLive() {
   const listeners = new Map<string, Set<(data: any) => void>>()
   return {
-    state: { stream: null as string | null, services: null as unknown },
+    state: { stream: null as string | null },
     on(name: string, fn: (data: any) => void) {
       const set = listeners.get(name) ?? new Set()
       set.add(fn)
@@ -94,16 +94,6 @@ describe('the stale table for images (without a view)', () => {
     live.emit('services', { units: [], updating: true })
     live.emit('services', { units: [], updating: true })
     expect(stale()).toBe(false)
-    live.emit('services', { units: [], updating: false })
-    expect(stale()).toBe(true)
-  })
-
-  it('knows an update that ran before the cache was made', () => {
-    r.stop()
-    live = fakeLive()
-    live.state.services = { units: [], updating: true }
-    r = createResources(live as never)
-    r.client.setQueryData(['images'], overview())
     live.emit('services', { units: [], updating: false })
     expect(stale()).toBe(true)
   })
@@ -430,8 +420,8 @@ describe('a VM\'s GitHub tokens and connection help', () => {
   it('a VM\'s event that turns SSH access on or off, or brings a new host key, marks only its help stale', () => {
     const live = fakeLive()
     const vmOf = (name: string, enabled: boolean, key: string | null = null) => ({ name, state: 'running', ssh: { enabled, port: 2201, host_key_fingerprint: key, keys: [], pending: false } })
-    ;(live.state as Record<string, unknown>).vms = [vmOf('work', false), vmOf('priv', false)]
     const r = createResources(live as never)
+    live.emit('state', { vms: [vmOf('work', false), vmOf('priv', false)], problems: [] })      // on connect
     for (const vm of ['work', 'priv']) r.client.setQueryData(['sshConfig', { vm }], { mode: 'local', hosts: [] })
     const stale = (vm: string) => r.client.getQueryState(['sshConfig', { vm }])!.isInvalidated
     live.emit('vm', { ...vmOf('work', false), state: 'paused' })          // nothing of SSH changed
@@ -497,15 +487,60 @@ describe('the Host\'s readings', () => {
   const sample = (time: number | null) => ({ time, readings: [{ id: 'cpu.load', kind: 'cpu_load', value: 1 }], vms: {} })
   const history = () => r.client.getQueryData<{ history: { time: number }[] }>(['host'])!.history.map(p => p.time)
 
-  it('appends each sample to the history, within its window, and skips a repeated one', () => {
+  it('takes each sample as the current one and appends it to the history, within its window, a repeated one once', () => {
     r.client.setQueryData(['host'], snapshot([940, 970, 1000]))
     live.emit('host', sample(1005))
     expect(history()).toEqual([970, 1000, 1005])
-    const before = r.client.getQueryData(['host'])
+    expect(r.client.getQueryData<{ time: number }>(['host'])!.time).toBe(1005)
     live.emit('host', sample(1005))
-    live.emit('host', sample(null))
-    expect(r.client.getQueryData(['host'])).toBe(before)
+    const repeated = r.client.getQueryData(['host'])
+    live.emit('host', sample(1001))      // older than the one held: nothing changes
+    expect(r.client.getQueryData(['host'])).toBe(repeated)
+    expect(r.client.getQueryData<{ time: number }>(['host'])!.time).toBe(1005)
+    live.emit('host', sample(null))      // no time: the current one, no point
+    expect(history()).toEqual([970, 1000, 1005])
     expect(r.client.getQueryState(['host'])!.isInvalidated).toBe(false)
+  })
+
+  it('a first sample during the first read is applied to its answer, with no second read', async () => {
+    let answer!: () => void
+    const api = fakeApi({ 'GET /host': () => new Promise(resolve => { answer = () => resolve(OK(snapshot([940, 970, 1000]))) }) })
+    const observer = new QueryObserver(r.client, { queryKey: ['host'], queryFn: () => r.read('host') })
+    const off = observer.subscribe(() => {})
+    await flushPromises()
+    live.emit('host', sample(1005))
+    answer()
+    await flushPromises()
+    await flushPromises()
+    expect(api.calls).toHaveLength(1)
+    expect(history()).toEqual([970, 1000, 1005])
+    off()
+  })
+
+  it('a sample after a failed read is the copy, with the failure kept and no read of its own', async () => {
+    const api = fakeApi({ 'GET /host': { status: 500, body: { error: { code: 'internal', message: 'x' } } } })
+    const observer = new QueryObserver(r.client, { queryKey: ['host'], queryFn: () => r.read('host') })
+    const off = observer.subscribe(() => {})
+    await flushPromises()
+    expect(api.calls).toHaveLength(1)
+    live.emit('host', sample(1005))
+    await flushPromises()
+    expect(api.calls).toHaveLength(1)
+    const state = r.client.getQueryState<{ readings: unknown[] }>(['host'])!
+    expect([state.status, state.data!.readings.length]).toEqual(['error', 1])
+    expect(state.error).toMatchObject({ code: 'internal' })
+    off()
+  })
+
+  it('takes a sample before any read as the first copy, and reads the history then', async () => {
+    const api = fakeApi({ 'GET /host': OK(snapshot([940, 970, 1000])) })
+    const observer = new QueryObserver(r.client, { queryKey: ['host'], queryFn: () => r.read('host'), enabled: false })
+    const off = observer.subscribe(() => {})
+    live.emit('host', sample(1005))
+    expect(r.client.getQueryData<{ readings: unknown[] }>(['host'])!.readings).toHaveLength(1)
+    expect(r.client.getQueryState(['host'])!.isInvalidated).toBe(true)
+    off()
+    expect(api.calls).toHaveLength(0)      // no view: read when one opens
   })
 
   it('appends a sample that arrives while the history is read to its answer', async () => {
@@ -844,5 +879,121 @@ describe('the stale table for the Watchlist page', () => {
   it('an Alert marks only that VM\'s Alerts stale', () => {
     live.emit('alert', { vm: 'work', domain: 'x.example' })
     expect([stale(keys.work), stale(keys.priv)]).toEqual([true, false])
+  })
+})
+
+describe('the pushed resources: the VMs, the system state, the version', () => {
+  let live: ReturnType<typeof fakeLive>
+  let r: Resources
+  const vmOf = (name: string, state = 'running', over: Record<string, unknown> = {}) => ({ name, state, network: 1, ...over })
+  const names = () => r.client.getQueryData<{ vms: { name: string, state: string }[] }>(['vms'])!.vms.map(v => [v.name, v.state])
+  beforeEach(() => {
+    live = fakeLive()
+    r = createResources(live as never)
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    r.stop()
+  })
+
+  it('takes the VM list from a state event, sorted by network, and replaces single VMs from vm events', () => {
+    live.emit('vm', vmOf('early'))      // before the list: nothing to place it in
+    expect(r.client.getQueryData(['vms'])).toBeUndefined()
+    live.emit('state', { vms: [vmOf('priv', 'stopped', { network: 2 }), vmOf('work')], problems: [{ vm: 'old', problem: 'broken record' }] })
+    expect(names()).toEqual([['work', 'running'], ['priv', 'stopped']])
+    expect(r.client.getQueryData<{ problems: unknown[] }>(['vms'])!.problems).toEqual([{ vm: 'old', problem: 'broken record' }])
+    live.emit('vm', vmOf('priv', 'running', { network: 2, agents: { working: 1 } }))
+    expect(names()).toEqual([['work', 'running'], ['priv', 'running']])
+    // a VM the list did not have yet goes in network order; events are whole objects, twice is harmless
+    live.emit('vm', vmOf('lab', 'stopped', { network: 3 }))
+    live.emit('vm', vmOf('lab', 'stopped', { network: 3 }))
+    live.emit('vm', { no: 'name' })
+    expect(names().map(n => n[0])).toEqual(['work', 'priv', 'lab'])
+    // a new snapshot (a VM was deleted) replaces everything
+    live.emit('state', { vms: [vmOf('work')], problems: [] })
+    expect(names()).toEqual([['work', 'running']])
+  })
+
+  it('keeps what was pushed while no view shows it', async () => {
+    vi.useFakeTimers()
+    live.emit('state', { vms: [vmOf('work')], problems: [] })
+    live.emit('host-reboot', { needed: true, packages: ['kernel'], checked: 't' })
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000)
+    expect(names()).toEqual([['work', 'running']])
+    expect(r.client.getQueryData<{ host_reboot: unknown }>(['system'])!.host_reboot).toEqual({ needed: true, packages: ['kernel'], checked: 't' })
+  })
+
+  it('writes the watch state, the Host-reboot notice and the services into one copy', () => {
+    live.emit('watch', { running: true, since: 't', restarts: 0, last_exit: null })
+    live.emit('services', { units: [{ unit: 'a', state: 'running' }], warnings: [{ code: 'w', message: 'm' }], updating: true })
+    live.emit('host-reboot', { needed: false })
+    expect(r.client.getQueryData(['system'])).toEqual({
+      watch: { running: true, since: 't', restarts: 0, last_exit: null },
+      services: [{ unit: 'a', state: 'running' }], warnings: [{ code: 'w', message: 'm' }], updating: true,
+      host_reboot: { needed: false },
+    })
+  })
+
+  it('reads the VM list again when agentbox watch runs again, not before', async () => {
+    const api = fakeApi({ 'GET /vms': OK({ vms: [vmOf('work', 'paused'), vmOf('priv', 'running', { network: 2 })], problems: [] }) })
+    live.emit('watch', { running: true, since: 't', restarts: 0, last_exit: null })
+    live.emit('state', { vms: [vmOf('work')], problems: [] })
+    live.emit('watch', { running: false, since: null, restarts: 1, last_exit: 1 })
+    await flushPromises()
+    expect(api.calls).toHaveLength(0)
+    live.emit('watch', { running: true, since: 't2', restarts: 1, last_exit: 1 })
+    await flushPromises()
+    expect(api.calls.map(c => c.path)).toEqual(['/vms'])
+    expect(names()).toEqual([['work', 'paused'], ['priv', 'running']])
+  })
+
+  it('reads the VM list once more when it was marked stale during its read', async () => {
+    let answer!: () => void
+    let reads = 0
+    fakeApi({ 'GET /vms': () => { reads++; return reads === 1 ? new Promise(resolve => { answer = () => resolve(OK({ vms: [vmOf('one')], problems: [] })) }) : OK({ vms: [vmOf('two')], problems: [] }) } })
+    live.emit('state', { vms: [vmOf('work')], problems: [] })
+    const observer = new QueryObserver(r.client, { queryKey: ['vms'], enabled: false })
+    const off = observer.subscribe(() => {})
+    void r.markStale('vms')      // a change: read
+    await flushPromises()
+    void r.markStale('vms')      // another, while that read is on the way
+    answer()
+    await flushPromises()
+    await flushPromises()
+    expect(reads).toBe(2)
+    expect(names()).toEqual([['two', 'running']])
+    off()
+  })
+
+  it('takes the VM list of GET /vms sorted, and keeps updating through a read of the system state', async () => {
+    fakeApi({
+      'GET /vms': OK({ vms: [vmOf('b', 'running', { network: 2 }), vmOf('a', 'running', { network: 1 })], problems: [] }),
+      'GET /system': OK({ watch: null, host_reboot: null, services: [], warnings: [], ui: null }),
+    })
+    live.emit('state', { vms: [], problems: [] })
+    live.emit('services', { units: [], warnings: [], updating: true })
+    await r.markStale('vms')
+    await r.markStale('system')
+    await flushPromises()
+    expect(names().map(n => n[0])).toEqual(['a', 'b'])
+    expect(r.client.getQueryData<{ updating: boolean }>(['system'])!.updating).toBe(true)
+  })
+
+  it('is not read by a reconnect that could not resume: the stream sends it again', async () => {
+    const api = fakeApi({ 'GET /vms': OK({ vms: [], problems: [] }) })
+    live.emit('state', { vms: [vmOf('work')], problems: [] })
+    live.emit('hello', { stream: 'a', resumed: false })
+    live.emit('hello', { stream: 'b', resumed: false })
+    await flushPromises()
+    expect(api.calls).toHaveLength(0)
+    expect(names()).toEqual([['work', 'running']])
+  })
+
+  it('writes a version event into the version read, and makes none before it', () => {
+    live.emit('version', { version: 'bbbb', ui: 'nuxt', installed: null })
+    expect(r.client.getQueryData(['version'])).toBeUndefined()
+    r.client.setQueryData(['version'], { api: 1, version: 'aaaa', ui: 'nuxt', installed: null, release: '1.0.0' })
+    live.emit('version', { version: 'bbbb', ui: 'nuxt', installed: 't' })
+    expect(r.client.getQueryData(['version'])).toEqual({ api: 1, version: 'bbbb', ui: 'nuxt', installed: 't', release: '1.0.0' })
   })
 })

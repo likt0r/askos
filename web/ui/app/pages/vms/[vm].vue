@@ -6,10 +6,10 @@ import type { NavigationMenuItem } from '@nuxt/ui'
 
 const { t } = useI18n()
 const route = useRoute()
-const live = useLive()
+const { vms, loaded } = useVms()
 
 const name = computed(() => String(route.params.vm))
-const vm = computed(() => live.state.vms.find(v => v.name === name.value))
+const vm = computed(() => vms.value.find(v => v.name === name.value))
 // the overview can be folded away (phones); remembered in this browser
 const overviewOpen = ref(storedFlag('agentbox-vm-overview', true))
 watch(overviewOpen, v => storeFlag('agentbox-vm-overview', v))
@@ -25,7 +25,7 @@ const tabs = computed<NavigationMenuItem[]>(() => [
   <div class="space-y-4">
     <UButton to="/vms" color="neutral" variant="link" icon="i-lucide-arrow-left" :label="t('vms.back')" class="px-0" />
 
-    <p v-if="!live.state.loaded" class="text-sm text-muted">
+    <p v-if="!loaded" class="text-sm text-muted">
       {{ t('vms.loading') }}
     </p>
     <UAlert

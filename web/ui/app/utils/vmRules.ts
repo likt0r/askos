@@ -2,7 +2,7 @@
 // vms.py, credentials.py, guest.py). The UI checks them before sending so mistakes
 // show at the field; agentbox checks them again and has the last word.
 
-import type { Vm } from './live'
+import type { Vm, VmList } from './live'
 
 // --- creating a VM --------------------------------------------------------------
 
@@ -166,7 +166,7 @@ export function priorityName(n: number | null | undefined): string | null {
 // --- showing a VM ---------------------------------------------------------------
 
 /** Memory the VM's QEMU process uses (host readings), in bytes, or null. */
-export function memoryInUse(host: Record<string, unknown> | null, name: string): number | null {
+export function memoryInUse(host: { vms?: unknown } | null, name: string): number | null {
   const vms = host?.vms as Record<string, { memory_bytes?: unknown }> | undefined
   const bytes = vms?.[name]?.memory_bytes
   return typeof bytes === 'number' && Number.isFinite(bytes) ? bytes : null
@@ -281,4 +281,25 @@ export function storeFlag(key: string, value: boolean) {
   catch {
     // private mode: for this page only
   }
+}
+
+// --- the VM list (the resource `vms`) -------------------------------------------
+
+/** VMs by network, then name. */
+export function sortVms(vms: Vm[]): Vm[] {
+  return [...vms].sort((a, b) => (a.network ?? Infinity) - (b.network ?? Infinity) || a.name.localeCompare(b.name))
+}
+
+/** The VM list of a `state` event or GET /vms: sorted, with its problems. */
+export function vmList(list: Partial<VmList> | null | undefined): VmList {
+  return { vms: sortVms(Array.isArray(list?.vms) ? list.vms : []), problems: Array.isArray(list?.problems) ? list.problems : [] }
+}
+
+/** The list with one VM's object replaced (a `vm` event), or added in its place. */
+export function withVm(list: VmList, vm: Vm): VmList {
+  const i = list.vms.findIndex(v => v.name === vm.name)
+  if (i < 0) return { ...list, vms: sortVms([...list.vms, vm]) }
+  const vms = [...list.vms]
+  vms.splice(i, 1, vm)
+  return { ...list, vms }
 }

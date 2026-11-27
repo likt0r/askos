@@ -2,8 +2,7 @@
 // Whether updates need a Host reboot (checked every six hours), with the reminder that
 // the disk passphrase must be entered at boot.
 const { t, locale } = useI18n()
-const live = useLive()
-const reboot = computed(() => live.state.hostReboot as { needed: boolean | null, packages?: string[], checked?: string } | null)
+const reboot = useSystem().hostReboot
 </script>
 
 <template>

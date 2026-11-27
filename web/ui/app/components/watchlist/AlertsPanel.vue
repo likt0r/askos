@@ -7,7 +7,7 @@ import type { AlertGroup, VmAlert } from '~/utils/access'
 
 const emit = defineEmits<{ check: [domain: string] }>()
 const { t } = useI18n()
-const live = useLive()
+const { vms, loaded: vmsLoaded } = useVms()
 const when = useWhen()
 const now = useNow(30000)
 
@@ -16,7 +16,7 @@ const busy = ref<string | null>(null)
 // a button's change: its failure is a toast; the list is read again on its Activity entry
 const seen = useChange('markSeen', { failed: () => t('watchlist.alerts.markSeenFailed') })
 
-const vmNames = computed(() => live.state.vms.map(v => v.name))
+const vmNames = computed(() => vms.value.map(v => v.name))
 const each = useResourceEach('alerts', { params: () => vmNames.value.map(vm => ({ vm })) })
 const alerts = computed<VmAlert[]>(() => each.value.flatMap((r) => {
   const vm = (r.params as { vm: string }).vm
@@ -27,8 +27,8 @@ const alerts = computed<VmAlert[]>(() => each.value.flatMap((r) => {
 // later is read while the others stay on screen
 const everyRead = computed(() => each.value.every(r => !r.loading.value))
 const readOnce = ref(false)
-watch(everyRead, (all) => { if (all && live.state.loaded) readOnce.value = true }, { immediate: true })
-const loaded = computed(() => live.state.loaded && (readOnce.value || everyRead.value))
+watch(everyRead, (all) => { if (all && vmsLoaded.value) readOnce.value = true }, { immediate: true })
+const loaded = computed(() => vmsLoaded.value && (readOnce.value || everyRead.value))
 const loading = computed(() => each.value.some(r => r.fetching.value))
 const unseen = computed(() => alerts.value.filter(a => !a.seen))
 const shown = computed(() => {

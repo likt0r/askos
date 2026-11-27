@@ -9,7 +9,7 @@ import type { Image } from '~/utils/images'
 const open = defineModel<boolean>('open', { default: false })
 const { t } = useI18n()
 const toast = useToast()
-const live = useLive()
+const { vms } = useVms()
 
 const NONE = '__none__'
 const form = reactive({ name: '', image: '', memory: '' as string | number, disk: '' as string | number, owners: '', copyFrom: NONE, copySshFrom: NONE })
@@ -58,7 +58,7 @@ watch([open, images, defaults, overview.fetching, settings.fetching], ([isOpen, 
   form.image = usable.includes(wanted) ? wanted : usable[0] ?? ''
 })
 
-const existing = computed(() => live.state.vms.map(v => v.name))
+const existing = computed(() => vms.value.map(v => v.name))
 const name = computed(() => form.name.trim())
 const nameError = computed(() => {
   const p = nameProblem(name.value, existing.value)
@@ -79,7 +79,7 @@ const imageItems = computed(() => (images.value ?? []).filter(i => i.current).ma
 })))
 const copyItems = computed(() => [
   { value: NONE, label: t('vm.create.copyNone') },
-  ...live.state.vms.map(v => ({ value: v.name, label: v.name })),
+  ...vms.value.map(v => ({ value: v.name, label: v.name })),
 ])
 const noImage = computed(() => images.value !== null && !imageItems.value.length)
 
@@ -110,7 +110,6 @@ async function submit() {
     color: 'success',
     icon: 'i-lucide-check',
   })
-  void live.refetchVms()
   await navigateTo(`/vms/${made?.vm ?? name.value}`)
 }
 </script>

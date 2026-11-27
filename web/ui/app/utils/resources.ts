@@ -21,12 +21,13 @@ import { type AlertGroup, allowlistEntryPath, type AllowlistEntry, type BlockedD
 import { useChangeToast } from '../composables/useChangeToast'
 import { failurePlace, type FailurePlace, unreachable } from './failures'
 import { applyBuild, type BuildEvent, type BuildLog, type BuildLogEvent, buildLogPath, type ContainerfileText, type ImagesOverview, joinLog, withLogEvent } from './images'
-import { type HostOverview, type HostSample, noReadings, withSample } from './host'
+import { firstSample, type HostOverview, type HostSample, noReadings, withSample } from './host'
 import type { SettingInfo, SettingValue } from './settings'
 import type { Pairings } from './vm'
 import { type ActivityEntry, type ActivityParams, activityQuery, type ActivityResult, activityText, isEntry, matchesFilter, type Translator, withEntry } from './activity'
 import { joinVmLog, type LogFilters, type VmLog, vmLogPath } from './vmRules'
-import type { Live, VersionInfo, Vm } from './live'
+import type { HostReboot, Live, ServicesEvent, SystemState, VersionInfo, Vm, VmList, WatchState } from './live'
+import { vmList, withVm } from './vmRules'
 
 // query-core hands results to the views through setTimeout(0) by default; a microtask gives them
 // in the same turn, which the tests wait for with flushPromises. Production takes the same path.
@@ -50,6 +51,14 @@ interface Declaration<T, P> {
   fresh: boolean
   /** not kept once no view shows it (a copy each view opening reads anew anyway) */
   forget: boolean
+  /** pushed whole over the stream, on connect and whenever it changes: an event writes the copy
+   * also when there is none yet, it is kept while no view shows it, and neither a view that opens
+   * nor a reconnect that could not resume reads it (the stream sends it); its GET is the fallback,
+   * for a row that marks it stale and for Retry */
+  pushed: boolean
+  /** an event writes a first copy also when there is none yet (the Host's sample), which is then
+   * read for the rest (its history) */
+  seeds: boolean
   /** at least this many ms between the end of a read of a copy and the next (the API asks it of
    * a VM's blocked list): a stale mark meanwhile waits */
   spacing: number
@@ -62,13 +71,19 @@ interface Declaration<T, P> {
 
 /** A resource: its path, or for one with parameters (a VM's), its path from them. */
 function declare<T, P = undefined>(path: string | ((params: P, held: T | undefined) => string),
-  options: { fresh?: boolean, forget?: boolean, spacing?: number, states?: Record<string, () => T>,
+  options: { fresh?: boolean, forget?: boolean, pushed?: boolean, seeds?: boolean, spacing?: number, states?: Record<string, () => T>,
     merge?: (held: T | undefined, answer: any) => T, missed?: (held: T) => T, readOn?: (data: T) => boolean } = {}): Declaration<T, P> {
-  return { path: typeof path === 'string' ? () => path : path, fresh: !!options.fresh, forget: !!options.forget,
+  return { path: typeof path === 'string' ? () => path : path, fresh: !!options.fresh, forget: !!options.forget, pushed: !!options.pushed, seeds: !!options.seeds,
     spacing: options.spacing ?? 0, states: options.states ?? {}, merge: options.merge, missed: options.missed, readOn: options.readOn }
 }
 
 const RESOURCES = {
+  // the VMs and the problems of their records (`state` and `vm` events)
+  vms: declare<VmList>('/vms', { pushed: true, merge: (_held, answer: Partial<VmList>) => vmList(answer) }),
+  // the root helper `agentbox watch`, the Host-reboot notice, the services and their warnings
+  // (`watch`, `host-reboot` and `services` events)
+  // (`updating` comes with the `services` event only: a read keeps it)
+  system: declare<SystemState>('/system', { pushed: true, merge: (held, answer: SystemState) => ({ ...answer, updating: held?.updating }) }),
   images: declare<ImagesOverview>('/images'),
   // a device pairs inside Orca with the code: nothing on the Host records it
   pairings: declare<Pairings, { vm: string }>(p => `/vms/${p.vm}/pairings`, { fresh: true }),
@@ -83,8 +98,8 @@ const RESOURCES = {
     states: { github_app_missing: () => ({ apps: [], missing: [], none: true }) },
   }),
   // the Host's readings with 30 minutes of history; a Host without a sampler is a state
-  host: declare<HostOverview>('/host', { states: { readings_unavailable: noReadings } }),
-  // the UI build installed and the Release of Agent Box the Host runs
+  host: declare<HostOverview>('/host', { seeds: true, states: { readings_unavailable: noReadings } }),
+  // the UI build installed (the `version` event) and the Release of Agent Box the Host runs
   version: declare<VersionInfo>('/version'),
   // a Build's log: read on after the held cursor, so only what is new comes
   buildLog: declare<BuildLog, { image: string, build: string }>((p, held) => buildLogPath(p.image, p.build, held),
@@ -164,7 +179,8 @@ const ofEntryImage = (name: 'containerfile'): Stale => ({
  * (`write` returns the new data, or null when it cannot place the event: the resource is stale
  * then), or only says that something changed (`stale` names the resources to read again). */
 interface EventRow {
-  write?: { [N in ResourceName]?: (data: ResourceData<N>, event: any) => ResourceData<N> | null }
+  /** for a `pushed` resource `data` is undefined while there is no copy; undefined back: none */
+  write?: { [N in ResourceName]?: (data: ResourceData<N>, event: any) => ResourceData<N> | null | undefined }
   /** the parameters of the copy `write` goes into (a Build's log: the event's Image and Build);
    * none: the resource without parameters */
   writeParams?: (event: any) => unknown
@@ -174,8 +190,8 @@ interface EventRow {
   stale?: (event: any, before: any) => Stale[]
   /** compare per object (a VM by its name) */
   key?: (event: any) => string | undefined
-  /** the objects known before their first event: from the live state, and from each `state`
-   * event, which sends them all */
+  /** the objects known before their own first event: from each `state` event, which sends them
+   * all (on connect too) */
   known?: (state: any) => any[]
 }
 
@@ -189,6 +205,23 @@ interface Context {
 }
 
 const ON_EVENT: Record<string, EventRow> = {
+  // every VM and the problems of their records: the list (sorted by network, then name)
+  state: {
+    write: { vms: (_: VmList | undefined, list: Partial<VmList>) => vmList(list) },
+  },
+  // the version check, the update and the root helper: read alike by `system`
+  watch: {
+    write: { system: (data: SystemState | undefined, watch: WatchState) => ({ ...data, watch }) },
+    // VM state may have changed unseen while the root helper was not running
+    stale: (watch: WatchState, before: WatchState | undefined) => (before?.running === false && watch?.running === true ? ['vms'] : []),
+  },
+  'host-reboot': {
+    write: { system: (data: SystemState | undefined, reboot: HostReboot) => ({ ...data, host_reboot: reboot }) },
+  },
+  // a UI build installed or removed; the Release comes with GET /version only
+  version: {
+    write: { version: (data: VersionInfo | undefined, event: VersionInfo) => (data ? { ...data, ...event } : undefined) },
+  },
   // one whole Activity entry: into each timeline whose filter it passes (by agentbox's text or
   // the words the UI shows for it), newest first, no repeats (`addEntry`)
   activity: {
@@ -215,6 +248,8 @@ const ON_EVENT: Record<string, EventRow> = {
   // a VM's SSH access turned on or off, or its host key made: its connection help is read again
   // (whatever did it: the UI, the CLI, regenerate)
   vm: {
+    // that VM, replaced in the list (or added to it)
+    write: { vms: (data: VmList | undefined, vm: Vm) => (data && vm && typeof vm.name === 'string' ? withVm(data, vm) : data) },
     key: (vm: Vm) => vm?.name,
     known: (state: { vms?: Vm[] }) => (Array.isArray(state?.vms) ? state.vms : []),
     stale: (vm: Vm, before: Vm | undefined) => (before && vm?.name
@@ -222,9 +257,9 @@ const ON_EVENT: Record<string, EventRow> = {
       ? [{ name: 'sshConfig', params: () => ({ vm: vm.name }) }]
       : []),
   },
-  // a sample of the Host's readings (every 5 s): appended to the history
+  // a sample of the Host's readings (every 5 s): the current one, appended to the history
   host: {
-    write: { host: (data, sample: HostSample) => withSample(data, sample) },
+    write: { host: (data: HostOverview | undefined, sample: HostSample) => (data ? withSample(data, sample) : firstSample(sample)) },
   },
   // a VM was refused a destination (an Alert: its blocked list and its Alerts) or the proxy holds
   // one for it (its blocked list)
@@ -238,6 +273,12 @@ const ON_EVENT: Record<string, EventRow> = {
   // version check ended (`available`, what a Build would update): started by hand, it records no
   // Activity entry
   services: {
+    write: { system: (data: SystemState | undefined, event: ServicesEvent) => ({
+      ...data,
+      services: Array.isArray(event?.units) ? event.units : null,
+      warnings: Array.isArray(event?.warnings) ? event.warnings : null,
+      updating: typeof event?.updating === 'boolean' ? event.updating : undefined,
+    }) },
     stale: (event, before) => ((before?.updating === true && event?.updating === false)
       || (versionCheckRuns(before) && !versionCheckRuns(event)) ? ['images'] : []),
   },
@@ -325,7 +366,8 @@ function declareChange<A = void>(request: (args: A) => ChangeRequest, stale: Res
 
 /** Every change the views make, declared once: its request, and what it makes stale. A change
  * that records an Activity entry is read again through that entry's row in ON_ACTIVITY, once, so
- * it names nothing here (the owner on #215). */
+ * it names nothing here (the owner on #215); a pushed resource (`vms`), which no entry's row
+ * names, it does name. */
 const CHANGES = {
   // the Images: a Build's `build` events and the Activity entries say what changed
   rebuild: declareChange((image: string) => ({ method: 'POST', path: '/builds', body: { image } })),
@@ -348,7 +390,7 @@ const CHANGES = {
   createVm: declareChange((body: {
     name: string, image: string | null, memory_mib: number | null, data_disk_gib: number | null, github_owners: string[],
     copy_allowlist_from: string | null, copy_ssh_keys_from: string | null,
-  }) => ({ method: 'POST', path: '/vms', body })),
+  }) => ({ method: 'POST', path: '/vms', body }), ['vms']),
   deleteVm: declareChange((a: { vm: string, deleteDataDisk: boolean }) =>
     ({ method: 'DELETE', path: `/vms/${a.vm}`, body: { confirm: a.vm, delete_data_disk: a.deleteDataDisk } })),
   setImage: declareChange((a: { vm: string, image: string, build: string | null }) =>
@@ -361,15 +403,17 @@ const CHANGES = {
   setContainerImageCleanup: declareChange((a: { vm: string, enabled?: boolean, days?: number }) =>
     ({ method: 'PUT', path: `/vms/${a.vm}/container-image-cleanup`, body: { enabled: a.enabled, days: a.days } })),
   // a VM's access: GitHub owners, its Claude token (it stays on the Host), SSH access and keys
-  setOwners: declareChange((a: { vm: string, owners: string[] }) => ({ method: 'PUT', path: `/vms/${a.vm}/github-owners`, body: { owners: a.owners } })),
-  setClaudeToken: declareChange((a: { vm: string, token: string }) => ({ method: 'PUT', path: `/vms/${a.vm}/claude-token`, body: { token: a.token } })),
-  removeClaudeToken: declareChange((vm: string) => ({ method: 'DELETE', path: `/vms/${vm}/claude-token` })),
-  setSsh: declareChange((a: { vm: string, enabled: boolean }) => ({ method: 'PUT', path: `/vms/${a.vm}/ssh`, body: { enabled: a.enabled } })),
+  // these change the VM's record, which no `vm` event may report at once (owners, the token's
+  // presence, SSH access and keys): the VM list is read again, also after a failure that saved
+  setOwners: declareChange((a: { vm: string, owners: string[] }) => ({ method: 'PUT', path: `/vms/${a.vm}/github-owners`, body: { owners: a.owners } }), ['vms']),
+  setClaudeToken: declareChange((a: { vm: string, token: string }) => ({ method: 'PUT', path: `/vms/${a.vm}/claude-token`, body: { token: a.token } }), ['vms']),
+  removeClaudeToken: declareChange((vm: string) => ({ method: 'DELETE', path: `/vms/${vm}/claude-token` }), ['vms']),
+  setSsh: declareChange((a: { vm: string, enabled: boolean }) => ({ method: 'PUT', path: `/vms/${a.vm}/ssh`, body: { enabled: a.enabled } }), ['vms']),
   addSshKey: declareChange((a: { vm: string, key: string, name: string }) =>
-    ({ method: 'POST', path: `/vms/${a.vm}/ssh-keys`, body: { key: a.key, ...(a.name ? { name: a.name } : {}) } })),
-  copySshKeys: declareChange((a: { vm: string, from: string }) => ({ method: 'POST', path: `/vms/${a.vm}/ssh-keys`, body: { from: a.from } })),
+    ({ method: 'POST', path: `/vms/${a.vm}/ssh-keys`, body: { key: a.key, ...(a.name ? { name: a.name } : {}) } }), ['vms']),
+  copySshKeys: declareChange((a: { vm: string, from: string }) => ({ method: 'POST', path: `/vms/${a.vm}/ssh-keys`, body: { from: a.from } }), ['vms']),
   removeSshKey: declareChange((a: { vm: string, fingerprint: string }) =>
-    ({ method: 'POST', path: `/vms/${a.vm}/ssh-keys/remove`, body: { fingerprint: a.fingerprint } })),
+    ({ method: 'POST', path: `/vms/${a.vm}/ssh-keys/remove`, body: { fingerprint: a.fingerprint } }), ['vms']),
   // pairing a device with a VM's Orca
   revealPairingCode: declareChange((vm: string) => ({ method: 'POST', path: `/vms/${vm}/pairing-code`, body: { confirm: true } })),
   revokePairings: declareChange((vm: string) => ({ method: 'POST', path: `/vms/${vm}/pairings/revoke`, body: { confirm: vm } })),
@@ -450,6 +494,12 @@ export function createResources(live: Pick<Live, 'on' | 'state'>, context: Conte
     },
   })
 
+  // what the stream pushed stays while no view shows it: the next view shows it at once
+  // (and is read by the module only: its read is the default of the copy)
+  for (const [name, declaration] of Object.entries(RESOURCES) as [ResourceName, Declaration<unknown, unknown>][]) {
+    if (declaration.pushed) client.setQueryDefaults([name], { gcTime: Infinity, queryFn: ({ queryKey }: { queryKey: readonly unknown[] }) => read(name, queryKey[1] as never) })
+  }
+
   // replays: events that arrived while a read of their copy was on the way (by the hash of its
   // key), applied to its answer, so that the older answer does not undo them
   const replays = new Map<string, Set<((data: any) => any)[]>>()
@@ -479,7 +529,7 @@ export function createResources(live: Pick<Live, 'on' | 'state'>, context: Conte
       for (const apply of pending) {
         const next = apply(data)
         if (next === null) again.add(hashKey(queryKey))
-        else data = next
+        else if (next !== undefined) data = next
       }
       if (declaration.readOn?.(data)) again.add(hashKey(queryKey))
       return data
@@ -525,6 +575,14 @@ export function createResources(live: Pick<Live, 'on' | 'state'>, context: Conte
 
   function markStaleNow(queryKey: readonly unknown[]): Promise<void> {
     for (const query of client.getQueryCache().findAll({ queryKey, fetchStatus: 'fetching' })) again.add(query.queryHash)
+    // a pushed resource no view reads by itself: read its copy now
+    // (a change does not wait for it: the stream may tell it sooner)
+    if ((RESOURCES[queryKey[0] as ResourceName] as Declaration<unknown, unknown>).pushed) {
+      for (const query of client.getQueryCache().findAll({ queryKey })) {
+        if (query.state.fetchStatus !== 'fetching') void client.fetchQuery({ queryKey: query.queryKey, staleTime: 0 }).catch(() => {})
+      }
+      return Promise.resolve()
+    }
     return client.invalidateQueries({ queryKey, predicate: query => query.state.fetchStatus !== 'fetching' }, { cancelRefetch: false })
   }
 
@@ -539,16 +597,29 @@ export function createResources(live: Pick<Live, 'on' | 'state'>, context: Conte
     if (pendings?.size) for (const p of pendings) p.push(apply)
     const query = client.getQueryCache().find<ResourceData<N>>({ queryKey, exact: true })
     const data = query?.state.data
-    if (!query || data === undefined) return
+    if (data === undefined) {
+      // a pushed resource, or one an event seeds: the event is its first copy
+      const declaration = RESOURCES[name] as Declaration<unknown, unknown>
+      if (!declaration.pushed && !declaration.seeds) return
+      const first = apply(undefined as never)
+      if (first === undefined || first === null) return
+      const failed = query?.state.status === 'error' ? query.state.error : null
+      client.setQueryData(queryKey, first)
+      // read for the rest, unless a read is on the way already (it takes this event too) or the
+      // last one failed (no automatic retry: Retry reads it, with its failure still shown)
+      if (failed) query!.setState({ status: 'error', error: failed, isInvalidated: true })
+      else if (declaration.seeds && query?.state.fetchStatus !== 'fetching') void markStale(name, params)
+      return
+    }
     const next = apply(data)
     if (next === null) void markStale(name, params)
     // only the data: a stale mark and a failed read's error stay (setQueryData would clear both)
-    else query.setState({ data: next, dataUpdatedAt: Date.now() })
+    else if (next !== undefined && next !== data) query!.setState({ data: next, dataUpdatedAt: Date.now() })
   }
 
   const offs = [client.getQueryCache().subscribe((event) => {
     if (event.type !== 'updated' || (event.action.type !== 'success' && event.action.type !== 'error')) return
-    if (again.delete(event.query.queryHash)) void client.invalidateQueries({ queryKey: event.query.queryKey, exact: true }, { cancelRefetch: false })
+    if (again.delete(event.query.queryHash)) void markStaleNow(event.query.queryKey)
     // a read that ended took what a waiting mark was for (it was set while no read was on the way)
     const timer = waiting.get(event.query.queryHash)
     if (timer) {
@@ -560,21 +631,20 @@ export function createResources(live: Pick<Live, 'on' | 'state'>, context: Conte
 
   // the last of each event, for a row that compares (`services`: did the update end?), per object
   // for a row with a key (`vm`: a VM's SSH access)
-  const before = new Map<string, unknown>([['services', live.state.services]])
+  const before = new Map<string, unknown>()
   const slot = (eventName: string, row: EventRow, data: unknown) => (row.key ? `${eventName}:${row.key(data)}` : eventName)
-  /** The objects a row compares, from the live state or a `state` event, which sends them all:
-   * an object it already knew is compared as its own event would be. */
-  function know(state: unknown, compare: boolean) {
+  /** The objects a row compares, from a `state` event, which sends them all: an object it already
+   * knew is compared as its own event would be. */
+  function know(state: unknown) {
     for (const [eventName, row] of Object.entries(ON_EVENT)) {
       for (const item of row.known?.(state) ?? []) {
         const key = slot(eventName, row, item)
-        if (compare) for (const stale of row.stale?.(item, before.get(key)) ?? []) markStaleBy(stale, item)
+        for (const stale of row.stale?.(item, before.get(key)) ?? []) markStaleBy(stale, item)
         before.set(key, item)
       }
     }
   }
-  know(live.state, false)
-  offs.push(live.on('state', (state: unknown) => know(state, true)))
+  offs.push(live.on('state', (state: unknown) => know(state)))
   offs.push(...Object.entries(ON_EVENT).map(([eventName, row]) => live.on(eventName, (data: unknown) => {
     for (const [name, apply] of Object.entries(row.write ?? {}) as [ResourceName, (d: any, e: any) => any][]) {
       write(name, row.writeParams?.(data), d => apply(d, data))
@@ -612,7 +682,9 @@ export function createResources(live: Pick<Live, 'on' | 'state'>, context: Conte
       }
       // the connection is there: a read that failed because the Control Room could not be
       // reached is read again
-      if (missed || (query.state.status === 'error' && unreachable(query.state.error))) {
+      // (a pushed one comes with the stream again)
+      const pushed = (RESOURCES[name] as Declaration<unknown, unknown>).pushed
+      if ((missed && !pushed) || (query.state.status === 'error' && unreachable(query.state.error))) {
         void markStale(name, params)
       }
     }
@@ -644,6 +716,11 @@ function activityWords(): Context['words'] {
   const i18n = useNuxtApp().$i18n
   const tr: Translator = { t: (key, values) => i18n.t(key, values ?? {}), te: key => i18n.te(key) }
   return entry => activityText(entry, tr)
+}
+
+/** The cache and its wiring, made now (before the live stream opens: it keeps what is pushed). */
+export function startResources() {
+  useResources()
 }
 
 /** Tests only: the cache and its wiring. */
@@ -715,7 +792,8 @@ export function useResource<N extends ResourceName>(name: N, ...[options = {}]: 
     // on while the browser tab is in the background
     refetchInterval: computed(() => toValue(options.every) ?? false),
     refetchIntervalInBackground: true,
-    enabled: () => toValue(options.enabled ?? true),
+    // a pushed one is read by no view (the stream sends it); Retry still reads it
+    enabled: () => toValue(options.enabled ?? true) && !RESOURCES[name].pushed,
   }, r.client)
   return {
     name,

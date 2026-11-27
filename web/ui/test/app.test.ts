@@ -1,6 +1,7 @@
 // The app shell against a fake backend: pages need a session, the VM list follows the
 // stream, the connection state is visible, drops are retried, sign-out.
 import { flushPromises } from '@vue/test-utils'
+import { resourcesForTests } from '~/utils/resources'
 import { mountSuspended } from '@nuxt/test-utils/runtime'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '~/app.vue'
@@ -140,6 +141,9 @@ describe('app shell', () => {
     const wrapper = await mountSuspended(App, { route: '/vms' })
     await flushPromises()
     FakeEventSource.last.emit('hello', { stream: 'x', resumed: false })
+    FakeEventSource.last.emit('state', { vms: [vm('work')], problems: [] })
+    const cache = resourcesForTests().client.getQueryCache()
+    expect(cache.find({ queryKey: ['vms'] })?.state.data).toBeDefined()
     await wrapper.find('[data-testid="sign-out"]').trigger('click')
     await flushPromises()
     const del = api.calls.find(c => c.method === 'DELETE')!
@@ -147,6 +151,7 @@ describe('app shell', () => {
     expect(del.headers['x-agentbox']).toBe('1')
     await vi.waitFor(() => expect(useRouter().currentRoute.value.path).toBe('/sign-in'))
     expect(FakeEventSource.last.closed).toBe(true)
-    expect(useLive().state.vms).toEqual([])
+    // no server data left: the cache of before is empty
+    expect(cache.getAll()).toEqual([])
   })
 })

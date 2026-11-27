@@ -7,7 +7,6 @@ import type { Vm } from '~/utils/live'
 
 const props = defineProps<{ vm: Vm }>()
 const { t } = useI18n()
-const live = useLive()
 const when = useWhen()
 
 const token = ref('')
@@ -40,7 +39,6 @@ async function submit() {
   if (!r.ok) return
   const length = (r.data as { length?: number } | null)?.length
   stored.value = { length: typeof length === 'number' ? length : 0 }
-  void live.refetchVms()
 }
 
 function askRemove() {
@@ -55,7 +53,6 @@ async function remove() {
   if (!(await unset.run(props.vm.name)).ok) return
   removed.value = true
   removeOpen.value = false
-  void live.refetchVms()
 }
 </script>
 

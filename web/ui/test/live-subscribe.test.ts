@@ -1,5 +1,5 @@
-// Views subscribe to stream events that carry no state of their own (activity, build,
-// notification, ...) with live.on().
+// Subscribers take the stream's events with live.on(): those that carry no state of their own
+// (activity, build, notification, ...) and the pushed objects (the resources module's).
 import { describe, expect, it } from 'vitest'
 import { createLive } from '~/utils/live'
 import { FakeEventSource } from './fakes'
@@ -8,7 +8,6 @@ function setup() {
   FakeEventSource.reset()
   const live = createLive({
     checkSession: async () => true,
-    fetchVms: async () => ({ vms: [], problems: [] }),
     createEventSource: url => new FakeEventSource(url),
   })
   live.start()
@@ -27,12 +26,15 @@ describe('live.on', () => {
     expect(seen).toEqual([{ kind: 'action', description: 'one' }, { kind: 'action', description: 'two' }])
   })
 
-  it('also works for events that update state, after the state changed', () => {
+  it('hands the pushed objects whole to subscribers, and keeps none itself', () => {
     const { live, es } = setup()
     const seen: unknown[] = []
-    live.on('host', () => seen.push(live.state.host))
+    for (const name of ['state', 'vm', 'host', 'services', 'version', 'watch', 'host-reboot']) live.on(name, e => seen.push([name, e]))
     es.emit('host', { time: 1, readings: [], vms: {} })
-    expect(seen).toEqual([{ time: 1, readings: [], vms: {} }])
+    es.emit('state', { vms: [], problems: [] })
+    es.emit('host-reboot', { needed: false })
+    expect(seen).toEqual([['host', { time: 1, readings: [], vms: {} }], ['state', { vms: [], problems: [] }], ['host-reboot', { needed: false }]])
+    expect(Object.keys(live.state).sort()).toEqual(['attempts', 'connection', 'retryAt', 'stream'])
   })
 
   it('does not let a failing subscriber stop the others or the stream', () => {

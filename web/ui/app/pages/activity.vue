@@ -2,12 +2,12 @@
 // Activity (#15): one timeline of everything that happened, live.
 definePageMeta({ titleKey: 'nav.activity' })
 const { t } = useI18n()
-const live = useLive()
+const { vms } = useVms()
 const { filter, timeline, entries, truncated, retentionDays, loading, showMore, lines } = useActivity()
 const MAX_LINES = ACTIVITY_MAX_LINES
 
 const vmNames = computed(() => {
-  const names = new Set(live.state.vms.map(v => v.name))
+  const names = new Set(vms.value.map(v => v.name))
   for (const e of entries.value) if (e.vm) names.add(e.vm)
   if (filter.vm) names.add(filter.vm)
   return [...names].sort()

@@ -3,7 +3,7 @@
 // a socket starts (systemd's TriggeredBy) is shown under it, and waits for it while inactive.
 // Above them, what the Host lacks for its maintenance (the event's warnings, by stable code).
 const { t, te } = useI18n()
-const live = useLive()
+const system = useSystem()
 
 // state: the backend's word for the unit, text: systemd's words to show (#115); the UI compares
 // no systemd state itself
@@ -11,13 +11,13 @@ interface Unit { unit: string, load: string, active: string, sub: string, descri
 interface Group { unit: Unit, started: Unit[] }
 interface Warning { code: string, message: string }
 const units = computed<Unit[] | null>(() => {
-  const s = live.state.services as { units?: Unit[] } | null
-  return Array.isArray(s?.units) ? s.units : null
+  const s = system.services.value
+  return Array.isArray(s) ? s as unknown as Unit[] : null
 })
 const warnings = computed<Warning[]>(() => {
-  const s = live.state.services as { warnings?: unknown } | null
-  return Array.isArray(s?.warnings)
-    ? s.warnings.filter((w): w is Warning => typeof w?.code === 'string' && typeof w?.message === 'string')
+  const w = system.warnings.value
+  return Array.isArray(w)
+    ? w.filter((x): x is Warning => typeof (x as Warning)?.code === 'string' && typeof (x as Warning)?.message === 'string')
     : []
 })
 

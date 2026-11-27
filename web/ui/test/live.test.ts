@@ -1,5 +1,6 @@
-// The live connection (app/utils/live.ts): snapshot then updates, and getting back on its
-// feet after the stream drops or the backend refuses it.
+// The live connection (app/utils/live.ts), only the connection: opening the stream, handing its
+// events on, and getting back on its feet after it drops or the backend refuses it. What the
+// events carry is the resources module's (resources.test.ts).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createLive } from '~/utils/live'
 import { FakeEventSource, vm } from './fakes'
@@ -7,10 +8,10 @@ import { FakeEventSource, vm } from './fakes'
 function setup(overrides: Partial<Parameters<typeof createLive>[0]> = {}) {
   let clock = 0
   const checkSession = vi.fn(async () => true)
-  const fetchVms = vi.fn(async () => ({ vms: [vm('work', 'paused'), vm('priv', 'running', { network: 2 })], problems: [] }))
+  const beforeStart = vi.fn()
   const onSignedOut = vi.fn()
   const live = createLive({
-    checkSession, fetchVms, onSignedOut,
+    checkSession, beforeStart, onSignedOut,
     createEventSource: url => new FakeEventSource(url),
     backoffMs: [1000, 3000, 10000],
     deadAfterMs: 30000,
@@ -21,7 +22,7 @@ function setup(overrides: Partial<Parameters<typeof createLive>[0]> = {}) {
     clock += ms
     await vi.advanceTimersByTimeAsync(ms)
   }
-  return { live, checkSession, fetchVms, onSignedOut, advance }
+  return { live, checkSession, beforeStart, onSignedOut, advance }
 }
 
 beforeEach(() => {
@@ -32,47 +33,37 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-describe('live state', () => {
-  it('takes the VM list from the state snapshot and replaces single VMs from vm events', () => {
-    const { live } = setup()
+describe('the stream', () => {
+  it('opens once what subscribes to it is there, goes live on hello and hands every event on', () => {
+    const { live, beforeStart } = setup()
+    const seen: string[] = []
+    live.on('state', () => seen.push('state'))
+    live.on('vm', () => seen.push('vm'))
+    beforeStart.mockImplementation(() => seen.push('before'))
     live.start()
+    expect(seen).toEqual(['before'])
     expect(FakeEventSource.last.url).toBe('/api/v1/events')
     expect(live.state.connection).toBe('connecting')
-    expect(live.state.loaded).toBe(false)
-
     const es = FakeEventSource.last
     es.emit('hello', { stream: 'ab12cd34', resumed: false })
-    expect(live.state.connection).toBe('live')
-    es.emit('watch', { running: true, since: '2026-11-03T12:00:00Z', restarts: 0, last_exit: null })
-    es.emit('state', { vms: [vm('priv', 'stopped', { network: 2 }), vm('work')], problems: [{ vm: 'old', problem: 'broken record' }] }, 'ab12cd34-1')
-    expect(live.state.loaded).toBe(true)
-    expect(live.state.vms.map(v => [v.name, v.state])).toEqual([['work', 'running'], ['priv', 'stopped']])
-    expect(live.state.problems).toEqual([{ vm: 'old', problem: 'broken record' }])
-
-    es.emit('vm', vm('priv', 'running', { network: 2, agents: { working: 1 } }), 'ab12cd34-2')
-    expect(live.state.vms.map(v => [v.name, v.state])).toEqual([['work', 'running'], ['priv', 'running']])
-    expect(live.state.vms[1]!.agents).toEqual({ working: 1 })
-
-    // a VM the list did not have yet goes in network order; events are whole objects, twice is harmless
-    es.emit('vm', vm('lab', 'stopped', { network: 3 }))
-    es.emit('vm', vm('lab', 'stopped', { network: 3 }))
-    expect(live.state.vms.map(v => v.name)).toEqual(['work', 'priv', 'lab'])
-
-    // a new snapshot (a VM was deleted) replaces everything
+    expect(live.state).toMatchObject({ connection: 'live', stream: 'ab12cd34' })
     es.emit('state', { vms: [vm('work')], problems: [] })
-    expect(live.state.vms.map(v => v.name)).toEqual(['work'])
-    expect(live.state.problems).toEqual([])
+    es.emit('vm', vm('work'))
+    expect(seen).toEqual(['before', 'state', 'vm'])
   })
 
-  it('ignores unknown events and broken data', () => {
+  it('hands on no unknown event and no data that is not JSON', () => {
     const { live } = setup()
+    const seen: unknown[] = []
+    live.on('something-new', e => seen.push(e))
+    live.on('vm', e => seen.push(e))
     live.start()
     const es = FakeEventSource.last
-    es.emit('hello', { stream: 'x', resumed: false })
-    es.emit('state', { vms: [vm('work')], problems: [] })
     es.emit('something-new', { a: 1 })
-    es.emit('vm', { no: 'name' })
-    expect(live.state.vms.map(v => v.name)).toEqual(['work'])
+    for (const listener of (es as unknown as { listeners: Map<string, ((e: MessageEvent) => void)[]> }).listeners.get('vm') ?? []) {
+      listener(new MessageEvent('vm', { data: 'not json' }))
+    }
+    expect(seen).toEqual([])
   })
 })
 
@@ -152,8 +143,10 @@ describe('reconnecting', () => {
     await advance(0)
     live.reconnectNow()
     expect(FakeEventSource.instances).toHaveLength(2)
+    const seen: unknown[] = []
+    live.on('state', e => seen.push(e))
     first.emit('state', { vms: [vm('stale')], problems: [] })
-    expect(live.state.vms).toEqual([])
+    expect(seen).toEqual([])
     await advance(5000)
     expect(FakeEventSource.instances).toHaveLength(2)    // the scheduled retry was cancelled
   })
@@ -178,29 +171,12 @@ describe('reconnecting', () => {
     expect(FakeEventSource.instances).toHaveLength(2)
   })
 
-  it('fetches the VM list again when agentbox watch runs again', async () => {
-    const { live, fetchVms } = setup()
-    live.start()
-    const es = FakeEventSource.last
-    es.emit('hello', { stream: 'x', resumed: false })
-    es.emit('watch', { running: true, since: 't', restarts: 0, last_exit: null })
-    es.emit('state', { vms: [vm('work')], problems: [] })
-    expect(fetchVms).not.toHaveBeenCalled()
-    es.emit('watch', { running: false, since: null, restarts: 1, last_exit: 1 })
-    expect(live.state.watch?.running).toBe(false)
-    es.emit('watch', { running: true, since: 't2', restarts: 1, last_exit: 1 })
-    expect(fetchVms).toHaveBeenCalledTimes(1)
-    await vi.advanceTimersByTimeAsync(0)
-    expect(live.state.vms.map(v => [v.name, v.state])).toEqual([['work', 'paused'], ['priv', 'running']])
-  })
-
   it('forgets everything on reset (sign-out)', () => {
     const { live } = setup()
     live.start()
     FakeEventSource.last.emit('hello', { stream: 'x', resumed: false })
-    FakeEventSource.last.emit('state', { vms: [vm('work')], problems: [] })
     live.reset()
     expect(FakeEventSource.last.closed).toBe(true)
-    expect(live.state).toMatchObject({ connection: 'idle', loaded: false, vms: [] })
+    expect(live.state).toMatchObject({ connection: 'idle', stream: null, attempts: 0 })
   })
 })

@@ -117,8 +117,9 @@ describe('host bar', () => {
     })
     es.emit('host', hostSample([reading('cpu.load', 'cpu_load', 12)], {}, 1030))
     await flushPromises()
+    // the live sample is the first copy: the history could not be added to it
     const failure = wrapper.find('[data-testid="host-bar-details"] [data-testid="host-error"]')
-    expect(failure.text()).toContain('Could not read the Host\'s history.')
+    expect(failure.attributes('data-read')).toBe('stale')
     expect(wrapper.findAll('[data-testid="host-chip"]')).toHaveLength(1)
     fail = false
     await failure.findAll('button').find(b => b.text() === 'Retry')!.trigger('click')

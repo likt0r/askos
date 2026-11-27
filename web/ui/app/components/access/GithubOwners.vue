@@ -5,7 +5,6 @@ import type { Vm } from '~/utils/live'
 
 const props = defineProps<{ vm: Vm }>()
 const { t } = useI18n()
-const live = useLive()
 const toast = useToast()
 
 const editing = ref(false)
@@ -46,7 +45,6 @@ async function save() {
   if (!(await set.run({ vm: props.vm.name, owners: draft.value })).ok) return
   toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t('access.owners.saved', { vm: props.vm.name }) })
   editing.value = false
-  void live.refetchVms()
 }
 </script>
 

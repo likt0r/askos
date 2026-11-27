@@ -927,6 +927,20 @@ describe('creating a VM', () => {
     expect((byTestId('create-memory').element as HTMLInputElement).value).toBe('32768')
   })
 
+  it('reads the VM list after creating one, also before the stream tells it', async () => {
+    const api = fakeApi(routes({
+      'POST /vms': { status: 201, body: { vm: 'lab', network: 3, orca_port: 6803, image: 'base' } },
+      'GET /vms': OK({ vms: [WORK, vm('lab', 'stopped', { network: 3 })], problems: [] }),
+    }))
+    await openApp('/vms', [WORK])
+    await click('vm-create')
+    await type('create-name', 'lab')
+    await submit('create-dialog')
+    await vi.waitFor(() => expect(api.calls.filter(c => c.method === 'GET' && c.path === '/vms')).toHaveLength(1))
+    await vi.waitFor(() => expect(useRouter().currentRoute.value.path).toBe('/vms/lab/web'))
+    await vi.waitFor(() => expect(exists('vm-detail')).toBe(true))
+  })
+
   it('copies the SSH keys of another VM once when asked, and says how many', async () => {
     const api = fakeApi(routes({ 'POST /vms': { status: 201, body: { vm: 'lab', network: 3, orca_port: 6803, image: 'base',
       ssh_keys_from: 'work', ssh_keys: [{ fingerprint: 'SHA256:a', name: 'laptop', type: 'ssh-ed25519' },

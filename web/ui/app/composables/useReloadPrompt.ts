@@ -1,7 +1,8 @@
-// A new Control Room build was installed: the `version` event carries a version that differs
-// from the one this page loaded with. Open pages offer to reload. The page's own version is the
-// UI build of the first answer of the resource `version` (GET /version, read when the app shell
-// opens); later answers, after a reconnect or a sign-in, may name a newer build, not this page's.
+// A new Control Room build was installed: the resource `version` (GET /version, kept current by
+// the `version` event) names a build that differs from the one this page loaded with. Open pages
+// offer to reload. The page's own version is the UI build of the first copy of `version` (read when
+// the app shell opens); later ones, after an event, a reconnect or a sign-in, may name a newer
+// build, not this page's.
 import { computed, ref, watch } from 'vue'
 
 const own = ref<string | null>(null)
@@ -19,21 +20,22 @@ export function useRelease() {
 }
 
 export function useReloadPrompt() {
-  const live = useLive()
   const version = useVersion()
   watch(() => version.value?.version, (v) => {
     if (own.value === null && typeof v === 'string') own.value = v
   }, { immediate: true })
+  // the UI build installed now: the resource, which the `version` event keeps current
+  const installed = computed(() => version.value ?? null)
   const available = computed(() => {
-    const v = live.state.version
-    return !!v && v.ui === 'nuxt' && !!own.value && v.version !== own.value
+    const v = installed.value
+    return !!v && v.ui === 'nuxt' && !!own.value && typeof v.version === 'string' && v.version !== own.value
   })
-  const visible = computed(() => available.value && dismissed.value !== live.state.version?.version)
+  const visible = computed(() => available.value && dismissed.value !== installed.value?.version)
   return {
     visible,
     reload: () => window.location.reload(),
     dismiss() {
-      dismissed.value = live.state.version?.version ?? null
+      dismissed.value = installed.value?.version ?? null
     },
   }
 }
