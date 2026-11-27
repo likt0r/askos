@@ -390,17 +390,25 @@ describe('the GitHub Apps through the resources module (#216)', () => {
 
   it('keeps saying no App is set up while it reads again', async () => {
     let release: (() => void) | null = null
-    const { es } = await openApp('/system', { 'GET /github-app': () => (release === null
+    const { api, es } = await openApp('/system', { 'GET /github-app': () => (release === null
       ? fail(409, 'github_app_missing')
       : new Promise(resolve => { const r = release!; release = () => { r(); resolve(fail(409, 'github_app_missing')) } })) as never })
     expect(must('[data-testid="app-error"]').textContent).toContain('No GitHub App is set up.')
     release = () => {}
     es.emit('activity', activity('create'))
     await new Promise(r => setTimeout(r, 400))
+    expect(api.calls.filter(c => c.path === '/github-app')).toHaveLength(2)
     expect(must('[data-testid="app-error"]').textContent).toContain('No GitHub App is set up.')
     release!()
     await settle()
     expect(must('[data-testid="app-error"]').textContent).toContain('No GitHub App is set up.')
+  })
+
+  it('a VM\'s owners show without the mark, and without a failure, when the Apps cannot be read', async () => {
+    await openApp('/vms/work/access', { ...ACCESS, 'GET /github-app': fail(502, 'github_unavailable', 'GitHub answers 502') }, [workVm()])
+    expect($$('[data-testid="owners-list"] [data-owner]').map(o => o.dataset.owner)).toEqual(['likt0r', 'acme-corp'])
+    expect($('[data-testid="owner-missing"]')).toBeNull()
+    expect(must('[data-testid="github-owners"]').querySelector('[data-read]')).toBeNull()
   })
 
   it('a failed first read shows what could not be read, with Retry', async () => {

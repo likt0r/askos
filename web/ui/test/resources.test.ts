@@ -372,3 +372,12 @@ describe('a code the Host answers for a state', () => {
     r.stop()
   })
 })
+
+describe('a failure code named like a built-in property', () => {
+  it('stays a failure', async () => {
+    const r = createResources(fakeLive() as never)
+    fakeApi({ 'GET /github-app': { status: 500, body: { error: { code: 'constructor', message: 'x' } } } })
+    await expect(r.read('githubApp')).rejects.toMatchObject({ code: 'constructor' })
+    r.stop()
+  })
+})

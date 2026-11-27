@@ -145,7 +145,7 @@ async function remove() {
       :description="t('githubApp.missingApp')"
       data-testid="app-error"
     />
-    <ReadFailure :resource="apps" data-testid="app-error" />
+    <ReadFailure :resource="apps" />
     <p v-if="apps.loading.value" class="text-sm text-muted">
       {{ t('access.common.loading') }}
     </p>

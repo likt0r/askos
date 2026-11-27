@@ -298,7 +298,7 @@ export function createResources(live: Pick<Live, 'on' | 'state'>) {
         data = await api<ResourceData<N>>(declaration.path(params))
       }
       catch (e) {
-        const state = e instanceof ApiError ? declaration.states[e.code] : undefined
+        const state = e instanceof ApiError && Object.hasOwn(declaration.states, e.code) ? declaration.states[e.code] : undefined
         if (!state) throw e
         data = state()
       }
