@@ -350,3 +350,34 @@ describe('a VM\'s copy marked stale while it is read', () => {
     r.stop()
   })
 })
+
+describe('the stale table for the GitHub Apps', () => {
+  it.each(['set-github-app', 'remove-github-app', 'set-owners', 'create', 'delete'])('%s marks githubApp stale', (code) => {
+    const live = fakeLive()
+    const r = createResources(live as never)
+    r.client.setQueryData(['githubApp'], { apps: [], missing: [] })
+    live.emit('activity', entry(code))
+    expect(r.client.getQueryState(['githubApp'])!.isInvalidated).toBe(true)
+    r.stop()
+  })
+})
+
+describe('a code the Host answers for a state', () => {
+  it('is read as the declared data, not as a failure', async () => {
+    const r = createResources(fakeLive() as never)
+    fakeApi({ 'GET /github-app': { status: 409, body: { error: { code: 'github_app_missing', message: 'x' } } } })
+    expect(await r.read('githubApp')).toEqual({ apps: [], missing: [], none: true })
+    fakeApi({ 'GET /github-app': { status: 502, body: { error: { code: 'github_unavailable', message: 'x' } } } })
+    await expect(r.read('githubApp')).rejects.toMatchObject({ code: 'github_unavailable' })
+    r.stop()
+  })
+})
+
+describe('a failure code named like a built-in property', () => {
+  it('stays a failure', async () => {
+    const r = createResources(fakeLive() as never)
+    fakeApi({ 'GET /github-app': { status: 500, body: { error: { code: 'constructor', message: 'x' } } } })
+    await expect(r.read('githubApp')).rejects.toMatchObject({ code: 'constructor' })
+    r.stop()
+  })
+})

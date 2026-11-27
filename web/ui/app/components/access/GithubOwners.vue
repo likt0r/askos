@@ -1,7 +1,6 @@
 <script setup lang="ts">
 // The VM's GitHub owners: the accounts and organisations it may get tokens for. Marks owners
 // without an Installation of the GitHub App (when GitHub can be asked); edit and save.
-import type { GithubAppOverview } from '~/utils/access'
 import type { Vm } from '~/utils/live'
 
 const props = defineProps<{ vm: Vm }>()
@@ -14,21 +13,18 @@ const draft = ref<string[]>([])
 const input = ref('')
 const set = useChange('setOwners', { form: true })
 const busy = set.busy
-const missing = ref<Set<string> | null>(null)
+// the owners no App is installed on, from the GitHub Apps' overview: an extra (without GitHub
+// the owners are shown without that mark); it follows the changes of the Apps and owners
+const app = useResource('githubApp', { extra: true })
+const missing = computed(() => {
+  const data = app.data.value
+  // no App set up: no Installation to miss (the System page says so)
+  return data && !data.none ? new Set(data.missing.filter(m => m.vms.includes(props.vm.name)).map(m => m.owner.toLowerCase())) : null
+})
 
 const owners = computed(() => props.vm.github_owners ?? [])
 const inputValid = computed(() => !input.value.trim() || input.value.trim().split(/[\s,]+/).every(looksLikeGithubOwner))
 const changed = computed(() => draft.value.join(',') !== owners.value.join(','))
-
-onMounted(async () => {
-  try {
-    const app = await api<GithubAppOverview>('/github-app')
-    missing.value = new Set(app.missing.filter(m => m.vms.includes(props.vm.name)).map(m => m.owner.toLowerCase()))
-  }
-  catch {
-    // without GitHub the owners are shown without that mark
-  }
-})
 
 function edit() {
   draft.value = [...owners.value]

@@ -15,7 +15,7 @@
 import { notifyManager, QueryClient, useMutation, useQuery } from '@tanstack/vue-query'
 import { computed, type ComputedRef, type MaybeRefOrGetter, type Ref, ref, toValue } from 'vue'
 import { api, ApiError } from './api'
-import { allowlistEntryPath, type AllowlistEntry, entryPath, forbidPath, type ForbidEntry, type Target } from './access'
+import { allowlistEntryPath, type AllowlistEntry, entryPath, forbidPath, type ForbidEntry, type GithubAppOverview, type Target } from './access'
 import { useChangeToast } from '../composables/useChangeToast'
 import { failurePlace, type FailurePlace, unreachable } from './failures'
 import { applyBuild, type BuildEvent, type ImagesOverview } from './images'
@@ -34,20 +34,29 @@ interface Declaration<T, P> {
   /** the Host sends no event about its changes: read again whenever a view of it opens (the owner
    * on #216) */
   fresh: boolean
+  /** codes the Host answers for a state, not a failure: read as this data */
+  states: Record<string, () => T>
   /** only carry the types of the answer and of the parameters */
   answer?: T
   params?: P
 }
 
 /** A resource: its path, or for one with parameters (a VM's), its path from them. */
-function declare<T, P = undefined>(path: string | ((params: P) => string), options: { fresh?: boolean } = {}): Declaration<T, P> {
-  return { path: typeof path === 'string' ? () => path : path, fresh: !!options.fresh }
+function declare<T, P = undefined>(path: string | ((params: P) => string),
+  options: { fresh?: boolean, states?: Record<string, () => T> } = {}): Declaration<T, P> {
+  return { path: typeof path === 'string' ? () => path : path, fresh: !!options.fresh, states: options.states ?? {} }
 }
 
 const RESOURCES = {
   images: declare<ImagesOverview>('/images'),
   // a device pairs inside Orca with the code: nothing on the Host records it
   pairings: declare<Pairings, { vm: string }>(p => `/vms/${p.vm}/pairings`, { fresh: true }),
+  // an App installed or uninstalled on GitHub: nothing on the Host records it; no App set up is a
+  // state, not a failure
+  githubApp: declare<GithubAppOverview>('/github-app', {
+    fresh: true,
+    states: { github_app_missing: () => ({ apps: [], missing: [], none: true }) },
+  }),
 }
 
 export type ResourceName = keyof typeof RESOURCES
@@ -107,12 +116,16 @@ const ON_ACTIVITY: Record<string, Stale[]> = {
   'recipe.restore': ['images'],
   'recipe.remove': ['images'],
   // which VMs use and pin each Image and Build (`vms`, `used_by`, `pinned_by`)
-  'create': ['images'],
-  'delete': ['images'],
+  'create': ['images', 'githubApp'],
+  'delete': ['images', 'githubApp'],
   'set-image': ['images'],
   'reset': ['images'],
   'reset.automatic': ['images'],
   'reset.update': ['images'],
+  // the GitHub Apps, their Installations and which VMs' owners miss one
+  'set-github-app': ['githubApp'],
+  'remove-github-app': ['githubApp'],
+  'set-owners': ['githubApp'],
   // a VM's Paired devices
   'observe': [ofEntryVm('pairings')],
   'unpair': [ofEntryVm('pairings')],
@@ -279,7 +292,16 @@ export function createResources(live: Pick<Live, 'on' | 'state'>) {
     replays.set(name, set)
     set.add(pending)
     try {
-      let data = await api<ResourceData<N>>((RESOURCES[name].path as (p: unknown) => string)(params))
+      const declaration = RESOURCES[name] as Declaration<ResourceData<N>, unknown>
+      let data: ResourceData<N>
+      try {
+        data = await api<ResourceData<N>>(declaration.path(params))
+      }
+      catch (e) {
+        const state = e instanceof ApiError && Object.hasOwn(declaration.states, e.code) ? declaration.states[e.code] : undefined
+        if (!state) throw e
+        data = state()
+      }
       for (const apply of pending) {
         const next = apply(data)
         if (next === null) again.add(name)

@@ -126,7 +126,8 @@ test/                      Vitest
 
 Server data lives in one cache, in `app/utils/resources.ts` ([ADR
 0026](../../docs/adr/0026-the-control-room-ui-holds-server-data-in-one-cache.md)). The resources
-it holds so far: `images` (`GET /images`) and `pairings` (`GET /vms/<vm>/pairings`). Every
+it holds so far: `images` (`GET /images`), `pairings` (`GET /vms/<vm>/pairings`) and
+`githubApp` (`GET /github-app`). Every
 other view still reads on its own, as the next section describes, until it moves into the
 module (#216).
 
@@ -135,7 +136,10 @@ module (#216).
   them (`pairings: declare<Pairings, { vm: string }>(p => `/vms/${p.vm}/pairings`)`). The key in
   the cache is `[name]`, or `[name, params]`: one copy per set of parameters. A resource whose
   changes the Host sends no event about is declared `fresh` (`pairings`: a device pairs inside
-  Orca): it is read again whenever a view of it opens (the owner on #216).
+  Orca; `githubApp`: an App installed on GitHub): it is read again whenever a view of it opens
+  (the owner on #216). A code the Host answers for a state, not a failure, is declared in
+  `states` and read as data (`github_app_missing`: no App set up, `{ apps: [], missing: [], none:
+  true }`), so a later failed read keeps that state, not an older overview.
 - **Asking for one**: `const images = useResource('images')` gives `data` (undefined until an
   answer came), `loading` (nothing yet and a read on the way), `fetching` (a read on the way,
   the first or a read again), `error` (why the last read failed) and `retry()`. Every view that
@@ -160,7 +164,8 @@ module (#216).
   `maintenance.versions`, `update-now`, `recipe.set`, `recipe.restore`, `recipe.remove` (a
   Recipe's Image comes or goes) and `create`, `delete`, `set-image`, `reset`, `reset.automatic`,
   `reset.update` (which VMs use and pin each Build); `pairings` of the entry's VM after `observe`,
-  `unpair` and `revoke-pairings` (a row `ofEntryVm(name)` marks only that VM's copy). A write
+  `unpair` and `revoke-pairings` (a row `ofEntryVm(name)` marks only that VM's copy);
+  `githubApp` after `set-github-app`, `remove-github-app`, `set-owners`, `create` and `delete`. A write
   keeps a stale mark and a failed read's error. A
   stale resource that a view shows is read again; one that nothing shows is read when a view
   next asks for it. A new Activity code that changes a resource needs a row here; without one,

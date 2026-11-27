@@ -4,15 +4,18 @@
 // elsewhere; GitHub owners of VMs that no App is installed on (missing Installations); adding
 // an App, replacing one App's key (checked with GitHub before it is stored; the key is never
 // shown again) and removing an App.
-import type { GithubApp, GithubAppOverview } from '~/utils/access'
+import type { GithubApp } from '~/utils/access'
 
 const { t } = useI18n()
 const errorText = useErrorText()
 const toast = useToast()
 
-const overview = ref<GithubAppOverview | null>(null)
-const loading = ref(false)
-const error = ref<unknown>(null)
+// the Apps, read again on the Activity entries that change them; no App set up is a state of
+// the resource (`none`): there is no overview then
+const apps = useResource('githubApp')
+const missingApp = computed(() => apps.data.value?.none === true)
+const overview = computed(() => (missingApp.value ? null : apps.data.value ?? null))
+const loading = apps.fetching
 const copied = ref<number | null>(null)
 
 // the form: a new App, or a new key for the App with this ID
@@ -34,23 +37,7 @@ const del = useChange('removeGithubApp', { form: true })
 const appIdValid = computed(() => /^[1-9]\d{0,11}$/.test(appId.value.trim()))
 const keyLooksRight = computed(() => /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(key.value))
 const canSave = computed(() => appIdValid.value && keyLooksRight.value && !saving.value)
-const missingApp = computed(() => error.value instanceof ApiError && error.value.code === 'github_app_missing')
 const known = computed(() => overview.value?.apps.some(a => String(a.id) === appId.value.trim()) ?? false)
-
-async function load() {
-  loading.value = true
-  try {
-    overview.value = await api<GithubAppOverview>('/github-app')
-    error.value = null
-  }
-  catch (e) {
-    overview.value = null
-    error.value = e
-  }
-  finally {
-    loading.value = false
-  }
-}
 
 function appError(app: GithubApp) {
   return app.error ? new ApiError(0, app.error.error, app.error.message) : null
@@ -130,10 +117,6 @@ async function remove() {
   if (editing.value === 'replace' && appId.value === String(app.id)) cancelEdit()
   toast.add({ color: 'success', icon: 'i-lucide-circle-check', title: t('githubApp.remove.done', { id: app.id }) })
 }
-
-onMounted(load)
-// only `overview` is replaced: an open form keeps what was typed
-useReloadOnActivity(load, { codes: ['set-github-app', 'remove-github-app', 'set-owners', 'create', 'delete'] })
 </script>
 
 <template>
@@ -144,7 +127,7 @@ useReloadOnActivity(load, { codes: ['set-github-app', 'remove-github-app', 'set-
         {{ t('githubApp.title') }}
       </h2>
       <span class="flex-1" />
-      <UButton color="neutral" variant="ghost" size="sm" icon="i-lucide-refresh-cw" :loading="loading" :aria-label="t('access.common.refresh')" @click="load" />
+      <UButton color="neutral" variant="ghost" size="sm" icon="i-lucide-refresh-cw" :loading="loading" :aria-label="t('access.common.refresh')" @click="apps.retry()" />
       <UButton v-if="!editing" color="neutral" variant="outline" size="sm" icon="i-lucide-plus" :label="t('githubApp.add.open')" data-testid="app-add-open" @click="startEdit('add')" />
     </div>
     <p class="text-sm text-muted">
@@ -154,15 +137,16 @@ useReloadOnActivity(load, { codes: ['set-github-app', 'remove-github-app', 'set-
     <UAlert v-if="saved" color="success" variant="subtle" icon="i-lucide-circle-check" :title="t(saved.added ? 'githubApp.add.done' : 'githubApp.replace.done', { id: saved.id })" :description="t(saved.added ? 'githubApp.add.doneText' : 'githubApp.replace.doneText')" data-testid="app-replaced" />
 
     <UAlert
-      v-if="error"
-      :color="missingApp ? 'warning' : 'error'"
+      v-if="missingApp"
+      color="warning"
       variant="subtle"
       icon="i-lucide-circle-alert"
-      :title="errorText(error)"
-      :description="missingApp ? t('githubApp.missingApp') : undefined"
+      :title="t('errors.github_app_missing')"
+      :description="t('githubApp.missingApp')"
       data-testid="app-error"
     />
-    <p v-if="!overview && !error" class="text-sm text-muted">
+    <ReadFailure :resource="apps" />
+    <p v-if="apps.loading.value" class="text-sm text-muted">
       {{ t('access.common.loading') }}
     </p>
 

@@ -193,7 +193,7 @@ describe('a failed read of the Images', () => {
 
   it('a page that loads while the Control Room is out of reach reads again with the first hello', async () => {
     let answers = 0
-    const api = fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': () => (++answers === 1 ? OFFLINE() : OK(IMAGES)) })
+    const api = fakeApi({ 'GET /session': SIGNED_IN, 'GET /github-app': OK({ apps: [], missing: [] }), 'GET /images': () => (++answers === 1 ? OFFLINE() : OK(IMAGES)) })
     await openApp('/system', [WORK])
     expect(reads(api)).toBe(2)
     expect(failure()).toBeNull()
@@ -202,7 +202,7 @@ describe('a failed read of the Images', () => {
 
   it('with the connection down only the connection notice speaks; the read happens again when it is back', async () => {
     let offline = false
-    const api = fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': () => (offline ? OFFLINE() : OK(IMAGES)) })
+    const api = fakeApi({ 'GET /session': SIGNED_IN, 'GET /github-app': OK({ apps: [], missing: [] }), 'GET /images': () => (offline ? OFFLINE() : OK(IMAGES)) })
     const { es } = await openApp('/system', [WORK])
     const section = byTestId('system-images').element
     offline = true
@@ -224,7 +224,7 @@ describe('a failed read of the Images', () => {
   it('says nothing while the read again after the connection came back is on the way', async () => {
     let answer: () => unknown = () => OK(IMAGES)
     let release!: () => void
-    fakeApi({ 'GET /session': SIGNED_IN, 'GET /images': () => answer() as never })
+    fakeApi({ 'GET /session': SIGNED_IN, 'GET /github-app': OK({ apps: [], missing: [] }), 'GET /images': () => answer() as never })
     const { es } = await openApp('/system', [WORK])
     answer = OFFLINE
     es.emit('activity', { time: 't', vm: null, actor: 'timer', kind: 'action', action: 'maintenance.versions', code: 'maintenance.versions', outcome: 'ok', description: '' })

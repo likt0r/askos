@@ -13,6 +13,10 @@ import { useSession } from '~/composables/useSession'
 import { ok, openPage, useFreshApp } from './system-helpers'
 import en from '../i18n/locales/en'
 
+// Switching the whole Settings page to German re-renders every field and takes several seconds
+// (3 to 6 on a VM, more on a slow CI runner): the German tests get more time than the default 5.
+vi.setConfig({ testTimeout: 15_000 })
+
 // as agentbox/settings.py describes them (German `allowed` and `applies_later` texts included)
 const LATER = {
   builds_kept: 'ab dem naechsten Build',
