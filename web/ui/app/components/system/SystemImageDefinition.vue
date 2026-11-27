@@ -15,6 +15,8 @@ const open = ref(false)
 // shown and read while open, and while there is a text to read (a removed Recipe's Image may
 // have none)
 const shown = computed(() => open.value && readable.value)
+// one that went because its text did, stays closed when a text comes back
+watch(readable, (r) => { if (!r) open.value = false })
 const containerfile = useResource('containerfile', { params: () => ({ image: props.image.name }), enabled: shown })
 const file = computed(() => containerfile.data.value ?? null)
 // where the text shown came from, by its own answer: the Image may have changed since

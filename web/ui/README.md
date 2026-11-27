@@ -170,8 +170,9 @@ module (#216).
   `maintenance.versions`, `update-now`, `recipe.set`, `recipe.restore`, `recipe.remove` (a
   Recipe's Image comes or goes; these three also mark the `containerfile` of the Image the
   entry's `name` parameter names, a row `ofEntryImage(name)`) and `create`, `delete`,
-  `set-image`, `reset`, `reset.automatic`, `reset.update` (which VMs use and pin each Build); `pairings` of the entry's VM after `observe`,
-  `unpair` and `revoke-pairings` (a row `ofEntryVm(name)` marks only that VM's copy);
+  `set-image`, `reset`, `reset.automatic`, `reset.update` (which VMs use and pin each Build);
+  `pairings` of the entry's VM after `observe`, `unpair` and `revoke-pairings` (a row
+  `ofEntryVm(name)` marks only that VM's copy);
   `githubApp` after `set-github-app`, `remove-github-app`, `set-owners`, `create` and `delete`;
   `githubTokens` of the event's VM after a `github-token` event, `sshConfig` of a VM when its `vm`
   event turns SSH access on or off or brings a new host key (a row with `key` compares each VM

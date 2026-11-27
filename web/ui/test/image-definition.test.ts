@@ -343,10 +343,10 @@ describe('System page: Image definition follows the Activity', () => {
     expect(part(wrapper, 'base', 'containerfile-error').attributes('data-read')).toBe('stale')
   })
 
-  it('closes an open Recipe panel when its Recipe is removed and nothing defines the Image', async () => {
+  it('closes an open Recipe panel when its Recipe is removed and nothing defines the Image, for good', async () => {
     const recipe = image('dms', { in_release: false, recipe: true, containerfile_url: null, containerfile: 'Recipe dms: Containerfile (current recipe.tar)' })
     let images = overview([recipe])
-    const { wrapper, es } = await openSystem(images, {
+    const { wrapper, api, es } = await openSystem(images, {
       'GET /images': () => ok(images),
       'GET /images/dms/containerfile': () => (images.images[0] === recipe
         ? ok({ ...containerfile('dms'), text: 'FROM recipe\n', url: null, recipe_sha256: 'aaa' })
@@ -360,6 +360,16 @@ describe('System page: Image definition follows the Activity', () => {
     await quiet()
     expect(part(wrapper, 'dms', 'containerfile').exists()).toBe(false)
     expect(card(wrapper, 'dms').text()).not.toContain('FROM recipe')
+    const before = reads(api, 'dms')
+
+    // the Recipe comes back: its panel stays closed until opened
+    images = overview([recipe])
+    es.emit('activity', entry('recipe.set', 'dms'))
+    await wait(() => expect(part(wrapper, 'dms', 'containerfile-toggle').exists()).toBe(true))
+    await quiet()
+    expect(part(wrapper, 'dms', 'containerfile').exists()).toBe(false)
+    expect(part(wrapper, 'dms', 'containerfile-toggle').attributes('aria-expanded')).toBe('false')
+    expect(reads(api, 'dms')).toBe(before)
   })
 
   it('names where the text shown came from by its answer, also while the next is read', async () => {
