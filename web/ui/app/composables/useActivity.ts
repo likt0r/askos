@@ -21,9 +21,10 @@ export function useActivity(options: { searchDelayMs?: number } = {}) {
     lines.value = Math.min(ACTIVITY_MAX_LINES, lines.value * 2)
   }
 
+  // another kind or VM starts at the first length, in the same step (no read at the old one)
   watch(() => [filter.kinds.join(','), filter.vm], () => {
     lines.value = ACTIVITY_PAGE
-  })
+  }, { flush: 'sync' })
   watch(() => filter.search, () => {
     if (timer) clearTimeout(timer)
     timer = setTimeout(() => {

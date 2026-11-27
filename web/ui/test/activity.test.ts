@@ -144,17 +144,27 @@ describe('Activity page', () => {
     expect(rows(wrapper).map(r => r.text())).toEqual([expect.stringContaining('after')])
   })
 
-  it('reads a longer list for older entries, the list shown meanwhile', async () => {
+  it('reads a longer list for older entries, the list shown meanwhile, and the first length again for another filter', async () => {
+    let answer: (() => void) | null = null
     const { wrapper, api } = await openPage('/activity', {
       'GET /activity?lines=200': ok({ entries: [entry({ description: 'newest' })], truncated: true, retention_days: 90 }),
-      'GET /activity?lines=400': ok({ entries: [entry({ description: 'newest' }), entry({ time: '2026-11-01T00:00:00Z', description: 'older' })], truncated: false, retention_days: 90 }),
+      'GET /activity?lines=400': () => new Promise(resolve => {
+        answer = () => resolve(ok({ entries: [entry({ description: 'newest' }), entry({ time: '2026-11-01T00:00:00Z', description: 'older' })], truncated: false, retention_days: 90 }))
+      }) as never,
+      'GET /activity?kind=alert&lines=200': ok({ entries: [], truncated: false, retention_days: 90 }),
     })
     await flushPromises()
     await wrapper.find('[data-testid="activity-more"]').trigger('click')
     await flushPromises()
-    expect(api.calls.some(c => c.path === '/activity?lines=400')).toBe(true)
+    expect(rows(wrapper)).toHaveLength(1)
+    answer!()
+    await flushPromises()
     expect(rows(wrapper)).toHaveLength(2)
     expect(wrapper.find('[data-testid="activity-truncated"]').exists()).toBe(false)
+    await wrapper.find('[data-testid="activity-kind"][data-kind="alert"]').trigger('click')
+    await flushPromises()
+    expect(api.calls.filter(c => c.path.startsWith('/activity')).map(c => c.path))
+      .toEqual(['/activity?lines=200', '/activity?lines=400', '/activity?kind=alert&lines=200'])
   })
 
   it('finds live entries by the words it shows for them (#69)', async () => {
