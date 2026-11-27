@@ -145,19 +145,20 @@ on its own, as the next section describes, until it moves into the module (#216)
   (`pairings: declare<Pairings, { vm: string }>(p => `/vms/${p.vm}/pairings`)`). The key in the
   cache is `[name]`, or `[name, params]`: one copy per set of parameters. A resource whose changes
   the Host sends no event about is declared `fresh` (`pairings`: a device pairs inside Orca;
-  `githubApp`: an App installed on GitHub): it is read again whenever a view of it opens (the
-  owner on #216). A code the Host answers for a state, not a failure, is declared in `states` and
-  read as data (`github_app_missing`: no App set up, `{ apps: [], missing: [], none: true }`;
-  `readings_unavailable`: a Host without a sampler), so a later failed read keeps that state, not
-  an older overview. A resource read on from where its copy is takes the held copy in its path and
-  declares `merge`, which joins the answer to it (`buildLog`: after the held cursor, the lines
-  joined with `appendLines`). Such a resource also declares `missed`, what its copy becomes when a
-  reconnect could not resume (`buildLog`: a gap, so that later events are not kept past what was
-  missed until it is read), and `readOn`, whether a copy read still has a gap (an answer cut
-  short): it is read on right after. One that each opening of its view reads anew is declared
-  `forget`: not kept once no view shows it (`vmLog`: each opening of the Log tab and each "Show"
-  is a new copy, the newest entries; while following, what one answer could not hold comes with
-  the next poll).
+  `githubApp`: an App installed on GitHub; `blocked`: most refusals send no event; `allowlist`,
+  `vmAllowlist` and `forbids`: their counts of the last 24 hours): it is read again whenever a
+  view of it opens (the owner on #216). A code the Host answers for a state, not a failure, is
+  declared in `states` and read as data (`github_app_missing`: no App set up, `{ apps: [],
+  missing: [], none: true }`; `readings_unavailable`: a Host without a sampler), so a later failed
+  read keeps that state, not an older overview. A resource read on from where its copy is takes
+  the held copy in its path and declares `merge`, which joins the answer to it (`buildLog`: after
+  the held cursor, the lines joined with `appendLines`). Such a resource also declares `missed`,
+  what its copy becomes when a reconnect could not resume (`buildLog`: a gap, so that later events
+  are not kept past what was missed until it is read), and `readOn`, whether a copy read still has
+  a gap (an answer cut short): it is read on right after. One that each opening of its view reads
+  anew is declared `forget`: not kept once no view shows it (`vmLog`: each opening of the Log tab
+  and each "Show" is a new copy, the newest entries; while following, what one answer could not
+  hold comes with the next poll).
 - **Asking for one**: `const images = useResource('images')` gives `data` (undefined until an
   answer came), `loading` (nothing yet and a read on the way), `fetching` (a read on the way, the
   first or a read again), `error` (why the last read failed) and `retry()`. Every view that asks
@@ -195,8 +196,9 @@ on its own, as the next section describes, until it moves into the module (#216)
   entry's VM after `observe`, `unpair` and `revoke-pairings` (a row `ofEntryVm(name)` marks only
   that VM's copy); `settings` after `set-settings`; `allowlist`, `vmAllowlist` and `forbids` after
   any entry of kind `allowlist` (`ON_ACTIVITY_KIND`, a table by kind for a kind whose codes are
-  many: every change of an entry or a Forbid, from the UI, the CLI or the expiry timer), and
-  `allowlist` after `delete` too; `blocked` of the VM after its `alert` and `held` events;
+  many: every change of an entry or a Forbid, from the UI, the CLI or the expiry timer), and after
+  `create` and `delete` (a new VM may copy another's entries, a deleted one's go) `allowlist` and
+  that VM's `vmAllowlist` and `forbids`; `blocked` of the VM after its `alert` and `held` events;
   `githubApp` after `set-github-app`, `remove-github-app`, `set-owners`, `create` and `delete`;
   `githubTokens` of the event's VM after a `github-token` event, `sshConfig` of a VM when its `vm`
   event turns SSH access on or off or brings a new host key (a row with `key` compares each VM

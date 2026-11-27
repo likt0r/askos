@@ -335,8 +335,6 @@ describe('Web tab', () => {
     const loads = () => api.calls.filter(c => c.path === '/vms/work/blocked').length
     expect(loads()).toBe(1)
     for (let i = 0; i < 5; i++) es.emit('alert', { time: 't', vm: 'work', domain: `x${i}.example`, signals: ['young'] })
-    await new Promise(r => setTimeout(r, 300))
-    expect(loads()).toBe(1)
     await waitFor(() => expect(loads()).toBe(2))
     await new Promise(r => setTimeout(r, 300))
     expect(loads()).toBe(2)
@@ -362,5 +360,22 @@ describe('Web tab', () => {
     await settle()
     expect($('[data-testid="vm-entries-error"]')).toBeNull()
     expect(must('[data-testid="vm-entries"]').textContent).toContain('docs.rs')
+  })
+
+  it('reads the blocked list, the entries and the Forbids again whenever the tab opens (counts change with no event)', async () => {
+    const { api } = await openApp('/vms/work/web', ROUTES)
+    const loads = () => ['blocked', 'allowlist', 'forbids'].map(p => api.calls.filter(c => c.path === `/vms/work/${p}`).length)
+    expect(loads()).toEqual([1, 1, 1])
+    await useRouter().push('/vms/work/access')
+    await settle()
+    await useRouter().push('/vms/work/web')
+    await settle()
+    expect(loads()).toEqual([2, 2, 2])
+  })
+
+  it('shows a failed read of the blocked list and of the Forbids with Retry', async () => {
+    await openApp('/vms/work/web', { ...ROUTES, 'GET /vms/work/blocked': fail(502, 'action_failed'), 'GET /vms/work/forbids': fail(502, 'action_failed') })
+    expect(must('[data-testid="blocked-error"]').textContent).toContain('Could not read the blocked destinations.')
+    expect(must('[data-testid="vm-forbids-error"]').textContent).toContain('Could not read the Forbids.')
   })
 })

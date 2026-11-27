@@ -731,9 +731,34 @@ describe('the stale table for the Allowlist, the Forbids and the blocked lists',
       stale(['forbids', { vm: 'priv' }]), stale(['blocked', { vm: 'work' }])]).toEqual([true, true, true, true, false])
   })
 
-  it('deleting a VM marks the Allowlist stale (it drops the VM\'s entries)', () => {
-    live.emit('activity', { ...entry('delete'), kind: 'action', vm: 'gone' })
-    expect([stale(['allowlist', { filter: '*' }]), stale(['vmAllowlist', { vm: 'work' }])]).toEqual([true, false])
+  it.each(['create', 'delete'])('%s marks the Allowlist and that VM\'s entries and Forbids stale', (code) => {
+    live.emit('activity', { ...entry(code), kind: 'action', vm: 'work' })
+    expect([stale(['allowlist', { filter: '*' }]), stale(['vmAllowlist', { vm: 'work' }]), stale(['forbids', { vm: 'priv' }])])
+      .toEqual([true, true, false])
+  })
+
+  it('a read longer than the spacing is followed by the next only a spacing after it ended', async () => {
+    vi.useFakeTimers()
+    try {
+      let answer!: () => void
+      fakeApi({ 'GET /vms/work/blocked': () => new Promise(resolve => { answer = () => resolve(OK([])) }) })
+      const observer = new QueryObserver(r.client, { queryKey: ['blocked', { vm: 'work' }], queryFn: () => r.read('blocked', { vm: 'work' }) })
+      const off = observer.subscribe(() => {})
+      void observer.refetch()
+      await vi.advanceTimersByTimeAsync(0)
+      live.emit('held', { vm: 'work' })      // while it is read
+      await vi.advanceTimersByTimeAsync(1500)
+      expect(stale(['blocked', { vm: 'work' }])).toBe(false)
+      answer()
+      await vi.advanceTimersByTimeAsync(999)
+      expect(r.client.getQueryState(['blocked', { vm: 'work' }])!.fetchStatus).toBe('idle')
+      await vi.advanceTimersByTimeAsync(2)
+      expect(r.client.getQueryState(['blocked', { vm: 'work' }])!.fetchStatus).toBe('fetching')
+      off()
+    }
+    finally {
+      vi.useRealTimers()
+    }
   })
 
   it('an Alert or a hold marks only that VM\'s blocked list, and none without a VM', () => {
