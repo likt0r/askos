@@ -136,18 +136,20 @@ first answer as the page's own and keeps it through later reads). Every other vi
 on its own, as the next section describes, until it moves into the
 module (#216).
 
-- **Declaring a resource**: one line in `RESOURCES`, its name, its path and the type of its
-  answer (`images: declare<ImagesOverview>('/images')`); one with parameters takes its path from
-  them (`pairings: declare<Pairings, { vm: string }>(p => `/vms/${p.vm}/pairings`)`). The key in
-  the cache is `[name]`, or `[name, params]`: one copy per set of parameters. A resource whose
-  changes the Host sends no event about is declared `fresh` (`pairings`: a device pairs inside
-  Orca; `githubApp`: an App installed on GitHub): it is read again whenever a view of it opens
-  (the owner on #216). A code the Host answers for a state, not a failure, is declared in
-  `states` and read as data (`github_app_missing`: no App set up, `{ apps: [], missing: [], none:
-  true }`; `readings_unavailable`: a Host without a sampler), so a later failed read keeps that
-  state, not an older overview. A resource read on from where its copy is takes the held copy
-  in its path and declares `merge`, which joins the answer to it (`buildLog`: after the held
-  cursor, the lines joined with `appendLines`).
+- **Declaring a resource**: one line in `RESOURCES`, its name, its path and the type of its answer
+  (`images: declare<ImagesOverview>('/images')`); one with parameters takes its path from them
+  (`pairings: declare<Pairings, { vm: string }>(p => `/vms/${p.vm}/pairings`)`). The key in the
+  cache is `[name]`, or `[name, params]`: one copy per set of parameters. A resource whose changes
+  the Host sends no event about is declared `fresh` (`pairings`: a device pairs inside Orca;
+  `githubApp`: an App installed on GitHub): it is read again whenever a view of it opens (the
+  owner on #216). A code the Host answers for a state, not a failure, is declared in `states` and
+  read as data (`github_app_missing`: no App set up, `{ apps: [], missing: [], none: true }`;
+  `readings_unavailable`: a Host without a sampler), so a later failed read keeps that state, not
+  an older overview. A resource read on from where its copy is takes the held copy in its path and
+  declares `merge`, which joins the answer to it (`buildLog`: after the held cursor, the lines
+  joined with `appendLines`). Such a resource also declares `missed`, what its copy becomes when a
+  reconnect could not resume (`buildLog`: a gap, so that later events are not kept past what was
+  missed until it is read).
 - **Asking for one**: `const images = useResource('images')` gives `data` (undefined until an
   answer came), `loading` (nothing yet and a read on the way), `fetching` (a read on the way,
   the first or a read again), `error` (why the last read failed) and `retry()`. Every view that
@@ -188,8 +190,9 @@ module (#216).
   shows is read when a view next asks for it. A new Activity code that changes a resource needs a
   row here; without one, the view shows old data until the next reconnect or reload.
 - **An event during a read**: an event written while a read of its resource is on the way is
-  applied to that read's answer as well, and a resource that turns stale during a read is read
-  once more right after it (once for a whole burst). The older answer never undoes an event.
+  applied to that read's answer as well, and a copy that turns stale during its read is read once
+  more right after it (once for a whole burst; other copies of the resource are not). The older
+  answer never undoes an event.
 - **When data is read again**: only for a reason the stream or the owner gives: a row of the
   table, a change made in this browser, a `hello` with `resumed: false` that is not the first
   (everything is stale), any `hello` for the reads that could not reach the Control Room, or

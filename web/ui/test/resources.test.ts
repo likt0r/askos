@@ -551,11 +551,56 @@ describe('a Build\'s log', () => {
     expect([stale('r1'), stale('r2')]).toEqual([false, false])
   })
 
-  it('after lines were skipped keeps no later lines and reads after the held cursor', () => {
+  it('after lines were skipped keeps no later lines and reads after the held cursor', async () => {
     live.emit('build-log', event('r1', [5], true))
     live.emit('build-log', event('r1', [6]))
     expect(lines('r1')).toEqual(['c1', 'c2'])
     expect([stale('r1'), stale('r2')]).toEqual([true, false])
+    const api = fakeApi({ 'GET /images/ml/log?build=r1&lines=500&after_cursor=c2': OK({ entries: [3, 4, 5, 6].map(line), cursor: 'c6' }) })
+    await r.read('buildLog', { image: 'ml', build: 'r1' })
+    expect(api.calls).toHaveLength(1)
+  })
+
+  it('a reconnect that could not resume leaves a gap: later lines are not kept until it is read', () => {
+    live.emit('hello', { stream: 'a', resumed: true })
+    live.emit('hello', { stream: 'b', resumed: false })
+    live.emit('build-log', event('r1', [5]))
+    expect(lines('r1')).toEqual(['c1', 'c2'])
+    expect([stale('r1'), stale('r2')]).toEqual([true, true])
+  })
+
+  it('a reconnect that could not resume during a read leaves the gap in its answer, read once more after it', async () => {
+    let answers = 0
+    const api = fakeApi({ 'GET /images/ml/log?build=r3&lines=500': () => new Promise(resolve => { answer = () => resolve(OK({ entries: [line(1)], cursor: 'c1' })) }),
+      'GET /images/ml/log?build=r3&lines=500&after_cursor=c1': () => { answers++; return OK({ entries: [2, 3].map(line), cursor: 'c3' }) } })
+    let answer!: () => void
+    const observer = new QueryObserver(r.client, { queryKey: key('r3'), queryFn: () => r.read('buildLog', { image: 'ml', build: 'r3' }) })
+    const off = observer.subscribe(() => {})
+    await flushPromises()
+    live.emit('hello', { stream: 'a', resumed: true })
+    live.emit('hello', { stream: 'b', resumed: false })      // line 2 was missed
+    live.emit('build-log', event('r3', [3]))
+    answer()
+    await flushPromises()
+    expect(answers).toBe(1)
+    expect(lines('r3')).toEqual(['c1', 'c2', 'c3'])
+    expect(api.calls.map(c => c.path)).toEqual(['/images/ml/log?build=r3&lines=500', '/images/ml/log?build=r3&lines=500&after_cursor=c1'])
+    off()
+  })
+
+  it('a log that turns stale while it is read is read once more, not every log', async () => {
+    let answer!: () => void
+    const api = fakeApi({ 'GET /images/ml/log?build=r3&lines=500': () => new Promise(resolve => { answer = () => resolve(OK({ entries: [line(1)], cursor: 'c1' })) }),
+      'GET /images/ml/log?build=r3&lines=500&after_cursor=c1': OK({ entries: [2, 3].map(line), cursor: 'c3' }) })
+    const observers = ['r1', 'r3'].map(build => new QueryObserver(r.client, { queryKey: key(build), queryFn: () => r.read('buildLog', { image: 'ml', build }) }))
+    const offs = observers.map(o => o.subscribe(() => {}))
+    await flushPromises()
+    live.emit('build-log', event('r3', [3], true))      // line 2 skipped while r3 is read
+    answer()
+    await flushPromises()
+    expect(api.calls.map(c => c.path)).toEqual(['/images/ml/log?build=r3&lines=500', '/images/ml/log?build=r3&lines=500&after_cursor=c1'])
+    expect(lines('r3')).toEqual(['c1', 'c2', 'c3'])
+    for (const off of offs) off()
   })
 
   it('marks the log of a Build that ended stale, not that of another', () => {

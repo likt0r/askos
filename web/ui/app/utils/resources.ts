@@ -35,6 +35,9 @@ interface Declaration<T, P> {
   path: (params: P, held: T | undefined) => string
   /** an answer that continues the held copy, joined to it */
   merge?: (held: T | undefined, answer: any) => T
+  /** what a copy becomes when events were missed (a reconnect that could not resume), before it
+   * is read again: one read on from where it is must not take later events past the gap */
+  missed?: (held: T) => T
   /** the Host sends no event about its changes: read again whenever a view of it opens (the owner
    * on #216) */
   fresh: boolean
@@ -47,8 +50,8 @@ interface Declaration<T, P> {
 
 /** A resource: its path, or for one with parameters (a VM's), its path from them. */
 function declare<T, P = undefined>(path: string | ((params: P, held: T | undefined) => string),
-  options: { fresh?: boolean, states?: Record<string, () => T>, merge?: (held: T | undefined, answer: any) => T } = {}): Declaration<T, P> {
-  return { path: typeof path === 'string' ? () => path : path, fresh: !!options.fresh, states: options.states ?? {}, merge: options.merge }
+  options: { fresh?: boolean, states?: Record<string, () => T>, merge?: (held: T | undefined, answer: any) => T, missed?: (held: T) => T } = {}): Declaration<T, P> {
+  return { path: typeof path === 'string' ? () => path : path, fresh: !!options.fresh, states: options.states ?? {}, merge: options.merge, missed: options.missed }
 }
 
 const RESOURCES = {
@@ -70,7 +73,8 @@ const RESOURCES = {
   // the UI build installed and the Release of Agent Box the Host runs
   version: declare<VersionInfo>('/version'),
   // a Build's log: read on after the held cursor, so only what is new comes
-  buildLog: declare<BuildLog, { image: string, build: string }>((p, held) => buildLogPath(p.image, p.build, held), { merge: joinLog }),
+  buildLog: declare<BuildLog, { image: string, build: string }>((p, held) => buildLogPath(p.image, p.build, held),
+    { merge: joinLog, missed: log => ({ ...log, gap: true }) }),
   // an Image's Containerfile: the installed Release's, or its Recipe's
   containerfile: declare<ContainerfileText, { image: string }>(p => `/images/${encodeURIComponent(p.image)}/containerfile`),
 }
@@ -351,9 +355,9 @@ export function createResources(live: Pick<Live, 'on' | 'state'>) {
   // replays: events that arrived while a read of their copy was on the way (by the hash of its
   // key), applied to its answer, so that the older answer does not undo them
   const replays = new Map<string, Set<((data: any) => any)[]>>()
-  // resources to read once more when the read on the way ends: it may have started before what
-  // made them stale
-  const again = new Set<ResourceName>()
+  // copies (by the hash of their key) to read once more when the read on the way ends: it may
+  // have started before what made them stale
+  const again = new Set<string>()
 
   async function read<N extends ResourceName>(name: N, params?: ResourceParams<N>): Promise<ResourceData<N>> {
     const queryKey = keyOf(name, params)
@@ -376,7 +380,7 @@ export function createResources(live: Pick<Live, 'on' | 'state'>) {
       }
       for (const apply of pending) {
         const next = apply(data)
-        if (next === null) again.add(name)
+        if (next === null) again.add(hashKey(queryKey))
         else data = next
       }
       return data
@@ -386,16 +390,13 @@ export function createResources(live: Pick<Live, 'on' | 'state'>) {
     }
   }
 
-  /** Mark a resource stale, with every set of its parameters or only these: a view that shows it
-   * reads it again, at once or, when a read is on the way, right after it (with every set of its
-   * parameters then); one that is not shown reads it when it is next shown. */
+  /** Mark a resource stale, with every set of its parameters or only these: a view that shows a
+   * copy reads it again, at once or, when a read of that copy is on the way, right after it; one
+   * that is not shown reads it when it is next shown. */
   function markStale(name: ResourceName, params?: unknown): Promise<void> {
     const queryKey = keyOf(name, params)
-    if (client.isFetching({ queryKey }) > 0) {
-      again.add(name)
-      return Promise.resolve()
-    }
-    return client.invalidateQueries({ queryKey }, { cancelRefetch: false })
+    for (const query of client.getQueryCache().findAll({ queryKey, fetchStatus: 'fetching' })) again.add(query.queryHash)
+    return client.invalidateQueries({ queryKey, predicate: query => query.state.fetchStatus !== 'fetching' }, { cancelRefetch: false })
   }
 
   function markStaleBy(stale: Stale, event: Concerns) {
@@ -418,8 +419,7 @@ export function createResources(live: Pick<Live, 'on' | 'state'>) {
 
   const offs = [client.getQueryCache().subscribe((event) => {
     if (event.type !== 'updated' || (event.action.type !== 'success' && event.action.type !== 'error')) return
-    const name = event.query.queryKey[0] as ResourceName
-    if (again.delete(name)) void markStale(name)
+    if (again.delete(event.query.queryHash)) void client.invalidateQueries({ queryKey: event.query.queryKey, exact: true }, { cancelRefetch: false })
   })]
 
   // the last of each event, for a row that compares (`services`: did the update end?), per object
@@ -460,10 +460,17 @@ export function createResources(live: Pick<Live, 'on' | 'state'>) {
     const missed = helloSeen && data?.resumed === false
     helloSeen = true
     for (const query of client.getQueryCache().getAll()) {
+      const [name, params] = query.queryKey as [ResourceName, unknown?]
+      const gap = missed ? (RESOURCES[name] as Declaration<unknown, unknown>).missed : undefined
+      if (gap) {
+        // the copy, and the answer of a read on the way, have a gap
+        for (const pending of replays.get(query.queryHash) ?? []) pending.push(gap)
+        if (query.state.data !== undefined) query.setState({ data: gap(query.state.data) })
+      }
       // the connection is there: a read that failed because the Control Room could not be
       // reached is read again
       if (missed || (query.state.status === 'error' && unreachable(query.state.error))) {
-        void markStale(query.queryKey[0] as ResourceName)
+        void markStale(name, params)
       }
     }
   }))

@@ -739,6 +739,24 @@ describe('System page: Build log', () => {
     expect(lines(wrapper)).toEqual(['line 1'])
   })
 
+  it('a closed log reads what a reconnect that could not resume missed, before lines that came after it', async () => {
+    const { wrapper, es, api } = await openSystem({
+      'GET /images': ok(RUNNING),
+      [LOG_R1]: logOf('ml', 'r1', [line(1), line(2)], 'c2'),
+      [`${LOG_R1}&after_cursor=c2`]: logOf('ml', 'r1', [line(3), line(4), line(5)], 'c5'),
+    })
+    const toggle = () => wrapper.find('[data-image="ml"] [data-testid="build-log-toggle"]')
+    await toggle().trigger('click')      // closed
+    await flushPromises()
+    es.emit('hello', { stream: 'other', resumed: false })      // lines 3 and 4 were missed
+    es.emit('build-log', rEvent([line(5)]))
+    await flushPromises()
+    await toggle().trigger('click')
+    await flushPromises()
+    expect(api.calls.filter(c => c.path.startsWith('/images/ml/log')).map(c => c.path).at(-1)).toBe(`/images/ml/log?build=r1&lines=500&after_cursor=c2`)
+    expect(lines(wrapper)).toEqual(['line 1', 'line 2', 'line 3', 'line 4', 'line 5'])
+  })
+
   it('ignores log events of a Build whose log is not open', async () => {
     const { wrapper, es, api } = await openSystem()
     es.emit('build-log', { unit: 'u', target: 'base', image: 'base', build: '20261101-0300', entries: [line(1)], cursor: 'c1', truncated: false })
