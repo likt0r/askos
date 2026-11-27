@@ -59,8 +59,9 @@ export function useSettings() {
   // end: one that succeeded or failed with a 5xx reads what is stored then; a refused one follows
   // it as here.
   let missed = false
-  // the read after this browser's save failed: the next copy read is the save's, taken keeping
-  // what is typed (as that read would have), not as a change from elsewhere
+  // the read after this browser's save failed: the next read that succeeds (Retry, a reconnect,
+  // the save's own entry) is the save's, taken keeping what is typed (as that read would have),
+  // not as a change from elsewhere, also when the copy did not change
   let ownNext = false
   function follow() {
     if (dirty.value.length) changedElsewhere.value = true
@@ -70,12 +71,13 @@ export function useSettings() {
     if (!data) return
     if (saving.value) missed = true
     else if (!keys.value.length) adopt(stored())
-    else if (ownNext) {
-      ownNext = false
-      update(stored())
-    }
-    else follow()
+    else if (!ownNext) follow()
   }, { immediate: true, flush: 'sync' })      // at once: a save on the way sees it as its own
+  watch(() => settings.fetching.value, (fetching) => {
+    if (fetching || !ownNext || saving.value || settings.error.value) return
+    ownNext = false
+    update(stored())
+  })
   watch(() => dirty.value.length, (n) => {
     if (n === 0 && changedElsewhere.value) adopt(stored())
   })
@@ -100,6 +102,7 @@ export function useSettings() {
   }
 
   function discard() {
+    ownNext = false
     adopt(stored())
     patch.reset()
   }
@@ -118,6 +121,7 @@ export function useSettings() {
     if (Object.keys(errors).length || !Object.keys(body).length) return false
     reading.value = true
     missed = false
+    ownNext = false
     let read = false
     try {
       const r = await patch.run(body)

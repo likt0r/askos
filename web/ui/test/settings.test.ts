@@ -771,6 +771,53 @@ describe('Settings page', () => {
       expect((input(wrapper, 'builds_kept').element as HTMLInputElement).value).toBe('5')
     })
 
+    it('a saved change whose read failed is taken by the next read even when the copy did not change', async () => {
+      let failing = false
+      let release!: () => void
+      let current = settingsBody()
+      const { wrapper, es } = await openPage('/settings', {
+        'GET /settings': () => (failing ? { status: 502, body: { error: { code: 'action_failed', message: 'x' } } } : ok(current)),
+        'PATCH /settings': () => new Promise(resolve => { release = () => { failing = true; resolve(ok(changedBody)) } }),
+      })
+      await type(wrapper, 'reset_age_days', '9')
+      await save(wrapper).trigger('click')
+      await flushPromises()
+      current = settingsBody({ reset_age_days: 9 })
+      es.emit('activity', entry)              // its own entry, read while the save runs
+      await vi.waitFor(() => expect(wrapper.find('[data-testid="settings-changed-elsewhere"]').exists()).toBe(false))
+      await new Promise(r => setTimeout(r, 50))
+      release()
+      await flushPromises()
+      expect(wrapper.find('[data-testid="settings-load-error"]').exists()).toBe(true)
+      failing = false
+      await wrapper.find('[data-testid="settings-load-error"] button').trigger('click')
+      await flushPromises()
+      expect(save(wrapper).exists()).toBe(false)
+      expect(wrapper.find('[data-testid="settings-changed-elsewhere"]').exists()).toBe(false)
+    })
+
+    it('after a failed save whose read failed, a later change from elsewhere still says so', async () => {
+      let failing = false
+      let current = settingsBody()
+      const { wrapper, es } = await openPage('/settings', {
+        'GET /settings': () => (failing ? { status: 502, body: { error: { code: 'action_failed', message: 'x' } } } : ok(current)),
+        'PATCH /settings': () => {
+          failing = true
+          return { status: 502, body: { error: { code: 'action_failed', message: 'agentbox failed' } } }
+        },
+      })
+      await type(wrapper, 'reset_age_days', '9')
+      await save(wrapper).trigger('click')
+      await flushPromises()
+      failing = false
+      await wrapper.find('[data-testid="settings-load-error"] button').trigger('click')
+      await flushPromises()
+      current = settingsBody({ builds_kept: 5 })
+      es.emit('activity', entry)
+      await vi.waitFor(() => expect(wrapper.find('[data-testid="settings-changed-elsewhere"]').exists()).toBe(true))
+      expect((input(wrapper, 'reset_age_days').element as HTMLInputElement).value).toBe('9')
+    })
+
     it('a failed change of the Settings may have saved (applied or not): it is followed like any other', async () => {
       const { wrapper, api, es, change } = await open()
       change({ reset_age_days: 30 })
