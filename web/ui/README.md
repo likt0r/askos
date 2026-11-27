@@ -130,7 +130,8 @@ it holds so far: `images` (`GET /images`), `pairings` (`GET /vms/<vm>/pairings`)
 (`GET /github-app`), `githubTokens` (`GET /vms/<vm>/github-tokens?since=`), `sshConfig`
 (`GET /vms/<vm>/ssh-config`), `containerfile` (`GET /images/<image>/containerfile`, read only
 while its panel is open), `host` (`GET /host`: the Host's readings with 30 minutes of
-history), `buildLog` (`GET /images/<image>/log?build=`: a Build's log) and `version`
+history), `buildLog` (`GET /images/<image>/log?build=`: a Build's log), `vmLog` (`GET
+/vms/<vm>/logs`: a VM's journal for the filters applied) and `version`
 (`GET /version`: the UI build installed and the Release; the reload prompt takes the build of its
 first answer as the page's own and keeps it through later reads). Every other view still reads
 on its own, as the next section describes, until it moves into the
@@ -150,16 +151,20 @@ module (#216).
   joined with `appendLines`). Such a resource also declares `missed`, what its copy becomes when a
   reconnect could not resume (`buildLog`: a gap, so that later events are not kept past what was
   missed until it is read), and `readOn`, whether a copy read still has a gap (an answer cut
-  short): it is read on right after.
+  short): it is read on right after. One that each opening of its view reads anew is declared
+  `forget`: not kept once no view shows it (`vmLog`: each opening of the Log tab and each "Show"
+  is a new copy, the newest entries; while following, what one answer could not hold comes with
+  the next poll).
 - **Asking for one**: `const images = useResource('images')` gives `data` (undefined until an
-  answer came), `loading` (nothing yet and a read on the way), `fetching` (a read on the way,
-  the first or a read again), `error` (why the last read failed) and `retry()`. Every view that
-  asks shares one copy and one read. `{ params: () => ({ vm }) }` names the parameters of a
-  resource that has them; when they change, the view reads the new ones. `{ enabled: open }`
-  reads only while a dialog is open; `{ extra: true }` declares a read whose failure the view does
-  not show; `{ keepPrevious: true }` shows the copy of the parameters before while the new one is
-  read (another period; a view of another VM is another component). A view does not know the
-  path, when to read, or how to drop a late answer.
+  answer came), `loading` (nothing yet and a read on the way), `fetching` (a read on the way, the
+  first or a read again), `error` (why the last read failed) and `retry()`. Every view that asks
+  shares one copy and one read. `{ params: () => ({ vm }) }` names the parameters of a resource
+  that has them; when they change, the view reads the new ones. `{ enabled: open }` reads only
+  while a dialog is open; `{ extra: true }` declares a read whose failure the view does not show;
+  `{ keepPrevious: true }` shows the copy of the parameters before while the new one is read
+  (another period; a view of another VM is another component), and `previous` says so. `{ every:
+  ms }` reads it again by the clock: never the module's choice, only a view's own (the Log tab
+  while it follows). A view does not know the path, when to read, or how to drop a late answer.
 - **Showing a failed read**: `<ReadFailure :resource="images" />`, in place of the section.
   When nothing was read yet, it says what could not be read and why (`useErrorText`), with Retry.
   When data is shown, the data stays and a small notice says it could not be refreshed, with
@@ -197,7 +202,8 @@ module (#216).
 - **When data is read again**: only for a reason the stream or the owner gives: a row of the
   table, a change made in this browser, a `hello` with `resumed: false` that is not the first
   (everything is stale), any `hello` for the reads that could not reach the Control Room, or
-  Retry. Never by the clock, never on window focus, never as an automatic retry.
+  Retry. Never by the module's clock (a view may choose its own, `every`), never on window focus,
+  never as an automatic retry.
 - **A change made in this browser**: every change is declared once in `CHANGES`, its request
   from the view's arguments and what it makes stale (`rebuild: declareChange((image: string) =>
   ({ method: 'POST', path: '/builds', body: { image } }))`). A view asks for it by name:

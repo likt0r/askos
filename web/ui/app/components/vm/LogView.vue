@@ -1,11 +1,19 @@
+<script lang="ts">
+let shows = 0
+/** A new "Show" (also each opening of the tab): its own copy, the newest entries read anew. */
+function nextShow() {
+  shows += 1
+  return shows
+}
+</script>
+
 <script setup lang="ts">
-// A VM's journal, read through its guest agent (GET /vms/<vm>/logs, #3): filters for
-// unit, priority, since/until, boot, text search and number of lines; "Follow" asks
-// for entries after the last cursor every few seconds. Pairing codes are hidden by
-// agentbox and hidden here once more.
+// A VM's journal, read through its guest agent (the resource `vmLog`, GET /vms/<vm>/logs, #3):
+// filters for unit, priority, since/until, boot, text search and number of lines; "Follow" asks
+// for entries after the last cursor every few seconds (the view's own clock). Pairing codes are
+// hidden by agentbox and hidden here once more.
 const props = defineProps<{ name: string, followMs?: number }>()
 const { t, locale } = useI18n()
-const errorText = useErrorText()
 
 const ANY = '__any__'
 const MAX_SHOWN = MAX_LOG_LINES
@@ -15,17 +23,25 @@ const priority = computed({
   get: () => filters.priority || ANY,
   set: (v: string) => (filters.priority = v === ANY ? '' : v),
 })
-let applied: LogFilters = { ...filters }
-
-const entries = ref<LogEntry[]>([])
-const cursor = ref<string | null>(null)
-const truncated = ref(false)
-const dropped = ref(false)          // older entries left the view while following
-const loading = ref(false)
-const loaded = ref(false)
-const error = ref<string | null>(null)
+// the filters of the last "Show"; each "Show", and each opening of the tab, reads the newest
+// entries anew
+const applied = ref({ filters: { ...filters }, shown: nextShow() })
 const follow = ref(false)
 const list = ref<HTMLElement | null>(null)
+
+const log = useResource('vmLog', {
+  params: () => ({ vm: props.name, filters: applied.value.filters, shown: applied.value.shown }),
+  keepPrevious: true,
+  every: () => (follow.value ? props.followMs ?? 3000 : false),
+})
+// the entries shown: a "Show" that failed keeps those before on screen, under its failure
+const kept = shallowRef<VmLog | undefined>(undefined)
+watch(log.data, (data) => {
+  if (data !== undefined) kept.value = data
+}, { immediate: true })
+const entries = computed(() => (log.data.value ?? kept.value)?.entries ?? [])
+const loaded = computed(() => log.data.value !== undefined && !log.previous.value)
+const showing = computed(() => log.loading.value || log.previous.value)
 
 const problems = computed(() => logFilterProblems(filters))
 const problem = (field: LogFilterProblem) => problems.value.includes(field)
@@ -64,106 +80,34 @@ function nearBottom() {
   return !el || el.scrollHeight - el.scrollTop - el.clientHeight < 48
 }
 
-async function toBottom() {
+// the newest entries of a "Show" from the bottom; followed ones while one reads there
+let showed = true
+watch(entries, async () => {
+  const stick = showed || nearBottom()
+  showed = false
   await nextTick()
   const el = list.value
-  if (el) el.scrollTop = el.scrollHeight
-}
-
-let generation = 0
-
-async function fetchLogs(after: string | null) {
-  const gen = generation
-  const r = await api<LogResult>(`/vms/${props.name}/logs?${logQuery(applied, after)}`)
-  if (gen !== generation) return null       // filters changed or the view left meanwhile
-  return r
-}
+  if (el && stick) el.scrollTop = el.scrollHeight
+}, { flush: 'pre' })
 
 /** Show: the newest entries matching the filters. */
-async function show() {
+function show() {
   if (problems.value.length) return
-  generation += 1
-  applied = { ...filters }
-  loading.value = true
-  error.value = null
-  try {
-    const r = await fetchLogs(null)
-    if (!r) return
-    entries.value = Array.isArray(r.entries) ? r.entries : []
-    cursor.value = r.cursor ?? entries.value.at(-1)?.cursor ?? null
-    truncated.value = r.truncated === true
-    dropped.value = false
-    loaded.value = true
-    await toBottom()
-  }
-  catch (e) {
-    error.value = errorText(e)
-    follow.value = false
-  }
-  finally {
-    loading.value = false
-  }
+  showed = true
+  applied.value = { filters: { ...filters }, shown: nextShow() }
 }
 
-let polling = false
-async function poll() {
-  if (polling || loading.value || !follow.value) return
-  polling = true
-  try {
-    if (!cursor.value) {
-      await show()
-      return
-    }
-    const stick = nearBottom()
-    const r = await fetchLogs(cursor.value)
-    if (!r || !follow.value) return
-    const fresh = Array.isArray(r.entries) ? r.entries : []
-    if (fresh.length) {
-      const all = [...entries.value, ...fresh]
-      if (all.length > MAX_SHOWN) {
-        all.splice(0, all.length - MAX_SHOWN)
-        dropped.value = true
-      }
-      entries.value = all
-      cursor.value = r.cursor ?? fresh.at(-1)?.cursor ?? cursor.value
-      if (stick) await toBottom()
-    }
-    // more new entries than one answer holds: the next poll fetches the rest
-    error.value = null
-  }
-  catch (e) {
-    error.value = errorText(e)
-    follow.value = false
-  }
-  finally {
-    polling = false
-  }
-}
-
-let timer: ReturnType<typeof setInterval> | null = null
+// following asks at once (unless a read is on the way), then by the clock; a failed read stops it
 watch(follow, (on) => {
-  if (timer) clearInterval(timer)
-  timer = null
-  if (on) {
-    timer = setInterval(poll, props.followMs ?? 3000)
-    void poll()
-  }
+  if (on && !log.fetching.value) void log.retry()
+})
+watch(log.error, (e) => {
+  if (e) follow.value = false
 })
 
 function clearFilters() {
   Object.assign(filters, defaultLogFilters())
 }
-
-onMounted(show)
-watch(() => props.name, () => {
-  follow.value = false
-  entries.value = []
-  void show()
-})
-onBeforeUnmount(() => {
-  generation += 1
-  if (timer) clearInterval(timer)
-})
 </script>
 
 <template>
@@ -194,19 +138,22 @@ onBeforeUnmount(() => {
         {{ t('vm.log.timeHelp') }}
       </p>
       <div class="flex flex-wrap items-center gap-3 sm:col-span-2 lg:col-span-4">
-        <UButton type="submit" icon="i-lucide-refresh-cw" :label="t('vm.log.show')" :loading="loading" data-testid="log-show" />
+        <UButton type="submit" icon="i-lucide-refresh-cw" :label="t('vm.log.show')" :loading="showing" data-testid="log-show" />
         <UButton color="neutral" variant="ghost" :label="t('vm.log.clear')" data-testid="log-clear" @click="clearFilters" />
         <span class="flex-1" />
-        <USwitch v-model="follow" :label="t('vm.log.follow')" :disabled="!loaded && !error" data-testid="log-follow" />
+        <USwitch v-model="follow" :label="t('vm.log.follow')" :disabled="log.data.value === undefined && !log.error.value" data-testid="log-follow" />
       </div>
     </form>
 
-    <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="error" data-testid="log-error" />
-    <UAlert v-if="truncated" color="warning" variant="subtle" icon="i-lucide-scissors" :title="t('vm.log.truncated')" data-testid="log-truncated" />
+    <ReadFailure :resource="log" data-testid="log-error" />
+    <p v-if="loaded && log.data.value?.more && !follow" class="text-xs text-warning" data-testid="log-more">
+      {{ t('vm.log.more') }}
+    </p>
+    <UAlert v-if="loaded && log.data.value?.truncated" color="warning" variant="subtle" icon="i-lucide-scissors" :title="t('vm.log.truncated')" data-testid="log-truncated" />
 
     <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
       <span v-if="loaded" data-testid="log-count">{{ t('vm.log.count', entries.length) }}</span>
-      <span v-if="dropped">{{ t('vm.log.dropped', { max: MAX_SHOWN }) }}</span>
+      <span v-if="loaded && log.data.value?.dropped">{{ t('vm.log.dropped', { max: MAX_SHOWN }) }}</span>
       <span v-if="follow" class="inline-flex items-center gap-1 text-success" data-testid="log-following">
         <UIcon name="i-lucide-radio" class="size-3.5" />{{ t('vm.log.following') }}
       </span>
@@ -215,7 +162,7 @@ onBeforeUnmount(() => {
       </span>
     </div>
 
-    <p v-if="loaded && !entries.length && !error" class="text-sm text-muted" data-testid="log-empty">
+    <p v-if="loaded && !entries.length && !log.error.value" class="text-sm text-muted" data-testid="log-empty">
       {{ t('vm.log.empty') }}
     </p>
     <div
