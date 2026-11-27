@@ -14,6 +14,6 @@ const vm = computed(() => live.state.vms.find(v => v.name === name.value))
       <AccessClaudeToken :key="`claude-${vm.name}`" :vm="vm" />
     </div>
     <AccessSshAccess :key="`ssh-${vm.name}`" :vm="vm" />
-    <AccessGithubTokens :vm="vm.name" />
+    <AccessGithubTokens :key="`tokens-${vm.name}`" :vm="vm.name" />
   </div>
 </template>

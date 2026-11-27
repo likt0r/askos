@@ -6,6 +6,8 @@ export default {
     retry: 'Erneut versuchen',
     resources: {
       images: 'die Images',
+      githubTokens: 'die GitHub-Tokens',
+      sshConfig: 'die Verbindungshilfe',
       githubApp: 'die GitHub-Apps',
       pairings: 'die gekoppelten Geräte',
     },

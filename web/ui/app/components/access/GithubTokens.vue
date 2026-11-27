@@ -9,43 +9,20 @@ const { t } = useI18n()
 // why a request was refused in the UI language (#69); the token service's English text on hover
 const tr = useTranslator()
 const reason = (r: GithubTokens['requests'][number]) => tokenReason(r, tr)
-const errorText = useErrorText()
 const when = useWhen()
 const now = useNow(60000)
 
 const PERIODS = { '-24h': 'day', '-7d': 'week', '-30d': 'month' } as const
 const period = ref<string>('-7d')
-const data = ref<GithubTokens | null>(null)
-const loading = ref(false)
-const error = ref<unknown>(null)
-let request = 0
+// read again on the `github-token` events of this VM (resources module); the list of the period
+// before stays while the next one is read
+const tokens = useResource('githubTokens', { params: () => ({ vm: props.vm, since: period.value }), keepPrevious: true })
+const data = computed(() => tokens.data.value ?? null)
+const loading = tokens.fetching
 
 const periods = computed(() => Object.entries(PERIODS).map(([value, key]) => ({ value, label: t(`access.tokens.periods.${key}`) })))
 const refused = computed(() => data.value?.requests.filter(r => r.outcome !== 'issued') ?? [])
 const issued = computed(() => data.value?.repositories.filter(r => r.tokens > 0) ?? [])
-
-async function load() {
-  const mine = ++request
-  loading.value = true
-  try {
-    const r = await api<GithubTokens>(`/vms/${props.vm}/github-tokens?since=${encodeURIComponent(period.value)}`)
-    if (mine !== request) return
-    data.value = r
-    error.value = null
-  }
-  catch (e) {
-    if (mine === request) error.value = e
-  }
-  finally {
-    if (mine === request) loading.value = false
-  }
-}
-
-watch([() => props.vm, period], load)
-onMounted(load)
-useLiveEvent('github-token', (e) => {
-  if (e?.vm === props.vm) void load()
-}, 1000)
 </script>
 
 <template>
@@ -60,10 +37,10 @@ useLiveEvent('github-token', (e) => {
         </p>
       </div>
       <USelect v-model="period" :items="periods" size="sm" class="w-40" :aria-label="t('access.tokens.period')" data-testid="tokens-period" />
-      <UButton color="neutral" variant="ghost" size="sm" icon="i-lucide-refresh-cw" :loading="loading" :aria-label="t('access.common.refresh')" @click="load" />
+      <UButton color="neutral" variant="ghost" size="sm" icon="i-lucide-refresh-cw" :loading="loading" :aria-label="t('access.common.refresh')" @click="tokens.retry()" />
     </div>
-    <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-circle-alert" :title="errorText(error)" />
-    <p v-if="!data && !error" class="text-sm text-muted">
+    <ReadFailure :resource="tokens" />
+    <p v-if="tokens.loading.value" class="text-sm text-muted">
       {{ t('access.common.loading') }}
     </p>
 

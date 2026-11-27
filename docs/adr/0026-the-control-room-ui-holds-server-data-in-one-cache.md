@@ -1,6 +1,6 @@
 # The Control Room UI holds all server data in one cache; an event writes into it or marks it stale
 
-Status: Accepted (#212), by the owner on 2026-11-26. Built so far: the resources module with its first resource, `images`, its rows of the table and the read-failure element (#214, `web/ui/app/utils/resources.ts`, `web/ui/app/components/ReadFailure.vue`); every change of the UI but signing in and out through it, with its failure placed by kind (#215, `useChange`, `web/ui/app/utils/failures.ts`). Details show a failure's code and message, not its `detail` (#224). Reads move in one page at a time (#216): so far a VM's Paired devices (a resource with parameters, a VM's) and the GitHub Apps; both are read again when a view of them opens, as the Host hears nothing of some of their changes (a device paired inside Orca, an App installed on GitHub). A code the Host answers for a state, not a failure, is read as data (`states`: no GitHub App set up). The other steps are the children of #212.
+Status: Accepted (#212), by the owner on 2026-11-26. Built so far: the resources module with its first resource, `images`, its rows of the table and the read-failure element (#214, `web/ui/app/utils/resources.ts`, `web/ui/app/components/ReadFailure.vue`); every change of the UI but signing in and out through it, with its failure placed by kind (#215, `useChange`, `web/ui/app/utils/failures.ts`). Details show a failure's code and message, not its `detail` (#224). Reads move in one page at a time (#216): so far a VM's Paired devices (a resource with parameters, a VM's), the GitHub Apps, and a VM's GitHub tokens and SSH connection help; the Paired devices and the GitHub Apps are read again when a view of them opens, as the Host hears nothing of some of their changes (a device paired inside Orca, an App installed on GitHub). A code the Host answers for a state, not a failure, is read as data (`states`: no GitHub App set up). The other steps are the children of #212.
 
 ## Context
 
@@ -30,7 +30,7 @@ One table in the module says, for every live event and Activity entry, which of 
 | The event carries the whole object: it is written into the cache | The event only says that something changed: the resource is marked stale and read again |
 |---|---|
 | `state`, `vm`, `host`, `services`, `version`, `watch`, `host-reboot` | Allowlist, Forbids, Watchlist, Legitimate domains, Harmless marks |
-| `build` (one Build), `build-log` (lines), `activity` (one entry, for the Activity timeline) | Settings, GitHub App, pairings, Alerts, the blocked list, GitHub tokens, the Images overview once a Build ends |
+| `build` (one Build), `build-log` (lines), `activity` (one entry, for the Activity timeline) | Settings, GitHub App, pairings, Alerts, the blocked list, GitHub tokens, a VM's SSH connection help, the Images overview once a Build ends |
 
 - **The UI never computes server data from an Activity entry.** An entry of kind `allowlist` carries a code and parameters, not the Allowlist entry; working out the new list from it would repeat the backend's rules in the UI, such as which of an Allowlist entry and a Forbid wins ([ADR 0024](0024-the-more-specific-of-an-allowlist-entry-and-a-forbid-wins.md)).
 - **An event that arrives while a read of the same resource is on the way is not lost to the older answer.** The module handles this once, for every resource.

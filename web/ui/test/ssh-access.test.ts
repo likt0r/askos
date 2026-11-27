@@ -443,3 +443,35 @@ describe('SSH changes and their failures (#215)', () => {
     expect(useState<unknown[]>('toasts').value).toEqual([])
   })
 })
+
+describe('the connection help through the resources module (#216)', () => {
+  it('is read again when its VM\'s SSH access turns on, and a failed read shows a notice', async () => {
+    let failing = false
+    let on = false
+    const { api, es, current } = await openSsh({ enabled: false }, {
+      'GET /vms/work/ssh-config': () => (failing ? fail(502, 'action_failed', 'x') : ok(sshConfig('local', on))),
+    })
+    const reads = () => api.calls.filter(c => c.path === '/vms/work/ssh-config').length
+    expect(reads()).toBe(1)
+    expect($('[data-testid="ssh-help-off"]')).not.toBeNull()
+    // turned on (here by the CLI): the VM's event says so, and the help is read again
+    on = true
+    current.vm = sshVm({ enabled: true })
+    es.emit('vm', current.vm)
+    await waitFor(() => expect(reads()).toBe(2))
+    await settle()
+    expect($('[data-testid="ssh-config-block"]')).not.toBeNull()
+    // another VM's event reads nothing; an event that changes nothing of SSH neither
+    es.emit('vm', vm('priv', 'running', { network: 2, ssh: { enabled: true, port: 2202, host_key_fingerprint: null, keys: [], pending: false } }))
+    es.emit('vm', { ...current.vm, state: 'paused' })
+    await settle()
+    expect(reads()).toBe(2)
+    // a new host key: read again, and when that fails the help says it may be out of date
+    failing = true
+    current.vm = sshVm({ enabled: true, host_key_fingerprint: 'SHA256:new' })
+    es.emit('vm', current.vm)
+    await waitFor(() => expect(reads()).toBe(3))
+    await settle()
+    expect(must('[data-testid="ssh-help-failed"]').getAttribute('data-read')).toBe('stale')
+  })
+})

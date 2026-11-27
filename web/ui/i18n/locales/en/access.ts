@@ -524,7 +524,6 @@ export default {
         localOnly: 'The Host is Local-only: the SSH port listens on the Host only, so these work on the Host itself.',
         mine: 'On the Host, your own keys from ~/.ssh go in with:',
         off: 'Turn SSH access on to see how to connect.',
-        failed: 'The connection help cannot be shown: {error}',
       },
     },
   },
