@@ -7,7 +7,7 @@ const { t, locale } = useI18n()
 const errorText = useErrorText()
 const toast = useToast()
 const images = useImages()
-const { startError, starting, logs, logLoading, logErrors } = images
+const { startError, starting } = images
 const overview = images.resource.data
 const loading = images.resource.loading
 // an update of every Image runs (Update now, or the automatic one)
@@ -161,14 +161,10 @@ async function update(vms: string[]) {
         :key="image.name"
         :image="image"
         :available="available"
-        :logs="logs"
-        :log-loading="logLoading"
-        :log-errors="logErrors"
         :busy="busy"
         :starting="starting === image.name"
         @rebuild="images.start(image.name)"
         @update="openUpdate(image.name)"
-        @log="images.fetchLog(image.name, $event)"
       />
     </template>
 

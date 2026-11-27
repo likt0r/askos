@@ -227,6 +227,37 @@ export interface BuildLog {
   step?: string | null
   error?: string | null
   problems?: string[]
+  /** lines were skipped (a `truncated` event): later events are not kept until a read after
+   * `cursor` fills the gap */
+  gap?: boolean
+}
+
+/** GET /images/<image>/log: up to 500 lines, only those after the held log's cursor once there
+ * is one. */
+export function buildLogPath(image: string, build: string, held: BuildLog | undefined) {
+  const params = new URLSearchParams({ build, lines: '500' })
+  if (held?.cursor) params.set('after_cursor', held.cursor)
+  return `/images/${encodeURIComponent(image)}/log?${params}`
+}
+
+/** An answer of the log endpoint after the held log's lines. */
+export function joinLog(held: BuildLog | undefined,
+  answer: { entries?: LogLine[], cursor?: string | null, status?: BuildStatus, step?: string | null, error?: string | null, problems?: string[] }): BuildLog {
+  const lines = appendLines(held?.lines ?? [], Array.isArray(answer?.entries) ? answer.entries : [])
+  return {
+    lines,
+    cursor: lines.at(-1)?.cursor ?? answer?.cursor ?? held?.cursor ?? null,
+    status: answer?.status, step: answer?.step, error: answer?.error, problems: answer?.problems,
+  }
+}
+
+/** A `build-log` event written into the held log: its lines appended; after lines were skipped
+ * (`truncated`) none are kept until a read fills the gap. The same log when nothing changes. */
+export function withLogEvent(log: BuildLog, event: BuildLogEvent): BuildLog {
+  if (!Array.isArray(event?.entries) || log.gap) return log
+  if (event.truncated) return { ...log, gap: true }
+  const lines = appendLines(log.lines, event.entries)
+  return lines === log.lines ? log : { ...log, lines, cursor: event.cursor ?? log.cursor }
 }
 
 /** The steps of a Build in order (the `step` field of a running Build); `import` (the Host takes
@@ -255,10 +286,6 @@ export function podmanStep(running: Image['running'] | undefined): (BuildProgres
   const p = running?.step === 'build' ? running.progress : null
   if (!p || !Number.isInteger(p.step) || !Number.isInteger(p.steps) || p.step < 1 || p.step > p.steps) return null
   return { ...p, percent: Math.round((p.step / p.steps) * 100) }
-}
-
-export function logKey(image: string, build: string) {
-  return `${image}/${build}`
 }
 
 /** A Build event applied to the overview: the Build's record is replaced (or added, newest

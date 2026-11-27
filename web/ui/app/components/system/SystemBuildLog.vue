@@ -1,10 +1,11 @@
 <script setup lang="ts">
-// The journal lines of a Build, newest at the bottom; follows the end while one reads there.
-import type { LogLine } from '~/utils/images'
-
-const props = defineProps<{ lines: LogLine[], loading?: boolean, error?: unknown, running?: boolean }>()
+// The journal lines of a Build, newest at the bottom; follows the end while one reads there. The
+// resource `buildLog`: `build-log` events append to it, the log endpoint fills what they could not
+// carry (lines skipped, a reconnect that could not resume, the end of the Build).
+const props = defineProps<{ image: string, build: string, running?: boolean }>()
 const { t, locale } = useI18n()
-const errorText = useErrorText()
+const log = useResource('buildLog', { params: () => ({ image: props.image, build: props.build }) })
+const lines = computed(() => log.data.value?.lines ?? [])
 const box = ref<HTMLElement | null>(null)
 let follow = true
 
@@ -13,7 +14,7 @@ function onScroll() {
   if (el) follow = el.scrollHeight - el.scrollTop - el.clientHeight < 40
 }
 
-watch(() => props.lines.length, async () => {
+watch(() => lines.value.length, async () => {
   await nextTick()
   const el = box.value
   if (el && follow) el.scrollTop = el.scrollHeight
@@ -22,11 +23,9 @@ watch(() => props.lines.length, async () => {
 
 <template>
   <div data-testid="build-log">
-    <p v-if="error" class="mb-1 text-sm text-error" data-testid="build-log-error">
-      {{ errorText(error) }}
-    </p>
-    <p v-if="!lines.length && !error" class="text-sm text-muted">
-      {{ loading ? t('system.log.loading') : running ? t('system.log.waiting') : t('system.log.empty') }}
+    <ReadFailure :resource="log" class="mb-1" data-testid="build-log-error" />
+    <p v-if="!lines.length && !log.error.value" class="text-sm text-muted">
+      {{ log.loading.value ? t('system.log.loading') : running ? t('system.log.waiting') : t('system.log.empty') }}
     </p>
     <div
       v-else-if="lines.length"

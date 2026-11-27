@@ -10,6 +10,7 @@ export default {
       sshConfig: 'the connection help',
       githubApp: 'the GitHub Apps',
       pairings: 'the Paired devices',
+      buildLog: 'the Build\'s log',
       containerfile: 'the Containerfile',
       host: 'the Host\'s history',
     },
